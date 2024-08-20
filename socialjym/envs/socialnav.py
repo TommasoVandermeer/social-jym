@@ -1,8 +1,8 @@
 import numpy as np
 import jax.numpy as jnp
-from jax import random, jit, lax
+from jax import random, jit, lax, debug
 from functools import partial
-from jhsfm.hsfm import step
+from jhsfm.hsfm import step as humans_step
 from jhsfm.utils import get_standard_humans_parameters
 from socialjym.utils.aux_functions import is_multiple
 
@@ -39,61 +39,171 @@ class SocialNav(BaseEnv):
     def __repr__(self) -> str:
         return str(self.__dict__)
 
-    def _get_obs(self, state):
+    def _get_obs(self, state, info, action):
+        """
+        Given the current state, the additional information about the environment, and the robot's action,
+        this function computes the observation of the current state.
+
+        args:
+        - state: current state of the environment.
+        - info: dictionary containing additional information about the environment.
+        - action: action to be taken by the robot.
+
+        output:
+        - obs: observation of the current state. It is in the form:
+                [[human1_px, human1_py, human1_vx, human1_vy, human1_radius],
+                [human2_px, human2_py, human2_vx, human2_vy, human2_radius],
+                ...
+                [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius],
+                [robot_px, robot_py, robot_ux, robot_uy, robot_radius]].
+        """
+        # TODO: Correct - humans state is [px, py, bvx, bvy, theta, omega] you should save vx and vy in the obs
+        obs = jnp.ones((self.n_humans+1, 5))
+        obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], state[i,2], state[i,3], info['humans_parameters'][i,0]])), obs)
+        obs = obs.at[self.n_humans].set(jnp.array([state[self.n_humans,0], state[self.n_humans,1], action[0], action[1], self.robot_radius]))
         return state
 
     @partial(jit, static_argnames=("self"))
     def _reset(self, key):
         key, subkey = random.split(key)
-        full_state = lax.switch(self.scenario, [self._generate_circular_crossing_episode, 
-                                                self._generate_parallel_traffic_episode], subkey)
-        return full_state, key
+        full_state, info = lax.switch(self.scenario, [self._generate_circular_crossing_episode, 
+                                                      self._generate_parallel_traffic_episode], subkey)
+        return full_state, key, info
 
     @partial(jit, static_argnames=("self"))
     def _reset_if_done(self, env_state, done):
-        pass
+        # TODO: Implement this method
+        return env_state
     
     @partial(jit, static_argnames=("self"))
     def _get_reward_done(self, new_state):
-        pass
+        # TODO: Implement this method
+        return 0., False
     
     @partial(jit, static_argnames=("self"))
     def _generate_circular_crossing_episode(self, key):
         full_state = jnp.zeros((self.n_humans+1, 6))
-        # Humans state, goals and parameters
+
+        ### DETERMINISTIC CIRCULAR CROSSING (spread humans evenly in the circle perimeter)
+        ## Humans state, goals and parameters
+        # humans_goal = jnp.zeros((self.n_humans, 2))
+        # angle_width = (2 * jnp.pi) / (self.n_humans + 1)
+        # full_state = lax.fori_loop(0, self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
+        #                                     [self.circle_radius * jnp.sin((i+1) * angle_width),
+        #                                     -self.circle_radius * jnp.cos((i+1) * angle_width),
+        #                                     0.,
+        #                                     0.,
+        #                                     (jnp.pi/2) + (i+1) * angle_width,
+        #                                     0.]))
+        #              , full_state)
+        # humans_goal = lax.fori_loop(0, self.n_humans, lambda i, humans_goal:
+        #               humans_goal.at[i].set(jnp.array([-full_state[i,0], -full_state[i,1]]))
+        #               , humans_goal)
+        # humans_goal = humans_goal
+        # humans_parameters = get_standard_humans_parameters(self.n_humans)
+
+        ### STOCHASTIC CIRCULAR CROSSING
+        ## Humans state, goals and parameters
         humans_goal = jnp.zeros((self.n_humans, 2))
-        angle_width = (2 * jnp.pi) / (self.n_humans)
-        full_state = lax.fori_loop(0, self.n_humans, lambda i, full_state: full_state.at[i].set(
-                                            jnp.array([self.circle_radius * jnp.cos(i * angle_width),
-                                            self.circle_radius * jnp.sin(i * angle_width),
+        humans_parameters = get_standard_humans_parameters(self.n_humans)
+        # Randomly generate the humans' positions
+        min_dist = 2 * jnp.max(humans_parameters[:, 0]) + 0.1 # Calculate the minimum distance between humans
+        min_angle = 2 * jnp.arcsin(min_dist / (2 * self.circle_radius)) # Calculate the minimum angular distance in radians for inter-point distance
+        exclusion_angle = 3/2 * jnp.pi # Calculate the angular exclusion zone for distance from (0, -self.circle_radius)
+        min_exclusion_angle = exclusion_angle - min_angle
+        max_exclusion_angle = exclusion_angle + min_angle
+        def is_valid(angles):
+            angular_diffs = jnp.diff(jnp.concatenate([angles, angles[:1] + 2*jnp.pi]))
+            valid_distances = jnp.all(angular_diffs >= min_angle)
+            valid_from_south = jnp.all((angles < min_exclusion_angle) | (angles > max_exclusion_angle))
+            return valid_distances & valid_from_south
+        def loop_body(val):
+            angles, key = val
+            key, subkey = random.split(key)
+            new_angles = random.uniform(subkey, shape=(self.n_humans,), minval=0, maxval=2*jnp.pi)
+            new_angles = jnp.sort(new_angles)
+            return lax.cond(is_valid(new_angles),
+                                lambda _: (new_angles, key),
+                                lambda _: (angles, key),
+                                operand=None)
+        angles = random.uniform(key, shape=(self.n_humans,), minval=0, maxval=2*jnp.pi) # Initialize with random angles
+        angles = jnp.sort(angles)
+        angles, key = lax.while_loop(lambda val: ~is_valid(val[0]),
+                                    loop_body,
+                                    (angles, key))
+        key, subkey = random.split(key)
+        disturbance = random.uniform(subkey, shape=(self.n_humans,), minval=-0.05, maxval=0.5) # Add some disturbance to the outer circle
+        points = self.circle_radius * jnp.stack([jnp.cos(angles), jnp.sin(angles)], axis=1) # Convert angles to (x, y) coordinates on the circle
+        disturbed_points = lax.fori_loop(0, self.n_humans, lambda i, points: points.at[i].set(points[i] + disturbance[i] * jnp.array([jnp.cos(angles[i]), jnp.sin(angles[i])])), points)
+        
+        # Assign the humans' positions and goals
+        full_state = lax.fori_loop(0, self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
+                                            [disturbed_points[i,0],
+                                            disturbed_points[i,1],
                                             0.,
                                             0.,
-                                            -jnp.pi + i * angle_width,
+                                            angles[i] + jnp.pi,
                                             0.]))
                      , full_state)
         humans_goal = lax.fori_loop(0, self.n_humans, lambda i, humans_goal:
-                      humans_goal.at[i].set(jnp.array([-full_state[i,0], -full_state[i,1]]))
+                      humans_goal.at[i].set(jnp.array([-points[i,0], -points[i,1]]))
                       , humans_goal)
-        self.humans_goal = humans_goal
-        self.humans_parameters = get_standard_humans_parameters(self.n_humans)
         # Robot state and goal
         full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, jnp.nan, jnp.nan, jnp.nan, jnp.nan]))
-        self.robot_goal = jnp.array([0., self.circle_radius])
+        self.robot_goal = np.array([0., self.circle_radius])
         # Obstacles
-        self.static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
-        return full_state
+        static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
+        # Info
+        info = {"humans_goal": humans_goal, "humans_parameters": humans_parameters, "static_obstacles": static_obstacles}
+        return full_state, info
     
     @partial(jit, static_argnames=("self"))
     def _generate_parallel_traffic_episode(self, key):
         # TODO: Implement this method
         full_state = jnp.zeros((self.n_humans+1, 6))
-        return full_state
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = get_standard_humans_parameters(self.n_humans)
+        static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
+        info = {"humans_goal": humans_goal, "humans_parameters": humans_parameters, "static_obstacles": static_obstacles}
+        return full_state, info
 
     # --- Public methods ---
 
     @partial(jit, static_argnames=("self"))
-    def step(self, state, action) -> tuple:
-        pass
+    def step(self, env_state:tuple, info:dict, action) -> tuple:
+        """
+        Given an environment state, a dictionary containing additional information about the environment, and an action,
+        this function computes the next state, the observation, the reward, and whether the episode is done.
+
+        args:
+        - env_state: tuple containing the environment state and a PRNG key.
+        - info: dictionary containing additional information about the environment.
+        - action: action to be taken by the robot.
+
+        output:
+        - env_state: tuple containing the new environment state and a PRNG key.
+        - obs: observation of the new state.
+        - info: dictionary containing additional information about the environment.
+        - reward: reward obtained in the transition.
+        - done: boolean indicating whether the episode is done.
+        """
+        state, key = env_state
+        humans_goal = info["humans_goal"]
+        humans_parameters = info["humans_parameters"]
+        static_obstacles = info["static_obstacles"]
+        ### Update humans
+        # TODO: update humans depending on robot visibility
+        # TODO: update humans depending on their policy
+        # TODO: update humans robot_dt/humans_dt times
+        new_state = jnp.vstack([humans_step(state[0:self.n_humans], humans_goal, humans_parameters, static_obstacles, self.humans_dt), state[-1]])
+        ### Update robot
+        # TODO: update robot based on the action
+        ### Compute reward and done
+        reward, done = self._get_reward_done(new_state)
+        env_state = new_state, key
+        env_state = self._reset_if_done(env_state, done)
+        new_state = env_state[0]
+        return env_state, self._get_obs(new_state, info, action), info, reward, done
 
     def reset(self, key) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
@@ -117,7 +227,8 @@ class SocialNav(BaseEnv):
                 ...
                 [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius],
                 [robot_px, robot_py, robot_ux, robot_uy, robot_radius]].
+        - info: dictionary containing additional information about the environment.
         """
-        env_state = self._reset(key)
-        new_state = env_state[0]
-        return env_state, self._get_obs(new_state)
+        new_state, key, info = self._reset(key)
+        env_state = (new_state, key)
+        return env_state, self._get_obs(new_state, info, jnp.zeros((2,))), info
