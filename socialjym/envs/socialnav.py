@@ -71,8 +71,8 @@ class SocialNav(BaseEnv):
             obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], linear_velocities[i,0], linear_velocities[i,1], info['humans_parameters'][i,0]])), obs)
         else: # For sfm and orca policies the state already contains the linear velocities
             obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], state[i,2], state[i,3], info['humans_parameters'][i,0]])), obs)
-        obs = obs.at[self.n_humans].set(jnp.array([state[self.n_humans,0], state[self.n_humans,1], action[0], action[1], self.robot_radius]))
-        return state
+        obs = obs.at[self.n_humans].set(jnp.array([*state[self.n_humans,0:2], *action, self.robot_radius]))
+        return obs
 
     @partial(jit, static_argnames=("self"))
     def _reset(self, key):
@@ -209,7 +209,6 @@ class SocialNav(BaseEnv):
         ### Update state
         # TODO: update humans depending on their policy
         if self.robot_visible:
-            # TODO: there is a bug here somewhere
             goals = jnp.vstack((humans_goal, info["robot_goal"]))
             parameters = jnp.vstack((humans_parameters, self.fictitious_robot_parameters))
             fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2],*action,0.,0.])])
@@ -280,10 +279,10 @@ class SocialNav(BaseEnv):
         humans_pos = obs[0:self.n_humans,0:2]
         robot_goal = info["robot_goal"]
         humans_radiuses = obs[0:self.n_humans,4]
-        robot_radius = self.robot_radius
+        robot_radius = obs[-1,4]
         time = info["time"]
         # Collision and discomfort detection with humans
-        distances = jnp.linalg.norm(humans_pos - robot_pos) - (humans_radiuses + robot_radius)
+        distances = jnp.linalg.norm(humans_pos - robot_pos, axis=1) - (humans_radiuses + robot_radius)
         collision = jnp.any(distances < 0)
         min_distance = jnp.max(jnp.array([jnp.min(distances),0]))
         discomfort = jnp.all(jnp.array([jnp.logical_not(collision), min_distance < self.robot_discomfort_dist]))

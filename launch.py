@@ -8,7 +8,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.aux_functions import plot_state, plot_trajectory
 
 # Hyperparameters
-n_humans = 5
+n_humans = 15
 n_episodes = 5
 robot_dt = 0.25
 humans_dt = 0.01
@@ -37,6 +37,7 @@ for i in range(n_episodes):
     ax.axis('equal')
     plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
     for k in range(0,len(all_states),int(3/robot_dt)):
-        plot_state(ax, k*robot_dt, all_states[k], 'hsfm', 'circular_crossing', 0.3 * np.ones((n_humans,)), env.robot_radius)
+        plot_state(ax, k*robot_dt, all_states[k], 'hsfm', 'circular_crossing', info["humans_parameters"][:,0], env.robot_radius)
+    # plot_state(ax, len(all_states)*robot_dt, all_states[len(all_states)-1], 'hsfm', 'circular_crossing', info["humans_parameters"][:,0], env.robot_radius) # plot last state
     plt.show()
 print(f"Average time per episode: {round(np.mean(episode_simulation_times),2)} seconds")
