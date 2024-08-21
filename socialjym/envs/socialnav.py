@@ -8,7 +8,7 @@ from socialjym.utils.aux_functions import is_multiple
 
 from .base_env import BaseEnv
 
-SCENARIOS = ["circular_crossing", "parallel_traffic"]
+SCENARIOS = ["circular_crossing", "parallel_traffic", "hybrid_scenario"]
 HUMAN_POLICIES = ["orca", "sfm", "hsfm"]
 
 class SocialNav(BaseEnv):
@@ -17,28 +17,35 @@ class SocialNav(BaseEnv):
     through RL.
     """
     def __init__(self, robot_radius:float, robot_dt:float, humans_dt:float, scenario:str, n_humans:int, humans_policy='hsfm', 
-                 robot_visible=False, circle_radius=7, traffic_height=3, traffic_length=14) -> None:
-        # Args validation
+                 robot_discomfort_dist=0.2, robot_visible=False, circle_radius=7, traffic_height=3, traffic_length=14,
+                 time_limit=50) -> None:
+        ## Args validation
         assert scenario in SCENARIOS, f"Invalid scenario. Choose one of {SCENARIOS}"
         assert humans_policy in HUMAN_POLICIES, f"Invalid human policy. Choose one of {HUMAN_POLICIES}"
         assert is_multiple(robot_dt, humans_dt), "The robot's time step must be a multiple of the humans' time step."
-        # Env initialization
+        ## Env initialization
+        # Configurable args
         self.robot_radius = robot_radius
         self.robot_dt = robot_dt
         self.humans_dt = humans_dt
         self.scenario = SCENARIOS.index(scenario)
         self.n_humans = n_humans
         self.humans_policy = SCENARIOS.index(scenario)
+        self.robot_discomfort_dist = robot_discomfort_dist
         self.robot_visible = robot_visible
         self.circle_radius = circle_radius
         self.traffic_height = traffic_height
         self.traffic_length = traffic_length
+        self.time_limit = time_limit
+        # Default args
+        self.fictitious_robot_parameters = jnp.array([self.robot_radius, *get_standard_humans_parameters(1)[0,1:]])
 
     # --- Private methods ---
 
     def __repr__(self) -> str:
         return str(self.__dict__)
 
+    @partial(jit, static_argnames=("self"))
     def _get_obs(self, state, info, action):
         """
         Given the current state, the additional information about the environment, and the robot's action,
@@ -57,9 +64,13 @@ class SocialNav(BaseEnv):
                 [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius],
                 [robot_px, robot_py, robot_ux, robot_uy, robot_radius]].
         """
-        # TODO: Correct - humans state is [px, py, bvx, bvy, theta, omega] you should save vx and vy in the obs
         obs = jnp.ones((self.n_humans+1, 5))
-        obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], state[i,2], state[i,3], info['humans_parameters'][i,0]])), obs)
+        if self.humans_policy == 'hsfm': # In case of hsfm convert humans body velocities to linear velocities
+            linear_velocities = jnp.ones((self.n_humans, 2))
+            linear_velocities = lax.fori_loop(0, self.n_humans, lambda i, lv: lv.at[i].set(jnp.matmul(jnp.array([[jnp.cos(state[i,4]), -jnp.sin(state[i,4])], [jnp.sin(state[i,4]), jnp.cos(state[i,4])]]), state[i,2:4])) , linear_velocities)
+            obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], linear_velocities[i,0], linear_velocities[i,1], info['humans_parameters'][i,0]])), obs)
+        else: # For sfm and orca policies the state already contains the linear velocities
+            obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], state[i,2], state[i,3], info['humans_parameters'][i,0]])), obs)
         obs = obs.at[self.n_humans].set(jnp.array([state[self.n_humans,0], state[self.n_humans,1], action[0], action[1], self.robot_radius]))
         return state
 
@@ -71,14 +82,14 @@ class SocialNav(BaseEnv):
         return full_state, key, info
 
     @partial(jit, static_argnames=("self"))
-    def _reset_if_done(self, env_state, done):
-        # TODO: Implement this method
-        return env_state
-    
-    @partial(jit, static_argnames=("self"))
-    def _get_reward_done(self, new_state):
-        # TODO: Implement this method
-        return 0., False
+    def _reset_if_done(self, env_state, done, info):
+        key = env_state[1]
+        return lax.cond(
+            done,
+            self._reset,
+            lambda key: (env_state[0], key, info),
+            key,
+        )
     
     @partial(jit, static_argnames=("self"))
     def _generate_circular_crossing_episode(self, key):
@@ -105,6 +116,7 @@ class SocialNav(BaseEnv):
         ### STOCHASTIC CIRCULAR CROSSING
         ## Humans state, goals and parameters
         humans_goal = jnp.zeros((self.n_humans, 2))
+        # TODO: Adjust parameters based on humans policy
         humans_parameters = get_standard_humans_parameters(self.n_humans)
         # Randomly generate the humans' positions
         min_dist = 2 * jnp.max(humans_parameters[:, 0]) + 0.1 # Calculate the minimum distance between humans
@@ -136,6 +148,7 @@ class SocialNav(BaseEnv):
         points = self.circle_radius * jnp.stack([jnp.cos(angles), jnp.sin(angles)], axis=1) # Convert angles to (x, y) coordinates on the circle
         disturbed_points = lax.fori_loop(0, self.n_humans, lambda i, points: points.at[i].set(points[i] + disturbance[i] * jnp.array([jnp.cos(angles[i]), jnp.sin(angles[i])])), points)
         
+        # TODO: Modify full state based on humans policy
         # Assign the humans' positions and goals
         full_state = lax.fori_loop(0, self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
                                             [disturbed_points[i,0],
@@ -150,11 +163,11 @@ class SocialNav(BaseEnv):
                       , humans_goal)
         # Robot state and goal
         full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, jnp.nan, jnp.nan, jnp.nan, jnp.nan]))
-        self.robot_goal = np.array([0., self.circle_radius])
+        robot_goal = np.array([0., self.circle_radius])
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
         # Info
-        info = {"humans_goal": humans_goal, "humans_parameters": humans_parameters, "static_obstacles": static_obstacles}
+        info = {"humans_goal": humans_goal, "robot_goal": robot_goal, "humans_parameters": humans_parameters, "static_obstacles": static_obstacles, "time": 0.}
         return full_state, info
     
     @partial(jit, static_argnames=("self"))
@@ -164,7 +177,8 @@ class SocialNav(BaseEnv):
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = get_standard_humans_parameters(self.n_humans)
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
-        info = {"humans_goal": humans_goal, "humans_parameters": humans_parameters, "static_obstacles": static_obstacles}
+        robot_goal = np.array([self.traffic_length/2, 0])
+        info = {"humans_goal": humans_goal, "robot_goal": robot_goal, "humans_parameters": humans_parameters, "static_obstacles": static_obstacles, "time": 0.}
         return full_state, info
 
     # --- Public methods ---
@@ -187,24 +201,39 @@ class SocialNav(BaseEnv):
         - reward: reward obtained in the transition.
         - done: boolean indicating whether the episode is done.
         """
+        info["time"] += self.robot_dt
         state, key = env_state
         humans_goal = info["humans_goal"]
         humans_parameters = info["humans_parameters"]
         static_obstacles = info["static_obstacles"]
-        ### Update humans
-        # TODO: update humans depending on robot visibility
+        ### Update state
         # TODO: update humans depending on their policy
-        # TODO: update humans robot_dt/humans_dt times
-        new_state = jnp.vstack([humans_step(state[0:self.n_humans], humans_goal, humans_parameters, static_obstacles, self.humans_dt), state[-1]])
-        ### Update robot
-        # TODO: update robot based on the action
+        if self.robot_visible:
+            # TODO: there is a bug here somewhere
+            goals = jnp.vstack((humans_goal, info["robot_goal"]))
+            parameters = jnp.vstack((humans_parameters, self.fictitious_robot_parameters))
+            fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2],*action,0.,0.])])
+            new_state = lax.fori_loop(0,
+                                      int(self.robot_dt/self.humans_dt),
+                                      lambda _ , x: jnp.vstack([humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
+                                                                jnp.array([x[-1,0]+action[0]*self.humans_dt, x[-1,1]+action[1]*self.humans_dt, *action, 0., 0.])]),
+                                      fictitious_state)
+            new_state = new_state.at[self.n_humans,2:].set(jnp.array([jnp.nan, jnp.nan, jnp.nan, jnp.nan]))
+        else:
+            ## Update humans
+            new_state = lax.fori_loop(0,
+                                      int(self.robot_dt/self.humans_dt),
+                                      lambda _ , x: jnp.vstack([humans_step(x[0:self.n_humans], humans_goal, humans_parameters, static_obstacles, self.humans_dt), x[-1]]),
+                                      state)
+            ## Update robot
+            new_state = new_state.at[self.n_humans,0:2].set(jnp.array([new_state[self.n_humans,0] + action[0] * self.robot_dt, new_state[self.n_humans,1] + action[1] * self.robot_dt]))
         ### Compute reward and done
-        reward, done = self._get_reward_done(new_state)
-        env_state = new_state, key
-        env_state = self._reset_if_done(env_state, done)
-        new_state = env_state[0]
+        reward, done = self.get_reward_done(self._get_obs(new_state, info, action), info)
+        new_state, key, info = self._reset_if_done((new_state, key), done, info)
+        env_state = (new_state, key)
         return env_state, self._get_obs(new_state, info, action), info, reward, done
 
+    @partial(jit, static_argnames=("self"))
     def reset(self, key) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Given a PRNG key, this function resets the environment to start a new episode returning a stochastic initial state.
@@ -232,3 +261,47 @@ class SocialNav(BaseEnv):
         new_state, key, info = self._reset(key)
         env_state = (new_state, key)
         return env_state, self._get_obs(new_state, info, jnp.zeros((2,))), info
+    
+    @partial(jit, static_argnames=("self"))
+    def get_reward_done(self, obs, info):
+        """
+        Given a state and a dictionary containing additional information about the environment,
+        this function computes the reward of the current state and wether the episode is finished or not.
+        This function is public so that it can be called by the agent policy to compute the best action.
+
+        args:
+        - obs: observation of the current state of the environment
+
+        output:
+        - reward: reward obtained in the current state.
+        - done: boolean indicating whether the episode is done.
+        """
+        robot_pos = obs[-1,0:2]
+        humans_pos = obs[0:self.n_humans,0:2]
+        robot_goal = info["robot_goal"]
+        humans_radiuses = obs[0:self.n_humans,4]
+        robot_radius = self.robot_radius
+        time = info["time"]
+        # Collision and discomfort detection with humans
+        distances = jnp.linalg.norm(humans_pos - robot_pos) - (humans_radiuses + robot_radius)
+        collision = jnp.any(distances < 0)
+        min_distance = jnp.max(jnp.array([jnp.min(distances),0]))
+        discomfort = jnp.all(jnp.array([jnp.logical_not(collision), min_distance < self.robot_discomfort_dist]))
+        # Check if the robot reached its goal
+        reached_goal = jnp.linalg.norm(robot_pos - robot_goal) < robot_radius
+        # Timeout
+        timeout = jnp.any(time >= self.time_limit)
+        # Compute reward
+        reward = 0.
+        reward = lax.cond(reached_goal, lambda r: r + 1., lambda r: r, reward) # Reward for reaching the goal
+        reward = lax.cond(collision, lambda r: r - 0.25, lambda r: r, reward) # Penalty for collision
+        reward = lax.cond(discomfort, lambda r: r - 0.5 * self.robot_dt * (min_distance - self.robot_discomfort_dist), lambda r: r, reward) # Penalty for getting too close to humans
+        # Compute done
+        done = jnp.any(jnp.array([collision,reached_goal,timeout]))
+        # # DEBUG
+        # debug.print("\n")
+        # debug.print("collision: {x}", x=collision)
+        # debug.print("reached_goal: {x}", x=reached_goal)
+        # debug.print("timeout: {x}", x=timeout)
+        return reward, done
+
