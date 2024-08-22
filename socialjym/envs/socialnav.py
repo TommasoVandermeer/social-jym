@@ -2,10 +2,10 @@ import numpy as np
 import jax.numpy as jnp
 from jax import random, jit, lax, debug
 from functools import partial
+
 from jhsfm.hsfm import step as humans_step
 from jhsfm.utils import get_standard_humans_parameters
 from socialjym.utils.aux_functions import is_multiple
-
 from .base_env import BaseEnv
 
 SCENARIOS = ["circular_crossing", "parallel_traffic", "hybrid_scenario"]
@@ -46,7 +46,7 @@ class SocialNav(BaseEnv):
         return str(self.__dict__)
 
     @partial(jit, static_argnames=("self"))
-    def _get_obs(self, state, info, action):
+    def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment, and the robot's action,
         this function computes the observation of the current state.
@@ -75,24 +75,14 @@ class SocialNav(BaseEnv):
         return obs
 
     @partial(jit, static_argnames=("self"))
-    def _reset(self, key):
+    def _reset(self, key:random.PRNGKey) -> tuple[jnp.ndarray, random.PRNGKey, dict]:
         key, subkey = random.split(key)
         full_state, info = lax.switch(self.scenario, [self._generate_circular_crossing_episode, 
                                                       self._generate_parallel_traffic_episode], subkey)
         return full_state, key, info
-
-    @partial(jit, static_argnames=("self"))
-    def _reset_if_done(self, env_state, done, info):
-        key = env_state[1]
-        return lax.cond(
-            done,
-            self._reset,
-            lambda key: (env_state[0], key, info),
-            key,
-        )
     
     @partial(jit, static_argnames=("self"))
-    def _generate_circular_crossing_episode(self, key):
+    def _generate_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
         full_state = jnp.zeros((self.n_humans+1, 6))
 
         ### DETERMINISTIC CIRCULAR CROSSING (spread humans evenly in the circle perimeter)
@@ -171,7 +161,7 @@ class SocialNav(BaseEnv):
         return full_state, info
     
     @partial(jit, static_argnames=("self"))
-    def _generate_parallel_traffic_episode(self, key):
+    def _generate_parallel_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
         # TODO: Implement this method
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
@@ -184,7 +174,8 @@ class SocialNav(BaseEnv):
     # --- Public methods ---
 
     @partial(jit, static_argnames=("self"))
-    def step(self, env_state:tuple, info:dict, action) -> tuple:
+    def step(self, env_state:tuple, info:dict, action:jnp.ndarray
+            )-> tuple[tuple[jnp.ndarray, random.PRNGKey], jnp.ndarray, dict, float, bool]:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
         this function computes the next state, the observation, the reward, and whether the episode is done.
@@ -228,12 +219,11 @@ class SocialNav(BaseEnv):
             new_state = new_state.at[self.n_humans,0:2].set(jnp.array([new_state[self.n_humans,0] + action[0] * self.robot_dt, new_state[self.n_humans,1] + action[1] * self.robot_dt]))
         ### Compute reward and done
         reward, done = self.get_reward_done(self._get_obs(new_state, info, action), info)
-        new_state, key, info = self._reset_if_done((new_state, key), done, info)
         env_state = (new_state, key)
         return env_state, self._get_obs(new_state, info, action), info, reward, done
 
     @partial(jit, static_argnames=("self"))
-    def reset(self, key) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    def reset(self, key:random.PRNGKey) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Given a PRNG key, this function resets the environment to start a new episode returning a stochastic initial state.
 
@@ -261,8 +251,9 @@ class SocialNav(BaseEnv):
         env_state = (new_state, key)
         return env_state, self._get_obs(new_state, info, jnp.zeros((2,))), info
     
+    # TODO: The reward function should be outside the environment class because it must be called inside the policy class
     @partial(jit, static_argnames=("self"))
-    def get_reward_done(self, obs, info):
+    def get_reward_done(self, obs:jnp.ndarray, info:dict) -> tuple[float, bool]:
         """
         Given a state and a dictionary containing additional information about the environment,
         this function computes the reward of the current state and wether the episode is finished or not.

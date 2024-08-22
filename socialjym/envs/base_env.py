@@ -14,10 +14,6 @@ class BaseEnv(ABC):
     def _reset(self, key):
         pass
 
-    @abstractmethod
-    def _reset_if_done(self, env_state, done):
-        pass
-
     # --- Public methods ---
 
     @abstractmethod
