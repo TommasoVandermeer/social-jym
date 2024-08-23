@@ -14,16 +14,21 @@ n_episodes = 5
 robot_dt = 0.25
 humans_dt = 0.01
 random_seed = 1
-robot_visible = False
+robot_visible = True
 scenario = 'circular_crossing'
 humans_policy = 'hsfm'
 
 # Initialize and reset environment
 env = SocialNav(robot_radius=0.3, robot_dt=robot_dt, humans_dt=humans_dt, humans_policy=humans_policy, scenario=scenario, n_humans=n_humans, robot_visible=robot_visible)
 
-# Warm up the environment - Dummy step to jit compile the step function (this way, computation time will only reflect execution and not compilation)
+# Initialize robot policy
+policy = CADRL(env.reward_function, dt=robot_dt)
+initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((policy.vnet_input_size,)))
+
+# Warm up the environment and policy - Dummy step to jit compile the step function (this way, computation time will only reflect execution and not compilation)
 env_state, _, info = env.reset(random.key(random_seed))
-_ = env.step(env_state,info,jnp.zeros((2,)))
+_, obs, _, _, _ = env.step(env_state,info,jnp.zeros((2,)))
+_ = policy.act(random.key(random_seed), obs, info, initial_vnet_params, 0.5)
 key = random.key(random_seed)
 
 # Simulate some episodes
@@ -34,8 +39,9 @@ for i in range(n_episodes):
     env_state, obs, info = env.reset(key)
     all_states = np.array([env_state[0]])
     while not done:
-        action = jnp.array([0.,1.])
-        env_state, obs, info, reward, done = env.step(env_state,info,action)
+        # action = jnp.array([0.,1.]) # Move north
+        action, key = policy.act(key, obs, info, initial_vnet_params, 0.5)
+        env_state, obs, info, reward, done = env.step(env_state,info,action) 
         all_states = np.vstack((all_states, [env_state[0]]))
         key = env_state[1]
     all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
@@ -48,6 +54,7 @@ for i in range(n_episodes):
     for k in range(0,len(all_states),int(3/robot_dt)):
         plot_state(ax, k*robot_dt, all_states[k], humans_policy, scenario, info["humans_parameters"][:,0], env.robot_radius)
     # plot last state
-    plot_state(ax, len(all_states)*robot_dt, all_states[len(all_states)-1], humans_policy, scenario, info["humans_parameters"][:,0], env.robot_radius)
+    plot_state(ax, (len(all_states)-1)*robot_dt, all_states[len(all_states)-1], humans_policy, scenario, info["humans_parameters"][:,0], env.robot_radius)
     plt.show()
 print(f"Average time per episode: {round(np.mean(episode_simulation_times),2)} seconds")
+print(f"Total time for {n_episodes} episodes: {round(np.sum(episode_simulation_times),2)} seconds")

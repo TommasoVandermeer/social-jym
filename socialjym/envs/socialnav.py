@@ -10,6 +10,55 @@ from .base_env import BaseEnv
 
 SCENARIOS = ["circular_crossing", "parallel_traffic", "hybrid_scenario"]
 HUMAN_POLICIES = ["orca", "sfm", "hsfm"]
+REWARD_SETTINGS = {"discomfort_dist": 0.2,
+                   "collision_penalty": 0.25,
+                   "goal_reward": 1.0,
+                   "time_limit": 50}
+
+@jit
+def get_reward_done(obs:jnp.ndarray, info:dict, dt:float) -> tuple[float, bool]:
+        """
+        Given a state and a dictionary containing additional information about the environment,
+        this function computes the reward of the current state and wether the episode is finished or not.
+        This function is public so that it can be called by the agent policy to compute the best action.
+
+        args:
+        - obs: observation of the current state of the environment
+
+        output:
+        - reward: reward obtained in the current state.
+        - done: boolean indicating whether the episode is done.
+        """
+        robot_pos = obs[-1,0:2]
+        humans_pos = obs[0:len(obs)-1,0:2]
+        robot_goal = info["robot_goal"]
+        humans_radiuses = obs[0:len(obs)-1,4]
+        robot_radius = obs[-1,4]
+        time = info["time"]
+        next_robot_pos = robot_pos + obs[-1,2:4] * dt
+        next_humans_pos = humans_pos + obs[0:len(obs)-1,2:4] * dt
+        # Collision and discomfort detection with humans (within a duration of dt)
+        distances = jnp.linalg.norm(next_humans_pos - next_robot_pos, axis=1) - (humans_radiuses + robot_radius)
+        collision = jnp.any(distances < 0)
+        min_distance = jnp.max(jnp.array([jnp.min(distances),0]))
+        discomfort = jnp.all(jnp.array([jnp.logical_not(collision), min_distance < REWARD_SETTINGS["discomfort_dist"]]))
+        # Check if the robot reached its goal
+        reached_goal = jnp.linalg.norm(next_robot_pos - robot_goal) < robot_radius
+        # Timeout
+        timeout = jnp.any(time >= REWARD_SETTINGS["time_limit"])
+        # Compute reward
+        reward = 0.
+        reward = lax.cond(reached_goal, lambda r: r + REWARD_SETTINGS["goal_reward"], lambda r: r, reward) # Reward for reaching the goal
+        reward = lax.cond(collision, lambda r: r - 0.25, lambda r: r, reward) # Penalty for collision
+        reward = lax.cond(discomfort, lambda r: r - 0.5 * dt * (REWARD_SETTINGS["discomfort_dist"] - min_distance), lambda r: r, reward) # Penalty for getting too close to humans
+        # Compute done
+        done = jnp.any(jnp.array([collision,reached_goal,timeout]))
+        # # DEBUG
+        # debug.print("\n")
+        # debug.print("collision: {x}", x=collision)
+        # debug.print("reached_goal: {x}", x=reached_goal)
+        # debug.print("timeout: {x}", x=timeout)
+        return reward, done
 
 class SocialNav(BaseEnv):
     """
@@ -39,6 +88,7 @@ class SocialNav(BaseEnv):
         self.time_limit = time_limit
         # Default args
         self.fictitious_robot_parameters = jnp.array([self.robot_radius, *get_standard_humans_parameters(1)[0,1:]])
+        self.reward_function = get_reward_done
 
     # --- Private methods ---
 
@@ -218,7 +268,7 @@ class SocialNav(BaseEnv):
             ## Update robot
             new_state = new_state.at[self.n_humans,0:2].set(jnp.array([new_state[self.n_humans,0] + action[0] * self.robot_dt, new_state[self.n_humans,1] + action[1] * self.robot_dt]))
         ### Compute reward and done
-        reward, done = self.get_reward_done(self._get_obs(new_state, info, action), info)
+        reward, done = self.reward_function(self._get_obs(new_state, info, action), info, self.robot_dt)
         env_state = (new_state, key)
         return env_state, self._get_obs(new_state, info, action), info, reward, done
 
@@ -250,48 +300,4 @@ class SocialNav(BaseEnv):
         new_state, key, info = self._reset(key)
         env_state = (new_state, key)
         return env_state, self._get_obs(new_state, info, jnp.zeros((2,))), info
-    
-    # TODO: The reward function should be outside the environment class because it must be called inside the policy class
-    @partial(jit, static_argnames=("self"))
-    def get_reward_done(self, obs:jnp.ndarray, info:dict) -> tuple[float, bool]:
-        """
-        Given a state and a dictionary containing additional information about the environment,
-        this function computes the reward of the current state and wether the episode is finished or not.
-        This function is public so that it can be called by the agent policy to compute the best action.
-
-        args:
-        - obs: observation of the current state of the environment
-
-        output:
-        - reward: reward obtained in the current state.
-        - done: boolean indicating whether the episode is done.
-        """
-        robot_pos = obs[-1,0:2]
-        humans_pos = obs[0:self.n_humans,0:2]
-        robot_goal = info["robot_goal"]
-        humans_radiuses = obs[0:self.n_humans,4]
-        robot_radius = obs[-1,4]
-        time = info["time"]
-        # Collision and discomfort detection with humans
-        distances = jnp.linalg.norm(humans_pos - robot_pos, axis=1) - (humans_radiuses + robot_radius)
-        collision = jnp.any(distances < 0)
-        min_distance = jnp.max(jnp.array([jnp.min(distances),0]))
-        discomfort = jnp.all(jnp.array([jnp.logical_not(collision), min_distance < self.robot_discomfort_dist]))
-        # Check if the robot reached its goal
-        reached_goal = jnp.linalg.norm(robot_pos - robot_goal) < robot_radius
-        # Timeout
-        timeout = jnp.any(time >= self.time_limit)
-        # Compute reward
-        reward = 0.
-        reward = lax.cond(reached_goal, lambda r: r + 1., lambda r: r, reward) # Reward for reaching the goal
-        reward = lax.cond(collision, lambda r: r - 0.25, lambda r: r, reward) # Penalty for collision
-        reward = lax.cond(discomfort, lambda r: r - 0.5 * self.robot_dt * (min_distance - self.robot_discomfort_dist), lambda r: r, reward) # Penalty for getting too close to humans
-        # Compute done
-        done = jnp.any(jnp.array([collision,reached_goal,timeout]))
-        # # DEBUG
-        # debug.print("\n")
-        # debug.print("collision: {x}", x=collision)
-        # debug.print("reached_goal: {x}", x=reached_goal)
-        # debug.print("timeout: {x}", x=timeout)
-        return reward, done
 
