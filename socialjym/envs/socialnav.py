@@ -47,6 +47,7 @@ def get_reward_done(obs:jnp.ndarray, info:dict, dt:float) -> tuple[float, bool]:
         # Timeout
         timeout = jnp.any(time >= REWARD_SETTINGS["time_limit"])
         # Compute reward
+        # reward = - jnp.linalg.norm(next_robot_pos - robot_goal) # Debug reward (agent should always move towards the goal)
         reward = 0.
         reward = lax.cond(reached_goal, lambda r: r + REWARD_SETTINGS["goal_reward"], lambda r: r, reward) # Reward for reaching the goal
         reward = lax.cond(collision, lambda r: r - 0.25, lambda r: r, reward) # Penalty for collision
@@ -224,26 +225,25 @@ class SocialNav(BaseEnv):
     # --- Public methods ---
 
     @partial(jit, static_argnames=("self"))
-    def step(self, env_state:tuple, info:dict, action:jnp.ndarray
-            )-> tuple[tuple[jnp.ndarray, random.PRNGKey], jnp.ndarray, dict, float, bool]:
+    def step(self, state:jnp.ndarray, info:dict, action:jnp.ndarray
+            )-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
         this function computes the next state, the observation, the reward, and whether the episode is done.
 
         args:
-        - env_state: tuple containing the environment state and a PRNG key.
+        - state: jnp.ndarray containing the state of the environment.
         - info: dictionary containing additional information about the environment.
         - action: action to be taken by the robot.
 
         output:
-        - env_state: tuple containing the new environment state and a PRNG key.
+        - new_state: jnp.ndarray containing the updated state of the environment.
         - obs: observation of the new state.
         - info: dictionary containing additional information about the environment.
         - reward: reward obtained in the transition.
         - done: boolean indicating whether the episode is done.
         """
         info["time"] += self.robot_dt
-        state, key = env_state
         humans_goal = info["humans_goal"]
         humans_parameters = info["humans_parameters"]
         static_obstacles = info["static_obstacles"]
@@ -269,8 +269,7 @@ class SocialNav(BaseEnv):
             new_state = new_state.at[self.n_humans,0:2].set(jnp.array([new_state[self.n_humans,0] + action[0] * self.robot_dt, new_state[self.n_humans,1] + action[1] * self.robot_dt]))
         ### Compute reward and done
         reward, done = self.reward_function(self._get_obs(new_state, info, action), info, self.robot_dt)
-        env_state = (new_state, key)
-        return env_state, self._get_obs(new_state, info, action), info, reward, done
+        return new_state, self._get_obs(new_state, info, action), info, reward, done
 
     @partial(jit, static_argnames=("self"))
     def reset(self, key:random.PRNGKey) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -281,7 +280,7 @@ class SocialNav(BaseEnv):
         - key: PRNG key to initialize a random state
 
         output:
-        - full_state: initial full state of the environment. The state is a JAX array in the form:
+        - initial_state: initial full state of the environment. The state is a JAX array in the form:
                       [[*human1_state],
                        [*human2_state],
                        ...
@@ -297,7 +296,6 @@ class SocialNav(BaseEnv):
                 [robot_px, robot_py, robot_ux, robot_uy, robot_radius]].
         - info: dictionary containing additional information about the environment.
         """
-        new_state, key, info = self._reset(key)
-        env_state = (new_state, key)
-        return env_state, self._get_obs(new_state, info, jnp.zeros((2,))), info
+        initial_state, key, info = self._reset(key)
+        return initial_state, key, self._get_obs(initial_state, info, jnp.zeros((2,))), info
 

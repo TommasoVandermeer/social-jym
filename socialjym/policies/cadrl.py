@@ -3,6 +3,7 @@ from jax import random, jit, vmap, lax, debug, nn
 from functools import partial
 import haiku as hk
 from types import FunctionType
+import optax
 
 from .base_policy import BasePolicy
 
@@ -118,5 +119,10 @@ class CADRL(BasePolicy):
         return action, key      
 
     @partial(jit, static_argnames=("self"))
-    def update(self):
+    def update(self, 
+               current_vnet_params:dict, 
+               optimizer:optax.GradientTransformation, 
+               optimizer_state: jnp.ndarray, 
+               experiences:dict[str:jnp.ndarray] # Experiences: {"observations":jnp.ndarray, "rewards":jnp.ndarray}
+               ) -> dict:
         pass

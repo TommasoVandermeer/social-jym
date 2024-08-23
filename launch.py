@@ -25,27 +25,30 @@ env = SocialNav(robot_radius=0.3, robot_dt=robot_dt, humans_dt=humans_dt, humans
 policy = CADRL(env.reward_function, dt=robot_dt)
 initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((policy.vnet_input_size,)))
 
-# Warm up the environment and policy - Dummy step to jit compile the step function (this way, computation time will only reflect execution and not compilation)
-env_state, _, info = env.reset(random.key(random_seed))
-_, obs, _, _, _ = env.step(env_state,info,jnp.zeros((2,)))
-_ = policy.act(random.key(random_seed), obs, info, initial_vnet_params, 0.5)
-key = random.key(random_seed)
+# Warm up the environment and policy - Dummy step and act to jit compile the functions 
+# (this way, computation time will only reflect execution and not compilation)
+state, _, _, info = env.reset(random.key(0))
+_, obs, _, _, _ = env.step(state,info,jnp.zeros((2,)))
+_ = policy.act(random.key(0), obs, info, initial_vnet_params, 0.5)
+
+# Initialize random keys
+reset_key = random.key(random_seed)
+policy_key = random.key(random_seed)
 
 # Simulate some episodes
 episode_simulation_times = np.empty((n_episodes,))
 for i in range(n_episodes):
     done = False
     episode_start_time = time.time()
-    env_state, obs, info = env.reset(key)
-    all_states = np.array([env_state[0]])
+    state, reset_key, obs, info = env.reset(reset_key)
+    all_states = np.array([state])
     while not done:
         # action = jnp.array([0.,1.]) # Move north
-        action, key = policy.act(key, obs, info, initial_vnet_params, 0.5)
-        env_state, obs, info, reward, done = env.step(env_state,info,action) 
-        all_states = np.vstack((all_states, [env_state[0]]))
-        key = env_state[1]
-    all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
+        action, policy_key = policy.act(policy_key, obs, info, initial_vnet_params, 0.1)
+        state, obs, info, reward, done = env.step(state,info,action) 
+        all_states = np.vstack((all_states, [state]))
     episode_simulation_times[i] = round(time.time() - episode_start_time,2)
+    all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
     ## Plot episode trajectory
     print(f"Episode {i} ended - Execution time {episode_simulation_times[i]} seconds - Plotting trajectory...")
     figure, ax = plt.subplots(figsize=(10,10))
