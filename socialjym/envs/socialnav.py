@@ -272,7 +272,7 @@ class SocialNav(BaseEnv):
         return new_state, self._get_obs(new_state, info, action), info, reward, done
 
     @partial(jit, static_argnames=("self"))
-    def reset(self, key:random.PRNGKey) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    def reset(self, key:random.PRNGKey) -> tuple:
         """
         Given a PRNG key, this function resets the environment to start a new episode returning a stochastic initial state.
 

@@ -9,27 +9,30 @@ from socialjym.policies.cadrl import CADRL
 from socialjym.utils.aux_functions import plot_state, plot_trajectory
 
 # Hyperparameters
-n_humans = 5
-n_episodes = 5
-robot_dt = 0.25
-humans_dt = 0.01
 random_seed = 1
-robot_visible = True
-scenario = 'circular_crossing'
-humans_policy = 'hsfm'
+n_episodes = 5
+env_params = {
+    'robot_radius': 0.3,
+    'n_humans': 5,
+    'robot_dt': 0.25,
+    'humans_dt': 0.01,
+    'robot_visible': False,
+    'scenario': 'circular_crossing',
+    'humans_policy': 'hsfm',
+}
 
 # Initialize and reset environment
-env = SocialNav(robot_radius=0.3, robot_dt=robot_dt, humans_dt=humans_dt, humans_policy=humans_policy, scenario=scenario, n_humans=n_humans, robot_visible=robot_visible)
+env = SocialNav(**env_params)
 
 # Initialize robot policy
-policy = CADRL(env.reward_function, dt=robot_dt)
+policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((policy.vnet_input_size,)))
 
 # Warm up the environment and policy - Dummy step and act to jit compile the functions 
 # (this way, computation time will only reflect execution and not compilation)
 state, _, _, info = env.reset(random.key(0))
 _, obs, _, _, _ = env.step(state,info,jnp.zeros((2,)))
-_ = policy.act(random.key(0), obs, info, initial_vnet_params, 0.5)
+_ = policy.act(random.key(0), obs, info, initial_vnet_params, 0.1)
 
 # Initialize random keys
 reset_key = random.key(random_seed)
@@ -44,20 +47,21 @@ for i in range(n_episodes):
     all_states = np.array([state])
     while not done:
         # action = jnp.array([0.,1.]) # Move north
-        action, policy_key = policy.act(policy_key, obs, info, initial_vnet_params, 0.1)
+        action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.1)
         state, obs, info, reward, done = env.step(state,info,action) 
         all_states = np.vstack((all_states, [state]))
     episode_simulation_times[i] = round(time.time() - episode_start_time,2)
     all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
-    ## Plot episode trajectory
     print(f"Episode {i} ended - Execution time {episode_simulation_times[i]} seconds - Plotting trajectory...")
+    ## Plot episode trajectory
     figure, ax = plt.subplots(figsize=(10,10))
     ax.axis('equal')
     plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
-    for k in range(0,len(all_states),int(3/robot_dt)):
-        plot_state(ax, k*robot_dt, all_states[k], humans_policy, scenario, info["humans_parameters"][:,0], env.robot_radius)
+    for k in range(0,len(all_states),int(3/env_params['robot_dt'])):
+        plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
     # plot last state
-    plot_state(ax, (len(all_states)-1)*robot_dt, all_states[len(all_states)-1], humans_policy, scenario, info["humans_parameters"][:,0], env.robot_radius)
+    plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
     plt.show()
+# Print simulation times
 print(f"Average time per episode: {round(np.mean(episode_simulation_times),2)} seconds")
 print(f"Total time for {n_episodes} episodes: {round(np.sum(episode_simulation_times),2)} seconds")

@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, debug, nn
+from jax import random, jit, vmap, lax, debug, nn, value_and_grad
 from functools import partial
 import haiku as hk
 from types import FunctionType
@@ -32,6 +32,8 @@ class CADRL(BasePolicy):
         self.vnet_input_size = 13
         self.model = value_network
 
+    # Private methods
+
     @partial(jit, static_argnames=("self"))
     def _build_action_space(self) -> jnp.ndarray:
         speeds = lax.fori_loop(0,self.speed_samples,lambda i, speeds: speeds.at[i].set((jnp.exp((i + 1) / self.speed_samples) - 1) / (jnp.e - 1) * self.v_max), jnp.zeros((self.speed_samples,)))
@@ -46,7 +48,32 @@ class CADRL(BasePolicy):
         return action_space
 
     @partial(jit, static_argnames=("self"))
-    def _compute_vnet_input(self, robot_obs:jnp.ndarray, human_obs:jnp.ndarray, info:dict) -> jnp.ndarray:
+    def _compute_action_value(self, next_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
+        # TODO: vmap this function
+        n_humans = len(next_obs) - 1
+        # Apply robot action
+        next_obs = next_obs.at[n_humans,0:2].set(next_obs[n_humans,0:2] + action * self.dt)
+        next_obs = next_obs.at[n_humans,2:4].set(action)
+        # Compute instantaneous reward
+        reward, _ = self.reward_function(next_obs, info, self.dt)
+        # Re-parametrize observation, for each human: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
+        vnet_inputs = self.batch_compute_vnet_input(next_obs[n_humans], next_obs[0:n_humans], info)
+        # Compute the output of the value network (value of the state)
+        vnet_outputs = self.model.apply(vnet_params, None, vnet_inputs)
+        # Take the minimum among all outputs (representing the worst case scenario)
+        min_vnet_output = jnp.min(vnet_outputs)
+        # Compute the final value of the action
+        value = reward + self.gamma ** (self.dt * self.v_max) * min_vnet_output
+        return value, vnet_inputs
+        
+    @partial(jit, static_argnames=("self"))
+    def _batch_compute_action_value(self, next_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
+        return vmap(CADRL._compute_action_value, in_axes=(None,None,None,0,None))(self, next_obs, info, action, vnet_params)
+    
+    # Public methods
+
+    @partial(jit, static_argnames=("self"))
+    def compute_vnet_input(self, robot_obs:jnp.ndarray, human_obs:jnp.ndarray, info:dict) -> jnp.ndarray:
         # Robot observation: [x,y,ux,uy,radius]
         # Human observation: [x,y,vx,vy,radius]
         # Re-parametrized observation: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
@@ -68,39 +95,16 @@ class CADRL(BasePolicy):
         return vnet_input
 
     @partial(jit, static_argnames=("self"))
-    def _batch_compute_vnet_input(self, robot_obs:jnp.ndarray, humans_obs:jnp.ndarray, info:dict) -> jnp.ndarray:
-        return vmap(CADRL._compute_vnet_input,in_axes=(None,None,0,None))(self, robot_obs, humans_obs, info)
+    def batch_compute_vnet_input(self, robot_obs:jnp.ndarray, humans_obs:jnp.ndarray, info:dict) -> jnp.ndarray:
+        return vmap(CADRL.compute_vnet_input,in_axes=(None,None,0,None))(self, robot_obs, humans_obs, info)
 
     @partial(jit, static_argnames=("self"))
-    def _compute_action_value(self, next_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
-        # TODO: vmap this function
-        n_humans = len(next_obs) - 1
-        # Apply robot action
-        next_obs = next_obs.at[n_humans,0:2].set(next_obs[n_humans,0:2] + action * self.dt)
-        next_obs = next_obs.at[n_humans,2:4].set(action)
-        # Compute instantaneous reward
-        reward, _ = self.reward_function(next_obs, info, self.dt)
-        # Re-parametrize observation, for each human: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
-        vnet_inputs = self._batch_compute_vnet_input(next_obs[n_humans], next_obs[0:n_humans], info)
-        # Compute the output of the value network (value of the state)
-        vnet_outputs = self.model.apply(vnet_params, None, vnet_inputs)
-        # Take the minimum among all outputs (representing the worst case scenario)
-        min_vnet_output = jnp.min(vnet_outputs)
-        # Compute the final value of the action
-        value = reward + self.gamma ** (self.dt * self.v_max) * min_vnet_output
-        return value
-        
-    @partial(jit, static_argnames=("self"))
-    def _batch_compute_action_value(self, next_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
-        return vmap(CADRL._compute_action_value, in_axes=(None,None,None,0,None))(self, next_obs, info, action, vnet_params)
-
-    @partial(jit, static_argnames=("self"))
-    def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, 
-            vnet_params:dict, epsilon:float) -> jnp.ndarray:
+    def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, vnet_params:dict, epsilon:float) -> jnp.ndarray:
         
         def _random_action(key):
             key, subkey = random.split(key)
-            return random.choice(subkey, self.action_space), key
+            vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
+            return random.choice(subkey, self.action_space), key, vnet_inputs
         
         def _forward_pass(key):
             # Propagate humans state for dt time
@@ -109,20 +113,68 @@ class CADRL(BasePolicy):
                                      lambda i, obs: obs.at[i,0:2].set(obs[i,0:2] + obs[i,2:4] * self.dt),
                                      obs)
             # Compute action values
-            action_values = self._batch_compute_action_value(next_obs, info, self.action_space, vnet_params)
+            action_values, vnet_inputs = self._batch_compute_action_value(next_obs, info, self.action_space, vnet_params)
             # Return action with highest value
-            return self.action_space[jnp.argmax(action_values)], key
+            return self.action_space[jnp.argmax(action_values)], key, vnet_inputs[jnp.argmax(action_values)]
         
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
-        action, key = lax.cond(explore, _random_action, _forward_pass, key)
-        return action, key      
+        action, key, vnet_inputs = lax.cond(explore, _random_action, _forward_pass, key)
+        return action, key, vnet_inputs
 
-    @partial(jit, static_argnames=("self"))
+    @partial(jit, static_argnames=("self","optimizer"))
     def update(self, 
                current_vnet_params:dict, 
                optimizer:optax.GradientTransformation, 
                optimizer_state: jnp.ndarray, 
-               experiences:dict[str:jnp.ndarray] # Experiences: {"observations":jnp.ndarray, "rewards":jnp.ndarray}
-               ) -> dict:
-        pass
+               experiences:dict[str:jnp.ndarray]
+               # Experiences: {"vnet_inputs":jnp.ndarray, "rewards":jnp.ndarray, "next_vnet_inputs":jnp.ndarray, "dones":jnp.ndarray}
+               ) -> tuple:
+        
+        @jit
+        def _batch_loss_function(
+            current_vnet_params:dict,
+            vnet_inputs:jnp.ndarray,
+            rewards:jnp.ndarray,
+            next_vnet_inputs:jnp.ndarray,
+            dones:jnp.ndarray
+            ) -> jnp.ndarray:
+            
+            @partial(vmap, in_axes=(None, 0, 0, 0, 0))
+            def _loss_function(
+                current_vnet_params:dict,
+                vnet_input:jnp.ndarray,
+                reward:jnp.ndarray,
+                next_vnet_input:jnp.ndarray,
+                done:bool
+                ) -> jnp.ndarray:
+                # Compute the prediction
+                prediction = self.model.apply(current_vnet_params, None, vnet_input)
+                # Compute the target value
+                target = reward + (1 - done) * self.gamma ** (self.dt * self.v_max) * self.model.apply(current_vnet_params, None, next_vnet_input)
+                # Compute the loss
+                return jnp.square(target - prediction)
+            
+            return jnp.mean(_loss_function(
+                    current_vnet_params,
+                    vnet_inputs,
+                    rewards,
+                    next_vnet_inputs,
+                    dones))
+
+        vnet_inputs = experiences["vnet_inputs"]
+        next_vnet_inputs = experiences["next_vnet_inputs"]
+        rewards = experiences["rewards"]
+        dones = experiences["dones"]
+        # Compute the loss and gradients
+        loss, grads = value_and_grad(_batch_loss_function)(
+            current_vnet_params, 
+            vnet_inputs,
+            rewards,
+            next_vnet_inputs,
+            dones)
+        # Compute parameter updates
+        updates, optimizer_state = optimizer.update(grads, optimizer_state)
+        # Apply updates
+        current_vnet_params = optax.apply_updates(current_vnet_params, updates)
+        return current_vnet_params, optimizer_state, loss
