@@ -23,3 +23,7 @@ class BaseEnv(ABC):
     @abstractmethod
     def step(self, env_state, action):
         pass
+
+    @abstractmethod
+    def imitation_learning_step(self, env_state):
+        pass

@@ -46,8 +46,7 @@ for i in range(n_episodes):
     state, reset_key, obs, info = env.reset(reset_key)
     all_states = np.array([state])
     while not done:
-        # action = jnp.array([0.,1.]) # Move north
-        action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.1)
+        action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 1)
         state, obs, info, reward, done = env.step(state,info,action) 
         all_states = np.vstack((all_states, [state]))
     episode_simulation_times[i] = round(time.time() - episode_start_time,2)

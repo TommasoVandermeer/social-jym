@@ -49,6 +49,6 @@ def plot_trajectory(ax:Axes, all_states:jnp.ndarray, humans_goal:jnp.ndarray, ro
     colors = list(mcolors.TABLEAU_COLORS.values())
     n_agents = len(all_states[0])
     for h in range(n_agents): 
-        ax.plot(all_states[:,h,0], all_states[:,h,1], color=colors[h%len(colors)], linewidth=0.5, zorder=0)
+        ax.plot(all_states[:,h,0], all_states[:,h,1], color=colors[h%len(colors)] if h < n_agents - 1 else "red", linewidth=1, zorder=0)
         if h < n_agents - 1: ax.scatter(humans_goal[h,0], humans_goal[h,1], marker="*", color=colors[h%len(colors)], zorder=2)
         else: ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)

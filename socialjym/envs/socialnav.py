@@ -47,7 +47,7 @@ def get_reward_done(obs:jnp.ndarray, info:dict, dt:float) -> tuple[float, bool]:
         # Timeout
         timeout = jnp.any(time >= REWARD_SETTINGS["time_limit"])
         # Compute reward
-        # reward = - jnp.linalg.norm(next_robot_pos - robot_goal) # Debug reward (agent should always move towards the goal)
+        # reward = - (jnp.linalg.norm(next_robot_pos - robot_goal)/100) # Debug reward (agent should always move towards the goal)
         reward = 0.
         reward = lax.cond(reached_goal, lambda r: r + REWARD_SETTINGS["goal_reward"], lambda r: r, reward) # Reward for reaching the goal
         reward = lax.cond(collision, lambda r: r - 0.25, lambda r: r, reward) # Penalty for collision
@@ -88,7 +88,7 @@ class SocialNav(BaseEnv):
         self.traffic_length = traffic_length
         self.time_limit = time_limit
         # Default args
-        self.fictitious_robot_parameters = jnp.array([self.robot_radius, *get_standard_humans_parameters(1)[0,1:]])
+        self.robot_parameters = jnp.array([self.robot_radius, *get_standard_humans_parameters(1)[0,1:]])
         self.reward_function = get_reward_done
 
     # --- Private methods ---
@@ -203,7 +203,7 @@ class SocialNav(BaseEnv):
                       humans_goal.at[i].set(jnp.array([-points[i,0], -points[i,1]]))
                       , humans_goal)
         # Robot state and goal
-        full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, jnp.nan, jnp.nan, jnp.nan, jnp.nan]))
+        full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:]]))
         robot_goal = np.array([0., self.circle_radius])
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
@@ -225,8 +225,52 @@ class SocialNav(BaseEnv):
     # --- Public methods ---
 
     @partial(jit, static_argnames=("self"))
-    def step(self, state:jnp.ndarray, info:dict, action:jnp.ndarray
-            )-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
+    def imitation_learning_step(self, state:jnp.ndarray, info:dict)-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
+        """
+        Given an environment state and a dictionary containing additional information about the environment
+        this function computes the next state, the observation, the reward, and whether the episode is done.
+        The robot moves using the policy guiding humans.
+
+        args:
+        - state: jnp.ndarray containing the state of the environment.
+        - info: dictionary containing additional information about the environment.
+
+        output:
+        - new_state: jnp.ndarray containing the updated state of the environment.
+        - obs: observation of the new state.
+        - info: dictionary containing additional information about the environment.
+        - reward: reward obtained in the transition.
+        - done: boolean indicating whether the episode is done.
+        """
+        info["time"] += self.robot_dt
+        humans_goal = info["humans_goal"]
+        humans_parameters = info["humans_parameters"]
+        static_obstacles = info["static_obstacles"]
+        ### Update state
+        # TODO: update humans depending on their policy
+        goals = jnp.vstack((humans_goal, info["robot_goal"]))
+        parameters = jnp.vstack((humans_parameters, self.robot_parameters))
+        if self.robot_visible:
+            new_state = lax.fori_loop(0,
+                                      int(self.robot_dt/self.humans_dt),
+                                      lambda _ , x: humans_step(x, goals, parameters, static_obstacles, self.humans_dt),
+                                      state)
+        else:
+            new_state = lax.fori_loop(0,
+                                      int(self.robot_dt/self.humans_dt),
+                                      lambda _ , x: jnp.vstack([humans_step(x[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
+                                                                humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[self.n_humans]]),
+                                      state)
+        if self.humans_policy == 'hsfm': # In case of hsfm convert robot body velocities to linear velocity
+            action = jnp.matmul(jnp.array([[jnp.cos(state[self.n_humans,4]), -jnp.sin(state[self.n_humans,4])], [jnp.sin(state[self.n_humans,4]), jnp.cos(state[self.n_humans,4])]]), state[self.n_humans,2:4])
+        else:
+            action = state[self.n_humans,2:4]
+        ### Compute reward and done
+        reward, done = self.reward_function(self._get_obs(new_state, info, action), info, self.robot_dt)
+        return new_state, self._get_obs(new_state, info, action), info, reward, done
+    
+    @partial(jit, static_argnames=("self"))
+    def step(self, state:jnp.ndarray, info:dict, action:jnp.ndarray)-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
         this function computes the next state, the observation, the reward, and whether the episode is done.
@@ -251,7 +295,7 @@ class SocialNav(BaseEnv):
         # TODO: update humans depending on their policy
         if self.robot_visible:
             goals = jnp.vstack((humans_goal, info["robot_goal"]))
-            parameters = jnp.vstack((humans_parameters, self.fictitious_robot_parameters))
+            parameters = jnp.vstack((humans_parameters, self.robot_parameters))
             fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2],*action,0.,0.])])
             new_state = lax.fori_loop(0,
                                       int(self.robot_dt/self.humans_dt),
