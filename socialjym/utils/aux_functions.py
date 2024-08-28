@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
 
+def epsilon_scaling_decay(epsilon_start, epsilon_end, current_episode, decay_rate):
+    return jnp.max(jnp.array([epsilon_start + (epsilon_end - epsilon_start) / decay_rate * current_episode,epsilon_end]))
+
 def is_multiple(number, dividend, tolerance=1e-7) -> bool:
     """
     Checks if a number (also a float) is a multiple of another number within a given tolerance error.

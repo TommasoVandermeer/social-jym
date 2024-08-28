@@ -127,52 +127,40 @@ class CADRL(BasePolicy):
                current_vnet_params:dict, 
                optimizer:optax.GradientTransformation, 
                optimizer_state: jnp.ndarray, 
-               experiences:dict[str:jnp.ndarray]
-               # Experiences: {"vnet_inputs":jnp.ndarray, "rewards":jnp.ndarray, "next_vnet_inputs":jnp.ndarray, "dones":jnp.ndarray}
+               experiences:dict[str:jnp.ndarray],
+               # Experiences: {"vnet_inputs":jnp.ndarray, "targets":jnp.ndarray,}
                ) -> tuple:
         
         @jit
         def _batch_loss_function(
             current_vnet_params:dict,
             vnet_inputs:jnp.ndarray,
-            rewards:jnp.ndarray,
-            next_vnet_inputs:jnp.ndarray,
-            dones:jnp.ndarray
+            targets:jnp.ndarray,  
             ) -> jnp.ndarray:
             
-            @partial(vmap, in_axes=(None, 0, 0, 0, 0))
+            @partial(vmap, in_axes=(None, 0, 0))
             def _loss_function(
                 current_vnet_params:dict,
                 vnet_input:jnp.ndarray,
-                reward:jnp.ndarray,
-                next_vnet_input:jnp.ndarray,
-                done:bool
+                target:jnp.ndarray, 
                 ) -> jnp.ndarray:
                 # Compute the prediction
                 prediction = self.model.apply(current_vnet_params, None, vnet_input)
-                # Compute the target value
-                target = reward + (1 - done) * self.gamma ** (self.dt * self.v_max) * self.model.apply(current_vnet_params, None, next_vnet_input)
                 # Compute the loss
                 return jnp.square(target - prediction)
             
             return jnp.mean(_loss_function(
                     current_vnet_params,
                     vnet_inputs,
-                    rewards,
-                    next_vnet_inputs,
-                    dones))
+                    targets))
 
         vnet_inputs = experiences["vnet_inputs"]
-        next_vnet_inputs = experiences["next_vnet_inputs"]
-        rewards = experiences["rewards"]
-        dones = experiences["dones"]
+        targets = experiences["targets"]
         # Compute the loss and gradients
         loss, grads = value_and_grad(_batch_loss_function)(
             current_vnet_params, 
             vnet_inputs,
-            rewards,
-            next_vnet_inputs,
-            dones)
+            targets)
         # Compute parameter updates
         updates, optimizer_state = optimizer.update(grads, optimizer_state)
         # Apply updates

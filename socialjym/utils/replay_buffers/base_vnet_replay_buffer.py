@@ -18,13 +18,11 @@ class BaseVNetReplayBuffer(ABC):
         experience: tuple,
         idx: int,
     ):
-        vnet_input, reward, next_vnet_input, done = experience
+        vnet_input, target = experience
         filling_idx = idx % self.buffer_size
 
         buffer_state["vnet_inputs"] = buffer_state["vnet_inputs"].at[filling_idx].set(vnet_input)
-        buffer_state["rewards"] = buffer_state["rewards"].at[filling_idx].set(reward)
-        buffer_state["next_vnet_inputs"] = buffer_state["next_vnet_inputs"].at[filling_idx].set(next_vnet_input)
-        buffer_state["dones"] = buffer_state["dones"].at[filling_idx].set(done)
+        buffer_state["targets"] = buffer_state["targets"].at[filling_idx].set(target)
 
         return buffer_state
 

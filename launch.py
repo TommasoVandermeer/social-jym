@@ -10,7 +10,7 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory
 
 # Hyperparameters
 random_seed = 1
-n_episodes = 5
+n_episodes = 50
 env_params = {
     'robot_radius': 0.3,
     'n_humans': 5,
@@ -44,10 +44,12 @@ for i in range(n_episodes):
     done = False
     episode_start_time = time.time()
     state, reset_key, obs, info = env.reset(reset_key)
+    info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.1) # Set humans' safety space to 0.15
     all_states = np.array([state])
     while not done:
-        action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 1)
-        state, obs, info, reward, done = env.step(state,info,action) 
+        # action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 1)
+        # state, obs, info, reward, done = env.step(state,info,action) 
+        state, obs, info, reward, done = env.imitation_learning_step(state,info)
         all_states = np.vstack((all_states, [state]))
     episode_simulation_times[i] = round(time.time() - episode_start_time,2)
     all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
