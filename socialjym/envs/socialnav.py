@@ -50,7 +50,7 @@ def get_reward_done(obs:jnp.ndarray, info:dict, dt:float) -> tuple[float, bool]:
         # reward = - (jnp.linalg.norm(next_robot_pos - robot_goal)/100) # Debug reward (agent should always move towards the goal)
         reward = 0.
         reward = lax.cond(reached_goal, lambda r: r + REWARD_SETTINGS["goal_reward"], lambda r: r, reward) # Reward for reaching the goal
-        reward = lax.cond(collision, lambda r: r - 0.25, lambda r: r, reward) # Penalty for collision
+        reward = lax.cond(collision, lambda r: r - REWARD_SETTINGS["collision_penalty"], lambda r: r, reward) # Penalty for collision
         reward = lax.cond(discomfort, lambda r: r - 0.5 * dt * (REWARD_SETTINGS["discomfort_dist"] - min_distance), lambda r: r, reward) # Penalty for getting too close to humans
         # Compute done
         done = jnp.any(jnp.array([collision,reached_goal,timeout]))
@@ -80,7 +80,7 @@ class SocialNav(BaseEnv):
         self.humans_dt = humans_dt
         self.scenario = SCENARIOS.index(scenario)
         self.n_humans = n_humans
-        self.humans_policy = SCENARIOS.index(scenario)
+        self.humans_policy = HUMAN_POLICIES.index(humans_policy)
         self.robot_discomfort_dist = robot_discomfort_dist
         self.robot_visible = robot_visible
         self.circle_radius = circle_radius
@@ -115,7 +115,7 @@ class SocialNav(BaseEnv):
                 [robot_px, robot_py, robot_ux, robot_uy, robot_radius]].
         """
         obs = jnp.ones((self.n_humans+1, 5))
-        if self.humans_policy == 'hsfm': # In case of hsfm convert humans body velocities to linear velocities
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'): # In case of hsfm convert humans body velocities to linear velocities
             linear_velocities = jnp.ones((self.n_humans, 2))
             linear_velocities = lax.fori_loop(0, self.n_humans, lambda i, lv: lv.at[i].set(jnp.matmul(jnp.array([[jnp.cos(state[i,4]), -jnp.sin(state[i,4])], [jnp.sin(state[i,4]), jnp.cos(state[i,4])]]), state[i,2:4])) , linear_velocities)
             obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], linear_velocities[i,0], linear_velocities[i,1], info['humans_parameters'][i,0]])), obs)
@@ -252,7 +252,7 @@ class SocialNav(BaseEnv):
         ### Update state
         # TODO: update humans depending on their policy
         goals = jnp.vstack((humans_goal, info["robot_goal"]))
-        parameters = jnp.vstack((humans_parameters, jnp.array([self.robot_radius, *get_standard_humans_parameters(1)[0,1:-1], 0.1]))) # Add safety space of 0.1 to robot
+        parameters = jnp.vstack((humans_parameters, jnp.array([self.robot_radius, *get_standard_humans_parameters(1)[0,1:-1], 0.2]))) # Add safety space of 0.1 to robot
         if self.robot_visible:
             new_state = lax.fori_loop(0,
                                       int(self.robot_dt/self.humans_dt),
@@ -264,9 +264,9 @@ class SocialNav(BaseEnv):
                                       lambda _ , x: jnp.vstack([humans_step(x[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
                                                                 humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[self.n_humans]]),
                                       state)
-        if self.humans_policy == 'hsfm': # In case of hsfm convert robot body velocities to linear velocity
-            # action = jnp.matmul(jnp.array([[jnp.cos(state[self.n_humans,4]), -jnp.sin(state[self.n_humans,4])], [jnp.sin(state[self.n_humans,4]), jnp.cos(state[self.n_humans,4])]]), state[self.n_humans,2:4])
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'): # In case of hsfm convert robot body velocities to linear velocity
             action = (new_state[self.n_humans,0:2] - state[self.n_humans,0:2]) / self.robot_dt
+            # action = jnp.matmul(jnp.array([[jnp.cos(state[self.n_humans,4]), -jnp.sin(state[self.n_humans,4])], [jnp.sin(state[self.n_humans,4]), jnp.cos(state[self.n_humans,4])]]), state[self.n_humans,2:4])
         else:
             action = state[self.n_humans,2:4]
         ### Compute reward and done

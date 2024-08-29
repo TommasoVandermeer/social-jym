@@ -13,7 +13,7 @@ random_seed = 1
 n_episodes = 50
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 5,
+    'n_humans': 1,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
@@ -44,10 +44,10 @@ for i in range(n_episodes):
     done = False
     episode_start_time = time.time()
     state, reset_key, obs, info = env.reset(reset_key)
-    info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.1) # Set humans' safety space to 0.15
+    info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.15) # Set humans' safety space to 0.15
     all_states = np.array([state])
     while not done:
-        # action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 1)
+        # action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
         # state, obs, info, reward, done = env.step(state,info,action) 
         state, obs, info, reward, done = env.imitation_learning_step(state,info)
         all_states = np.vstack((all_states, [state]))

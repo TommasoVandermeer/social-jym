@@ -10,7 +10,7 @@ from socialjym.utils.aux_functions import epsilon_scaling_decay
 
 # Hyperparameters
 random_seed = 1
-il_training_episodes = 3000
+il_training_episodes = 1000
 il_learning_rate = 0.01
 il_num_epochs = 50 # Number of epochs to train the model after ending IL
 rl_training_episodes = 10000
@@ -27,7 +27,7 @@ env_params = {
     'robot_radius': 0.3,
     'n_humans': 1,
     'robot_dt': 0.25,
-    'humans_dt': 0.0125,
+    'humans_dt': 0.01,
     'robot_visible': False,
     'scenario': 'circular_crossing',
     'humans_policy': 'hsfm',
@@ -62,15 +62,17 @@ il_rollout_params = {
     'model': policy.model,
     'optimizer': optimizer,
     'buffer_state': buffer_state,
+    'current_buffer_size': 0,
     'policy': policy,
     'env': env,
     'replay_buffer': replay_buffer,
     'buffer_size': buffer_size,
     'num_epochs': il_num_epochs,
+    'batch_size': batch_size,
 }
 
 # Perform the Imitation Learning Rollout
-print("Starting Imitation Learning Rollout...")
+print("Starting IMITATION LEARNING Rollout...")
 il_out = deep_vnet_il_rollout(**il_rollout_params)
 
 # Save the IL model parameters, buffer state, and keys
@@ -78,6 +80,7 @@ il_model_params = il_out['model_params']
 reset_key = il_out['reset_key']
 policy_key = il_out['policy_key']
 buffer_state = il_out['buffer_state']
+current_buffer_size = il_out['current_buffer_size']
 
 # Plot the losses and returns
 import numpy as np
@@ -85,15 +88,18 @@ import time
 from jax import device_get
 from socialjym.utils.aux_functions import plot_state, plot_trajectory
 import matplotlib.pyplot as plt
-print(f"IL average Loss: {il_out['loss']}")
-window = 500
+window = 100
 figure, ax = plt.subplots(figsize=(10,10))
 ax.set(xlabel='Episodes', ylabel='Return', title='Return moving average over {} episodes'.format(window))
 ax.plot(np.arange(len(il_out['returns'])-(window-1))+window, jnp.convolve(il_out['returns'], jnp.ones(window,), 'valid') / window)
 plt.show()
+figure, ax = plt.subplots(figsize=(10,10))
+ax.set(xlabel='Episodes', ylabel='Loss', title='Loss over {} epochs'.format(len(il_out['losses'])))
+ax.plot(np.arange(len(il_out['losses'])), il_out['losses'])
+plt.show()
 
 # Simulate the policy with final model parameters in new episodes
-n_episodes = 5
+n_episodes = int(input("Select number of episodes to simulate the policy after Imitation Learning: "))
 env_params["n_humans"] = 1
 env = SocialNav(**env_params)
 # Simulate some episodes
@@ -137,6 +143,7 @@ rl_rollout_params = {
     'model': policy.model,
     'optimizer': optimizer,
     'buffer_state': buffer_state,
+    'current_buffer_size': current_buffer_size,
     'policy': policy,
     'env': env,
     'replay_buffer': replay_buffer,
@@ -149,7 +156,7 @@ rl_rollout_params = {
 }
 
 # Perform the Reinforcement Learning Rollout
-print("\nStarting Reinforcement Learning Rollout...")
+print("\nStarting REINFORCEMENT LEARNING Rollout...")
 rl_out = deep_vnet_rl_rollout(**rl_rollout_params)
 
 # Save the final model parameters and keys

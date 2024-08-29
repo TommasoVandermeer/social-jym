@@ -63,17 +63,20 @@ class CADRL(BasePolicy):
         # Take the minimum among all outputs (representing the worst case scenario)
         min_vnet_output = jnp.min(vnet_outputs)
         # Compute the final value of the action
-        value = reward + self.gamma ** (self.dt * self.v_max) * min_vnet_output
+        value = reward + pow(self.gamma,self.dt * self.v_max) * min_vnet_output
         return value, vnet_inputs
         
     @partial(jit, static_argnames=("self"))
     def _batch_compute_action_value(self, next_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
         return vmap(CADRL._compute_action_value, in_axes=(None,None,None,0,None))(self, next_obs, info, action, vnet_params)
     
-    # Public methods
+    @partial(jit, static_argnames=("self"))
+    def _propagate_obs(self, obs:jnp.ndarray) -> jnp.ndarray:
+        obs = obs.at[0:2].set(obs[0:2] + obs[2:4] * self.dt)
+        return obs
 
     @partial(jit, static_argnames=("self"))
-    def compute_vnet_input(self, robot_obs:jnp.ndarray, human_obs:jnp.ndarray, info:dict) -> jnp.ndarray:
+    def _compute_vnet_input(self, robot_obs:jnp.ndarray, human_obs:jnp.ndarray, info:dict) -> jnp.ndarray:
         # Robot observation: [x,y,ux,uy,radius]
         # Human observation: [x,y,vx,vy,radius]
         # Re-parametrized observation: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
@@ -94,9 +97,15 @@ class CADRL(BasePolicy):
         vnet_input = vnet_input.at[12].set(robot_obs[4] + human_obs[4])
         return vnet_input
 
+    # Public methods
+
     @partial(jit, static_argnames=("self"))
     def batch_compute_vnet_input(self, robot_obs:jnp.ndarray, humans_obs:jnp.ndarray, info:dict) -> jnp.ndarray:
-        return vmap(CADRL.compute_vnet_input,in_axes=(None,None,0,None))(self, robot_obs, humans_obs, info)
+        return vmap(CADRL._compute_vnet_input,in_axes=(None,None,0,None))(self, robot_obs, humans_obs, info)
+
+    @partial(jit, static_argnames=("self"))
+    def batch_propagate_obs(self, obs:jnp.ndarray) -> jnp.ndarray:
+        return vmap(CADRL._propagate_obs, in_axes=(None, 0))(self, obs)
 
     @partial(jit, static_argnames=("self"))
     def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, vnet_params:dict, epsilon:float) -> jnp.ndarray:
@@ -108,19 +117,18 @@ class CADRL(BasePolicy):
         
         def _forward_pass(key):
             # Propagate humans state for dt time
-            next_obs = lax.fori_loop(0,
-                                     obs.shape[0]-1,
-                                     lambda i, obs: obs.at[i,0:2].set(obs[i,0:2] + obs[i,2:4] * self.dt),
-                                     obs)
+            next_obs = jnp.vstack([self.batch_propagate_obs(obs[0:-1]),obs[-1]])
             # Compute action values
             action_values, vnet_inputs = self._batch_compute_action_value(next_obs, info, self.action_space, vnet_params)
+            action = self.action_space[jnp.argmax(action_values)]
+            vnet_input = vnet_inputs[jnp.argmax(action_values)]
             # Return action with highest value
-            return self.action_space[jnp.argmax(action_values)], key, vnet_inputs[jnp.argmax(action_values)]
+            return action, key, vnet_input
         
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
-        action, key, vnet_inputs = lax.cond(explore, _random_action, _forward_pass, key)
-        return action, key, vnet_inputs
+        action, key, vnet_input = lax.cond(explore, _random_action, _forward_pass, key)
+        return action, key, vnet_input
 
     @partial(jit, static_argnames=("self","optimizer"))
     def update(self, 
@@ -164,5 +172,5 @@ class CADRL(BasePolicy):
         # Compute parameter updates
         updates, optimizer_state = optimizer.update(grads, optimizer_state)
         # Apply updates
-        current_vnet_params = optax.apply_updates(current_vnet_params, updates)
-        return current_vnet_params, optimizer_state, loss
+        updated_vnet_params = optax.apply_updates(current_vnet_params, updates)
+        return updated_vnet_params, optimizer_state, loss
