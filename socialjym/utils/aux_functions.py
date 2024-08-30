@@ -1,11 +1,13 @@
 import jax.numpy as jnp
+from jax import lax
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
 
 def epsilon_scaling_decay(epsilon_start, epsilon_end, current_episode, decay_rate):
-    return jnp.max(jnp.array([epsilon_start + (epsilon_end - epsilon_start) / decay_rate * current_episode,epsilon_end]))
+    epsilon = lax.cond(current_episode < decay_rate, lambda x: epsilon_start + (epsilon_end - epsilon_start) / decay_rate * x, lambda x: epsilon_end, current_episode)
+    return epsilon
 
 def is_multiple(number, dividend, tolerance=1e-7) -> bool:
     """

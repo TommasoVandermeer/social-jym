@@ -211,7 +211,12 @@ class SocialNav(BaseEnv):
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
         # Info
-        info = {"humans_goal": humans_goal, "robot_goal": robot_goal, "humans_parameters": humans_parameters, "static_obstacles": static_obstacles, "time": 0.}
+        info = {
+            "humans_goal": humans_goal, 
+            "robot_goal": robot_goal, 
+            "humans_parameters": humans_parameters, 
+            "static_obstacles": static_obstacles, 
+            "time": 0.}
         return full_state, info
     
     @partial(jit, static_argnames=("self"))
@@ -269,6 +274,20 @@ class SocialNav(BaseEnv):
             # action = jnp.matmul(jnp.array([[jnp.cos(state[self.n_humans,4]), -jnp.sin(state[self.n_humans,4])], [jnp.sin(state[self.n_humans,4]), jnp.cos(state[self.n_humans,4])]]), state[self.n_humans,2:4])
         else:
             action = state[self.n_humans,2:4]
+        ### Update humans goal
+        if self.scenario == SCENARIOS.index('circular_crossing'):
+            info["humans_goal"] = lax.fori_loop(
+                0, 
+                self.n_humans, 
+                lambda i, goals: lax.cond(
+                    jnp.linalg.norm(new_state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0], 
+                    lambda x: x.at[i].set(-x[i]), 
+                    lambda x: x, 
+                    goals),
+                info["humans_goal"])
+        elif self.scenario == SCENARIOS.index('parallel_traffic'):
+            # TODO: update humans goal depending on each scenario
+            pass
         ### Compute reward and done
         obs = self._get_obs(new_state, info, action)
         reward, done = self.reward_function(obs, info, self.robot_dt)
@@ -316,6 +335,20 @@ class SocialNav(BaseEnv):
                                       state)
             ## Update robot
             new_state = new_state.at[self.n_humans,0:2].set(jnp.array([new_state[self.n_humans,0] + action[0] * self.robot_dt, new_state[self.n_humans,1] + action[1] * self.robot_dt]))
+        ### Update humans goal
+        if self.scenario == SCENARIOS.index('circular_crossing'):
+            info["humans_goal"] = lax.fori_loop(
+                0, 
+                self.n_humans, 
+                lambda i, goals: lax.cond(
+                    jnp.linalg.norm(new_state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0], 
+                    lambda x: x.at[i].set(-x[i]), 
+                    lambda x: x, 
+                    goals),
+                info["humans_goal"])
+        elif self.scenario == SCENARIOS.index('parallel_traffic'):
+            # TODO: update humans goal depending on each scenario
+            pass
         ### Compute reward and done
         reward, done = self.reward_function(self._get_obs(new_state, info, action), info, self.robot_dt)
         return new_state, self._get_obs(new_state, info, action), info, reward, done

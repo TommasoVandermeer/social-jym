@@ -10,17 +10,18 @@ from socialjym.utils.aux_functions import epsilon_scaling_decay
 
 # Hyperparameters
 random_seed = 1
-il_training_episodes = 1000
+il_training_episodes = 1_000
 il_learning_rate = 0.01
-il_num_epochs = 50 # Number of epochs to train the model after ending IL
-rl_training_episodes = 10000
+il_num_epochs = 150 # Number of epochs to train the model after ending IL
+rl_training_episodes = 10_000
 rl_learning_rate = 0.001
 rl_num_batches = 100 # Number of batches to train the model after each RL episode
 batch_size = 100 # Number of experiences to sample from the replay buffer for each model update
 epsilon_start = 0.5
 epsilon_end = 0.1
-epsilon_decay = 4000
-buffer_size = 100000 # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
+epsilon_decay = 4_000
+buffer_size = 100_000 # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
+target_update_interval = 50 # Number of episodes to wait before updating the target network for RL (the one used to compute the target state values)
 
 # Environment parameters
 env_params = {
@@ -59,7 +60,6 @@ il_rollout_params = {
     'initial_vnet_params': initial_vnet_params,
     'train_episodes': il_training_episodes,
     'random_seed': random_seed,
-    'model': policy.model,
     'optimizer': optimizer,
     'buffer_state': buffer_state,
     'current_buffer_size': 0,
@@ -152,7 +152,8 @@ rl_rollout_params = {
     'epsilon_decay_fn': epsilon_scaling_decay,
     'epsilon_start': epsilon_start,
     'epsilon_end': epsilon_end,
-    'decay_rate': epsilon_decay
+    'decay_rate': epsilon_decay,
+    'target_update_interval': target_update_interval,
 }
 
 # Perform the Reinforcement Learning Rollout
@@ -181,7 +182,7 @@ ax.plot(np.arange(len(rl_out['returns'])-(window-1))+window, jnp.convolve(rl_out
 plt.show()
 
 # Simulate the policy with final model parameters in new episodes
-n_episodes = 5
+n_episodes = int(input("Select number of episodes to simulate the policy after Reinforcement Learning: "))
 env_params["n_humans"] = 1
 env = SocialNav(**env_params)
 # Simulate some episodes

@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from functools import partial
-from jax import jit
+from jax import jit, vmap, tree_map, random, lax
+import jax.numpy as jnp
 
 class BaseVNetReplayBuffer(ABC):
     def __init__(
@@ -11,7 +12,7 @@ class BaseVNetReplayBuffer(ABC):
         self.buffer_size = buffer_size
         self.batch_size = batch_size
 
-    @partial(jit, static_argnums=(0))
+    @partial(jit, static_argnames=("self"))
     def add(
         self,
         buffer_state: dict,
@@ -25,6 +26,36 @@ class BaseVNetReplayBuffer(ABC):
         buffer_state["targets"] = buffer_state["targets"].at[filling_idx].set(target)
 
         return buffer_state
+
+    @partial(jit, static_argnames=("self"))
+    def iterate(self, buffer_state: dict, current_buffer_size: int, iteration:int) -> dict:
+        
+        @partial(vmap, in_axes=(0, None))
+        def iterate_batch(indexes, buffer):
+            return tree_map(lambda x: x[indexes], buffer)
+        
+        # If the indexes exceed the buffer size, the buffer will be iterated from the beginning
+        indexes = lax.fori_loop(
+            0, 
+            self.batch_size, 
+            lambda i, idx: idx.at[i].set(((iteration * self.batch_size + i) % current_buffer_size).astype(int)), 
+            jnp.zeros((self.batch_size,), dtype=jnp.int32))
+
+        experiences = iterate_batch(indexes, buffer_state)
+        return experiences
+
+    @partial(jit, static_argnames=("self"))
+    def shuffle(self, buffer_state: dict, key: random.PRNGKey) -> dict:
+            
+            @partial(vmap, in_axes=(0, None))
+            def shuffle_batch(indexes, buffer):
+                return tree_map(lambda x: x[indexes], buffer)
+            
+            key, subkey = random.split(key)
+            indexes = random.permutation(subkey, self.buffer_size)
+            shuffled_buffer_state = shuffle_batch(indexes, buffer_state)
+            
+            return shuffled_buffer_state, key
 
     @abstractmethod
     def sample(self):

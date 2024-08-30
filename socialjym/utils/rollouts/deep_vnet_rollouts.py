@@ -29,10 +29,13 @@ def deep_vnet_rl_rollout(
         epsilon_start: float,
         epsilon_end: float,
         decay_rate: float,
+        target_update_interval: int = 50
 ) -> dict:
         
         # If policy is CADRL, the number of humans in the training environment must be 1
         if isinstance(policy, CADRL): assert env.n_humans == 1, "CADRL policy only supports training with one human."
+        # For a correct shuffling of the buffer, the latter size must be a multiple of the number of batches times the batch size
+        assert buffer_size % (num_batches * replay_buffer.batch_size) == 0, "The buffer size must be a multiple of the number of batches times the batch size."
 
         # Define the main rollout episode loop
         @loop_tqdm(train_episodes)
@@ -52,7 +55,7 @@ def deep_vnet_rl_rollout(
                         steps += 1
                         return (state, obs, info, done, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, steps)
                 # Retrieve data from the tuple
-                model_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns = val
+                model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns = val
                 # Reset the environment
                 state, reset_key, obs, info = env.reset(reset_key)
                 # Episode loop
@@ -73,11 +76,41 @@ def deep_vnet_rl_rollout(
                         lambda x: lax.fori_loop(
                                 0,
                                 episode_steps,
-                                lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], rewards[k] + (1 - dones[k]) * pow(policy.gamma, policy.dt * policy.v_max) * model.apply(model_params, None, vnet_inputs[k+1])), buff[1]), buff[1]+1),
+                                lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], rewards[k] + (1 - dones[k]) * pow(policy.gamma, policy.dt * policy.v_max) * model.apply(target_model_params, None, vnet_inputs[k+1])), buff[1]), buff[1]+1),
                                 (x[0], x[1])),
                         lambda x: x,
                         (buffer_state, current_buffer_size))
-                # Update model parameters
+                # Shuffle the buffer if this is full and the number of experiences used is equal to buffer size (otherwise it is not possible without making a mess)
+                actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_size]))
+                buffer_state, buffer_key = lax.cond(
+                        jnp.any(jnp.array([actual_buffer_size == buffer_size, ((i * num_batches * replay_buffer.batch_size) % buffer_size) == 0]),), 
+                        lambda _: replay_buffer.shuffle(buffer_state, buffer_key), 
+                        lambda x: x, 
+                        (buffer_state,buffer_key))
+                ## Update model parameters - Iterate over the buffer in num_batches
+                # @jit
+                # def _model_update_fori_body(j:int, val:tuple):
+                #         # Retrieve data from the tuple
+                #         buffer_state, size, model_params, optimizer_state, losses = val
+                #         # Sample a batch of experiences from the replay buffer
+                #         experiences_batch = replay_buffer.iterate(
+                #         buffer_state,
+                #         size,
+                #         # ((i * num_batches) % (buffer_size / num_batches) + j)
+                #         ((((i * num_batches * replay_buffer.batch_size) % buffer_size) / replay_buffer.batch_size) + j))
+                #         # Update the model parameters
+                #         model_params, optimizer_state, loss = policy.update(
+                #         model_params,
+                #         optimizer,
+                #         optimizer_state,
+                #         experiences_batch)
+                #         # Save the losses
+                #         losses = losses.at[j].set(loss)
+                #         return (buffer_state, size, model_params, optimizer_state, losses)
+                # all_losses = jnp.empty([num_batches])
+                # val_init = (buffer_state, actual_buffer_size, model_params, optimizer_state, all_losses)
+                # buffer_state, _, model_params, optimizer_state, all_losses = lax.fori_loop(0, num_batches,_model_update_fori_body, val_init)
+                ## Update model parameters - Randomly sample experiences from the buffer
                 @jit
                 def _model_update_fori_body(j:int, val:tuple):
                         # Retrieve data from the tuple
@@ -97,13 +130,15 @@ def deep_vnet_rl_rollout(
                         losses = losses.at[j].set(loss)
                         return (buffer_key, buffer_state, size, model_params, optimizer_state, losses)
                 all_losses = jnp.empty([num_batches])
-                val_init = (buffer_key, buffer_state, jnp.min(jnp.array([current_buffer_size, buffer_size])), model_params, optimizer_state, all_losses)
+                val_init = (buffer_key, buffer_state, actual_buffer_size, model_params, optimizer_state, all_losses)
                 buffer_key, buffer_state, _, model_params, optimizer_state, all_losses = lax.fori_loop(0, num_batches,_model_update_fori_body, val_init)
+                # Update target network
+                target_model_params = lax.cond(i % target_update_interval == 0, lambda x: model_params, lambda x: x, target_model_params)
                 # Save data
                 losses = losses.at[i].set(jnp.mean(all_losses))
                 returns = returns.at[i].set(cumulative_episode_reward)
                 # Return the updated values
-                val = (model_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns)
+                val = (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns)
                 return val
 
         # Initialize the random keys
@@ -114,12 +149,12 @@ def deep_vnet_rl_rollout(
         # Initialize the model parameters
         optimizer_state = optimizer.init(initial_vnet_params)
         # Create initial values for training loop
-        val_init = (initial_vnet_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns)
+        val_init = (initial_vnet_params, initial_vnet_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns)
         # Execute the training loop
         vals = lax.fori_loop(0, train_episodes, _fori_body, val_init)
 
         output_dict = {}
-        keys = ["model_params", "optimizer_state", "buffer_state", "current_buffer_size", "policy_key", "buffer_key", "reset_key", "losses", "returns"]
+        keys = ["model_params", "target_model_params", "optimizer_state", "buffer_state", "current_buffer_size", "policy_key", "buffer_key", "reset_key", "losses", "returns"]
         for idx, value in enumerate(vals): output_dict[keys[idx]] = value
 
         return output_dict
@@ -128,7 +163,6 @@ def deep_vnet_il_rollout(
         initial_vnet_params: dict,
         train_episodes: int,
         random_seed: int,
-        model: hk.Transformed,
         optimizer: optax.GradientTransformation,
         buffer_state: dict,
         current_buffer_size: int,
@@ -202,10 +236,10 @@ def deep_vnet_il_rollout(
         # Execute the training loop
         debug.print("Simulating IL episodes...")
         model_params, buffer_state, current_buffer_size, policy_key, reset_key, returns = lax.fori_loop(0, train_episodes, _fori_body, val_init)
-        debug.print("Buffer size after IL: {x}", x=current_buffer_size)
 
         # Update model parameters
         actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_size]))
+        debug.print("Buffer size after IL: {x}", x=actual_buffer_size)
         optimization_steps = (actual_buffer_size / batch_size).astype(int)
         @loop_tqdm(num_epochs)
         @jit
@@ -213,12 +247,12 @@ def deep_vnet_il_rollout(
                 @jit
                 def _model_update_fori_body(k:int, val:tuple):
                         # Retrieve data from the tuple
-                        buffer_key, buffer_state, size, model_params, optimizer_state, losses = val
+                        buffer_state, size, model_params, optimizer_state, losses = val
                         # Sample a batch of experiences from the replay buffer
-                        experiences_batch, new_buffer_key = replay_buffer.sample(
-                        buffer_key,
+                        experiences_batch = replay_buffer.iterate(
                         buffer_state,
-                        size)
+                        size,
+                        k)
                         # Update the model parameters
                         new_model_params, new_optimizer_state, loss = policy.update(
                         model_params,
@@ -226,8 +260,12 @@ def deep_vnet_il_rollout(
                         optimizer_state,
                         experiences_batch)
                         new_losses = losses.at[j,k].set(loss)
-                        return (new_buffer_key, buffer_state, size, new_model_params, new_optimizer_state, new_losses)
-                val = lax.fori_loop(0, optimization_steps, _model_update_fori_body, val)
+                        return (buffer_state, size, new_model_params, new_optimizer_state, new_losses)
+                # Shuffle the buffer if this is full (otherwise it is not possible without making a mess)
+                shuffled_buffer_state, buffer_key = lax.cond(val[2] == buffer_size, lambda _: replay_buffer.shuffle(val[1], val[0]), lambda x: x, (val[1],val[0]))
+                val_init = (shuffled_buffer_state, *val[2:])
+                val_end = lax.fori_loop(0, optimization_steps, _model_update_fori_body, val_init)
+                val = (buffer_key, *val_end)
                 return val
         losses = jnp.empty([num_epochs,optimization_steps])
         val_init = (buffer_key, buffer_state, actual_buffer_size, model_params, optimizer_state, losses)
