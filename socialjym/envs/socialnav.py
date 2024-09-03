@@ -2,6 +2,7 @@ import numpy as np
 import jax.numpy as jnp
 from jax import random, jit, lax, debug
 from functools import partial
+from types import FunctionType
 
 from jhsfm.hsfm import step as humans_step
 from jhsfm.utils import get_standard_humans_parameters
@@ -10,65 +11,28 @@ from .base_env import BaseEnv
 
 SCENARIOS = ["circular_crossing", "parallel_traffic", "hybrid_scenario"]
 HUMAN_POLICIES = ["orca", "sfm", "hsfm"]
-REWARD_SETTINGS = {"discomfort_dist": 0.2,
-                   "collision_penalty": 0.25,
-                   "goal_reward": 1.0,
-                   "time_limit": 50}
-
-@jit
-def get_reward_done(obs:jnp.ndarray, info:dict, dt:float) -> tuple[float, bool]:
-        """
-        Given a state and a dictionary containing additional information about the environment,
-        this function computes the reward of the current state and wether the episode is finished or not.
-        This function is public so that it can be called by the agent policy to compute the best action.
-
-        args:
-        - obs: observation of the current state of the environment
-
-        output:
-        - reward: reward obtained in the current state.
-        - done: boolean indicating whether the episode is done.
-        """
-        robot_pos = obs[-1,0:2]
-        humans_pos = obs[0:len(obs)-1,0:2]
-        robot_goal = info["robot_goal"]
-        humans_radiuses = obs[0:len(obs)-1,4]
-        robot_radius = obs[-1,4]
-        time = info["time"]
-        next_robot_pos = robot_pos + obs[-1,2:4] * dt
-        next_humans_pos = humans_pos + obs[0:len(obs)-1,2:4] * dt
-        # Collision and discomfort detection with humans (within a duration of dt)
-        distances = jnp.linalg.norm(next_humans_pos - next_robot_pos, axis=1) - (humans_radiuses + robot_radius)
-        collision = jnp.any(distances < 0)
-        min_distance = jnp.max(jnp.array([jnp.min(distances),0]))
-        discomfort = jnp.all(jnp.array([jnp.logical_not(collision), min_distance < REWARD_SETTINGS["discomfort_dist"]]))
-        # Check if the robot reached its goal
-        reached_goal = jnp.linalg.norm(next_robot_pos - robot_goal) < robot_radius
-        # Timeout
-        timeout = jnp.any(time >= REWARD_SETTINGS["time_limit"])
-        # Compute reward
-        # reward = - (jnp.linalg.norm(next_robot_pos - robot_goal)/100) # Debug reward (agent should always move towards the goal)
-        reward = 0.
-        reward = lax.cond(reached_goal, lambda r: r + REWARD_SETTINGS["goal_reward"], lambda r: r, reward) # Reward for reaching the goal
-        reward = lax.cond(collision, lambda r: r - REWARD_SETTINGS["collision_penalty"], lambda r: r, reward) # Penalty for collision
-        reward = lax.cond(discomfort, lambda r: r - 0.5 * dt * (REWARD_SETTINGS["discomfort_dist"] - min_distance), lambda r: r, reward) # Penalty for getting too close to humans
-        # Compute done
-        done = jnp.any(jnp.array([collision,reached_goal,timeout]))
-        # # DEBUG
-        # debug.print("\n")
-        # debug.print("collision: {x}", x=collision)
-        # debug.print("reached_goal: {x}", x=reached_goal)
-        # debug.print("timeout: {x}", x=timeout)
-        return reward, done
 
 class SocialNav(BaseEnv):
     """
     A simple OpenAI gym-like environment based on JAX to train mobile robots for social navigation tasks 
     through RL.
     """
-    def __init__(self, robot_radius:float, robot_dt:float, humans_dt:float, scenario:str, n_humans:int, humans_policy='hsfm', 
-                 robot_discomfort_dist=0.2, robot_visible=False, circle_radius=7, traffic_height=3, traffic_length=14,
-                 time_limit=50) -> None:
+    def __init__(
+            self, 
+            robot_radius:float, 
+            robot_dt:float, 
+            humans_dt:float, 
+            scenario:str, 
+            n_humans:int, 
+            reward_function:FunctionType,
+            humans_policy='hsfm', 
+            robot_discomfort_dist=0.2, 
+            robot_visible=False, 
+            circle_radius=7, 
+            traffic_height=3, 
+            traffic_length=14,
+            time_limit=50
+        ) -> None:
         ## Args validation
         assert scenario in SCENARIOS, f"Invalid scenario. Choose one of {SCENARIOS}"
         assert humans_policy in HUMAN_POLICIES, f"Invalid human policy. Choose one of {HUMAN_POLICIES}"
@@ -88,7 +52,7 @@ class SocialNav(BaseEnv):
         self.traffic_length = traffic_length
         self.time_limit = time_limit
         # Default args
-        self.reward_function = get_reward_done
+        self.reward_function = reward_function
 
     # --- Private methods ---
 

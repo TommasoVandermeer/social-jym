@@ -6,7 +6,6 @@ import jax.numpy as jnp
 from jax_tqdm import loop_tqdm
 
 from socialjym.envs.base_env import BaseEnv
-from socialjym.envs.socialnav import REWARD_SETTINGS
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.policies.cadrl import CADRL
 from socialjym.utils.replay_buffers.base_vnet_replay_buffer import BaseVNetReplayBuffer
@@ -29,6 +28,8 @@ def deep_vnet_rl_rollout(
         epsilon_start: float,
         epsilon_end: float,
         decay_rate: float,
+        success_reward: float, # Used only to understand if the episode was successful or not
+        failure_reward: float, # Used only to understand if the episode was successful or not
         target_update_interval: int = 50
 ) -> dict:
         
@@ -72,7 +73,7 @@ def deep_vnet_rl_rollout(
                 cumulative_episode_reward = lax.fori_loop(0, episode_steps, lambda k, val: _compute_state_value_for_body(k, 0, val), 0.)
                 # Update buffer state
                 buffer_state, current_buffer_size = lax.cond(
-                        jnp.any(jnp.array([rewards[episode_steps-1] == REWARD_SETTINGS["goal_reward"], rewards[episode_steps-1] == REWARD_SETTINGS["collision_penalty"]])), # Add only experiences of successful or failed episodes
+                        jnp.any(jnp.array([rewards[episode_steps-1] == success_reward, rewards[episode_steps-1] == failure_reward])), # Add only experiences of successful or failed episodes
                         lambda x: lax.fori_loop(
                                 0,
                                 episode_steps,
@@ -83,43 +84,20 @@ def deep_vnet_rl_rollout(
                 # Shuffle the buffer if this is full and the number of experiences used is equal to buffer size (otherwise it is not possible without making a mess)
                 actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_size]))
                 buffer_state, buffer_key = lax.cond(
-                        jnp.any(jnp.array([actual_buffer_size == buffer_size, ((i * num_batches * replay_buffer.batch_size) % buffer_size) == 0]),), 
+                        jnp.all(jnp.array([actual_buffer_size == buffer_size, ((i * num_batches * replay_buffer.batch_size) % buffer_size) == 0]),), 
                         lambda _: replay_buffer.shuffle(buffer_state, buffer_key), 
                         lambda x: x, 
                         (buffer_state,buffer_key))
                 ## Update model parameters - Iterate over the buffer in num_batches
-                # @jit
-                # def _model_update_fori_body(j:int, val:tuple):
-                #         # Retrieve data from the tuple
-                #         buffer_state, size, model_params, optimizer_state, losses = val
-                #         # Sample a batch of experiences from the replay buffer
-                #         experiences_batch = replay_buffer.iterate(
-                #         buffer_state,
-                #         size,
-                #         # ((i * num_batches) % (buffer_size / num_batches) + j)
-                #         ((((i * num_batches * replay_buffer.batch_size) % buffer_size) / replay_buffer.batch_size) + j))
-                #         # Update the model parameters
-                #         model_params, optimizer_state, loss = policy.update(
-                #         model_params,
-                #         optimizer,
-                #         optimizer_state,
-                #         experiences_batch)
-                #         # Save the losses
-                #         losses = losses.at[j].set(loss)
-                #         return (buffer_state, size, model_params, optimizer_state, losses)
-                # all_losses = jnp.empty([num_batches])
-                # val_init = (buffer_state, actual_buffer_size, model_params, optimizer_state, all_losses)
-                # buffer_state, _, model_params, optimizer_state, all_losses = lax.fori_loop(0, num_batches,_model_update_fori_body, val_init)
-                ## Update model parameters - Randomly sample experiences from the buffer
                 @jit
                 def _model_update_fori_body(j:int, val:tuple):
                         # Retrieve data from the tuple
-                        buffer_key, buffer_state, size, model_params, optimizer_state, losses = val
+                        buffer_state, size, model_params, optimizer_state, losses = val
                         # Sample a batch of experiences from the replay buffer
-                        experiences_batch, buffer_key = replay_buffer.sample(
-                        buffer_key,
+                        experiences_batch = replay_buffer.iterate(
                         buffer_state,
-                        size)
+                        size,
+                        ((((i * num_batches * replay_buffer.batch_size) % buffer_size) / replay_buffer.batch_size) + j)) 
                         # Update the model parameters
                         model_params, optimizer_state, loss = policy.update(
                         model_params,
@@ -128,10 +106,32 @@ def deep_vnet_rl_rollout(
                         experiences_batch)
                         # Save the losses
                         losses = losses.at[j].set(loss)
-                        return (buffer_key, buffer_state, size, model_params, optimizer_state, losses)
+                        return (buffer_state, size, model_params, optimizer_state, losses)
                 all_losses = jnp.empty([num_batches])
-                val_init = (buffer_key, buffer_state, actual_buffer_size, model_params, optimizer_state, all_losses)
-                buffer_key, buffer_state, _, model_params, optimizer_state, all_losses = lax.fori_loop(0, num_batches,_model_update_fori_body, val_init)
+                val_init = (buffer_state, actual_buffer_size, model_params, optimizer_state, all_losses)
+                buffer_state, _, model_params, optimizer_state, all_losses = lax.fori_loop(0, num_batches,_model_update_fori_body, val_init)
+                ## Update model parameters - Randomly sample experiences from the buffer
+                # @jit
+                # def _model_update_fori_body(j:int, val:tuple):
+                #         # Retrieve data from the tuple
+                #         buffer_key, buffer_state, size, model_params, optimizer_state, losses = val
+                #         # Sample a batch of experiences from the replay buffer
+                #         experiences_batch, buffer_key = replay_buffer.sample(
+                #         buffer_key,
+                #         buffer_state,
+                #         size)
+                #         # Update the model parameters
+                #         model_params, optimizer_state, loss = policy.update(
+                #         model_params,
+                #         optimizer,
+                #         optimizer_state,
+                #         experiences_batch)
+                #         # Save the losses
+                #         losses = losses.at[j].set(loss)
+                #         return (buffer_key, buffer_state, size, model_params, optimizer_state, losses)
+                # all_losses = jnp.empty([num_batches])
+                # val_init = (buffer_key, buffer_state, actual_buffer_size, model_params, optimizer_state, all_losses)
+                # buffer_key, buffer_state, _, model_params, optimizer_state, all_losses = lax.fori_loop(0, num_batches,_model_update_fori_body, val_init)
                 # Update target network
                 target_model_params = lax.cond(i % target_update_interval == 0, lambda x: model_params, lambda x: x, target_model_params)
                 # Save data
@@ -172,6 +172,8 @@ def deep_vnet_il_rollout(
         buffer_size: int,
         num_epochs: int,
         batch_size: int,
+        success_reward: float, # Used only to understand if the episode was successful or not
+        failure_reward: float  # Used only to understand if the episode was successful or not
 ) -> dict:
         
         # If policy is CADRL, the number of humans in the training environment must be 1
@@ -210,7 +212,7 @@ def deep_vnet_il_rollout(
                         value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
                         return value 
                 buffer_state, current_buffer_size = lax.cond(
-                        jnp.any(jnp.array([rewards[episode_steps-1] == REWARD_SETTINGS["goal_reward"], rewards[episode_steps-1] == REWARD_SETTINGS["collision_penalty"]])), # Add only experiences of successful or failed episodes
+                        jnp.any(jnp.array([rewards[episode_steps-1] == success_reward, rewards[episode_steps-1] == failure_reward])), # Add only experiences of successful or failed episodes
                         lambda x: lax.fori_loop(
                                 0,
                                 episode_steps,

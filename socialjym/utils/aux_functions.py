@@ -1,9 +1,13 @@
 import jax.numpy as jnp
-from jax import lax
+from jax import lax, jit, random, vmap
+from jax_tqdm import loop_tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
+
+from socialjym.envs.base_env import BaseEnv
+from socialjym.policies.base_policy import BasePolicy
 
 def epsilon_scaling_decay(epsilon_start, epsilon_end, current_episode, decay_rate):
     epsilon = lax.cond(current_episode < decay_rate, lambda x: epsilon_start + (epsilon_end - epsilon_start) / decay_rate * x, lambda x: epsilon_end, current_episode)
@@ -57,3 +61,73 @@ def plot_trajectory(ax:Axes, all_states:jnp.ndarray, humans_goal:jnp.ndarray, ro
         ax.plot(all_states[:,h,0], all_states[:,h,1], color=colors[h%len(colors)] if h < n_agents - 1 else "red", linewidth=1, zorder=0)
         if h < n_agents - 1: ax.scatter(humans_goal[h,0], humans_goal[h,1], marker="*", color=colors[h%len(colors)], zorder=2)
         else: ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
+
+def test_k_trials(
+        k: int,
+        random_seed: int,
+        env: BaseEnv,
+        policy: BasePolicy,
+        model_params: dict,
+    ) -> tuple:
+
+    @loop_tqdm(k)
+    @jit
+    def _fori_body(i:int, for_val:tuple):
+         
+        @jit
+        def _while_body(while_val:tuple):
+            # Retrieve data from the tuple
+            state, obs, info, done, policy_key, steps, all_states, all_dones, all_rewards = while_val
+            # Make a step in the environment
+            action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
+            state, obs, info, reward, done = env.step(state,info,action) 
+            # Save data
+            all_states = all_states.at[steps].set(state)
+            all_dones = all_dones.at[steps].set(done)
+            all_rewards = all_rewards.at[steps].set(reward)
+            # Update step counter
+            steps += 1
+            return state, obs, info, done, policy_key, steps, all_states, all_dones, all_rewards
+
+        # Retrieve data from the tuple
+        reset_key, policy_key, metrics = for_val
+        # Reset the environment
+        state, reset_key, obs, info = env.reset(reset_key)
+        # Episode loop
+        all_states = jnp.empty((int(env.time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+        all_dones = jnp.empty((int(env.time_limit/env.robot_dt)+1,))
+        all_rewards = jnp.empty((int(env.time_limit/env.robot_dt)+1,))
+        while_val_init = (state, obs, info, False, policy_key, 0, all_states, all_dones, all_rewards)
+        _, _, _, _, policy_key, episode_steps, all_states, all_dones, all_rewards = lax.while_loop(lambda x: x[3] == False, _while_body, while_val_init)
+        # Update metrics
+        @jit
+        def _compute_state_value_for_body(j:int, t:int, value:float):
+            value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * all_rewards[j]
+            return value 
+        success = all_rewards[episode_steps-1] == 1
+        metrics["successes"] = lax.cond(success, lambda x: x + 1, lambda x: x, metrics["successes"])
+        metrics["collisions"] = lax.cond(all_rewards[episode_steps-1] == -0.25, lambda x: x + 1, lambda x: x, metrics["collisions"])
+        metrics["timeouts"] = lax.cond(jnp.all(jnp.array([all_rewards[episode_steps-1] != 1., all_rewards[episode_steps-1] != -0.25])), lambda x: x + 1, lambda x: x, metrics["timeouts"])
+        metrics["returns"] = metrics["returns"].at[i].set(lax.fori_loop(0, episode_steps, lambda k, val: _compute_state_value_for_body(k, 0, val), 0.))
+        metrics["times_to_goal"] = lax.cond(success, lambda x: x.at[i].set((episode_steps-1) * env.robot_dt), lambda x: x.at[i].set(jnp.nan), metrics["times_to_goal"])
+        return reset_key, policy_key, metrics
+    
+    # Initialize the random keys
+    policy_key, reset_key = vmap(random.PRNGKey)(jnp.arange(2) + random_seed)
+    # Initialize metrics
+    metrics = {
+        "successes": 0, 
+        "collisions": 0, 
+        "timeouts": 0, 
+        "returns": jnp.empty((k,)),
+        "times_to_goal": jnp.empty((k,))}
+    # Execute k tests
+    print(f"Executing {k} tests with {env.n_humans} humans...")
+    _, _, metrics = lax.fori_loop(0, k, _fori_body, (reset_key, policy_key, metrics))
+    print(f"Success rate: {round(metrics['successes']/k, 2)}")
+    print(f"Collision rate: {round(metrics['collisions']/k, 2)}")
+    print(f"Timeout rate: {round(metrics['timeouts']/k, 2)}")
+    print(f"Average return: {round(jnp.mean(metrics['returns'], 2))}")
+    print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']), 2)}")
+    return metrics
+                

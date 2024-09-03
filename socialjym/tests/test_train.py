@@ -6,13 +6,14 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.policies.cadrl import CADRL
 from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
 from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_rl_rollout, deep_vnet_il_rollout
-from socialjym.utils.aux_functions import epsilon_scaling_decay
+from socialjym.utils.aux_functions import epsilon_scaling_decay, test_k_trials
+from socialjym.utils.rewards.reward1 import generate_reward_done_function
 
 # Hyperparameters
 random_seed = 1
-il_training_episodes = 1_000
+il_training_episodes = 3_000
 il_learning_rate = 0.01
-il_num_epochs = 150 # Number of epochs to train the model after ending IL
+il_num_epochs = 50 # Number of epochs to train the model after ending IL
 rl_training_episodes = 10_000
 rl_learning_rate = 0.001
 rl_num_batches = 100 # Number of batches to train the model after each RL episode
@@ -23,16 +24,29 @@ epsilon_decay = 4_000
 buffer_size = 100_000 # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
 target_update_interval = 50 # Number of episodes to wait before updating the target network for RL (the one used to compute the target state values)
 
+# Reward function parameters
+reward_params = {
+    'goal_reward': 1.,
+    'collision_penalty': 0.25,
+    'discomfort_distance': 0.2,
+    'time_limit': 50.,
+}
+
+# Initialize reward function
+reward_function = generate_reward_done_function(**reward_params)
+
 # Environment parameters
 env_params = {
     'robot_radius': 0.3,
     'n_humans': 1,
+    'reward_function': reward_function,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
     'scenario': 'circular_crossing',
     'humans_policy': 'hsfm',
     'circle_radius': 7,
+    'time_limit': reward_params['time_limit']
 }
 
 # Initialize environment
@@ -69,6 +83,8 @@ il_rollout_params = {
     'buffer_size': buffer_size,
     'num_epochs': il_num_epochs,
     'batch_size': batch_size,
+    'success_reward': reward_params['goal_reward'],
+    'failure_reward': reward_params['collision_penalty']
 }
 
 # Perform the Imitation Learning Rollout
@@ -97,6 +113,9 @@ figure, ax = plt.subplots(figsize=(10,10))
 ax.set(xlabel='Episodes', ylabel='Loss', title='Loss over {} epochs'.format(len(il_out['losses'])))
 ax.plot(np.arange(len(il_out['losses'])), il_out['losses'])
 plt.show()
+
+# Test the IL trained agent on k episodes
+test_k_trials(1000, random_seed+il_training_episodes, env, policy, il_model_params)
 
 # Simulate the policy with final model parameters in new episodes
 n_episodes = int(input("Select number of episodes to simulate the policy after Imitation Learning: "))
@@ -154,6 +173,8 @@ rl_rollout_params = {
     'epsilon_end': epsilon_end,
     'decay_rate': epsilon_decay,
     'target_update_interval': target_update_interval,
+    'success_reward': reward_params['goal_reward'],
+    'failure_reward': reward_params['collision_penalty']
 }
 
 # Perform the Reinforcement Learning Rollout
