@@ -7,7 +7,6 @@ from jax_tqdm import loop_tqdm
 
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
-from socialjym.policies.cadrl import CADRL
 from socialjym.utils.replay_buffers.base_vnet_replay_buffer import BaseVNetReplayBuffer
 
 
@@ -34,7 +33,7 @@ def deep_vnet_rl_rollout(
 ) -> dict:
         
         # If policy is CADRL, the number of humans in the training environment must be 1
-        if isinstance(policy, CADRL): assert env.n_humans == 1, "CADRL policy only supports training with one human."
+        if policy.name == "CADRL": assert env.n_humans == 1, "CADRL policy only supports training with one human."
         # For a correct shuffling of the buffer, the latter size must be a multiple of the number of batches times the batch size
         assert buffer_size % (num_batches * replay_buffer.batch_size) == 0, "The buffer size must be a multiple of the number of batches times the batch size."
 
@@ -51,7 +50,7 @@ def deep_vnet_rl_rollout(
                         action, policy_key, vnet_input = policy.act(policy_key, obs, info, model_params, epsilon)
                         state, obs, info, reward, done = env.step(state, info, action)
                         # Save data
-                        vnet_inputs = vnet_inputs.at[steps].set(jnp.squeeze(vnet_input))
+                        vnet_inputs = vnet_inputs.at[steps].set(vnet_input)
                         rewards = rewards.at[steps].set(reward)
                         steps += 1
                         return (state, obs, info, done, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, steps)
@@ -60,7 +59,7 @@ def deep_vnet_rl_rollout(
                 # Reset the environment
                 state, reset_key, obs, info = env.reset(reset_key)
                 # Episode loop
-                vnet_inputs = jnp.empty((int(env.time_limit/env.robot_dt)+1, policy.vnet_input_size))
+                vnet_inputs = jnp.empty((int(env.time_limit/env.robot_dt)+1, env.n_humans, policy.vnet_input_size))
                 rewards = jnp.empty((int(env.time_limit/env.robot_dt)+1,))
                 dones = jnp.empty((int(env.time_limit/env.robot_dt)+1,))
                 val_init = (state, obs, info, False, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, 0)
@@ -77,7 +76,7 @@ def deep_vnet_rl_rollout(
                         lambda x: lax.fori_loop(
                                 0,
                                 episode_steps,
-                                lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], rewards[k] + (1 - dones[k]) * pow(policy.gamma, policy.dt * policy.v_max) * model.apply(target_model_params, None, vnet_inputs[k+1])), buff[1]), buff[1]+1),
+                                lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], rewards[k] + (1 - dones[k]) * pow(policy.gamma, policy.dt * policy.v_max) * jnp.squeeze(model.apply(target_model_params, None, vnet_inputs[k+1]))), buff[1]), buff[1]+1),
                                 (x[0], x[1])),
                         lambda x: x,
                         (buffer_state, current_buffer_size))
@@ -177,7 +176,7 @@ def deep_vnet_il_rollout(
 ) -> dict:
         
         # If policy is CADRL, the number of humans in the training environment must be 1
-        if isinstance(policy, CADRL): assert env.n_humans == 1, "CADRL policy only supports training with one human."
+        if policy.name == "CADRL": assert env.n_humans == 1, "CADRL policy only supports training with one human."
 
         # Define the main rollout episode loop
         @loop_tqdm(train_episodes)
@@ -191,7 +190,7 @@ def deep_vnet_il_rollout(
                         vnet_input = policy.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
                         state, obs, info, reward, done = env.imitation_learning_step(state, info)
                         # Save data
-                        vnet_inputs = vnet_inputs.at[steps].set(jnp.squeeze(vnet_input))
+                        vnet_inputs = vnet_inputs.at[steps].set(vnet_input)
                         rewards = rewards.at[steps].set(reward)
                         steps += 1
                         return (state, obs, info, done, policy_key, vnet_inputs, rewards, steps)
@@ -202,7 +201,7 @@ def deep_vnet_il_rollout(
                 # For imitation learning, set the humans' safety space to 0.15
                 info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.15) 
                 # Episode loop
-                vnet_inputs = jnp.empty((int(env.time_limit/env.robot_dt), policy.vnet_input_size))
+                vnet_inputs = jnp.empty((int(env.time_limit/env.robot_dt), env.n_humans, policy.vnet_input_size))
                 rewards = jnp.empty((int(env.time_limit/env.robot_dt),))
                 val_init = (state, obs, info, False, policy_key, vnet_inputs, rewards, 0)
                 _, _, _, _, policy_key, vnet_inputs, rewards, episode_steps = lax.while_loop(lambda x: x[3] == False, _while_body, val_init)           
@@ -262,6 +261,7 @@ def deep_vnet_il_rollout(
                         optimizer_state,
                         experiences_batch)
                         new_losses = losses.at[j,k].set(loss)
+                        # debug.print("Epoch {x} - Iteration {y} - Loss {z}", x=j, y=k, z=loss)
                         return (buffer_state, size, new_model_params, new_optimizer_state, new_losses)
                 # Shuffle the buffer if this is full (otherwise it is not possible without making a mess)
                 shuffled_buffer_state, buffer_key = lax.cond(val[2] == buffer_size, lambda _: replay_buffer.shuffle(val[1], val[0]), lambda x: x, (val[1],val[0]))

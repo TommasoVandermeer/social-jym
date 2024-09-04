@@ -104,7 +104,7 @@ def test_k_trials(
         def _compute_state_value_for_body(j:int, t:int, value:float):
             value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * all_rewards[j]
             return value 
-        success = all_rewards[episode_steps-1] == 1
+        success = (all_rewards[episode_steps-1] == 1)
         metrics["successes"] = lax.cond(success, lambda x: x + 1, lambda x: x, metrics["successes"])
         metrics["collisions"] = lax.cond(all_rewards[episode_steps-1] == -0.25, lambda x: x + 1, lambda x: x, metrics["collisions"])
         metrics["timeouts"] = lax.cond(jnp.all(jnp.array([all_rewards[episode_steps-1] != 1., all_rewards[episode_steps-1] != -0.25])), lambda x: x + 1, lambda x: x, metrics["timeouts"])
@@ -127,7 +127,7 @@ def test_k_trials(
     print(f"Success rate: {round(metrics['successes']/k, 2)}")
     print(f"Collision rate: {round(metrics['collisions']/k, 2)}")
     print(f"Timeout rate: {round(metrics['timeouts']/k, 2)}")
-    print(f"Average return: {round(jnp.mean(metrics['returns'], 2))}")
+    print(f"Average return: {round(jnp.mean(metrics['returns']), 2)}")
     print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']), 2)}")
     return metrics
                 

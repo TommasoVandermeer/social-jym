@@ -29,6 +29,7 @@ class CADRL(BasePolicy):
         self.rotation_samples = rotation_samples
         self.action_space = self._build_action_space()
         # Default attributes
+        self.name = "CADRL"
         self.vnet_input_size = 13
         self.model = value_network
 

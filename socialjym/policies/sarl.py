@@ -41,7 +41,7 @@ class ValueNetwork(hk.Module):
         self.mlp1 = hk.nets.MLP(**mlp1_params)
         self.mlp2 = hk.nets.MLP(**mlp2_params)
         self.mlp3 = hk.nets.MLP(**mlp3_params)
-        self.attention = hk.nets.MLP(**attention_layer_params)
+        self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
         self.robot_state_size = robot_state_size
         self.global_state_size = mlp1_params["output_sizes"][-1]
 
@@ -53,7 +53,7 @@ class ValueNetwork(hk.Module):
         Computes the value of the state given the input x of shape (batch_size, # of humans, length of reparametrized state)
         """
 
-        # Dimensions examples with 5 humans and 13 features of reparametrized state
+        # Dimensions examples (CrowdNav) with 5 humans and 13 features of reparametrized state
         # X Size : torch.Size([1, 5, 13])
         # MLP1 input size:  torch.Size([5, 13])
         # MLP1 output/MLP2 input size:  torch.Size([5, 100])
@@ -114,6 +114,7 @@ class SARL(CADRL):
             rotation_samples=rotation_samples
         )
         # Default attributes
+        self.name = "SARL"
         self.model = value_network
 
     # Private methods

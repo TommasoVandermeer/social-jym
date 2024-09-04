@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import optax
 
 from socialjym.envs.socialnav import SocialNav
-from socialjym.policies.cadrl import CADRL
+from socialjym.policies.sarl import SARL
 from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
 from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_rl_rollout, deep_vnet_il_rollout
 from socialjym.utils.aux_functions import epsilon_scaling_decay, test_k_trials
@@ -12,7 +12,7 @@ from socialjym.utils.rewards.reward1 import generate_reward_done_function
 # Hyperparameters
 random_seed = 1
 il_training_episodes = 3_000
-il_learning_rate = 0.01
+il_learning_rate = 0.001 # For SARL this has to be lower than for CADRL
 il_num_epochs = 50 # Number of epochs to train the model after ending IL
 rl_training_episodes = 10_000
 rl_learning_rate = 0.001
@@ -38,7 +38,7 @@ reward_function = generate_reward_done_function(**reward_params)
 # Environment parameters
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 1,
+    'n_humans': 5,
     'reward_function': reward_function,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
@@ -53,8 +53,8 @@ env_params = {
 env = SocialNav(**env_params)
 
 # Initialize robot policy and vnet params
-policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
-initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((policy.vnet_input_size,)))
+policy = SARL(env.reward_function, dt=env_params['robot_dt'])
+initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((env.n_humans, policy.vnet_input_size,)))
 
 # Initialize replay buffer
 replay_buffer = UniformVNetReplayBuffer(buffer_size, batch_size)
