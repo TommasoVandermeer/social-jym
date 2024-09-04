@@ -5,28 +5,32 @@ import matplotlib.pyplot as plt
 import time
 
 from socialjym.envs.socialnav import SocialNav
+from socialjym.utils.rewards.reward1 import generate_reward_done_function
 from socialjym.policies.cadrl import CADRL
+from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import plot_state, plot_trajectory
 
 # Hyperparameters
 random_seed = 1
 n_episodes = 50
+reward_function = generate_reward_done_function(1.,0.25,0.2,50)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 1,
+    'n_humans': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
     'scenario': 'circular_crossing',
     'humans_policy': 'hsfm',
+    'reward_function': reward_function
 }
 
 # Initialize and reset environment
 env = SocialNav(**env_params)
 
 # Initialize robot policy
-policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
-initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((policy.vnet_input_size,)))
+policy = SARL(env.reward_function, dt=env_params['robot_dt'])
+initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((env_params["n_humans"],policy.vnet_input_size)))
 
 # Warm up the environment and policy - Dummy step and act to jit compile the functions 
 # (this way, computation time will only reflect execution and not compilation)
