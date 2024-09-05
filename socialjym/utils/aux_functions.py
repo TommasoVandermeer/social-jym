@@ -62,13 +62,7 @@ def plot_trajectory(ax:Axes, all_states:jnp.ndarray, humans_goal:jnp.ndarray, ro
         if h < n_agents - 1: ax.scatter(humans_goal[h,0], humans_goal[h,1], marker="*", color=colors[h%len(colors)], zorder=2)
         else: ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
 
-def test_k_trials(
-        k: int,
-        random_seed: int,
-        env: BaseEnv,
-        policy: BasePolicy,
-        model_params: dict,
-    ) -> tuple:
+def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, model_params: dict) -> tuple:
 
     @loop_tqdm(k)
     @jit
@@ -131,3 +125,11 @@ def test_k_trials(
     print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']), 2)}")
     return metrics
                 
+def animate_trajectory(
+        states:jnp.ndarray, 
+        humans_goal:jnp.ndarray, 
+        robot_goal:jnp.ndarray, 
+        humans_radiuses:np.ndarray, 
+        robot_radius:float, 
+        ) -> None:
+    pass

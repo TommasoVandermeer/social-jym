@@ -29,7 +29,8 @@ def deep_vnet_rl_rollout(
         decay_rate: float,
         success_reward: float, # Used only to understand if the episode was successful or not
         failure_reward: float, # Used only to understand if the episode was successful or not
-        target_update_interval: int = 50
+        target_update_interval: int = 50,
+        debugging: bool = False
 ) -> dict:
         
         # If policy is CADRL, the number of humans in the training environment must be 1
@@ -136,6 +137,12 @@ def deep_vnet_rl_rollout(
                 # Save data
                 losses = losses.at[i].set(jnp.mean(all_losses))
                 returns = returns.at[i].set(cumulative_episode_reward)
+                # DEBUG: print the mean loss for this episode and the return
+                lax.cond(
+                        jnp.all(jnp.array([debugging, i % 100 == 0])),
+                        lambda _: debug.print("Episode {x} - Mean loss over {y} batches: {z} - Return: {w}", x=i, y=num_batches, z=losses[i], w=returns[i]),
+                        lambda x: x, 
+                        None)
                 # Return the updated values
                 val = (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns)
                 return val

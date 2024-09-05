@@ -1,9 +1,8 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, debug, nn, value_and_grad
+from jax import random, jit, vmap, lax, debug, nn
 from functools import partial
 import haiku as hk
 from types import FunctionType
-import optax
 
 from .cadrl import CADRL
 
@@ -43,14 +42,13 @@ class ValueNetwork(hk.Module):
         self.mlp3 = hk.nets.MLP(**mlp3_params)
         self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
         self.robot_state_size = robot_state_size
-        self.global_state_size = mlp1_params["output_sizes"][-1]
 
     def __call__(
             self, 
             x: jnp.ndarray
         ) -> jnp.ndarray:
         """
-        Computes the value of the state given the input x of shape (batch_size, # of humans, length of reparametrized state)
+        Computes the value of the state given the input x of shape (# of humans, length of reparametrized state)
         """
 
         # Dimensions examples (CrowdNav) with 5 humans and 13 features of reparametrized state
