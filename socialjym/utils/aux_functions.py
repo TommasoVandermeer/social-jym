@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
+from matplotlib.animation import FuncAnimation
 
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
@@ -126,10 +127,31 @@ def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, mo
     return metrics
                 
 def animate_trajectory(
-        states:jnp.ndarray, 
-        humans_goal:jnp.ndarray, 
-        robot_goal:jnp.ndarray, 
-        humans_radiuses:np.ndarray, 
-        robot_radius:float, 
-        ) -> None:
-    pass
+    states:jnp.ndarray, 
+    humans_radiuses:np.ndarray, 
+    robot_radius:float, 
+    robot_dt:float=0.25,
+    ) -> None:
+    # TODO: Improve this method: 
+    #           - add a legend, 
+    #           - add a title, 
+    #           - add a colorbar, 
+    #           - add a time counter,
+    #           - add a progress bar,
+    #           - add robot and humans goals,
+    #           - remove time from agents,
+    #           - add scenario and HMM args to plot accordingly,
+    #           - add pause, resume, and go back buttons
+
+    fig, ax = plt.subplots()
+    ax.set_aspect('equal')
+    ax.set(xlim=[-10,10],ylim=[-10,10])
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+
+    def animate(frame):
+        ax.clear()
+        plot_state(ax, frame*robot_dt, states[frame], "hsfm", "circular_crossing", humans_radiuses, robot_radius)
+
+    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(states))
+    plt.show()

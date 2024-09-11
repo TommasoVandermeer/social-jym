@@ -8,7 +8,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.reward1 import generate_reward_done_function
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
-from socialjym.utils.aux_functions import plot_state, plot_trajectory
+from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory
 
 # Hyperparameters
 random_seed = 1
@@ -67,6 +67,8 @@ for i in range(n_episodes):
     # plot last state
     plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
     plt.show()
+    ## Animate trajectory
+    animate_trajectory(all_states, info['humans_parameters'][:,0], env.robot_radius, env_params['robot_dt'])
 # Print simulation times
 print(f"Average time per episode: {round(np.mean(episode_simulation_times),2)} seconds")
 print(f"Total time for {n_episodes} episodes: {round(np.sum(episode_simulation_times),2)} seconds")

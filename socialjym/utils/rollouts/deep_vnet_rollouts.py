@@ -81,7 +81,7 @@ def deep_vnet_rl_rollout(
                                 (x[0], x[1])),
                         lambda x: x,
                         (buffer_state, current_buffer_size))
-                # Shuffle the buffer if this is full and the number of experiences used is equal to buffer size (otherwise it is not possible without making a mess)
+                # Shuffle the buffer if this is full (otherwise it is not possible without making a mess) and the number of experiences used is equal to buffer size
                 actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_size]))
                 buffer_state, buffer_key = lax.cond(
                         jnp.all(jnp.array([actual_buffer_size == buffer_size, ((i * num_batches * replay_buffer.batch_size) % buffer_size) == 0]),), 
