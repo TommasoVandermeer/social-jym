@@ -68,7 +68,12 @@ for i in range(n_episodes):
     plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
     plt.show()
     ## Animate trajectory
-    animate_trajectory(all_states, info['humans_parameters'][:,0], env.robot_radius, env_params['robot_dt'])
+    animate_trajectory(
+        all_states, 
+        info['humans_parameters'][:,0], 
+        env.robot_radius, env_params['humans_policy'],
+        info['robot_goal'],
+        robot_dt=env_params['robot_dt'])
 # Print simulation times
 print(f"Average time per episode: {round(np.mean(episode_simulation_times),2)} seconds")
 print(f"Total time for {n_episodes} episodes: {round(np.sum(episode_simulation_times),2)} seconds")

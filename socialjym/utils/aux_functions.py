@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
 from matplotlib.animation import FuncAnimation
+from matplotlib.lines import Line2D
 
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
@@ -21,7 +22,18 @@ def is_multiple(number, dividend, tolerance=1e-7) -> bool:
     mod = number % dividend
     return (abs(mod) <= tolerance) or (abs(dividend - mod) <= tolerance)
 
-def plot_state(ax:Axes, time:float, full_state:tuple, humans_policy:str, scenario:str, humans_radiuses:np.ndarray, robot_radius:float, circle_radius=7, traffic_height=3, traffic_length=14):
+def plot_state(
+        ax:Axes, 
+        time:float, 
+        full_state:tuple, 
+        humans_policy:str, 
+        scenario:str, 
+        humans_radiuses:np.ndarray, 
+        robot_radius:float, 
+        circle_radius=7, 
+        traffic_height=3, 
+        traffic_length=14, 
+        plot_time=True):
     """
     Plots a given single state of the environment.
 
@@ -49,11 +61,13 @@ def plot_state(ax:Axes, time:float, full_state:tuple, humans_policy:str, scenari
             ax.add_patch(head)
         circle = plt.Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor=colors[h%len(colors)], facecolor="white", fill=True, zorder=1)
         ax.add_patch(circle)
-        ax.text(full_state[h,0],full_state[h,1], f"{num}", color=colors[h%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
+        if plot_time: ax.text(full_state[h,0],full_state[h,1], f"{num}", color=colors[h%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
+        else: ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
     # Robot
     circle = plt.Circle((full_state[-1,0],full_state[-1,1]), robot_radius, edgecolor="red", facecolor="red", fill=True, zorder=1)
     ax.add_patch(circle)
-    ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color=colors[(len(full_state)-1)%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
+    if plot_time: ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color=colors[(len(full_state)-1)%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
+    else: ax.text(full_state[-1,0],full_state[-1,1], f"R", color="black", va="center", ha="center", size=10, zorder=1, weight='bold')
 
 def plot_trajectory(ax:Axes, all_states:jnp.ndarray, humans_goal:jnp.ndarray, robot_goal:jnp.ndarray):
     colors = list(mcolors.TABLEAU_COLORS.values())
@@ -130,20 +144,18 @@ def animate_trajectory(
     states:jnp.ndarray, 
     humans_radiuses:np.ndarray, 
     robot_radius:float, 
+    humans_policy:str,
+    robot_goal:np.ndarray,
     robot_dt:float=0.25,
     ) -> None:
     # TODO: Improve this method: 
-    #           - add a legend, 
-    #           - add a title, 
-    #           - add a colorbar, 
-    #           - add a time counter,
     #           - add a progress bar,
     #           - add robot and humans goals,
-    #           - remove time from agents,
     #           - add scenario and HMM args to plot accordingly,
     #           - add pause, resume, and go back buttons
 
     fig, ax = plt.subplots()
+    fig.subplots_adjust(right=0.78, top=0.90, bottom=0.05)
     ax.set_aspect('equal')
     ax.set(xlim=[-10,10],ylim=[-10,10])
     ax.set_xlabel('X')
@@ -151,7 +163,23 @@ def animate_trajectory(
 
     def animate(frame):
         ax.clear()
-        plot_state(ax, frame*robot_dt, states[frame], "hsfm", "circular_crossing", humans_radiuses, robot_radius)
+        ax.set_title(f"Time: {'{:.2f}'.format(round(frame*robot_dt,2))} - Humans policy: {humans_policy.upper()}", weight='bold')
+        ax.legend(
+            handles=[
+                Line2D([0], [0], color='white', marker='o', markersize=10, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Robot'), 
+                Line2D([0], [0], color='white', marker='o', markersize=10, markerfacecolor='white', markeredgecolor='blue', linewidth=2, label='Humans'),
+                Line2D([0], [0], color='white', marker='*', markersize=10, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Goal')],
+            bbox_to_anchor=(0.99, 0.5), loc='center left')
+        ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
+        plot_state(ax, frame*robot_dt, states[frame], humans_policy, "circular_crossing", humans_radiuses, robot_radius, plot_time=False)
 
     anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(states))
+    
+    anim.paused = False
+    def toggle_pause(self, *args, **kwargs):
+        if anim.paused: anim.resume()
+        else: anim.pause()
+        anim.paused = not anim.paused
+
+    fig.canvas.mpl_connect('button_press_event', toggle_pause)
     plt.show()
