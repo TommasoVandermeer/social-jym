@@ -10,7 +10,7 @@ def generate_reward_done_function(
     ) -> FunctionType:
     
     @jit
-    def get_reward_done(obs:jnp.ndarray, info:dict, dt:float) -> tuple[float, bool]:
+    def get_reward_done(obs:jnp.ndarray, info:dict, dt:float, train:bool=True) -> tuple[float, bool]:
         """
         Given a state and a dictionary containing additional information about the environment,
         this function computes the reward of the current state and wether the episode is finished or not.
@@ -18,6 +18,9 @@ def generate_reward_done_function(
 
         args:
         - obs: observation of the current state of the environment
+        - info: dictionary containing additional information about the environment
+        - dt: time step of the simulation
+        - train: boolean indicating whether the function is being called during training or testing. During testing the done bool is computed using current position of the agents.
 
         output:
         - reward: reward obtained in the current state.
@@ -46,8 +49,15 @@ def generate_reward_done_function(
         reward = lax.cond(reached_goal, lambda r: r + goal_reward, lambda r: r, reward) # Reward for reaching the goal
         reward = lax.cond(collision, lambda r: r - collision_penalty, lambda r: r, reward) # Penalty for collision
         reward = lax.cond(discomfort, lambda r: r - 0.5 * dt * (discomfort_distance - min_distance), lambda r: r, reward) # Penalty for getting too close to humans
-        # Compute done
-        done = jnp.any(jnp.array([collision,reached_goal,timeout]))
+        # Compute done (during testing we check for actual collision and reached_goal, during training we check for onestep lookahead collision and reached_goal)
+        done = lax.cond(
+            train,
+            lambda x: jnp.any(jnp.array([collision,reached_goal,timeout])),
+            lambda x: jnp.any(jnp.array([
+                jnp.any(jnp.linalg.norm(humans_pos - robot_pos, axis=1) - (humans_radiuses + robot_radius) < 0),
+                jnp.linalg.norm(robot_pos - robot_goal) < robot_radius,
+                timeout])),
+            None)
         # # DEBUG
         # debug.print("\n")
         # debug.print("collision: {x}", x=collision)

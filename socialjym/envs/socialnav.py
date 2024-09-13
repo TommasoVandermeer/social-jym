@@ -258,7 +258,7 @@ class SocialNav(BaseEnv):
         return new_state, obs, info, reward, done
     
     @partial(jit, static_argnames=("self"))
-    def step(self, state:jnp.ndarray, info:dict, action:jnp.ndarray)-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
+    def step(self, state:jnp.ndarray, info:dict, action:jnp.ndarray, train:bool=True)-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
         this function computes the next state, the observation, the reward, and whether the episode is done.
@@ -314,7 +314,7 @@ class SocialNav(BaseEnv):
             # TODO: update humans goal depending on each scenario
             pass
         ### Compute reward and done
-        reward, done = self.reward_function(self._get_obs(new_state, info, action), info, self.robot_dt)
+        reward, done = self.reward_function(self._get_obs(new_state, info, action), info, self.robot_dt, train=train)
         return new_state, self._get_obs(new_state, info, action), info, reward, done
 
     @partial(jit, static_argnames=("self"))

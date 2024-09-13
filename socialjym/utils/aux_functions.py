@@ -89,7 +89,7 @@ def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, mo
             state, obs, info, done, policy_key, steps, all_states, all_dones, all_rewards = while_val
             # Make a step in the environment
             action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
-            state, obs, info, reward, done = env.step(state,info,action) 
+            state, obs, info, reward, done = env.step(state,info,action,train=False) 
             # Save data
             all_states = all_states.at[steps].set(state)
             all_dones = all_dones.at[steps].set(done)
@@ -150,9 +150,7 @@ def animate_trajectory(
     ) -> None:
     # TODO: Improve this method: 
     #           - add a progress bar,
-    #           - add robot and humans goals,
-    #           - add scenario and HMM args to plot accordingly,
-    #           - add pause, resume, and go back buttons
+    #           - add scenario and HMM args to plot accordingly.
 
     fig, ax = plt.subplots()
     fig.subplots_adjust(right=0.78, top=0.90, bottom=0.05)
