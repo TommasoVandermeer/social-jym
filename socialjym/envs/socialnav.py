@@ -218,8 +218,7 @@ class SocialNav(BaseEnv):
         humans_goal = info["humans_goal"]
         humans_parameters = info["humans_parameters"]
         static_obstacles = info["static_obstacles"]
-        ### Compute reward and done
-        reward, done = self.reward_function(self._get_obs(state, info, action), info, self.robot_dt)
+        old_info = info.copy()
         ### Update state
         # TODO: update humans depending on their policy
         goals = jnp.vstack((humans_goal, info["robot_goal"]))
@@ -254,6 +253,8 @@ class SocialNav(BaseEnv):
         elif self.scenario == SCENARIOS.index('parallel_traffic'):
             # TODO: update humans goal depending on each scenario
             pass
+        ### Compute reward and done - WARNING: The old state is passed, not the updated one (but with the correct action applied)
+        reward, done = self.reward_function(self._get_obs(state, old_info, action), old_info, self.robot_dt)
         return new_state, self._get_obs(new_state, info, action), info, reward, done
     
     @partial(jit, static_argnames=("self"))
