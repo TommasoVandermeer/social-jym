@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import lax, jit, random, vmap
+from jax import lax, jit, random, vmap, debug
 from jax_tqdm import loop_tqdm
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,16 +11,18 @@ from matplotlib.lines import Line2D
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
 
-def epsilon_scaling_decay(epsilon_start, epsilon_end, current_episode, decay_rate):
+@jit
+def epsilon_scaling_decay(epsilon_start:float, epsilon_end:float, current_episode:int, decay_rate:float) -> float:
     epsilon = lax.cond(current_episode < decay_rate, lambda x: epsilon_start + (epsilon_end - epsilon_start) / decay_rate * x, lambda x: epsilon_end, current_episode)
     return epsilon
 
-def is_multiple(number, dividend, tolerance=1e-7) -> bool:
+@jit
+def is_multiple(number:float, dividend:float, tolerance:float=1e-7) -> bool:
     """
     Checks if a number (also a float) is a multiple of another number within a given tolerance error.
     """
     mod = number % dividend
-    return (abs(mod) <= tolerance) or (abs(dividend - mod) <= tolerance)
+    return jnp.any(jnp.array([abs(mod) <= tolerance,abs(dividend - mod) <= tolerance]))
 
 @jit
 def point_to_line_distance(point:jnp.ndarray, line_start:jnp.ndarray, line_end:jnp.ndarray) -> float:
@@ -50,14 +52,16 @@ def point_to_line_distance(point:jnp.ndarray, line_start:jnp.ndarray, line_end:j
         lambda _: jnp.squeeze(((x - x1) * dx + (y - y1) * dy) / jnp.linalg.norm(line_end - line_start)**2), 
         None)
 
-     # Clamp u to [0,1]
-    u = lax.cond(lax.cond(u < 0, lambda x: 0., lambda x: x, u)>1, lambda x: 1., lambda x: x, u)
+    # Clamp u to [0,1]
+    u = lax.cond(u < 0, lambda x: 0., lambda x: x, u)
+    u = lax.cond(u > 1, lambda x: 1., lambda x: x, u)
 
     closest_point = jnp.array([x1 + u * dx, y1 + u * dy])
     closest_distance = jnp.linalg.norm(closest_point - point)
 
     return closest_distance
 
+@jit
 def batch_point_to_line_distance(points:jnp.ndarray, line_starts:jnp.ndarray, line_ends:jnp.ndarray) -> jnp.ndarray:
     return vmap(point_to_line_distance, in_axes=(0, 0, 0))(points, line_starts, line_ends)
 
