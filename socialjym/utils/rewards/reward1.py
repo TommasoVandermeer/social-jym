@@ -1,6 +1,8 @@
 from types import FunctionType
-from jax import jit, lax
+from jax import jit, lax, debug
 import jax.numpy as jnp
+
+from socialjym.utils.aux_functions import batch_point_to_line_distance
 
 def generate_reward_done_function(
         goal_reward: float, 
@@ -35,7 +37,8 @@ def generate_reward_done_function(
         next_robot_pos = robot_pos + obs[-1,2:4] * dt
         next_humans_pos = humans_pos + obs[0:len(obs)-1,2:4] * dt
         # Collision and discomfort detection with humans (within a duration of dt)
-        distances = jnp.linalg.norm(next_humans_pos - next_robot_pos, axis=1) - (humans_radiuses + robot_radius)
+        distances = batch_point_to_line_distance(jnp.zeros((len(obs)-1,2)), humans_pos - robot_pos, next_humans_pos - next_robot_pos) - (humans_radiuses + robot_radius)
+        # distances = jnp.linalg.norm(next_humans_pos - next_robot_pos, axis=1) - (humans_radiuses + robot_radius)
         collision = jnp.any(distances < 0)
         min_distance = jnp.max(jnp.array([jnp.min(distances),0]))
         discomfort = jnp.all(jnp.array([jnp.logical_not(collision), min_distance < discomfort_distance]))
