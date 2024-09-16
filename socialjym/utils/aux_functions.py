@@ -132,7 +132,7 @@ def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, mo
             state, obs, info, done, policy_key, steps, all_states, all_dones, all_rewards = while_val
             # Make a step in the environment
             action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
-            state, obs, info, reward, done = env.step(state,info,action,train=False) 
+            state, obs, info, reward, done = env.step(state,info,action) 
             # Save data
             all_states = all_states.at[steps].set(state)
             all_dones = all_dones.at[steps].set(done)

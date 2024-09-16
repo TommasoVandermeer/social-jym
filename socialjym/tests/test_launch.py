@@ -52,7 +52,7 @@ for i in range(n_episodes):
     all_states = np.array([state])
     while not done:
         action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
-        state, obs, info, reward, done = env.step(state,info,action,train=True) 
+        state, obs, info, reward, done = env.step(state,info,action) 
         # state, obs, info, reward, done = env.imitation_learning_step(state,info)
         all_states = np.vstack((all_states, [state]))
     episode_simulation_times[i] = round(time.time() - episode_start_time,2)
