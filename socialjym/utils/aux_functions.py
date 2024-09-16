@@ -7,6 +7,8 @@ import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
 from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
+import pickle as pkl
+import os
 
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
@@ -224,3 +226,26 @@ def animate_trajectory(
 
     fig.canvas.mpl_connect('button_press_event', toggle_pause)
     plt.show()
+
+def save_policy_params(
+        policy_name:str,
+        policy_params: dict, 
+        train_env_params:dict, 
+        reward_params:dict,
+        hyperparameters:dict, 
+        path:str,
+        filename=None) -> None:
+    
+    if os.path.exists(path) == False:
+        os.makedirs(path)
+
+    if filename is None:
+        filename = f"{policy_name}_{train_env_params['n_humans']}_{train_env_params['humans_policy']}_{train_env_params['scenario']}.pkl"
+        
+    with open(os.path.join(path, filename), 'wb') as f:
+        pkl.dump({
+            "policy_name": policy_name,
+            "policy_params": policy_params,
+            "train_env_params": {k: train_env_params[k] for k in set(list(train_env_params.keys())) - set(['reward_function'])},
+            "reward_params": reward_params,
+            "hyperparameters": hyperparameters}, f)
