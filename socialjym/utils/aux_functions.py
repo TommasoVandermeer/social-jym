@@ -134,7 +134,7 @@ def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, mo
             state, obs, info, done, policy_key, steps, all_states, all_dones, all_rewards = while_val
             # Make a step in the environment
             action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
-            state, obs, info, reward, done = env.step(state,info,action) 
+            state, obs, info, reward, done = env.step(state,info,action,test=True) 
             # Save data
             all_states = all_states.at[steps].set(state)
             all_dones = all_dones.at[steps].set(done)
@@ -178,11 +178,13 @@ def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, mo
     # Execute k tests
     print(f"Executing {k} tests with {env.n_humans} humans...")
     _, _, metrics = lax.fori_loop(0, k, _fori_body, (reset_key, policy_key, metrics))
-    print(f"Success rate: {round(metrics['successes']/k, 2)}")
-    print(f"Collision rate: {round(metrics['collisions']/k, 2)}")
-    print(f"Timeout rate: {round(metrics['timeouts']/k, 2)}")
-    print(f"Average return: {round(jnp.mean(metrics['returns']), 2)}")
-    print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']), 2)}")
+    # Print results
+    print("\n RESULTS")
+    print(f"Success rate: {round(metrics['successes']/k, 2):.2f}")
+    print(f"Collision rate: {round(metrics['collisions']/k, 2):.2f}")
+    print(f"Timeout rate: {round(metrics['timeouts']/k, 2):.2f}")
+    print(f"Average return: {round(jnp.mean(metrics['returns']), 2):.2f}")
+    print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']), 2):.2f}")
     return metrics
                 
 def animate_trajectory(
@@ -249,3 +251,43 @@ def save_policy_params(
             "train_env_params": {k: train_env_params[k] for k in set(list(train_env_params.keys())) - set(['reward_function'])},
             "reward_params": reward_params,
             "hyperparameters": hyperparameters}, f)
+        
+def load_social_nav_py_envs_policy(
+        policy_name:str,
+        train_env_humans_policy:str,
+        train_env_scenario:str,
+        path:str) -> tuple:
+    
+    import torch
+
+    ## Get Value Network Parameters (weights and biases)
+    vnet_params = {}
+    if policy_name == "cadrl":
+        l = 0
+        for k, v in torch.load(path, weights_only=True).items():
+            if l%2 == 0:
+                vnet_params[f"mlp/~/linear_{l//2}"] = {}
+                vnet_params[f"mlp/~/linear_{l//2}"]["w"] = jnp.array(v.detach().cpu().numpy().T)
+            else:
+                vnet_params[f"mlp/~/linear_{l//2}"]["b"] = jnp.array(v.detach().cpu().numpy().T)
+            l += 1
+    elif policy_name == "sarl":
+        l = 0
+        for k, v in torch.load(path, weights_only=True).items():
+            if l%2 == 0:
+                if l == 0: vnet_params["value_network/~/mlp1/~/linear_0"] = {}
+                if l == 2: vnet_params["value_network/~/mlp1/~/linear_1"] = {}
+                if l == 4: vnet_params["value_network/~/mlp2/~/linear_0"] = {}
+                if l == 6: vnet_params["value_network/~/mlp2/~/linear_1"] = {}
+                if l == 8: vnet_params["value_network/~/attention/~/linear_0"] = {}
+                if l == 10: vnet_params["value_network/~/attention/~/linear_1"] = {}
+                if l == 12: vnet_params["value_network/~/attention/~/linear_2"] = {}
+                if l == 14: vnet_params["value_network/~/mlp3/~/linear_0"] = {}
+                if l == 16: vnet_params["value_network/~/mlp3/~/linear_1"] = {}
+                if l == 18: vnet_params["value_network/~/mlp3/~/linear_2"] = {}
+                if l == 20: vnet_params["value_network/~/mlp3/~/linear_3"] = {}
+                vnet_params[list(vnet_params.keys())[l//2]]["w"] = jnp.array(v.detach().cpu().numpy().T)
+            else:
+                vnet_params[list(vnet_params.keys())[l//2]]["b"] = jnp.array(v.detach().cpu().numpy().T)
+            l += 1
+    return vnet_params

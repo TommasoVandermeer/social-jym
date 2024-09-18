@@ -258,7 +258,7 @@ class SocialNav(BaseEnv):
         return new_state, self._get_obs(new_state, info, action), info, reward, done
     
     @partial(jit, static_argnames=("self"))
-    def step(self, state:jnp.ndarray, info:dict, action:jnp.ndarray)-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
+    def step(self, state:jnp.ndarray, info:dict, action:jnp.ndarray, test:bool=False)-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
         this function computes the next state, the observation, the reward, and whether the episode is done.
@@ -286,11 +286,11 @@ class SocialNav(BaseEnv):
         if self.robot_visible:
             goals = jnp.vstack((humans_goal, info["robot_goal"]))
             parameters = jnp.vstack((humans_parameters, jnp.array([self.robot_radius, *get_standard_humans_parameters(1)[0,1:]])))
-            fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2],*action,0.,0.])])
+            fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*action), 0.])]) # HSFM fictitious state
             new_state = lax.fori_loop(0,
                                       int(self.robot_dt/self.humans_dt),
                                       lambda _ , x: jnp.vstack([humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
-                                                                jnp.array([x[-1,0]+action[0]*self.humans_dt, x[-1,1]+action[1]*self.humans_dt, *action, 0., 0.])]),
+                                                                jnp.array([x[-1,0]+action[0]*self.humans_dt, x[-1,1]+action[1]*self.humans_dt, *x[-1,2:]])]),
                                       fictitious_state)
             new_state = new_state.at[self.n_humans,2:].set(jnp.array([0., 0., 0., 0.]))
         else:
@@ -301,14 +301,23 @@ class SocialNav(BaseEnv):
                                       state)
             ## Update robot
             new_state = new_state.at[self.n_humans,0:2].set(jnp.array([new_state[self.n_humans,0] + action[0] * self.robot_dt, new_state[self.n_humans,1] + action[1] * self.robot_dt]))
-        ### Update humans goal
+        ### Test done computation (during tests we check for actual collision or reaching goal)
+        done = lax.cond(
+            test,
+            lambda _: jnp.any(jnp.array([
+                jnp.linalg.norm(new_state[-1,0:2] - info["robot_goal"]) < self.robot_radius, # reaching goal
+                jnp.any(jnp.linalg.norm(new_state[0:self.n_humans,0:2] - new_state[-1,0:2], axis=1) < info["humans_parameters"][:,0]), # collision
+                jnp.any(info["time"] >= self.time_limit)])), # timeout
+            lambda _: done,
+            None)
+        ### Update humans goal or state depending on the scenario
         if self.scenario == SCENARIOS.index('circular_crossing'):
             info["humans_goal"] = lax.fori_loop(
                 0, 
                 self.n_humans, 
                 lambda i, goals: lax.cond(
                     jnp.linalg.norm(new_state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0], 
-                    lambda x: x.at[i].set(-x[i]), 
+                    lambda x: x.at[i].set(-info["humans_goal"][i]), 
                     lambda x: x, 
                     goals),
                 info["humans_goal"])

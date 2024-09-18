@@ -52,28 +52,28 @@ for i in range(n_episodes):
     all_states = np.array([state])
     while not done:
         action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
-        state, obs, info, reward, done = env.step(state,info,action) 
+        state, obs, info, reward, done = env.step(state,info,action,test=True) 
         # state, obs, info, reward, done = env.imitation_learning_step(state,info)
         all_states = np.vstack((all_states, [state]))
     episode_simulation_times[i] = round(time.time() - episode_start_time,2)
     all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
     print(f"Episode {i} ended - Execution time {episode_simulation_times[i]} seconds - Plotting trajectory...")
     ## Plot episode trajectory
-    figure, ax = plt.subplots(figsize=(10,10))
-    ax.axis('equal')
-    plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
-    for k in range(0,len(all_states),int(3/env_params['robot_dt'])):
-        plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
-    # plot last state
-    plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
-    plt.show()
+    # figure, ax = plt.subplots(figsize=(10,10))
+    # ax.axis('equal')
+    # plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
+    # for k in range(0,len(all_states),int(3/env_params['robot_dt'])):
+    #     plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
+    # # plot last state
+    # plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
+    # plt.show()
     ## Animate trajectory
-    # animate_trajectory(
-    #     all_states, 
-    #     info['humans_parameters'][:,0], 
-    #     env.robot_radius, env_params['humans_policy'],
-    #     info['robot_goal'],
-    #     robot_dt=env_params['robot_dt'])
+    animate_trajectory(
+        all_states, 
+        info['humans_parameters'][:,0], 
+        env.robot_radius, env_params['humans_policy'],
+        info['robot_goal'],
+        robot_dt=env_params['robot_dt'])
 # Print simulation times
 print(f"Average time per episode: {round(np.mean(episode_simulation_times),2)} seconds")
 print(f"Total time for {n_episodes} episodes: {round(np.sum(episode_simulation_times),2)} seconds")

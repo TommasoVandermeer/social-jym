@@ -37,9 +37,9 @@ class ValueNetwork(hk.Module):
             robot_state_size:int=6
         ) -> None:
         super().__init__()  
-        self.mlp1 = hk.nets.MLP(**mlp1_params)
-        self.mlp2 = hk.nets.MLP(**mlp2_params)
-        self.mlp3 = hk.nets.MLP(**mlp3_params)
+        self.mlp1 = hk.nets.MLP(**mlp1_params, name="mlp1")
+        self.mlp2 = hk.nets.MLP(**mlp2_params, name="mlp2")
+        self.mlp3 = hk.nets.MLP(**mlp3_params, name="mlp3")
         self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
         self.robot_state_size = robot_state_size
 
@@ -52,17 +52,29 @@ class ValueNetwork(hk.Module):
         """
 
         # Dimensions examples (CrowdNav) with 5 humans and 13 features of reparametrized state
-        # X Size : torch.Size([1, 5, 13])
-        # MLP1 input size:  torch.Size([5, 13])
-        # MLP1 output/MLP2 input size:  torch.Size([5, 100])
-        # Global State size before expansion:  torch.Size([1, 1, 100])
-        # Global State size:  torch.Size([5, 100])
-        # Attention input size:  torch.Size([5, 200])
-        # Scores size:  torch.Size([1, 5])
-        # Weights size:  torch.Size([1, 5, 1])
-        # Features size:  torch.Size([1, 5, 50])
-        # Weighted Feature size:  torch.Size([1, 50])
-        # Joint State/MLP3 input size:  torch.Size([1, 56])
+        # X Size : [1, 5, 13]
+        # MLP1 input size:  [5, 13]
+        # MLP1 output/MLP2 input size:  [5, 100]
+        # Features size:  [1, 5, 50]
+        # Global State size before expansion:  [1, 1, 100]
+        # Global State size:  [5, 100]
+        # Attention input size:  [5, 200]
+        # Scores size:  [1, 5]
+        # Weights size:  [1, 5, 1]
+        # Weighted Feature size:  [1, 50]
+        # Joint State/MLP3 input size:  [1, 56]
+
+        # Dimensions examples (CrowdNav) with 5 humans and 13 features of reparametrized state
+        # self_state size:  [6]
+        # MLP1 output size: [5,100]
+        # Features size: [5,50]
+        # Global State size before expansion: [1,100]
+        # Global State size: [5,100]
+        # Attention input size: [5,200]
+        # Scores size: [5,1]
+        # Weights size: [5,1]
+        # Weighted Feature size: [50]
+        # Joint State/MLP3 input size: [56]
 
         # Save self state variables
         size = x.shape # (# of humans, length of reparametrized state)
@@ -71,6 +83,9 @@ class ValueNetwork(hk.Module):
         # Compute embeddings and global state
         mlp1_output = self.mlp1(x)
         # debug.print("MLP1 output size: {x}", x=mlp1_output.shape)
+        # Compute hidden features
+        features = self.mlp2(mlp1_output)
+        # debug.print("Features size: {x}", x=features.shape)
         global_state = jnp.mean(mlp1_output, axis=0, keepdims=True)
         # debug.print("Global State size before expansion: {x}", x=global_state.shape)
         global_state = jnp.tile(global_state, (size[0], 1))
@@ -80,11 +95,9 @@ class ValueNetwork(hk.Module):
         # debug.print("Attention input size: {x}", x=attention_input.shape)
         scores = self.attention(attention_input)
         # debug.print("Scores size: {x}", x=scores.shape)
-        attention_weights = nn.softmax(scores)
+        scores_exp = jnp.exp(scores) * jnp.array(scores != 0)
+        attention_weights = scores_exp / jnp.sum(scores_exp, axis=0)
         # debug.print("Weights size: {x}", x=attention_weights.shape)
-        # Compute hidden features
-        features = self.mlp2(mlp1_output)
-        # debug.print("Features size: {x}", x=features.shape)
         # Compute weighted features (hidden features weighted by attention weights)
         weighted_features = jnp.sum(jnp.multiply(attention_weights, features), axis=0)
         # debug.print("Weighted Feature size: {x}", x=weighted_features.shape)
