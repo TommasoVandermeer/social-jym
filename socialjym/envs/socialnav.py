@@ -286,7 +286,7 @@ class SocialNav(BaseEnv):
         if self.robot_visible:
             goals = jnp.vstack((humans_goal, info["robot_goal"]))
             parameters = jnp.vstack((humans_parameters, jnp.array([self.robot_radius, *get_standard_humans_parameters(1)[0,1:]])))
-            fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*action), 0.])]) # HSFM fictitious state
+            fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*jnp.flip(action)), 0.])]) # HSFM fictitious state
             new_state = lax.fori_loop(0,
                                       int(self.robot_dt/self.humans_dt),
                                       lambda _ , x: jnp.vstack([humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 

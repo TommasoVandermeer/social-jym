@@ -29,18 +29,23 @@ env_params = {
 # Initialize and reset environment
 env = SocialNav(**env_params)
 
+# Initialize robot policy
 # Load Social-Navigation-PyEnvs policy vnet params
 vnet_params = load_social_nav_py_envs_policy(
     "sarl", 
     "hsfm", 
     "circular_crossing", 
     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_on_hsfm_new_guo/rl_model.pth"))
-
-# Initialize robot policy
 policy = SARL(env.reward_function, dt=env_params['robot_dt'])
+# vnet_params = load_social_nav_py_envs_policy(
+#     "cadrl", 
+#     "hsfm", 
+#     "circular_crossing", 
+#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_on_hsfm_new_guo/rl_model.pth"))
+# policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
 # Test Social-Navigation-PyEnvs policy
-test_k_trials(1000, 10, env, policy, vnet_params)
+test_k_trials(100, 10, env, policy, vnet_params)
 
 # Initialize random keys
 reset_key = random.key(random_seed)

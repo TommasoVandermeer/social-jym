@@ -179,7 +179,7 @@ def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, mo
     print(f"Executing {k} tests with {env.n_humans} humans...")
     _, _, metrics = lax.fori_loop(0, k, _fori_body, (reset_key, policy_key, metrics))
     # Print results
-    print("\n RESULTS")
+    print("\nRESULTS")
     print(f"Success rate: {round(metrics['successes']/k, 2):.2f}")
     print(f"Collision rate: {round(metrics['collisions']/k, 2):.2f}")
     print(f"Timeout rate: {round(metrics['timeouts']/k, 2):.2f}")

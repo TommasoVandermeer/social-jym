@@ -41,7 +41,7 @@ class CADRL(BasePolicy):
         rotations = jnp.linspace(0, 2 * jnp.pi, self.rotation_samples, endpoint=False)
         action_space = jnp.empty((self.speed_samples * self.rotation_samples + 1,2))
         action_space = action_space.at[0].set(jnp.array([0, 0])) # First action is to stay still
-        action_space = lax.fori_loop(0,
+        action_space = lax.fori_loop(1,
                                      len(action_space), 
                                      lambda i, acts: acts.at[i].set(jnp.array([speeds[i // self.rotation_samples] * jnp.cos(rotations[i % self.rotation_samples]),
                                                                                speeds[i // self.rotation_samples] * jnp.sin(rotations[i % self.rotation_samples])])),
@@ -81,7 +81,7 @@ class CADRL(BasePolicy):
         # Robot observation: [x,y,ux,uy,radius]
         # Human observation: [x,y,vx,vy,radius]
         # Re-parametrized observation: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
-        rot = jnp.atan2(info["robot_goal"][0] - robot_obs[0], info["robot_goal"][1] - robot_obs[1])
+        rot = jnp.atan2(info["robot_goal"][1] - robot_obs[1],info["robot_goal"][0] - robot_obs[0])
         vnet_input = jnp.zeros((self.vnet_input_size,))
         vnet_input = vnet_input.at[0].set(jnp.linalg.norm(info["robot_goal"] - robot_obs[0:2]))
         vnet_input = vnet_input.at[1].set(self.v_max)
