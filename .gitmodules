@@ -1,3 +1,6 @@
 [submodule "JHSFM"]
 	path = JHSFM
 	url = git@github.com:TommasoVandermeer/JHSFM.git
+[submodule "JSFM"]
+	path = JSFM
+	url = git@github.com:TommasoVandermeer/JSFM.git
