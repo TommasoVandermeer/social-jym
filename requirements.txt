@@ -1,6 +1,0 @@
-jax
-jax_tqdm
-matplotlib
-dm-haiku
-optax
-notebook
