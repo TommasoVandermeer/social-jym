@@ -59,14 +59,14 @@ for i in range(n_episodes):
     all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
     print(f"Episode {i} ended - Execution time {episode_simulation_times[i]} seconds - Plotting trajectory...")
     ## Plot episode trajectory
-    # figure, ax = plt.subplots(figsize=(10,10))
-    # ax.axis('equal')
-    # plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
-    # for k in range(0,len(all_states),int(3/env_params['robot_dt'])):
-    #     plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
-    # # plot last state
-    # plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
-    # plt.show()
+    figure, ax = plt.subplots(figsize=(10,10))
+    ax.axis('equal')
+    plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
+    for k in range(0,len(all_states),int(3/env_params['robot_dt'])):
+        plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
+    # plot last state
+    plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
+    plt.show()
     ## Animate trajectory
     animate_trajectory(
         all_states, 

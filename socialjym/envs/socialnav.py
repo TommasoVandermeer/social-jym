@@ -4,8 +4,10 @@ from jax import random, jit, lax, debug
 from functools import partial
 from types import FunctionType
 
-from jhsfm.hsfm import step as humans_step
-from jhsfm.utils import get_standard_humans_parameters
+from jhsfm.hsfm import step as hsfm_humans_step
+from jsfm.sfm import step as sfm_humans_step
+from jhsfm.utils import get_standard_humans_parameters as hsfm_get_standard_humans_parameters
+from jsfm.utils import get_standard_humans_parameters as sfm_get_standard_humans_parameters
 from socialjym.utils.aux_functions import is_multiple
 from .base_env import BaseEnv
 
@@ -45,13 +47,20 @@ class SocialNav(BaseEnv):
         self.scenario = SCENARIOS.index(scenario)
         self.n_humans = n_humans
         self.humans_policy = HUMAN_POLICIES.index(humans_policy)
+        if humans_policy == 'hsfm': 
+            self.humans_step = hsfm_humans_step
+            self.get_standard_humans_parameters = hsfm_get_standard_humans_parameters
+        elif humans_policy == 'sfm':
+            self.humans_step = sfm_humans_step
+            self.get_standard_humans_parameters = sfm_get_standard_humans_parameters
+        elif humans_policy == 'orca':
+            raise NotImplementedError("ORCA policy is not implemented yet.")
         self.robot_discomfort_dist = robot_discomfort_dist
         self.robot_visible = robot_visible
         self.circle_radius = circle_radius
         self.traffic_height = traffic_height
         self.traffic_length = traffic_length
         self.time_limit = time_limit
-        # Default args
         self.reward_function = reward_function
 
     # --- Private methods ---
@@ -83,7 +92,7 @@ class SocialNav(BaseEnv):
             linear_velocities = jnp.ones((self.n_humans, 2))
             linear_velocities = lax.fori_loop(0, self.n_humans, lambda i, lv: lv.at[i].set(jnp.matmul(jnp.array([[jnp.cos(state[i,4]), -jnp.sin(state[i,4])], [jnp.sin(state[i,4]), jnp.cos(state[i,4])]]), state[i,2:4])) , linear_velocities)
             obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], linear_velocities[i,0], linear_velocities[i,1], info['humans_parameters'][i,0]])), obs)
-        else: # For sfm and orca policies the state already contains the linear velocities
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'): # For sfm and orca policies the state already contains the linear velocities
             obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], state[i,2], state[i,3], info['humans_parameters'][i,0]])), obs)
         obs = obs.at[self.n_humans].set(jnp.array([*state[self.n_humans,0:2], *action, self.robot_radius]))
         return obs
@@ -115,13 +124,13 @@ class SocialNav(BaseEnv):
         #               humans_goal.at[i].set(jnp.array([-full_state[i,0], -full_state[i,1]]))
         #               , humans_goal)
         # humans_goal = humans_goal
-        # humans_parameters = get_standard_humans_parameters(self.n_humans)
+        # humans_parameters = self.get_standard_humans_parameters(self.n_humans)
 
         ### STOCHASTIC CIRCULAR CROSSING
         ## Humans state, goals and parameters
         humans_goal = jnp.zeros((self.n_humans, 2))
         # TODO: Adjust parameters based on humans policy
-        humans_parameters = get_standard_humans_parameters(self.n_humans)
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
         # Randomly generate the humans' positions
         min_dist = 2 * jnp.max(humans_parameters[:, 0]) + 0.1 # Calculate the minimum distance between humans
         min_angle = 2 * jnp.arcsin(min_dist / (2 * self.circle_radius)) # Calculate the minimum angular distance in radians for inter-point distance
@@ -152,26 +161,44 @@ class SocialNav(BaseEnv):
         points = self.circle_radius * jnp.stack([jnp.cos(angles), jnp.sin(angles)], axis=1) # Convert angles to (x, y) coordinates on the circle
         disturbed_points = lax.fori_loop(0, self.n_humans, lambda i, points: points.at[i].set(points[i] + disturbance[i] * jnp.array([jnp.cos(angles[i]), jnp.sin(angles[i])])), points)
         
-        # TODO: Modify full state based on humans policy
-        # Assign the humans' positions and goals
-        full_state = lax.fori_loop(
-            0, 
-            self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
-                [disturbed_points[i,0],
-                disturbed_points[i,1],
-                0.,
-                0.,
-                angles[i] + jnp.pi,
-                0.]))
-            , full_state)
+        # Assign the humans' and robot's positions
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = lax.fori_loop(
+                0, 
+                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
+                    [disturbed_points[i,0],
+                    disturbed_points[i,1],
+                    0.,
+                    0.,
+                    angles[i] + jnp.pi,
+                    0.]))
+                , full_state)
+            # Robot
+            full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:]]))
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = lax.fori_loop(
+                0, 
+                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
+                    [disturbed_points[i,0],
+                    disturbed_points[i,1],
+                    0.,
+                    0.,
+                    0,
+                    0.]))
+                , full_state)
+            # Robot
+            full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:4], jnp.pi/2, *full_state[self.n_humans,5:]]))
+
+        # Assign the humans' and robot goals
         humans_goal = lax.fori_loop(
             0, 
             self.n_humans, 
             lambda i, humans_goal: humans_goal.at[i].set(jnp.array([-points[i,0], -points[i,1]]))
             , humans_goal)
-        # Robot state and goal
-        full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:4], jnp.pi/2, *full_state[self.n_humans,5:]]))
         robot_goal = np.array([0., self.circle_radius])
+
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
         # Info
@@ -188,7 +215,7 @@ class SocialNav(BaseEnv):
         # TODO: Implement this method
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
-        humans_parameters = get_standard_humans_parameters(self.n_humans)
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
         robot_goal = np.array([self.traffic_length/2, 0])
         info = {"humans_goal": humans_goal, "robot_goal": robot_goal, "humans_parameters": humans_parameters, "static_obstacles": static_obstacles, "time": 0.}
@@ -222,23 +249,35 @@ class SocialNav(BaseEnv):
         ### Update state
         # TODO: update humans depending on their policy
         goals = jnp.vstack((humans_goal, info["robot_goal"]))
-        parameters = jnp.vstack((humans_parameters, jnp.array([self.robot_radius, *get_standard_humans_parameters(1)[0,1:-1], 0.2]))) # Add safety space of 0.1 to robot
+        parameters = jnp.vstack((humans_parameters, jnp.array([self.robot_radius, *self.get_standard_humans_parameters(1)[0,1:-1], 0.2]))) # Add safety space of 0.1 to robot
         if self.robot_visible:
-            new_state = lax.fori_loop(0,
-                                      int(self.robot_dt/self.humans_dt),
-                                      lambda _ , x: humans_step(x, goals, parameters, static_obstacles, self.humans_dt),
-                                      state)
+            if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+                new_state = lax.fori_loop(0,
+                                        int(self.robot_dt/self.humans_dt),
+                                        lambda _ , x: self.humans_step(x, goals, parameters, static_obstacles, self.humans_dt),
+                                        state)
+            elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+                new_state = jnp.pad(lax.fori_loop(0,
+                                        int(self.robot_dt/self.humans_dt),
+                                        lambda _ , x: self.humans_step(x, goals, parameters, static_obstacles, self.humans_dt),
+                                        state[:,0:4]),
+                                    ((0,0),(0,2)))
         else:
-            new_state = lax.fori_loop(0,
-                                      int(self.robot_dt/self.humans_dt),
-                                      lambda _ , x: jnp.vstack([humans_step(x[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
-                                                                humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[self.n_humans]]),
-                                      state)
-        if self.humans_policy == HUMAN_POLICIES.index('hsfm'): # In case of hsfm convert robot body velocities to linear velocity
-            action = (new_state[self.n_humans,0:2] - state[self.n_humans,0:2]) / self.robot_dt
-            # action = jnp.matmul(jnp.array([[jnp.cos(state[self.n_humans,4]), -jnp.sin(state[self.n_humans,4])], [jnp.sin(state[self.n_humans,4]), jnp.cos(state[self.n_humans,4])]]), state[self.n_humans,2:4])
-        else:
-            action = state[self.n_humans,2:4]
+            if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+                new_state = lax.fori_loop(0,
+                                        int(self.robot_dt/self.humans_dt),
+                                        lambda _ , x: jnp.vstack([self.humans_step(x[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
+                                                                self.humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[self.n_humans]]),
+                                        state)
+            elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+                new_state = jnp.pad(lax.fori_loop(0,
+                                        int(self.robot_dt/self.humans_dt),
+                                        lambda _ , x: jnp.vstack([self.humans_step(x[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
+                                                                self.humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[self.n_humans]]),
+                                        state[:,0:4]),
+                                    ((0,0),(0,2)))
+        # Compute action by derivative of robot position
+        action = (new_state[self.n_humans,0:2] - state[self.n_humans,0:2]) / self.robot_dt
         ### Update humans goal
         if self.scenario == SCENARIOS.index('circular_crossing'):
             info["humans_goal"] = lax.fori_loop(
@@ -282,23 +321,39 @@ class SocialNav(BaseEnv):
         ### Compute reward and done
         reward, done = self.reward_function(self._get_obs(state, info, action), info, self.robot_dt)
         ### Update state
-        # TODO: update humans depending on their policy
         if self.robot_visible:
             goals = jnp.vstack((humans_goal, info["robot_goal"]))
-            parameters = jnp.vstack((humans_parameters, jnp.array([self.robot_radius, *get_standard_humans_parameters(1)[0,1:]])))
-            fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*jnp.flip(action)), 0.])]) # HSFM fictitious state
-            new_state = lax.fori_loop(0,
-                                      int(self.robot_dt/self.humans_dt),
-                                      lambda _ , x: jnp.vstack([humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
+            parameters = jnp.vstack((humans_parameters, jnp.array([self.robot_radius, *self.get_standard_humans_parameters(1)[0,1:]])))
+            if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+                fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*jnp.flip(action)), 0.])]) # HSFM fictitious state
+                new_state = lax.fori_loop(0,
+                                        int(self.robot_dt/self.humans_dt),
+                                        lambda _ , x: jnp.vstack([self.humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
                                                                 jnp.array([x[-1,0]+action[0]*self.humans_dt, x[-1,1]+action[1]*self.humans_dt, *x[-1,2:]])]),
-                                      fictitious_state)
-            new_state = new_state.at[self.n_humans,2:].set(jnp.array([0., 0., 0., 0.]))
+                                        fictitious_state)
+                new_state = new_state.at[self.n_humans,2:].set(jnp.array([0., 0., 0., 0.]))
+            elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+                fictitious_state = jnp.vstack([state[0:self.n_humans][:,0:4], jnp.array([*state[-1,0:2], *action])]) # SFM or ORCA fictitious state
+                new_state = jnp.pad(lax.fori_loop(0,
+                                        int(self.robot_dt/self.humans_dt),
+                                        lambda _ , x: jnp.vstack([self.humans_step(x, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
+                                                                jnp.array([x[-1,0]+action[0]*self.humans_dt, x[-1,1]+action[1]*self.humans_dt, *x[-1,2:]])]),
+                                        fictitious_state),
+                                    ((0,0),(0,2)))
+                new_state = new_state.at[self.n_humans,2:].set(jnp.array([0., 0., 0., 0.]))
         else:
             ## Update humans
-            new_state = lax.fori_loop(0,
-                                      int(self.robot_dt/self.humans_dt),
-                                      lambda _ , x: jnp.vstack([humans_step(x[0:self.n_humans], humans_goal, humans_parameters, static_obstacles, self.humans_dt), x[-1]]),
-                                      state)
+            if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+                new_state = lax.fori_loop(0,
+                                        int(self.robot_dt/self.humans_dt),
+                                        lambda _ , x: jnp.vstack([self.humans_step(x[0:self.n_humans], humans_goal, humans_parameters, static_obstacles, self.humans_dt), x[-1]]),
+                                        state)
+            elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+                new_state = jnp.pad(lax.fori_loop(0,
+                                        int(self.robot_dt/self.humans_dt),
+                                        lambda _ , x: jnp.vstack([self.humans_step(x[0:self.n_humans], humans_goal, humans_parameters, static_obstacles, self.humans_dt), x[-1]]),
+                                        state[:,0:4]),
+                                    ((0,0),(0,2)))
             ## Update robot
             new_state = new_state.at[self.n_humans,0:2].set(jnp.array([new_state[self.n_humans,0] + action[0] * self.robot_dt, new_state[self.n_humans,1] + action[1] * self.robot_dt]))
         ### Test done computation (during tests we check for actual collision or reaching goal)
