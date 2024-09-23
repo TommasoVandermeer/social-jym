@@ -205,8 +205,8 @@ def deep_vnet_il_rollout(
                 model_params, buffer_state, current_buffer_size, policy_key, reset_key, returns = val
                 # Reset the environment
                 state, reset_key, obs, info = env.reset(reset_key)
-                # For imitation learning, set the humans' safety space to 0.15
-                info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.15) 
+                # For imitation learning, set the humans' safety space to 0.1
+                info["humans_parameters"] = info["humans_parameters"].at[:,-1].set(jnp.ones((env.n_humans,)) * 0.1) 
                 # Episode loop
                 vnet_inputs = jnp.empty((int(env.time_limit/env.robot_dt), env.n_humans, policy.vnet_input_size))
                 rewards = jnp.empty((int(env.time_limit/env.robot_dt),))
