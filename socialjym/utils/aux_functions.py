@@ -13,6 +13,14 @@ import os
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
 
+SCENARIOS = [
+    "circular_crossing", 
+    "parallel_traffic", 
+    "perpendicular_traffic", 
+    "robot_crowding", 
+    "hybrid_scenario"]
+HUMAN_POLICIES = ["orca", "sfm", "hsfm"]
+
 @jit
 def epsilon_scaling_decay(epsilon_start:float, epsilon_end:float, current_episode:int, decay_rate:float) -> float:
     epsilon = lax.cond(current_episode < decay_rate, lambda x: epsilon_start + (epsilon_end - epsilon_start) / decay_rate * x, lambda x: epsilon_end, current_episode)
@@ -72,12 +80,13 @@ def plot_state(
         time:float, 
         full_state:tuple, 
         humans_policy:str, 
-        scenario:str, 
+        scenario:int, 
         humans_radiuses:np.ndarray, 
         robot_radius:float, 
         circle_radius=7, 
         traffic_height=3, 
         traffic_length=14, 
+        crowding_square_side=14,
         plot_time=True):
     """
     Plots a given single state of the environment.
@@ -97,8 +106,10 @@ def plot_state(
     """
     colors = list(mcolors.TABLEAU_COLORS.values())
     num = int(time) if (time).is_integer() else (time)
-    if scenario == 'circular_crossing': ax.set(xlabel='X',ylabel='Y',xlim=[-circle_radius-1,circle_radius+1],ylim=[-circle_radius-1,circle_radius+1])
-    elif scenario == 'parallel_traffic': ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_height-1,traffic_height+1])
+    if scenario == SCENARIOS.index('circular_crossing'): ax.set(xlabel='X',ylabel='Y',xlim=[-circle_radius-1,circle_radius+1],ylim=[-circle_radius-1,circle_radius+1])
+    elif scenario == SCENARIOS.index('parallel_traffic'): ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_height-1,traffic_height+1])
+    elif scenario == SCENARIOS.index('perpendicular_traffic'): ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_length/2,traffic_length/2])
+    elif scenario == SCENARIOS.index('robot_crowding'): ax.set(xlabel='X',ylabel='Y',xlim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5],ylim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5])
     # Humans
     for h in range(len(full_state)-1): 
         if humans_policy == 'hsfm': 
@@ -193,12 +204,11 @@ def animate_trajectory(
     robot_radius:float, 
     humans_policy:str,
     robot_goal:np.ndarray,
+    scenario:int,
     robot_dt:float=0.25,
     ) -> None:
-    # TODO: Improve this method: 
-    #           - add a progress bar,
-    #           - add scenario and HMM args to plot accordingly.
 
+    # TODO: Add a progress bar,
     fig, ax = plt.subplots()
     fig.subplots_adjust(right=0.78, top=0.90, bottom=0.05)
     ax.set_aspect('equal')
@@ -216,7 +226,7 @@ def animate_trajectory(
                 Line2D([0], [0], color='white', marker='*', markersize=10, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Goal')],
             bbox_to_anchor=(0.99, 0.5), loc='center left')
         ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
-        plot_state(ax, frame*robot_dt, states[frame], humans_policy, "circular_crossing", humans_radiuses, robot_radius, plot_time=False)
+        plot_state(ax, frame*robot_dt, states[frame], humans_policy, scenario, humans_radiuses, robot_radius, plot_time=False)
 
     anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(states))
     

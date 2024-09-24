@@ -20,8 +20,8 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'parallel_traffic',
-    'humans_policy': 'hsfm',
+    'scenario': 'hybrid_scenario',
+    'humans_policy': 'sfm',
     'reward_function': reward_function
 }
 
@@ -63,7 +63,7 @@ for i in range(n_episodes):
     ax.axis('equal')
     plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
     for k in range(0,len(all_states),int(3/env_params['robot_dt'])):
-        plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
+        plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], info['current_scenario'], info["humans_parameters"][:,0], env.robot_radius)
     # plot last state
     plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
     plt.show()
@@ -71,8 +71,10 @@ for i in range(n_episodes):
     animate_trajectory(
         all_states, 
         info['humans_parameters'][:,0], 
-        env.robot_radius, env_params['humans_policy'],
+        env.robot_radius, 
+        env_params['humans_policy'],
         info['robot_goal'],
+        info['current_scenario'],
         robot_dt=env_params['robot_dt'])
 # Print simulation times
 print(f"Average time per episode: {round(np.mean(episode_simulation_times),2)} seconds")

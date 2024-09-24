@@ -8,11 +8,8 @@ from jhsfm.hsfm import step as hsfm_humans_step
 from jsfm.sfm import step as sfm_humans_step
 from jhsfm.utils import get_standard_humans_parameters as hsfm_get_standard_humans_parameters
 from jsfm.utils import get_standard_humans_parameters as sfm_get_standard_humans_parameters
-from socialjym.utils.aux_functions import is_multiple
+from socialjym.utils.aux_functions import is_multiple, SCENARIOS, HUMAN_POLICIES
 from .base_env import BaseEnv
-
-SCENARIOS = ["circular_crossing", "parallel_traffic", "hybrid_scenario"]
-HUMAN_POLICIES = ["orca", "sfm", "hsfm"]
 
 class SocialNav(BaseEnv):
     """
@@ -33,6 +30,7 @@ class SocialNav(BaseEnv):
             circle_radius=7, 
             traffic_height=5, 
             traffic_length=14,
+            crowding_square_side=14,
             time_limit=50
         ) -> None:
         ## Args validation
@@ -60,6 +58,7 @@ class SocialNav(BaseEnv):
         self.circle_radius = circle_radius
         self.traffic_height = traffic_height
         self.traffic_length = traffic_length
+        self.crowding_square_side = crowding_square_side
         self.time_limit = time_limit
         self.reward_function = reward_function
 
@@ -100,8 +99,14 @@ class SocialNav(BaseEnv):
     @partial(jit, static_argnames=("self"))
     def _reset(self, key:random.PRNGKey) -> tuple[jnp.ndarray, random.PRNGKey, dict]:
         key, subkey = random.split(key)
-        full_state, info = lax.switch(self.scenario, [self._generate_circular_crossing_episode, 
-                                                      self._generate_parallel_traffic_episode], subkey)
+        if self.scenario == SCENARIOS.index('hybrid_scenario'):
+            scenario = random.randint(subkey, shape=(), minval=0, maxval=4)
+        else:
+            scenario = self.scenario
+        full_state, info = lax.switch(scenario, [self._generate_circular_crossing_episode, 
+                                                self._generate_parallel_traffic_episode,
+                                                self._generate_perpendicular_traffic_episode,
+                                                self._generate_robot_crowding_episode], subkey)
         return full_state, key, info
     
     @partial(jit, static_argnames=("self"))
@@ -185,12 +190,12 @@ class SocialNav(BaseEnv):
             "robot_goal": robot_goal, 
             "humans_parameters": humans_parameters, 
             "static_obstacles": static_obstacles, 
-            "time": 0.}
+            "time": 0.,
+            "current_scenario": SCENARIOS.index('circular_crossing')}
         return full_state, info
     
     @partial(jit, static_argnames=("self"))
     def _generate_parallel_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
-        # TODO: Implement this method
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
@@ -248,7 +253,7 @@ class SocialNav(BaseEnv):
                     0.]))
                 , full_state)
         # Robot
-        full_state = full_state.at[self.n_humans].set(jnp.array([-self.traffic_length/2, 0., *full_state[self.n_humans,2:]]))
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
 
         # Assign the humans' and robot goals
         humans_goal = lax.fori_loop(
@@ -266,13 +271,178 @@ class SocialNav(BaseEnv):
             "robot_goal": robot_goal, 
             "humans_parameters": humans_parameters, 
             "static_obstacles": static_obstacles, 
-            "time": 0.}
+            "time": 0.,
+            "current_scenario": SCENARIOS.index('parallel_traffic')}
+        return full_state, info
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_perpendicular_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([0, self.traffic_length/2]))
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, key, valid = while_val
+                key, subkey = random.split(key)
+                normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1)
+                new_point = jnp.array([-self.traffic_length/2 + 1 + normalized_point[0] * self.traffic_length, -self.traffic_height/2 + normalized_point[1] * self.traffic_height])
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None)
+                return (disturbed_points, key, valid)
+            disturbed_points, key = for_val
+            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            return (disturbed_points, key)
+    
+        final_for_val = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
+        disturbed_points, key = final_for_val
+
+        # Assign the humans' and robot's positions
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = lax.fori_loop(
+                0, 
+                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
+                    [disturbed_points[i,0],
+                    disturbed_points[i,1],
+                    0.,
+                    0.,
+                    jnp.pi,
+                    0.]))
+                , full_state)
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = lax.fori_loop(
+                0, 
+                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
+                    [disturbed_points[i,0],
+                    disturbed_points[i,1],
+                    0.,
+                    0.,
+                    0,
+                    0.]))
+                , full_state)
+        # Robot
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
+
+        # Assign the humans' and robot goals
+        humans_goal = lax.fori_loop(
+            0, 
+            self.n_humans, 
+            lambda i, humans_goal: humans_goal.at[i].set(jnp.array([-self.traffic_length/2-3, disturbed_points[i,1]])),
+            humans_goal)
+        robot_goal = np.array([0, -self.traffic_length/2])
+
+        # Obstacles
+        static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
+        # Info
+        info = {
+            "humans_goal": humans_goal, 
+            "robot_goal": robot_goal, 
+            "humans_parameters": humans_parameters, 
+            "static_obstacles": static_obstacles, 
+            "time": 0.,
+            "current_scenario": SCENARIOS.index('perpendicular_traffic')}
+        return full_state, info
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_robot_crowding_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([self.crowding_square_side/2-1, 0.]))
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, key, valid = while_val
+                key, subkey = random.split(key)
+                normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1)
+                new_point = jnp.array([-self.crowding_square_side/2 + normalized_point[0] * self.crowding_square_side, -self.crowding_square_side/2 + normalized_point[1] * self.crowding_square_side])
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1 + self.robot_radius)))
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None)
+                return (disturbed_points, key, valid)
+            disturbed_points, key = for_val
+            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            return (disturbed_points, key)
+    
+        final_for_val = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
+        disturbed_points, key = final_for_val
+
+        # Assign the humans' and robot's positions
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = lax.fori_loop(
+                0, 
+                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
+                    [disturbed_points[i,0],
+                    disturbed_points[i,1],
+                    0.,
+                    0.,
+                    jnp.pi,
+                    0.]))
+                , full_state)
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = lax.fori_loop(
+                0, 
+                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
+                    [disturbed_points[i,0],
+                    disturbed_points[i,1],
+                    0.,
+                    0.,
+                    0,
+                    0.]))
+                , full_state)
+        # Robot
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
+
+        # Assign the humans' and robot goals
+        humans_goal = lax.fori_loop(
+            0, 
+            self.n_humans, 
+            lambda i, humans_goal: humans_goal.at[i].set(disturbed_points[i]),
+            humans_goal)
+        robot_goal = np.array([-self.crowding_square_side/2-1, 0.])
+
+        # Obstacles
+        static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
+        # Info
+        info = {
+            "humans_goal": humans_goal, 
+            "robot_goal": robot_goal, 
+            "humans_parameters": humans_parameters, 
+            "static_obstacles": static_obstacles, 
+            "time": 0.,
+            "current_scenario": SCENARIOS.index('robot_crowding')}
         return full_state, info
 
     @partial(jit, static_argnames=("self"))
     def _update_humans_goal_and_state_for_each_scenario(self, state:jnp.ndarray, info:dict):
-        ### Update humans goal or state depending on the scenario
-        if self.scenario == SCENARIOS.index('circular_crossing'):
+
+        @jit
+        def _update_circular_crossing(val:tuple):
+            info, state = val
             info["humans_goal"] = lax.fori_loop(
                 0, 
                 self.n_humans, 
@@ -282,16 +452,53 @@ class SocialNav(BaseEnv):
                     lambda x: x, 
                     goals),
                 info["humans_goal"])
-        elif self.scenario == SCENARIOS.index('parallel_traffic'):
+            return (info, state)
+        
+        @jit
+        def _update_traffic_scenarios(val:tuple):
+            info, state = val
             state = lax.fori_loop(
                 0, 
                 self.n_humans, 
                 lambda i, state: lax.cond(
                     jnp.linalg.norm(state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0] + 2, 
-                    lambda x: x.at[i,0:4].set(jnp.array([jnp.max(jnp.append(x[i,0]+(jnp.max(info["humans_parameters"][:,0])*2)+(jnp.max(info["humans_parameters"][:,-1])*2), self.traffic_length/2+1)), x[i,1], 0., 0.])), 
+                    lambda x: x.at[i,0:4].set(jnp.array([
+                        jnp.max(jnp.append(x[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2)+0.05, self.traffic_length/2+1)), 
+                        *x[i,1:4]])), 
                     lambda x: x, 
                     state),
                 state)
+            return (info, state)
+
+        info_and_state = lax.switch(
+            info["current_scenario"], 
+            [_update_circular_crossing, _update_traffic_scenarios, _update_traffic_scenarios, lambda x: x], 
+            (info, state))
+        info, state = info_and_state
+
+        # if self.scenario == SCENARIOS.index('circular_crossing'):
+        #     info["humans_goal"] = lax.fori_loop(
+        #         0, 
+        #         self.n_humans, 
+        #         lambda i, goals: lax.cond(
+        #             jnp.linalg.norm(state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0], 
+        #             lambda x: x.at[i].set(-info["humans_goal"][i]), 
+        #             lambda x: x, 
+        #             goals),
+        #         info["humans_goal"])
+        # elif self.scenario == SCENARIOS.index('parallel_traffic') or self.scenario == SCENARIOS.index('perpendicular_traffic'):
+        #     state = lax.fori_loop(
+        #         0, 
+        #         self.n_humans, 
+        #         lambda i, state: lax.cond(
+        #             jnp.linalg.norm(state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0] + 2, 
+        #             lambda x: x.at[i,0:4].set(jnp.array([
+        #                 jnp.max(jnp.append(x[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2)+0.05, self.traffic_length/2+1)), 
+        #                 *x[i,1:4]])), 
+        #             lambda x: x, 
+        #             state),
+        #         state)
+            
         return info, state
 
     # --- Public methods ---
@@ -456,4 +663,3 @@ class SocialNav(BaseEnv):
         """
         initial_state, key, info = self._reset(key)
         return initial_state, key, self._get_obs(initial_state, info, jnp.zeros((2,))), info
-
