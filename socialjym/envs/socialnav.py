@@ -101,6 +101,7 @@ class SocialNav(BaseEnv):
         key, subkey = random.split(key)
         if self.scenario == SCENARIOS.index('hybrid_scenario'):
             scenario = random.randint(subkey, shape=(), minval=0, maxval=4)
+            key, subkey = random.split(key)
         else:
             scenario = self.scenario
         full_state, info = lax.switch(scenario, [self._generate_circular_crossing_episode, 
@@ -472,32 +473,12 @@ class SocialNav(BaseEnv):
 
         info_and_state = lax.switch(
             info["current_scenario"], 
-            [_update_circular_crossing, _update_traffic_scenarios, _update_traffic_scenarios, lambda x: x], 
+            [_update_circular_crossing, 
+            _update_traffic_scenarios, 
+            _update_traffic_scenarios, 
+            lambda x: x], 
             (info, state))
         info, state = info_and_state
-
-        # if self.scenario == SCENARIOS.index('circular_crossing'):
-        #     info["humans_goal"] = lax.fori_loop(
-        #         0, 
-        #         self.n_humans, 
-        #         lambda i, goals: lax.cond(
-        #             jnp.linalg.norm(state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0], 
-        #             lambda x: x.at[i].set(-info["humans_goal"][i]), 
-        #             lambda x: x, 
-        #             goals),
-        #         info["humans_goal"])
-        # elif self.scenario == SCENARIOS.index('parallel_traffic') or self.scenario == SCENARIOS.index('perpendicular_traffic'):
-        #     state = lax.fori_loop(
-        #         0, 
-        #         self.n_humans, 
-        #         lambda i, state: lax.cond(
-        #             jnp.linalg.norm(state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0] + 2, 
-        #             lambda x: x.at[i,0:4].set(jnp.array([
-        #                 jnp.max(jnp.append(x[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2)+0.05, self.traffic_length/2+1)), 
-        #                 *x[i,1:4]])), 
-        #             lambda x: x, 
-        #             state),
-        #         state)
             
         return info, state
 
