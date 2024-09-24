@@ -133,6 +133,15 @@ def plot_trajectory(ax:Axes, all_states:jnp.ndarray, humans_goal:jnp.ndarray, ro
         if h < n_agents - 1: ax.scatter(humans_goal[h,0], humans_goal[h,1], marker="*", color=colors[h%len(colors)], zorder=2)
         else: ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
 
+def plot_lidar_measurements(ax:Axes, lidar_measurements:jnp.ndarray, robot_state:jnp.ndarray, robot_radius:float):
+    for i in range(len(lidar_measurements)):
+        ax.plot(
+            [robot_state[0], robot_state[0] + lidar_measurements[i,0] * jnp.cos(lidar_measurements[i,1])], 
+            [robot_state[1], robot_state[1] + lidar_measurements[i,0] * jnp.sin(lidar_measurements[i,1])], 
+            color="black", 
+            linewidth=0.5, 
+            zorder=0)
+
 def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, model_params: dict) -> tuple:
 
     @loop_tqdm(k)
@@ -187,10 +196,10 @@ def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, mo
         "returns": jnp.empty((k,)),
         "times_to_goal": jnp.empty((k,))}
     # Execute k tests
-    print(f"Executing {k} tests with {env.n_humans} humans...")
+    print(f"\nExecuting {k} tests with {env.n_humans} humans...")
     _, _, metrics = lax.fori_loop(0, k, _fori_body, (reset_key, policy_key, metrics))
     # Print results
-    print("\nRESULTS")
+    print("RESULTS")
     print(f"Success rate: {round(metrics['successes']/k, 2):.2f}")
     print(f"Collision rate: {round(metrics['collisions']/k, 2):.2f}")
     print(f"Timeout rate: {round(metrics['timeouts']/k, 2):.2f}")
@@ -206,6 +215,7 @@ def animate_trajectory(
     robot_goal:np.ndarray,
     scenario:int,
     robot_dt:float=0.25,
+    lidar_measurements=None,
     ) -> None:
 
     # TODO: Add a progress bar,
@@ -227,6 +237,8 @@ def animate_trajectory(
             bbox_to_anchor=(0.99, 0.5), loc='center left')
         ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
         plot_state(ax, frame*robot_dt, states[frame], humans_policy, scenario, humans_radiuses, robot_radius, plot_time=False)
+        if lidar_measurements is not None:
+            plot_lidar_measurements(ax, lidar_measurements[frame], states[frame][-1], robot_radius)
 
     anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(states))
     

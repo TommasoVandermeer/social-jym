@@ -16,7 +16,7 @@ n_episodes = 50
 reward_function = generate_reward_done_function(1.,0.25,0.2,50)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 25,
+    'n_humans': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
@@ -36,6 +36,8 @@ initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((env_
 # (this way, computation time will only reflect execution and not compilation)
 state, _, _, info = env.reset(random.key(0))
 _, obs, _, _, _ = env.step(state,info,jnp.zeros((2,)))
+_ = env.imitation_learning_step(state,info)
+_ = env.get_lidar_measurements(0., state, info)
 _ = policy.act(random.key(0), obs, info, initial_vnet_params, 0.1)
 
 # Initialize random keys
@@ -48,15 +50,26 @@ for i in range(n_episodes):
     done = False
     episode_start_time = time.time()
     state, reset_key, obs, info = env.reset(reset_key)
+    lidar_measurements = env.get_lidar_measurements(jnp.atan2(*jnp.flip(state[-1,2:4])), state, info)
+
     info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.1) # Set humans' safety space to 0.1
+    
     all_states = np.array([state])
+    all_lidar_measurements = np.array([lidar_measurements])
     while not done:
+
         # action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
-        # state, obs, info, reward, done = env.step(state,info,action,test=True) 
+        # state, obs, info, reward, done = env.step(state,info,action,test=True)
+        # lidar_measurements = env.get_lidar_measurements(jnp.atan2(*jnp.flip(action)), state, info) 
+
         state, obs, info, reward, done = env.imitation_learning_step(state,info)
+        lidar_measurements = env.get_lidar_measurements(jnp.atan2(*jnp.flip(state[-1,2:4])), state, info)
+
+        all_lidar_measurements = np.vstack((all_lidar_measurements, [lidar_measurements]))
         all_states = np.vstack((all_states, [state]))
     episode_simulation_times[i] = round(time.time() - episode_start_time,2)
     all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
+    all_lidar_measurements = device_get(all_lidar_measurements) # Transfer data from GPU to CPU for plotting
     print(f"Episode {i} ended - Execution time {episode_simulation_times[i]} seconds - Plotting trajectory...")
     ## Plot episode trajectory
     figure, ax = plt.subplots(figsize=(10,10))
@@ -75,7 +88,8 @@ for i in range(n_episodes):
         env_params['humans_policy'],
         info['robot_goal'],
         info['current_scenario'],
-        robot_dt=env_params['robot_dt'])
+        robot_dt=env_params['robot_dt'],
+        lidar_measurements=all_lidar_measurements)
 # Print simulation times
 print(f"Average time per episode: {round(np.mean(episode_simulation_times),2)} seconds")
 print(f"Total time for {n_episodes} episodes: {round(np.sum(episode_simulation_times),2)} seconds")

@@ -1,6 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
-from jax import random, jit, lax, debug
+from jax import random, jit, lax, debug, vmap
 from functools import partial
 from types import FunctionType
 
@@ -31,7 +31,10 @@ class SocialNav(BaseEnv):
             traffic_height=5, 
             traffic_length=14,
             crowding_square_side=14,
-            time_limit=50
+            time_limit=50,
+            lidar_angular_range=jnp.pi,
+            lidar_max_dist=10.,
+            lidar_num_rays=60,
         ) -> None:
         ## Args validation
         assert scenario in SCENARIOS, f"Invalid scenario. Choose one of {SCENARIOS}"
@@ -61,6 +64,9 @@ class SocialNav(BaseEnv):
         self.crowding_square_side = crowding_square_side
         self.time_limit = time_limit
         self.reward_function = reward_function
+        self.lidar_angular_range = lidar_angular_range
+        self.lidar_max_dist = lidar_max_dist
+        self.lidar_num_rays = lidar_num_rays
 
     # --- Private methods ---
 
@@ -482,6 +488,40 @@ class SocialNav(BaseEnv):
             
         return info, state
 
+    @partial(jit, static_argnames=("self"))
+    def _human_ray_intersect(self, direction:jnp.ndarray, human_position:jnp.ndarray, robot_position:jnp.ndarray, human_radius:float) -> float:
+        s = robot_position - human_position
+        b = jnp.dot(s, direction)
+        c = jnp.dot(s, s) - human_radius**2
+        h = b * b - c
+        distance = lax.cond(
+            h < 0,
+            lambda x: x,
+            lambda x: lax.cond(
+                - b - jnp.sqrt(h) < 0,
+                lambda y: y,
+                lambda _: - b - jnp.sqrt(h),
+                x),
+            self.lidar_max_dist)
+        return distance        
+    
+    @partial(jit, static_argnames=("self"))
+    def _batch_human_ray_intersect(self, direction:jnp.ndarray, human_positions:jnp.ndarray, robot_position:jnp.ndarray, human_radiuses:float) -> jnp.ndarray:
+        return jnp.min(vmap(SocialNav._human_ray_intersect, in_axes=(None,None,0,None,0))(self, direction, human_positions, robot_position, human_radiuses))
+
+    @partial(jit, static_argnames=("self"))
+    def _ray_cast(self, angle:float, state:jnp.ndarray, info:dict) -> float:
+        direction = jnp.array([jnp.cos(angle), jnp.sin(angle)])
+        human_positions = state[0:self.n_humans,0:2]
+        robot_position = state[self.n_humans,0:2]
+        human_radiuses = info["humans_parameters"][:,0]
+        measurement = self._batch_human_ray_intersect(direction, human_positions, robot_position, human_radiuses)
+        return measurement
+
+    @partial(jit, static_argnames=("self"))
+    def _batch_ray_cast(self, angles:float, state:jnp.ndarray, info:dict) -> jnp.ndarray:
+        return vmap(SocialNav._ray_cast, in_axes=(None,0,None,None))(self, angles, state, info)
+
     # --- Public methods ---
 
     @partial(jit, static_argnames=("self"))
@@ -644,3 +684,23 @@ class SocialNav(BaseEnv):
         """
         initial_state, key, info = self._reset(key)
         return initial_state, key, self._get_obs(initial_state, info, jnp.zeros((2,))), info
+    
+    @partial(jit, static_argnames=("self"))
+    def get_lidar_measurements(self, robot_yaw:float, state:jnp.ndarray, info:dict) -> jnp.ndarray:
+        """
+        Given the current state of the environment and the additional information about the environment,
+        this function computes the lidar measurements of the robot.
+
+        args:
+        - robot_yaw: yaw angle of the robot.
+        - state: current state of the environment.
+        - info: dictionary containing additional information about the environment.
+
+        output:
+        - lidar_output: jnp.ndarray containing the lidar measurements of the robot and the angle for each ray.
+        """
+        angles = jnp.linspace(robot_yaw - self.lidar_angular_range/2, robot_yaw + self.lidar_angular_range/2, self.lidar_num_rays)
+        measurements = self._batch_ray_cast(angles, state, info)
+        lidar_output = jnp.stack((measurements, angles), axis=-1)
+        return lidar_output
+        
