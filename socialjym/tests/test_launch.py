@@ -13,7 +13,13 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_t
 # Hyperparameters
 random_seed = 1
 n_episodes = 50
-reward_function = generate_reward_done_function(1.,0.25,0.2,50)
+reward_params = {
+    'goal_reward': 1.,
+    'collision_penalty': -0.25,
+    'discomfort_distance': 0.2,
+    'time_limit': 50.,
+}
+reward_function = generate_reward_done_function(**reward_params)
 env_params = {
     'robot_radius': 0.3,
     'n_humans': 15,

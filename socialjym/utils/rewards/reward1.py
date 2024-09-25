@@ -11,6 +11,11 @@ def generate_reward_done_function(
         time_limit: float
     ) -> FunctionType:
     
+    assert goal_reward > 0, "goal_reward must be positive"
+    assert collision_penalty < 0, "collision_penalty must be negative"
+    assert discomfort_distance > 0, "discomfort_distance must be positive"
+    assert time_limit > 0, "time_limit must be positive"
+
     @jit
     def get_reward_done(obs:jnp.ndarray, info:dict, dt:float) -> tuple[float, bool]:
         """
@@ -50,7 +55,7 @@ def generate_reward_done_function(
         # reward = - (jnp.linalg.norm(next_robot_pos - robot_goal)/100) # Debug reward (agent should always move towards the goal)
         reward = 0.
         reward = lax.cond(reached_goal, lambda r: r + goal_reward, lambda r: r, reward) # Reward for reaching the goal
-        reward = lax.cond(collision, lambda r: r - collision_penalty, lambda r: r, reward) # Penalty for collision
+        reward = lax.cond(collision, lambda r: r + collision_penalty, lambda r: r, reward) # Penalty for collision
         reward = lax.cond(discomfort, lambda r: r - 0.5 * dt * (discomfort_distance - min_distance), lambda r: r, reward) # Penalty for getting too close to humans
         # Compute done 
         done = jnp.any(jnp.array([collision,reached_goal,timeout]))

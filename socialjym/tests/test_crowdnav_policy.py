@@ -14,7 +14,13 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_t
 # Hyperparameters
 random_seed = 1
 n_episodes = 50
-reward_function = generate_reward_done_function(1.,0.25,0.2,50)
+reward_params = {
+    'goal_reward': 1.,
+    'collision_penalty': -0.25,
+    'discomfort_distance': 0.2,
+    'time_limit': 50.,
+}
+reward_function = generate_reward_done_function(**reward_params)
 env_params = {
     'robot_radius': 0.3,
     'n_humans': 5,
@@ -22,7 +28,7 @@ env_params = {
     'humans_dt': 0.01,
     'robot_visible': True,
     'scenario': 'circular_crossing',
-    'humans_policy': 'sfm',
+    'humans_policy': 'hsfm',
     'reward_function': reward_function
 }
 
@@ -33,7 +39,7 @@ env = SocialNav(**env_params)
 # Load Social-Navigation-PyEnvs policy vnet params
 vnet_params = load_crowdnav_policy(
     "sarl", 
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_on_sfm_guo/rl_model.pth"))
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_on_hsfm_new_guo/rl_model.pth"))
 policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 # vnet_params = load_crowdnav_policy(
 #     "cadrl", 
@@ -41,7 +47,7 @@ policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 # policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
 # Test Social-Navigation-PyEnvs policy
-test_k_trials(100, 10, env, policy, vnet_params)
+test_k_trials(100, 10, env, policy, vnet_params, success_reward=reward_params['goal_reward'], failure_reward=reward_params['collision_penalty'])
 
 # Initialize random keys
 reset_key = random.key(random_seed)

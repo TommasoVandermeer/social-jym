@@ -145,7 +145,15 @@ def plot_lidar_measurements(ax:Axes, lidar_measurements:jnp.ndarray, robot_state
             linewidth=0.5, 
             zorder=0)
 
-def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, model_params: dict, personal_space:float=0.5) -> tuple:
+def test_k_trials(
+    k: int, 
+    random_seed: int, 
+    env: BaseEnv, 
+    policy: BasePolicy, 
+    model_params: dict, 
+    success_reward:float=1.,
+    failure_reward:float=-0.25,
+    personal_space:float=0.5) -> tuple:
 
     @loop_tqdm(k)
     @jit
@@ -181,9 +189,9 @@ def test_k_trials(k: int, random_seed: int, env: BaseEnv, policy: BasePolicy, mo
         while_val_init = (state, obs, info, False, policy_key, 0, all_actions, all_states, all_dones, all_rewards)
         _, _, _, _, policy_key, episode_steps, all_actions, all_states, all_dones, all_rewards = lax.while_loop(lambda x: x[3] == False, _while_body, while_val_init)
         # Update metrics
-        success = (all_rewards[episode_steps-1] == 1)
+        success = (all_rewards[episode_steps-1] == success_reward)
         metrics["successes"] = lax.cond(success, lambda x: x + 1, lambda x: x, metrics["successes"])
-        metrics["collisions"] = lax.cond(all_rewards[episode_steps-1] == -0.25, lambda x: x + 1, lambda x: x, metrics["collisions"])
+        metrics["collisions"] = lax.cond(all_rewards[episode_steps-1] == failure_reward, lambda x: x + 1, lambda x: x, metrics["collisions"])
         metrics["timeouts"] = lax.cond(jnp.all(jnp.array([all_rewards[episode_steps-1] != 1., all_rewards[episode_steps-1] != -0.25])), lambda x: x + 1, lambda x: x, metrics["timeouts"])
         @jit
         def _compute_state_value_for_body(j:int, t:int, value:float):
