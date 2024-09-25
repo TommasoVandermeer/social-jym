@@ -9,7 +9,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.reward1 import generate_reward_done_function
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
-from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_social_nav_py_envs_policy, test_k_trials
+from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials
 
 # Hyperparameters
 random_seed = 1
@@ -31,16 +31,12 @@ env = SocialNav(**env_params)
 
 # Initialize robot policy
 # Load Social-Navigation-PyEnvs policy vnet params
-vnet_params = load_social_nav_py_envs_policy(
+vnet_params = load_crowdnav_policy(
     "sarl", 
-    "sfm", 
-    "circular_crossing", 
     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_on_sfm_guo/rl_model.pth"))
 policy = SARL(env.reward_function, dt=env_params['robot_dt'])
-# vnet_params = load_social_nav_py_envs_policy(
+# vnet_params = load_crowdnav_policy(
 #     "cadrl", 
-#     "hsfm", 
-#     "circular_crossing", 
 #     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_on_hsfm_new_guo/rl_model.pth"))
 # policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 

@@ -19,7 +19,10 @@ SCENARIOS = [
     "perpendicular_traffic", 
     "robot_crowding", 
     "hybrid_scenario"]
-HUMAN_POLICIES = ["orca", "sfm", "hsfm"]
+HUMAN_POLICIES = [
+    "orca",
+    "sfm", 
+    "hsfm"]
 
 @jit
 def epsilon_scaling_decay(epsilon_start:float, epsilon_end:float, current_episode:int, decay_rate:float) -> float:
@@ -347,10 +350,8 @@ def save_policy_params(
             "reward_params": reward_params,
             "hyperparameters": hyperparameters}, f)
         
-def load_social_nav_py_envs_policy(
+def load_crowdnav_policy(
         policy_name:str,
-        train_env_humans_policy:str,
-        train_env_scenario:str,
         path:str) -> tuple:
     
     import torch

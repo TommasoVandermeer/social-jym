@@ -21,7 +21,7 @@ env_params = {
     'humans_dt': 0.01,
     'robot_visible': False,
     'scenario': 'robot_crowding',
-    'humans_policy': 'sfm',
+    'humans_policy': 'hsfm',
     'reward_function': reward_function
 }
 
