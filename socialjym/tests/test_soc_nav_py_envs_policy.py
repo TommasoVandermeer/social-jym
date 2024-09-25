@@ -1,4 +1,4 @@
-from jax import random, debug, device_get
+from jax import random, debug
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,7 +22,7 @@ env_params = {
     'humans_dt': 0.01,
     'robot_visible': True,
     'scenario': 'circular_crossing',
-    'humans_policy': 'hsfm',
+    'humans_policy': 'sfm',
     'reward_function': reward_function
 }
 
@@ -33,9 +33,9 @@ env = SocialNav(**env_params)
 # Load Social-Navigation-PyEnvs policy vnet params
 vnet_params = load_social_nav_py_envs_policy(
     "sarl", 
-    "hsfm", 
+    "sfm", 
     "circular_crossing", 
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_on_hsfm_new_guo/rl_model.pth"))
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_on_sfm_guo/rl_model.pth"))
 policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 # vnet_params = load_social_nav_py_envs_policy(
 #     "cadrl", 
@@ -45,7 +45,7 @@ policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 # policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
 # Test Social-Navigation-PyEnvs policy
-# test_k_trials(100, 10, env, policy, vnet_params)
+test_k_trials(100, 10, env, policy, vnet_params)
 
 # Initialize random keys
 reset_key = random.key(random_seed)
@@ -76,6 +76,8 @@ for i in range(n_episodes):
     animate_trajectory(
         all_states, 
         info['humans_parameters'][:,0], 
-        env.robot_radius, env_params['humans_policy'],
+        env.robot_radius, 
+        env_params['humans_policy'],
         info['robot_goal'],
+        info['current_scenario'],
         robot_dt=env_params['robot_dt'])

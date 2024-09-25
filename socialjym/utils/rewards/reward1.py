@@ -18,6 +18,8 @@ def generate_reward_done_function(
         this function computes the reward of the current state and wether the episode is finished or not.
         This function is public so that it can be called by the agent policy to compute the best action.
 
+        This is the classical sparse reward with personal space invasion penalization used in the Social Navigation literature.
+
         args:
         - obs: observation of the current state of the environment
         - info: dictionary containing additional information about the environment
