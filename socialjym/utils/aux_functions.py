@@ -9,6 +9,7 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
 import pickle as pkl
 import os
+from datetime import date
 
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
@@ -189,7 +190,8 @@ def test_k_trials(
             return state, obs, info, outcome, policy_key, steps, all_actions, all_states, all_rewards
 
         ## Retrieve data from the tuple
-        reset_key, policy_key, metrics = for_val
+        seed, metrics = for_val
+        policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
         ## Reset the environment
         state, reset_key, obs, info = env.reset(reset_key)
         initial_robot_position = state[-1,:2]
@@ -250,7 +252,7 @@ def test_k_trials(
             int(time_limit/env.robot_dt)+1,
             lambda m, x: lax.cond(
                 m < episode_steps,
-                lambda y: y.at[m].set(jnp.min(jnp.linalg.norm(all_states[m, :-1, :2] - all_states[m, -1, :2], axis=1) - info["humans_parameters"][:,0] - env.robot_radius)),
+                lambda y: y.at[m].set(jnp.min(jnp.linalg.norm(all_states[m, :-1, :2] - all_states[m, -1, :2], axis=1) - info["humans_parameters"][:,0]) - env.robot_radius),
                 lambda y: y.at[m].set(jnp.nan),
                 x),
             jnp.empty((int(time_limit/env.robot_dt)+1,)))
@@ -260,15 +262,14 @@ def test_k_trials(
             int(time_limit/env.robot_dt)+1,
             lambda s, x: lax.cond(
                 s < episode_steps,
-                lambda y: y.at[s].set(min_distances[s] >= personal_space),
+                lambda y: y.at[s].set(min_distances[s] > personal_space),
                 lambda y: y.at[s].set(jnp.nan),
                 x),
             jnp.empty((int(time_limit/env.robot_dt)+1,)))
         metrics["space_compliance"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(space_compliances)), lambda x: x.at[i].set(jnp.nan), metrics["space_compliance"])
-        return reset_key, policy_key, metrics
+        seed += 1
+        return seed, metrics
     
-    # Initialize the random keys
-    policy_key, reset_key = vmap(random.PRNGKey)(jnp.arange(2) + random_seed)
     # Initialize metrics
     metrics = {
         "successes": 0, 
@@ -285,7 +286,7 @@ def test_k_trials(
         "path_length": jnp.empty((k,))}
     # Execute k tests
     print(f"\nExecuting {k} tests with {env.n_humans} humans...")
-    _, _, metrics = lax.fori_loop(0, k, _fori_body, (reset_key, policy_key, metrics))
+    _, metrics = lax.fori_loop(0, k, _fori_body, (random_seed, metrics))
     # Print results
     print("RESULTS")
     print(f"Success rate: {metrics['successes']/k:.2f}")
@@ -347,19 +348,23 @@ def animate_trajectory(
     plt.show()
 
 def save_policy_params(
-        policy_name:str,
-        policy_params: dict, 
-        train_env_params:dict, 
-        reward_params:dict,
-        hyperparameters:dict, 
-        path:str,
-        filename=None) -> None:
-    
+    policy_name:str,
+    policy_params: dict, 
+    train_env_params:dict, 
+    reward_params:dict,
+    hyperparameters:dict, 
+    path:str,
+    filename=None
+) -> None:
+
     if os.path.exists(path) == False:
         os.makedirs(path)
 
     if filename is None:
-        filename = f"{policy_name}_{train_env_params['n_humans']}_{train_env_params['humans_policy']}_{train_env_params['scenario']}.pkl"
+        today = date.today().strftime('%d/%m/%Y')
+        filename = f"{policy_name}_{train_env_params['n_humans']}_{train_env_params['humans_policy']}_{train_env_params['scenario']}_{today}.pkl"
+    else:
+        filename = f"{filename}.pkl"
         
     with open(os.path.join(path, filename), 'wb') as f:
         pkl.dump({
@@ -368,7 +373,15 @@ def save_policy_params(
             "train_env_params": {k: train_env_params[k] for k in set(list(train_env_params.keys())) - set(['reward_function'])},
             "reward_params": reward_params,
             "hyperparameters": hyperparameters}, f)
-        
+
+def load_socialjym_policy(
+    path:str, 
+) -> dict:
+    with open(os.path.join(path), 'rb') as f:
+        trained_policy = pkl.load(f)
+        policy_params = trained_policy["policy_params"]
+        return policy_params
+
 def load_crowdnav_policy(
         policy_name:str,
         path:str) -> tuple:

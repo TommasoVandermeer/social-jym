@@ -367,8 +367,9 @@ class SocialNav(BaseEnv):
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
 
         # Randomly generate the humans' positions
-        disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
-        disturbed_points = disturbed_points.at[-1].set(jnp.array([self.crowding_square_side/2-1, 0.]))
+        disturbed_points = jnp.ones((self.n_humans+2, 2)) * -1000
+        disturbed_points = disturbed_points.at[-2].set(jnp.array([self.crowding_square_side/2-1, 0.]))
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.crowding_square_side/2-1, 0.])) # This is needed to make sure the robot has space to reach its goal
         
         @jit
         def _fori_body(i:int, for_val:tuple):
@@ -379,7 +380,7 @@ class SocialNav(BaseEnv):
                 normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1)
                 new_point = jnp.array([-self.crowding_square_side/2 + normalized_point[0] * self.crowding_square_side, -self.crowding_square_side/2 + normalized_point[1] * self.crowding_square_side])
                 differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
-                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1 + self.robot_radius)))
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + jnp.max(humans_parameters[:, -1]) + 0.1 + self.robot_radius)))
                 disturbed_points = lax.cond(
                     valid,
                     lambda _: disturbed_points.at[i].set(new_point),
@@ -419,7 +420,7 @@ class SocialNav(BaseEnv):
                     0.]))
                 , full_state)
         # Robot
-        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-2], *full_state[self.n_humans,2:]]))
 
         # Assign the humans' and robot goals
         humans_goal = lax.fori_loop(
@@ -427,7 +428,7 @@ class SocialNav(BaseEnv):
             self.n_humans, 
             lambda i, humans_goal: humans_goal.at[i].set(disturbed_points[i]),
             humans_goal)
-        robot_goal = np.array([-self.crowding_square_side/2-1, 0.])
+        robot_goal = disturbed_points[-1]
 
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles

@@ -1,4 +1,4 @@
-from jax import random, debug, device_get
+from jax import random, debug, vmap, device_get
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,11 +22,11 @@ reward_params = {
 reward_function = generate_reward_done_function(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 15,
+    'n_humans': 1,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'robot_crowding',
+    'scenario': 'hybrid_scenario',
     'humans_policy': 'hsfm',
     'reward_function': reward_function
 }
@@ -46,13 +46,10 @@ _ = env.imitation_learning_step(state,info)
 _ = env.get_lidar_measurements(obs[-1,:2], jnp.atan2(*jnp.flip(obs[-1,2:4])), obs[:-1,:2], info["humans_parameters"][:,0])
 _ = policy.act(random.key(0), obs, info, initial_vnet_params, 0.1)
 
-# Initialize random keys
-reset_key = random.key(random_seed)
-policy_key = random.key(random_seed)
-
 # Simulate some episodes
 episode_simulation_times = np.empty((n_episodes,))
 for i in range(n_episodes):
+    policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
     outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
     episode_start_time = time.time()
     state, reset_key, obs, info = env.reset(reset_key)

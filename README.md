@@ -14,15 +14,9 @@ Clone the repository and its submodules.
 ```
 git clone --recurse-submodules https://github.com/TommasoVandermeer/social-jym.git
 ```
-Install the submodules.
+Install the submodules and the main package.
 ```
-cd social-jym/JHSFM
-python3 install setup.py
-cd ../JSFM
-python3 install setup.py
-cd ..
-```
-Install the main package.
-```
-python3 install setup.py
+pip install -e social-jym/JHSFM
+pip install -e social-jym/JSFM
+pip install -e social-jym
 ```

@@ -1,4 +1,4 @@
-from jax import random, debug
+from jax import random, vmap, debug
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,10 +9,10 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.reward1 import generate_reward_done_function
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
-from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials
+from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
 
-# Hyperparameters
-random_seed = 1
+### Hyperparameters
+random_seed = 3
 n_episodes = 50
 reward_params = {
     'goal_reward': 1.,
@@ -32,29 +32,37 @@ env_params = {
     'reward_function': reward_function
 }
 
-# Initialize and reset environment
+
+### Initialize and reset environment
 env = SocialNav(**env_params)
 
-# Initialize robot policy
-# Load Social-Navigation-PyEnvs policy vnet params
+
+### Initialize robot policy
+
+## Load Social-Navigation-PyEnvs policy vnet params
 # vnet_params = load_crowdnav_policy(
 #     "sarl", 
 #     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_on_hsfm_new_guo/rl_model.pth"))
 # policy = SARL(env.reward_function, dt=env_params['robot_dt'])
-vnet_params = load_crowdnav_policy(
-    "cadrl", 
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_on_hsfm_new_guo/rl_model.pth"))
+# vnet_params = load_crowdnav_policy(
+#     "cadrl", 
+#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_on_hsfm_new_guo/rl_model.pth"))
+# policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
+
+## Load social-jym policy
+vnet_params = load_socialjym_policy(
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_1_hsfm_hybrid_scenario.pkl"))
 policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
-# Test Social-Navigation-PyEnvs policy
-metrics = test_k_trials(1000, 10, env, policy, vnet_params, reward_params["time_limit"])
 
-# Initialize random keys
-reset_key = random.key(random_seed)
-policy_key = random.key(random_seed)
+### Test Social-Navigation-PyEnvs policy
+metrics = test_k_trials(100, random_seed, env, policy, vnet_params, reward_params["time_limit"])
+# print(metrics)
 
-# Simulate some episodes
+
+### Simulate some episodes
 for i in range(n_episodes):
+    policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i)
     outcome = {"success": 0, "failure": 0, "timeout": 0, "nothing": 1}
     episode_start_time = time.time()
     state, reset_key, obs, info = env.reset(reset_key)
