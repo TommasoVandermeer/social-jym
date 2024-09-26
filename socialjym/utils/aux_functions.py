@@ -81,7 +81,7 @@ def batch_point_to_line_distance(points:jnp.ndarray, line_starts:jnp.ndarray, li
 def plot_state(
         ax:Axes, 
         time:float, 
-        full_state:tuple, 
+        full_state:jnp.ndarray, 
         humans_policy:str, 
         scenario:int, 
         humans_radiuses:np.ndarray, 
@@ -128,11 +128,11 @@ def plot_state(
     if plot_time: ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color=colors[(len(full_state)-1)%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
     else: ax.text(full_state[-1,0],full_state[-1,1], f"R", color="black", va="center", ha="center", size=10, zorder=1, weight='bold')
 
-def plot_trajectory(ax:Axes, all_states:jnp.ndarray, humans_goal:jnp.ndarray, robot_goal:jnp.ndarray):
+def plot_trajectory(ax:Axes, agents_positions:jnp.ndarray, humans_goal:jnp.ndarray, robot_goal:jnp.ndarray):
     colors = list(mcolors.TABLEAU_COLORS.values())
-    n_agents = len(all_states[0])
+    n_agents = len(agents_positions[0])
     for h in range(n_agents): 
-        ax.plot(all_states[:,h,0], all_states[:,h,1], color=colors[h%len(colors)] if h < n_agents - 1 else "red", linewidth=1, zorder=0)
+        ax.plot(agents_positions[:,h,0], agents_positions[:,h,1], color=colors[h%len(colors)] if h < n_agents - 1 else "red", linewidth=1, zorder=0)
         if h < n_agents - 1: ax.scatter(humans_goal[h,0], humans_goal[h,1], marker="*", color=colors[h%len(colors)], zorder=2)
         else: ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
 
@@ -151,9 +151,23 @@ def test_k_trials(
     env: BaseEnv, 
     policy: BasePolicy, 
     model_params: dict, 
-    success_reward:float=1.,
-    failure_reward:float=-0.25,
+    time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
     personal_space:float=0.5) -> tuple:
+    """
+    This function tests a policy in a given environment for k trials and outputs a series of metrics.
+
+    args:
+    - k: int. The number of trials to execute.
+    - random_seed: int. The random seed to use for the execution.
+    - env: BaseEnv. The environment to test the policy in.
+    - policy: BasePolicy. The policy to test.
+    - model_params: dict. The parameters of the policy model.
+    - time_limit: float. The maximum time limit for each trial. WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage.
+    - personal_space: float. A parameter used to compute space compliance.
+
+    output:
+    - metrics: dict. A dictionary containing the metrics of the tests.
+    """
 
     @loop_tqdm(k)
     @jit
@@ -162,98 +176,95 @@ def test_k_trials(
         @jit
         def _while_body(while_val:tuple):
             # Retrieve data from the tuple
-            state, obs, info, done, policy_key, steps, all_actions, all_states, all_dones, all_rewards = while_val
+            state, obs, info, outcome, policy_key, steps, all_actions, all_states, all_rewards = while_val
             # Make a step in the environment
             action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
-            state, obs, info, reward, done = env.step(state,info,action,test=True) 
+            state, obs, info, reward, outcome = env.step(state,info,action,test=True)
             # Save data
             all_actions = all_actions.at[steps].set(action)
             all_states = all_states.at[steps].set(state)
-            all_dones = all_dones.at[steps].set(done)
             all_rewards = all_rewards.at[steps].set(reward)
             # Update step counter
             steps += 1
-            return state, obs, info, done, policy_key, steps, all_actions, all_states, all_dones, all_rewards
+            return state, obs, info, outcome, policy_key, steps, all_actions, all_states, all_rewards
 
-        # Retrieve data from the tuple
+        ## Retrieve data from the tuple
         reset_key, policy_key, metrics = for_val
-        # Reset the environment
+        ## Reset the environment
         state, reset_key, obs, info = env.reset(reset_key)
         initial_robot_position = state[-1,:2]
         robot_goal = info["robot_goal"]
-        # Episode loop
-        all_actions = jnp.empty((int(env.time_limit/env.robot_dt)+1, 2))
-        all_states = jnp.empty((int(env.time_limit/env.robot_dt)+1, env.n_humans+1, 6))
-        all_dones = jnp.empty((int(env.time_limit/env.robot_dt)+1,))
-        all_rewards = jnp.empty((int(env.time_limit/env.robot_dt)+1,))
-        while_val_init = (state, obs, info, False, policy_key, 0, all_actions, all_states, all_dones, all_rewards)
-        _, _, _, _, policy_key, episode_steps, all_actions, all_states, all_dones, all_rewards = lax.while_loop(lambda x: x[3] == False, _while_body, while_val_init)
-        # Update metrics
-        success = (all_rewards[episode_steps-1] == success_reward)
-        metrics["successes"] = lax.cond(success, lambda x: x + 1, lambda x: x, metrics["successes"])
-        metrics["collisions"] = lax.cond(all_rewards[episode_steps-1] == failure_reward, lambda x: x + 1, lambda x: x, metrics["collisions"])
-        metrics["timeouts"] = lax.cond(jnp.all(jnp.array([all_rewards[episode_steps-1] != 1., all_rewards[episode_steps-1] != -0.25])), lambda x: x + 1, lambda x: x, metrics["timeouts"])
+        ## Episode loop
+        all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+        all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+        all_rewards = jnp.empty((int(time_limit/env.robot_dt)+1,))
+        init_outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
+        while_val_init = (state, obs, info, init_outcome, policy_key, 0, all_actions, all_states, all_rewards)
+        _, _, _, outcome, policy_key, episode_steps, all_actions, all_states, all_rewards = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+        ## Update metrics
+        metrics["successes"] = lax.cond(outcome["success"], lambda x: x + 1, lambda x: x, metrics["successes"])
+        metrics["collisions"] = lax.cond(outcome["failure"], lambda x: x + 1, lambda x: x, metrics["collisions"])
+        metrics["timeouts"] = lax.cond(outcome["timeout"], lambda x: x + 1, lambda x: x, metrics["timeouts"])
         @jit
         def _compute_state_value_for_body(j:int, t:int, value:float):
             value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * all_rewards[j]
             return value 
         metrics["returns"] = metrics["returns"].at[i].set(lax.fori_loop(0, episode_steps, lambda k, val: _compute_state_value_for_body(k, 0, val), 0.))
-        # path_length = jnp.sum(jnp.linalg.norm(jnp.diff(all_states[:episode_steps, -1, :2], axis=0), axis=1))
         path_length = lax.fori_loop(0, episode_steps-1, lambda p, val: val + jnp.linalg.norm(all_states[p+1, -1, :2] - all_states[p, -1, :2]), 0.)
-        metrics["episodic_spl"] = lax.cond(success, lambda x: x.at[i].set(jnp.linalg.norm(robot_goal-initial_robot_position)/path_length), lambda x: x.at[i].set(0.), metrics["episodic_spl"])
+        metrics["episodic_spl"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.linalg.norm(robot_goal-initial_robot_position)/path_length), lambda x: x.at[i].set(0.), metrics["episodic_spl"])
         # Metrics computed only if the episode is successful
-        metrics["path_length"] = lax.cond(success, lambda x: x.at[i].set(path_length), lambda x: x.at[i].set(jnp.nan), metrics["path_length"])
-        metrics["times_to_goal"] = lax.cond(success, lambda x: x.at[i].set((episode_steps-1) * env.robot_dt), lambda x: x.at[i].set(jnp.nan), metrics["times_to_goal"])
+        metrics["path_length"] = lax.cond(outcome["success"], lambda x: x.at[i].set(path_length), lambda x: x.at[i].set(jnp.nan), metrics["path_length"])
+        metrics["times_to_goal"] = lax.cond(outcome["success"], lambda x: x.at[i].set((episode_steps-1) * env.robot_dt), lambda x: x.at[i].set(jnp.nan), metrics["times_to_goal"])
         speeds = lax.fori_loop(
             0, 
-            int(env.time_limit/env.robot_dt)+1, 
+            int(time_limit/env.robot_dt)+1, 
             lambda s, x: lax.cond(
                 s < episode_steps,
                 lambda y: y.at[s].set(all_actions[s]),
                 lambda y: y.at[s].set(jnp.array([jnp.nan,jnp.nan])), 
                 x),
-            jnp.empty((int(env.time_limit/env.robot_dt)+1, 2)))
-        metrics["average_speed"] = lax.cond(success, lambda x: x.at[i].set(jnp.nanmean(jnp.linalg.norm(speeds, axis=1))), lambda x: x.at[i].set(jnp.nan), metrics["average_speed"])
+            jnp.empty((int(time_limit/env.robot_dt)+1, 2)))
+        metrics["average_speed"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(jnp.linalg.norm(speeds, axis=1))), lambda x: x.at[i].set(jnp.nan), metrics["average_speed"])
         accelerations = lax.fori_loop(
             0,
-            int(env.time_limit/env.robot_dt)+1,
+            int(time_limit/env.robot_dt)+1,
             lambda a, x: lax.cond(
                 a < episode_steps-1,
                 lambda y: y.at[a].set((speeds[a+1] - speeds[a]) / env.robot_dt),
                 lambda y: y.at[a].set(jnp.array([jnp.nan,jnp.nan])),
                 x),
-            jnp.empty((int(env.time_limit/env.robot_dt)+1, 2)))
-        metrics["average_acceleration"] = lax.cond(success, lambda x: x.at[i].set(jnp.nanmean(jnp.linalg.norm(accelerations, axis=1))), lambda x: x.at[i].set(jnp.nan), metrics["average_acceleration"])
+            jnp.empty((int(time_limit/env.robot_dt)+1, 2)))
+        metrics["average_acceleration"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(jnp.linalg.norm(accelerations, axis=1))), lambda x: x.at[i].set(jnp.nan), metrics["average_acceleration"])
         jerks = lax.fori_loop(
             0,
-            int(env.time_limit/env.robot_dt)+1,
+            int(time_limit/env.robot_dt)+1,
             lambda j, x: lax.cond(
                 j < episode_steps-2,
                 lambda y: y.at[j].set((accelerations[j+1] - accelerations[j]) / env.robot_dt),
                 lambda y: y.at[j].set(jnp.array([jnp.nan,jnp.nan])),
                 x),
-            jnp.empty((int(env.time_limit/env.robot_dt)+1, 2)))
-        metrics["average_jerk"] = lax.cond(success, lambda x: x.at[i].set(jnp.nanmean(jnp.linalg.norm(jerks, axis=1))), lambda x: x.at[i].set(jnp.nan), metrics["average_jerk"])
+            jnp.empty((int(time_limit/env.robot_dt)+1, 2)))
+        metrics["average_jerk"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(jnp.linalg.norm(jerks, axis=1))), lambda x: x.at[i].set(jnp.nan), metrics["average_jerk"])
         min_distances = lax.fori_loop(
             0,
-            int(env.time_limit/env.robot_dt)+1,
+            int(time_limit/env.robot_dt)+1,
             lambda m, x: lax.cond(
                 m < episode_steps,
                 lambda y: y.at[m].set(jnp.min(jnp.linalg.norm(all_states[m, :-1, :2] - all_states[m, -1, :2], axis=1) - info["humans_parameters"][:,0] - env.robot_radius)),
                 lambda y: y.at[m].set(jnp.nan),
                 x),
-            jnp.empty((int(env.time_limit/env.robot_dt)+1,)))
-        metrics["min_distance"] = lax.cond(success, lambda x: x.at[i].set(jnp.nanmin(min_distances)), lambda x: x.at[i].set(jnp.nan), metrics["min_distance"])
+            jnp.empty((int(time_limit/env.robot_dt)+1,)))
+        metrics["min_distance"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmin(min_distances)), lambda x: x.at[i].set(jnp.nan), metrics["min_distance"])
         space_compliances = lax.fori_loop(
             0,
-            int(env.time_limit/env.robot_dt)+1,
+            int(time_limit/env.robot_dt)+1,
             lambda s, x: lax.cond(
                 s < episode_steps,
                 lambda y: y.at[s].set(min_distances[s] >= personal_space),
                 lambda y: y.at[s].set(jnp.nan),
                 x),
-            jnp.empty((int(env.time_limit/env.robot_dt)+1,)))
-        metrics["space_compliance"] = lax.cond(success, lambda x: x.at[i].set(jnp.nanmean(space_compliances)), lambda x: x.at[i].set(jnp.nan), metrics["space_compliance"])
+            jnp.empty((int(time_limit/env.robot_dt)+1,)))
+        metrics["space_compliance"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(space_compliances)), lambda x: x.at[i].set(jnp.nan), metrics["space_compliance"])
         return reset_key, policy_key, metrics
     
     # Initialize the random keys
@@ -277,18 +288,18 @@ def test_k_trials(
     _, _, metrics = lax.fori_loop(0, k, _fori_body, (reset_key, policy_key, metrics))
     # Print results
     print("RESULTS")
-    print(f"Success rate: {round(metrics['successes']/k, 2):.2f}")
-    print(f"Collision rate: {round(metrics['collisions']/k, 2):.2f}")
-    print(f"Timeout rate: {round(metrics['timeouts']/k, 2):.2f}")
-    print(f"Average return: {round(jnp.mean(metrics['returns']), 2):.2f}")
-    print(f"SPL: {round(jnp.mean(metrics['episodic_spl']), 2):.2f}")
-    print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']), 2):.2f} s")
-    print(f"Average path length: {round(jnp.nanmean(metrics['path_length']), 2):.2f} m")
-    print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']), 2):.2f} m/s")
-    print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']), 2):.2f} m/s^2")
-    print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']), 2):.2f} m/s^3")
-    print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']), 2):.2f}")
-    print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']), 2):.2f} m")
+    print(f"Success rate: {metrics['successes']/k:.2f}")
+    print(f"Collision rate: {metrics['collisions']/k:.2f}")
+    print(f"Timeout rate: {metrics['timeouts']/k:.2f}")
+    print(f"Average return: {jnp.mean(metrics['returns']):.2f}")
+    print(f"SPL: {jnp.mean(metrics['episodic_spl']):.2f}")
+    print(f"Average time to goal: {jnp.nanmean(metrics['times_to_goal']):.2f} s")
+    print(f"Average path length: {jnp.nanmean(metrics['path_length']):.2f} m")
+    print(f"Average speed: {jnp.nanmean(metrics['average_speed']):.2f} m/s")
+    print(f"Average acceleration: {jnp.nanmean(metrics['average_acceleration']):.2f} m/s^2")
+    print(f"Average jerk: {jnp.nanmean(metrics['average_jerk']):.2f} m/s^3")
+    print(f"Average space compliance: {jnp.nanmean(metrics['space_compliance']):.2f}")
+    print(f"Average minimum distance to humans: {jnp.nanmean(metrics['min_distance']):.2f} m")
     return metrics
                 
 def animate_trajectory(

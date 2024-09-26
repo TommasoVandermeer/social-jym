@@ -37,17 +37,17 @@ env = SocialNav(**env_params)
 
 # Initialize robot policy
 # Load Social-Navigation-PyEnvs policy vnet params
-vnet_params = load_crowdnav_policy(
-    "sarl", 
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_on_hsfm_new_guo/rl_model.pth"))
-policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 # vnet_params = load_crowdnav_policy(
-#     "cadrl", 
-#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_on_hsfm_new_guo/rl_model.pth"))
-# policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
+#     "sarl", 
+#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_on_hsfm_new_guo/rl_model.pth"))
+# policy = SARL(env.reward_function, dt=env_params['robot_dt'])
+vnet_params = load_crowdnav_policy(
+    "cadrl", 
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_on_hsfm_new_guo/rl_model.pth"))
+policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
 # Test Social-Navigation-PyEnvs policy
-test_k_trials(100, 10, env, policy, vnet_params, success_reward=reward_params['goal_reward'], failure_reward=reward_params['collision_penalty'])
+metrics = test_k_trials(1000, 10, env, policy, vnet_params, reward_params["time_limit"])
 
 # Initialize random keys
 reset_key = random.key(random_seed)
@@ -55,13 +55,13 @@ policy_key = random.key(random_seed)
 
 # Simulate some episodes
 for i in range(n_episodes):
-    done = False
+    outcome = {"success": 0, "failure": 0, "timeout": 0, "nothing": 1}
     episode_start_time = time.time()
     state, reset_key, obs, info = env.reset(reset_key)
     all_states = np.array([state])
-    while not done:
+    while outcome["nothing"]:
         action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, 0.)
-        state, obs, info, reward, done = env.step(state,info,action,test=True) 
+        state, obs, info, reward, outcome = env.step(state,info,action,test=True) 
         all_states = np.vstack((all_states, [state]))
 
     ## Plot episode trajectory

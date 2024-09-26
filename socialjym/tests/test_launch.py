@@ -53,7 +53,7 @@ policy_key = random.key(random_seed)
 # Simulate some episodes
 episode_simulation_times = np.empty((n_episodes,))
 for i in range(n_episodes):
-    done = False
+    outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
     episode_start_time = time.time()
     state, reset_key, obs, info = env.reset(reset_key)
     lidar_measurements = env.get_lidar_measurements(obs[-1,:2], jnp.atan2(*jnp.flip(obs[-1,2:4])), obs[:-1,:2], info["humans_parameters"][:,0])
@@ -62,12 +62,12 @@ for i in range(n_episodes):
 
     all_states = np.array([state])
     all_lidar_measurements = np.array([lidar_measurements])
-    while not done:
+    while outcome["nothing"]:
 
         # action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
-        # state, obs, info, reward, done = env.step(state,info,action,test=True)
+        # state, obs, info, reward, outcome = env.step(state,info,action,test=True)
 
-        state, obs, info, reward, done = env.imitation_learning_step(state,info)
+        state, obs, info, reward, outcome = env.imitation_learning_step(state,info)
 
         lidar_measurements = env.get_lidar_measurements(obs[-1,:2], jnp.atan2(*jnp.flip(obs[-1,2:4])), obs[:-1,:2], info["humans_parameters"][:,0])
         all_lidar_measurements = np.vstack((all_lidar_measurements, [lidar_measurements]))

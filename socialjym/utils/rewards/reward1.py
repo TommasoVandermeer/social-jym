@@ -17,7 +17,7 @@ def generate_reward_done_function(
     assert time_limit > 0, "time_limit must be positive"
 
     @jit
-    def get_reward_done(obs:jnp.ndarray, info:dict, dt:float) -> tuple[float, bool]:
+    def get_reward_done(obs:jnp.ndarray, info:dict, dt:float) -> tuple[float, dict]:
         """
         Given a state and a dictionary containing additional information about the environment,
         this function computes the reward of the current state and wether the episode is finished or not.
@@ -32,7 +32,7 @@ def generate_reward_done_function(
 
         output:
         - reward: reward obtained in the current state.
-        - done: boolean indicating whether the episode is done.
+        - outcome: dictionary indicating if the episode is finished or not and why.
         """
         robot_pos = obs[-1,0:2]
         humans_pos = obs[0:len(obs)-1,0:2]
@@ -57,13 +57,18 @@ def generate_reward_done_function(
         reward = lax.cond(reached_goal, lambda r: r + goal_reward, lambda r: r, reward) # Reward for reaching the goal
         reward = lax.cond(collision, lambda r: r + collision_penalty, lambda r: r, reward) # Penalty for collision
         reward = lax.cond(discomfort, lambda r: r - 0.5 * dt * (discomfort_distance - min_distance), lambda r: r, reward) # Penalty for getting too close to humans
-        # Compute done 
-        done = jnp.any(jnp.array([collision,reached_goal,timeout]))
+        # Compute outcome 
+        outcome = {
+            "nothing": jnp.logical_not(jnp.any(jnp.array([collision,reached_goal,timeout]))),
+            "success": reached_goal,
+            "failure": collision,
+            "timeout": timeout
+        }
         # # DEBUG
         # debug.print("\n")
         # debug.print("collision: {x}", x=collision)
         # debug.print("reached_goal: {x}", x=reached_goal)
         # debug.print("timeout: {x}", x=timeout)
-        return reward, done
+        return reward, outcome
     
     return get_reward_done

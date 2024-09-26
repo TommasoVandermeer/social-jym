@@ -27,8 +27,7 @@ def deep_vnet_rl_rollout(
         epsilon_start: float,
         epsilon_end: float,
         decay_rate: float,
-        success_reward: float, # Used only to understand if the episode was successful or not
-        failure_reward: float, # Used only to understand if the episode was successful or not
+        time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
         target_update_interval: int = 50,
         debugging: bool = False
 ) -> dict:
@@ -45,26 +44,28 @@ def deep_vnet_rl_rollout(
                 @jit
                 def _while_body(val:tuple):
                         # Retrieve data from the tuple
-                        state, obs, info, done, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, steps = val
+                        state, obs, info, outcome, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, steps = val
                         # Step
                         epsilon = epsilon_decay_fn(epsilon_start, epsilon_end, i, decay_rate)
                         action, policy_key, vnet_input = policy.act(policy_key, obs, info, model_params, epsilon)
-                        state, obs, info, reward, done = env.step(state, info, action)
+                        state, obs, info, reward, outcome = env.step(state, info, action)
                         # Save data
                         vnet_inputs = vnet_inputs.at[steps].set(vnet_input)
                         rewards = rewards.at[steps].set(reward)
+                        dones = dones.at[steps].set(jnp.logical_not(outcome["nothing"]))
                         steps += 1
-                        return (state, obs, info, done, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, steps)
+                        return (state, obs, info, outcome, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, steps)
                 # Retrieve data from the tuple
                 model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns = val
                 # Reset the environment
                 state, reset_key, obs, info = env.reset(reset_key)
                 # Episode loop
-                vnet_inputs = jnp.empty((int(env.time_limit/env.robot_dt)+1, env.n_humans, policy.vnet_input_size))
-                rewards = jnp.empty((int(env.time_limit/env.robot_dt)+1,))
-                dones = jnp.empty((int(env.time_limit/env.robot_dt)+1,))
-                val_init = (state, obs, info, False, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, 0)
-                _, _, _, _, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, episode_steps = lax.while_loop(lambda x: x[3] == False, _while_body, val_init)           
+                vnet_inputs = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans, policy.vnet_input_size))
+                rewards = jnp.empty((int(time_limit/env.robot_dt)+1,))
+                init_outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
+                dones = jnp.empty((int(time_limit/env.robot_dt)+1,))
+                val_init = (state, obs, info, init_outcome, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, 0)
+                _, _, _, outcome, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, episode_steps = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, val_init)           
                 # Compute episode return
                 @jit
                 def _compute_state_value_for_body(j:int, t:int, value:float):
@@ -73,7 +74,7 @@ def deep_vnet_rl_rollout(
                 cumulative_episode_reward = lax.fori_loop(0, episode_steps, lambda k, val: _compute_state_value_for_body(k, 0, val), 0.)
                 # Update buffer state
                 buffer_state, current_buffer_size = lax.cond(
-                        jnp.any(jnp.array([rewards[episode_steps-1] == success_reward, rewards[episode_steps-1] == failure_reward])), # Add only experiences of successful or failed episodes
+                        jnp.any(jnp.array([outcome["success"], outcome["failure"]])), # Add only experiences of successful or failed episodes
                         lambda x: lax.fori_loop(
                                 0,
                                 episode_steps,
@@ -178,8 +179,7 @@ def deep_vnet_il_rollout(
         buffer_size: int,
         num_epochs: int,
         batch_size: int,
-        success_reward: float, # Used only to understand if the episode was successful or not
-        failure_reward: float  # Used only to understand if the episode was successful or not
+        time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
 ) -> dict:
         
         # If policy is CADRL, the number of humans in the training environment must be 1
@@ -192,15 +192,15 @@ def deep_vnet_il_rollout(
                 @jit
                 def _while_body(val:tuple):
                         # Retrieve data from the tuple
-                        state, obs, info, done, policy_key, vnet_inputs, rewards, steps = val
+                        state, obs, info, outcome, policy_key, vnet_inputs, rewards, steps = val
                         # Step
                         vnet_input = policy.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
-                        state, obs, info, reward, done = env.imitation_learning_step(state, info)
+                        state, obs, info, reward, outcome = env.imitation_learning_step(state, info)
                         # Save data
                         vnet_inputs = vnet_inputs.at[steps].set(vnet_input)
                         rewards = rewards.at[steps].set(reward)
                         steps += 1
-                        return (state, obs, info, done, policy_key, vnet_inputs, rewards, steps)
+                        return (state, obs, info, outcome, policy_key, vnet_inputs, rewards, steps)
                 # Retrieve data from the tuple
                 model_params, buffer_state, current_buffer_size, policy_key, reset_key, returns = val
                 # Reset the environment
@@ -208,17 +208,18 @@ def deep_vnet_il_rollout(
                 # For imitation learning, set the humans' safety space to 0.1
                 info["humans_parameters"] = info["humans_parameters"].at[:,-1].set(jnp.ones((env.n_humans,)) * 0.1) 
                 # Episode loop
-                vnet_inputs = jnp.empty((int(env.time_limit/env.robot_dt), env.n_humans, policy.vnet_input_size))
-                rewards = jnp.empty((int(env.time_limit/env.robot_dt),))
-                val_init = (state, obs, info, False, policy_key, vnet_inputs, rewards, 0)
-                _, _, _, _, policy_key, vnet_inputs, rewards, episode_steps = lax.while_loop(lambda x: x[3] == False, _while_body, val_init)           
+                vnet_inputs = jnp.empty((int(time_limit/env.robot_dt), env.n_humans, policy.vnet_input_size))
+                rewards = jnp.empty((int(time_limit/env.robot_dt),))
+                init_outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
+                val_init = (state, obs, info, init_outcome, policy_key, vnet_inputs, rewards, 0)
+                _, _, _, outcome, policy_key, vnet_inputs, rewards, episode_steps = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, val_init)           
                 # Update buffer state
                 @jit
                 def _compute_state_value_for_body(j:int, t:int, value:float):
                         value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
                         return value 
                 buffer_state, current_buffer_size = lax.cond(
-                        jnp.any(jnp.array([rewards[episode_steps-1] == success_reward, rewards[episode_steps-1] == failure_reward])), # Add only experiences of successful or failed episodes
+                        jnp.any(jnp.array([outcome["success"], outcome["failure"]])), # Add only experiences of successful or failed episodes
                         lambda x: lax.fori_loop(
                                 0,
                                 episode_steps,

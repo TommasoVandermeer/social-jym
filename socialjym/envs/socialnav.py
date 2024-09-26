@@ -31,7 +31,6 @@ class SocialNav(BaseEnv):
             traffic_height=5, 
             traffic_length=14,
             crowding_square_side=14,
-            time_limit=50,
             lidar_angular_range=jnp.pi,
             lidar_max_dist=10.,
             lidar_num_rays=60,
@@ -64,7 +63,6 @@ class SocialNav(BaseEnv):
         self.traffic_height = traffic_height
         self.traffic_length = traffic_length
         self.crowding_square_side = crowding_square_side
-        self.time_limit = time_limit
         self.reward_function = reward_function
 
     # --- Private methods ---
@@ -565,14 +563,14 @@ class SocialNav(BaseEnv):
         - obs: observation of the new state.
         - info: dictionary containing additional information about the environment.
         - reward: reward obtained in the transition.
-        - done: boolean indicating whether the episode is done.
+        - outcome: dictionary indicating whether the episode is in a terminal state or not.
         """
         info["time"] += self.robot_dt
         humans_goal = info["humans_goal"]
         humans_parameters = info["humans_parameters"]
         static_obstacles = info["static_obstacles"]
-        ### Compute reward and done
-        reward, done = self.reward_function(self._get_obs(state, info, action), info, self.robot_dt)
+        ### Compute reward and outcome
+        reward, outcome = self.reward_function(self._get_obs(state, info, action), info, self.robot_dt)
         ### Update state
         if self.robot_visible:
             goals = jnp.vstack((humans_goal, info["robot_goal"]))
@@ -609,18 +607,19 @@ class SocialNav(BaseEnv):
                                     ((0,0),(0,2)))
             ## Update robot
             new_state = new_state.at[self.n_humans,0:2].set(jnp.array([new_state[self.n_humans,0] + action[0] * self.robot_dt, new_state[self.n_humans,1] + action[1] * self.robot_dt]))
-        ### Test done computation (during tests we check for actual collision or reaching goal)
-        done = lax.cond(
-            test,
-            lambda _: jnp.any(jnp.array([
-                jnp.linalg.norm(new_state[-1,0:2] - info["robot_goal"]) < self.robot_radius, # reaching goal
-                jnp.any(jnp.linalg.norm(new_state[0:self.n_humans,0:2] - new_state[-1,0:2], axis=1) < info["humans_parameters"][:,0]), # collision
-                jnp.any(info["time"] >= self.time_limit)])), # timeout
-            lambda _: done,
-            None)
+        ### Test outcome computation (during tests we check for actual collision or reaching goal)
+        @jit
+        def _test_outcome(val:tuple):
+            state, info, outcome = val
+            outcome["success"] = jnp.linalg.norm(state[-1,0:2] - info["robot_goal"]) < self.robot_radius
+            outcome["failure"] = jnp.any(jnp.linalg.norm(state[0:self.n_humans,0:2] - state[-1,0:2], axis=1) < info["humans_parameters"][:,0])
+            outcome["timeout"] = outcome["timeout"]
+            outcome["nothing"] = jnp.logical_not(jnp.any(jnp.array([outcome["success"], outcome["failure"], outcome["timeout"]])))
+            return outcome
+        outcome = lax.cond(test, lambda x: _test_outcome(x), lambda x: x[2], (new_state, info, outcome))
         ### Update humans goal or state depending on the scenario
         new_info, new_state = self._update_humans_goal_and_state_for_each_scenario(new_state, info)
-        return new_state, self._get_obs(new_state, new_info, action), new_info, reward, done
+        return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome
 
     @partial(jit, static_argnames=("self"))
     def reset(self, key:random.PRNGKey) -> tuple:
