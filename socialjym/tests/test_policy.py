@@ -12,7 +12,7 @@ from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
 
 ### Hyperparameters
-random_seed = 3
+random_seed = 13_000 # Usually we train with 3_000 IL episodes and 10_000 RL episodes
 n_episodes = 50
 reward_params = {
     'goal_reward': 1.,
@@ -51,7 +51,7 @@ env = SocialNav(**env_params)
 
 ## Load social-jym policy
 vnet_params = load_socialjym_policy(
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_1_hsfm_hybrid_scenario.pkl"))
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_1_hsfm_hybrid_scenario_27_09_2024.pkl"))
 policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
 

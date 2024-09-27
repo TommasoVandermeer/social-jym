@@ -22,7 +22,7 @@ reward_params = {
 reward_function = generate_reward_done_function(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 1,
+    'n_humans': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,

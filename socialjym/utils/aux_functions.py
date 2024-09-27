@@ -361,7 +361,7 @@ def save_policy_params(
         os.makedirs(path)
 
     if filename is None:
-        today = date.today().strftime('%d/%m/%Y')
+        today = date.today().strftime('%d_%m_%Y')
         filename = f"{policy_name}_{train_env_params['n_humans']}_{train_env_params['humans_policy']}_{train_env_params['scenario']}_{today}.pkl"
     else:
         filename = f"{filename}.pkl"

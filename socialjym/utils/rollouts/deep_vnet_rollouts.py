@@ -56,7 +56,9 @@ def deep_vnet_rl_rollout(
                         steps += 1
                         return (state, obs, info, outcome, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, steps)
                 # Retrieve data from the tuple
-                model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns = val
+                model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns = val
+                # Initialize the random keys
+                policy_key, buffer_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i)
                 # Reset the environment
                 state, reset_key, obs, info = env.reset(reset_key)
                 # Episode loop
@@ -145,23 +147,21 @@ def deep_vnet_rl_rollout(
                         lambda x: x, 
                         None)
                 # Return the updated values
-                val = (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns)
+                val = (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
                 return val
 
-        # Initialize the random keys
-        policy_key, buffer_key, reset_key = vmap(random.PRNGKey)(jnp.arange(3) + random_seed)
         # Initialize the array where to save data
         losses = jnp.empty([train_episodes], dtype=jnp.float32)
         returns = jnp.empty([train_episodes], dtype=jnp.float32)
         # Initialize the model parameters
         optimizer_state = optimizer.init(initial_vnet_params)
         # Create initial values for training loop
-        val_init = (initial_vnet_params, initial_vnet_params, optimizer_state, buffer_state, current_buffer_size, policy_key, buffer_key, reset_key, losses, returns)
+        val_init = (initial_vnet_params, initial_vnet_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
         # Execute the training loop
         vals = lax.fori_loop(0, train_episodes, _fori_body, val_init)
 
         output_dict = {}
-        keys = ["model_params", "target_model_params", "optimizer_state", "buffer_state", "current_buffer_size", "policy_key", "buffer_key", "reset_key", "losses", "returns"]
+        keys = ["model_params", "target_model_params", "optimizer_state", "buffer_state", "current_buffer_size", "losses", "returns"]
         for idx, value in enumerate(vals): output_dict[keys[idx]] = value
 
         return output_dict
@@ -202,7 +202,9 @@ def deep_vnet_il_rollout(
                         steps += 1
                         return (state, obs, info, outcome, policy_key, vnet_inputs, rewards, steps)
                 # Retrieve data from the tuple
-                model_params, buffer_state, current_buffer_size, policy_key, reset_key, returns = val
+                model_params, buffer_state, current_buffer_size, returns = val
+                # Initialize the random keys
+                policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i)
                 # Reset the environment
                 state, reset_key, obs, info = env.reset(reset_key)
                 # For imitation learning, set the humans' safety space to 0.1
@@ -231,20 +233,21 @@ def deep_vnet_il_rollout(
                 cumulative_episode_reward = lax.fori_loop(0, episode_steps, lambda k, val: _compute_state_value_for_body(k, 0, val), 0.)
                 returns = returns.at[i].set(cumulative_episode_reward)
                 # Return the updated values
-                val = (model_params, buffer_state, current_buffer_size, policy_key, reset_key, returns)
+                val = (model_params, buffer_state, current_buffer_size, returns)
                 return val
 
-        # Initialize the random keys
-        policy_key, buffer_key, reset_key = vmap(random.PRNGKey)(jnp.arange(3) + random_seed)
         # Initialize the array where to save data
         returns = jnp.empty([train_episodes])
         # Initialize the optimizer
         optimizer_state = optimizer.init(initial_vnet_params)
         # Create initial values for training loop
-        val_init = (initial_vnet_params, buffer_state, current_buffer_size, policy_key, reset_key, returns)
+        val_init = (initial_vnet_params, buffer_state, current_buffer_size, returns)
         # Execute the training loop
         debug.print("Simulating IL episodes...")
-        model_params, buffer_state, current_buffer_size, policy_key, reset_key, returns = lax.fori_loop(0, train_episodes, _fori_body, val_init)
+        model_params, buffer_state, current_buffer_size, returns = lax.fori_loop(0, train_episodes, _fori_body, val_init)
+
+        # Initialize the buffer key
+        buffer_key = random.PRNGKey(random_seed)
 
         # Update model parameters
         actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_size]))
@@ -287,9 +290,7 @@ def deep_vnet_il_rollout(
                 "optimizer_state": optimizer_state,
                 "buffer_state": buffer_state,
                 "current_buffer_size": current_buffer_size,
-                "policy_key": policy_key,
                 "buffer_key": buffer_key,
-                "reset_key": reset_key,
                 "losses": jnp.mean(all_losses, axis=1),
                 "returns": returns}
 
