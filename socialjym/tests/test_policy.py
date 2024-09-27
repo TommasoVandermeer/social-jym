@@ -40,19 +40,19 @@ env = SocialNav(**env_params)
 ### Initialize robot policy
 
 ## Load Social-Navigation-PyEnvs policy vnet params
-# vnet_params = load_crowdnav_policy(
-#     "sarl", 
-#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_on_hsfm_new_guo/rl_model.pth"))
-# policy = SARL(env.reward_function, dt=env_params['robot_dt'])
+vnet_params = load_crowdnav_policy(
+    "sarl", 
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hybrid_scenario/rl_model.pth"))
+policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 # vnet_params = load_crowdnav_policy(
 #     "cadrl", 
-#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_on_hsfm_new_guo/rl_model.pth"))
+#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_1_hsfm_hybrid_scenario/rl_model.pth"))
 # policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
 ## Load social-jym policy
-vnet_params = load_socialjym_policy(
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_1_hsfm_hybrid_scenario_27_09_2024.pkl"))
-policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
+# vnet_params = load_socialjym_policy(
+#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_1_hsfm_hybrid_scenario_27_09_2024.pkl"))
+# policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
 
 ### Test Social-Navigation-PyEnvs policy
