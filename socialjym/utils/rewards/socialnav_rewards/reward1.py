@@ -1,23 +1,37 @@
-from types import FunctionType
-from jax import jit, lax, debug
+from jax import jit, lax
 import jax.numpy as jnp
+from functools import partial
 
 from socialjym.utils.aux_functions import batch_point_to_line_distance
+from socialjym.utils.rewards.base_reward import BaseReward
 
-def generate_reward_done_function(
-        goal_reward: float, 
-        collision_penalty : float, 
-        discomfort_distance: float, 
-        time_limit: float
-    ) -> FunctionType:
-    
-    assert goal_reward > 0, "goal_reward must be positive"
-    assert collision_penalty < 0, "collision_penalty must be negative"
-    assert discomfort_distance > 0, "discomfort_distance must be positive"
-    assert time_limit > 0, "time_limit must be positive"
+class Reward1(BaseReward):
+    def __init__(
+        self, 
+        goal_reward: float=1., 
+        collision_penalty: float=-0.25, 
+        discomfort_distance: float=0.2, 
+        time_limit: float=50.,
+    ) -> None:
+        # Check input parameters
+        assert goal_reward > 0, "goal_reward must be positive"
+        assert collision_penalty < 0, "collision_penalty must be negative"
+        assert discomfort_distance > 0, "discomfort_distance must be positive"
+        assert time_limit > 0, "time_limit must be positive"
+        # Initialize reward parameters
+        self.type = "socialnav_reward1"
+        self.goal_reward = goal_reward
+        self.collision_penalty = collision_penalty
+        self.discomfort_distance = discomfort_distance
+        self.time_limit = time_limit
 
-    @jit
-    def get_reward_done(obs:jnp.ndarray, info:dict, dt:float) -> tuple[float, dict]:
+    @partial(jit, static_argnames=("self"))
+    def __call__(
+        self, 
+        obs:jnp.ndarray, 
+        info:dict, 
+        dt:float
+    ) -> tuple[float, dict]:
         """
         Given a state and a dictionary containing additional information about the environment,
         this function computes the reward of the current state and wether the episode is finished or not.
@@ -46,17 +60,17 @@ def generate_reward_done_function(
         distances = batch_point_to_line_distance(jnp.zeros((len(obs)-1,2)), humans_pos - robot_pos, next_humans_pos - next_robot_pos) - (humans_radiuses + robot_radius)
         collision = jnp.any(distances < 0)
         min_distance = jnp.max(jnp.array([jnp.min(distances),0]))
-        discomfort = jnp.all(jnp.array([jnp.logical_not(collision), min_distance < discomfort_distance]))
+        discomfort = jnp.all(jnp.array([jnp.logical_not(collision), min_distance < self.discomfort_distance]))
         # Check if the robot reached its goal
         reached_goal = jnp.linalg.norm(next_robot_pos - robot_goal) < robot_radius
         # Timeout
-        timeout = jnp.any(time >= time_limit)
+        timeout = jnp.any(time >= self.time_limit)
         # Compute reward
         # reward = - (jnp.linalg.norm(next_robot_pos - robot_goal)/100) # Debug reward (agent should always move towards the goal)
         reward = 0.
-        reward = lax.cond(reached_goal, lambda r: r + goal_reward, lambda r: r, reward) # Reward for reaching the goal
-        reward = lax.cond(collision, lambda r: r + collision_penalty, lambda r: r, reward) # Penalty for collision
-        reward = lax.cond(discomfort, lambda r: r - 0.5 * dt * (discomfort_distance - min_distance), lambda r: r, reward) # Penalty for getting too close to humans
+        reward = lax.cond(reached_goal, lambda r: r + self.goal_reward, lambda r: r, reward) # Reward for reaching the goal
+        reward = lax.cond(collision, lambda r: r + self.collision_penalty, lambda r: r, reward) # Penalty for collision
+        reward = lax.cond(discomfort, lambda r: r - 0.5 * dt * (self.discomfort_distance - min_distance), lambda r: r, reward) # Penalty for getting too close to humans
         # Compute outcome 
         outcome = {
             "nothing": jnp.logical_not(jnp.any(jnp.array([collision,reached_goal,timeout]))),
@@ -70,5 +84,3 @@ def generate_reward_done_function(
         # debug.print("reached_goal: {x}", x=reached_goal)
         # debug.print("timeout: {x}", x=timeout)
         return reward, outcome
-    
-    return get_reward_done

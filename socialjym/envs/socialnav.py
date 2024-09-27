@@ -25,7 +25,6 @@ class SocialNav(BaseEnv):
             n_humans:int, 
             reward_function:FunctionType,
             humans_policy='hsfm', 
-            robot_discomfort_dist=0.2, 
             robot_visible=False, 
             circle_radius=7, 
             traffic_height=5, 
@@ -57,7 +56,6 @@ class SocialNav(BaseEnv):
             self.get_standard_humans_parameters = sfm_get_standard_humans_parameters
         elif humans_policy == 'orca':
             raise NotImplementedError("ORCA policy is not implemented yet.")
-        self.robot_discomfort_dist = robot_discomfort_dist
         self.robot_visible = robot_visible
         self.circle_radius = circle_radius
         self.traffic_height = traffic_height
@@ -487,6 +485,9 @@ class SocialNav(BaseEnv):
         return info, state
 
     # --- Public methods ---
+
+    def get_parameters(self):
+        return self.__dict__
 
     @partial(jit, static_argnames=("self"))
     def imitation_learning_step(self, state:jnp.ndarray, info:dict)-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:

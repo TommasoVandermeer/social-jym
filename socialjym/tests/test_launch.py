@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import time
 
 from socialjym.envs.socialnav import SocialNav
-from socialjym.utils.rewards.reward1 import generate_reward_done_function
+from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory
@@ -19,7 +19,7 @@ reward_params = {
     'discomfort_distance': 0.2,
     'time_limit': 50.,
 }
-reward_function = generate_reward_done_function(**reward_params)
+reward_function = Reward1(**reward_params)
 env_params = {
     'robot_radius': 0.3,
     'n_humans': 5,
