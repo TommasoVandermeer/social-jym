@@ -13,4 +13,10 @@ class BaseReward(ABC):
     # --- Public methods ---
 
     def get_parameters(self) -> tuple:
-        return self.__dict__
+        """
+        This function returns the parameters of the reward function as a dictionary.
+
+        output:
+        - params: dictionary containing the parameters of the reward functions.
+        """
+        return self.__dict__.copy()

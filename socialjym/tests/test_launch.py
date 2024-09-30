@@ -12,7 +12,7 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_t
 
 # Hyperparameters
 random_seed = 1
-n_episodes = 50
+n_episodes = 1
 reward_params = {
     'goal_reward': 1.,
     'collision_penalty': -0.25,

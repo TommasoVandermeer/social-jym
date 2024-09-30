@@ -27,7 +27,7 @@ class SocialNav(BaseEnv):
             humans_policy='hsfm', 
             robot_visible=False, 
             circle_radius=7, 
-            traffic_height=5, 
+            traffic_height=5, # traffic_height=3 # Conform with Social-Navigation-PyEnvs
             traffic_length=14,
             crowding_square_side=14,
             lidar_angular_range=jnp.pi,
@@ -204,6 +204,7 @@ class SocialNav(BaseEnv):
 
         # Randomly generate the humans' positions
         disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
+        # disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.traffic_length/2 + 1, 0.])) # Conform with Social-Navigation-PyEnvs
         disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.traffic_length/2, 0.]))
         
         @jit
@@ -263,7 +264,7 @@ class SocialNav(BaseEnv):
             self.n_humans, 
             lambda i, humans_goal: humans_goal.at[i].set(jnp.array([-self.traffic_length/2-3, disturbed_points[i,1]])),
             humans_goal)
-        robot_goal = np.array([self.traffic_length/2, 0.])
+        robot_goal = - disturbed_points[-1]
 
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
@@ -465,9 +466,12 @@ class SocialNav(BaseEnv):
                 self.n_humans, 
                 lambda i, state: lax.cond(
                     jnp.linalg.norm(state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0] + 2, 
+                    # jnp.linalg.norm(state[i,0:2] - info["humans_goal"][i]) <= 3,
                     lambda x: x.at[i,0:4].set(jnp.array([
                         jnp.max(jnp.append(x[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2)+0.05, self.traffic_length/2+1)), 
-                        *x[i,1:4]])), 
+                        # jnp.max(jnp.append(x[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2), self.traffic_length/2)),
+                        jnp.clip(x[i,1], -self.traffic_height/2, self.traffic_height/2),
+                        *x[i,2:4]])), 
                     lambda x: x, 
                     state),
                 state)
@@ -487,7 +491,17 @@ class SocialNav(BaseEnv):
     # --- Public methods ---
 
     def get_parameters(self):
-        return self.__dict__
+        """
+        This function returns the parameters of the environment as a dictionary.
+
+        output:
+        - params: dictionary containing the parameters of the environment.
+        """
+        params = {}
+        for key, value in self.__dict__.items():
+            if not callable(value):
+                params[key] = value
+        return params
 
     @partial(jit, static_argnames=("self"))
     def imitation_learning_step(self, state:jnp.ndarray, info:dict)-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
