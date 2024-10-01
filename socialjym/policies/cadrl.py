@@ -40,7 +40,7 @@ class CADRL(BasePolicy):
         speeds = lax.fori_loop(0,self.speed_samples,lambda i, speeds: speeds.at[i].set((jnp.exp((i + 1) / self.speed_samples) - 1) / (jnp.e - 1) * self.v_max), jnp.zeros((self.speed_samples,)))
         rotations = jnp.linspace(0, 2 * jnp.pi, self.rotation_samples, endpoint=False)
         action_space = jnp.empty((self.speed_samples * self.rotation_samples + 1,2))
-        action_space = action_space.at[0].set(jnp.array([0, 0])) # First action is to stay still
+        action_space = action_space.at[0].set(jnp.array([0., 0.])) # First action is to stay still
         action_space = lax.fori_loop(1,
                                      len(action_space), 
                                      lambda i, acts: acts.at[i].set(jnp.array([speeds[i // self.rotation_samples] * jnp.cos(rotations[i % self.rotation_samples]),

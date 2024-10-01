@@ -11,19 +11,8 @@ import pickle as pkl
 import os
 from datetime import date
 
-from socialjym.envs.base_env import BaseEnv
+from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES
 from socialjym.policies.base_policy import BasePolicy
-
-SCENARIOS = [
-    "circular_crossing", 
-    "parallel_traffic", 
-    "perpendicular_traffic", 
-    "robot_crowding", 
-    "hybrid_scenario"]
-HUMAN_POLICIES = [
-    "orca",
-    "sfm", 
-    "hsfm"]
 
 @jit
 def epsilon_scaling_decay(epsilon_start:float, epsilon_end:float, current_episode:int, decay_rate:float) -> float:
@@ -289,18 +278,18 @@ def test_k_trials(
     _, metrics = lax.fori_loop(0, k, _fori_body, (random_seed, metrics))
     # Print results
     print("RESULTS")
-    print(f"Success rate: {metrics['successes']/k:.2f}")
-    print(f"Collision rate: {metrics['collisions']/k:.2f}")
-    print(f"Timeout rate: {metrics['timeouts']/k:.2f}")
-    print(f"Average return: {jnp.mean(metrics['returns']):.2f}")
-    print(f"SPL: {jnp.mean(metrics['episodic_spl']):.2f}")
-    print(f"Average time to goal: {jnp.nanmean(metrics['times_to_goal']):.2f} s")
-    print(f"Average path length: {jnp.nanmean(metrics['path_length']):.2f} m")
-    print(f"Average speed: {jnp.nanmean(metrics['average_speed']):.2f} m/s")
-    print(f"Average acceleration: {jnp.nanmean(metrics['average_acceleration']):.2f} m/s^2")
-    print(f"Average jerk: {jnp.nanmean(metrics['average_jerk']):.2f} m/s^3")
-    print(f"Average space compliance: {jnp.nanmean(metrics['space_compliance']):.2f}")
-    print(f"Average minimum distance to humans: {jnp.nanmean(metrics['min_distance']):.2f} m")
+    print(f"Success rate: {round(metrics['successes']/k,2):.2f}")
+    print(f"Collision rate: {round(metrics['collisions']/k,2):.2f}")
+    print(f"Timeout rate: {round(metrics['timeouts']/k,2):.2f}")
+    print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
+    print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
+    print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
+    print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
+    print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
+    print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
+    print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
+    print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
+    print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
     return metrics
                 
 def animate_trajectory(

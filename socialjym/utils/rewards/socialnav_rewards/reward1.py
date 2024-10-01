@@ -64,7 +64,7 @@ class Reward1(BaseReward):
         # Check if the robot reached its goal
         reached_goal = jnp.linalg.norm(next_robot_pos - robot_goal) < robot_radius
         # Timeout
-        timeout = jnp.any(time >= self.time_limit)
+        timeout = jnp.all(jnp.array([time >= self.time_limit, jnp.logical_not(collision), jnp.logical_not(reached_goal)]))
         # Compute reward
         # reward = - (jnp.linalg.norm(next_robot_pos - robot_goal)/100) # Debug reward (agent should always move towards the goal)
         reward = 0.

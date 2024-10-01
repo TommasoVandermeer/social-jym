@@ -28,7 +28,7 @@ env_params = {
     'humans_dt': 0.01,
     'robot_visible': True,
     'scenario': 'parallel_traffic',
-    'humans_policy': 'hsfm',
+    'humans_policy': 'sfm',
     'reward_function': reward_function
 }
 
@@ -53,11 +53,8 @@ policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 #     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_1_hsfm_hybrid_scenario_27_09_2024.pkl"))
 # policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
-
 ### Test Social-Navigation-PyEnvs policy
 metrics = test_k_trials(100, random_seed, env, policy, vnet_params, reward_params["time_limit"])
-# print(metrics)
-
 
 ### Simulate some episodes
 for i in range(n_episodes):
