@@ -1,6 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 from jax import random, jit, lax, debug, vmap
+from jax.experimental import checkify
 from functools import partial
 from types import FunctionType
 
@@ -89,7 +90,8 @@ class SocialNav(BaseEnv):
     def _reset(self, key:random.PRNGKey) -> tuple[jnp.ndarray, random.PRNGKey, dict]:
         key, subkey = random.split(key)
         if self.scenario == SCENARIOS.index('hybrid_scenario'):
-            scenario = random.randint(subkey, shape=(), minval=0, maxval=4)
+            # Randomly choose a scenario betweel all except "hybrid_scenario"
+            scenario = random.randint(subkey, shape=(), minval=0, maxval=len(SCENARIOS)-1)
             key, subkey = random.split(key)
         else:
             scenario = self.scenario
@@ -557,7 +559,7 @@ class SocialNav(BaseEnv):
                        ...
                        [*humanN_state],
                        [robot_px, robot_py, pad, pad..]].
-                      The length of each sub_array depends on the humans policy used (hsfm:6, sfm: 4, orca:4).
+                      The length of each sub_array is 6.
         - new_key: PRNG key to be used in the next steps.
         - obs: observation of the initial state. The observation is a JAX array in the form:
                [[human1_px, human1_py, human1_vx, human1_vy, human1_radius],
@@ -569,4 +571,54 @@ class SocialNav(BaseEnv):
         """
         initial_state, key, info = self._reset(key)
         return initial_state, key, self._get_obs(initial_state, info, jnp.zeros((2,))), info
+    
+    @partial(jit, static_argnames=("self"))
+    def reset_custom_episode(self, custom_episode:dict) -> tuple:
+        """
+        Given a custom episode data, this function resets the environment to start a new episode with the given data.
+
+        args:
+        - custom_episode: dictionary containing the custom episode data. Its keys are:
+            full_state (np.array): initial full state of the environment.
+            humans_goal (np.array): goal positions of the humans.
+            robot_goal (np.array): goal position of the robot.
+            humans_parameters (np.array): parameters of the humans.
+            static_obstacles (np.array): positions of the static obstacles.
+            scenario (int): scenario of the episode.
+            humans_policy (int): policy used by the humans.
+
+        output:
+        - initial_state: initial full state of the environment. The state is a JAX array in the form:
+                      [[*human1_state],
+                       [*human2_state],
+                       ...
+                       [*humanN_state],
+                       [robot_px, robot_py, pad, pad..]].
+                      The length of each sub_array is 6.
+        - obs: observation of the initial state. The observation is a JAX array in the form:
+               [[human1_px, human1_py, human1_vx, human1_vy, human1_radius],
+                [human2_px, human2_py, human2_vx, human2_vy, human2_radius],
+                ...
+                [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius],
+                [robot_px, robot_py, robot_ux, robot_uy, robot_radius]].
+        - info: dictionary containing additional information about the environment.
+        """
+        ## Check input data is coherent with the environment
+        # TODO: Verify input data is coheren with the environment: humans_policy, n_humans
+        ## Reset the environment with the custom episode data
+        full_state = jnp.array(custom_episode["full_state"])
+        humans_goal = jnp.array(custom_episode["humans_goal"])
+        humans_parameters = jnp.array(custom_episode["humans_parameters"])
+        robot_goal = jnp.array(custom_episode["robot_goal"])
+        # Obstacles
+        static_obstacles = jnp.array(custom_episode["static_obstacles"])
+        # Info
+        info = {
+            "humans_goal": humans_goal, 
+            "robot_goal": robot_goal, 
+            "humans_parameters": humans_parameters, 
+            "static_obstacles": static_obstacles, 
+            "time": 0.,
+            "current_scenario": custom_episode["scenario"]}
+        return full_state, self._get_obs(full_state, info, jnp.zeros((2,))), info
         
