@@ -229,6 +229,10 @@ class BaseEnv(ABC):
         pass
 
     @abstractmethod
+    def reset_custom_episode(self, key, episode):
+        pass
+
+    @abstractmethod
     def step(self, env_state, action):
         pass
 

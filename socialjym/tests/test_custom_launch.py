@@ -9,10 +9,9 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
-from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory
+from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials
 
 # Hyperparameters
-custom_data_file = "custom_episodes_1.pkl"
 reward_params = {
     'goal_reward': 1.,
     'collision_penalty': -0.25,
@@ -22,21 +21,24 @@ reward_params = {
 reward_function = Reward1(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 5,
+    'n_humans': 25,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
-    'robot_visible': False,
-    'scenario': 'hybrid_scenario',
-    'humans_policy': 'hsfm',
+    'robot_visible': True,
+    'scenario': 'parallel_traffic',
+    'humans_policy': 'sfm',
     'reward_function': reward_function
 }
+custom_data_file = f"{env_params['scenario']}_{env_params['n_humans']}_humans.pkl"
 
 # Initialize and reset environment
 env = SocialNav(**env_params)
 
 # Initialize robot policy
-policy = SARL(env.reward_function, dt=env_params['robot_dt'])
-initial_vnet_params = policy.model.init(random.key(1), jnp.zeros((env_params["n_humans"],policy.vnet_input_size)))
+vnet_params = load_crowdnav_policy(
+    "cadrl", 
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_1_sfm_hybrid_scenario/rl_model.pth"))
+policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
 # Load custom episodes data
 custom_data_dir = os.path.join(os.path.expanduser("~"),"Repos/social-jym/custom_episodes/",custom_data_file)
@@ -44,15 +46,19 @@ with open(custom_data_dir, 'rb') as f:
     custom_episodes = pickle.load(f)
 n_episodes = len(custom_episodes)
 
+# Test k trials
+metrics = test_k_trials(n_episodes, 0, env, policy, vnet_params, reward_params["time_limit"], custom_episodes=custom_episodes)
+
 # Simulate some episodes
 episode_simulation_times = np.empty((n_episodes,))
 for i in range(n_episodes):
     policy_key = random.PRNGKey(0)
+    reset_key = random.PRNGKey(0)
     outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
-    state, obs, info = env.reset_custom_episode(custom_episodes[f"{i}"])
+    state, reset_key, obs, info = env.reset_custom_episode(reset_key, custom_episodes[i])
     all_states = np.array([state])
     while outcome["nothing"]:
-        action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
+        action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, 0.)
         state, obs, info, reward, outcome = env.step(state,info,action,test=True)
         all_states = np.vstack((all_states, [state]))
     all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting

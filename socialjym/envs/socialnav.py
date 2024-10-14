@@ -573,19 +573,20 @@ class SocialNav(BaseEnv):
         return initial_state, key, self._get_obs(initial_state, info, jnp.zeros((2,))), info
     
     @partial(jit, static_argnames=("self"))
-    def reset_custom_episode(self, custom_episode:dict) -> tuple:
+    def reset_custom_episode(self, key:random.PRNGKey, custom_episode:dict) -> tuple:
         """
         Given a custom episode data, this function resets the environment to start a new episode with the given data.
 
         args:
+        - key; PRNG key (NOT USED).
         - custom_episode: dictionary containing the custom episode data. Its keys are:
-            full_state (np.array): initial full state of the environment.
+            full_state (np.array): initial full state of the environment. WARNING: The velocity of humans is always in the global frame (for hsfm you should be using the velocity on the body frame)
             humans_goal (np.array): goal positions of the humans.
             robot_goal (np.array): goal position of the robot.
-            humans_parameters (np.array): parameters of the humans.
             static_obstacles (np.array): positions of the static obstacles.
             scenario (int): scenario of the episode.
-            humans_policy (int): policy used by the humans.
+            humans_radius (float): radius of the humans.
+            humans_speed (float): max speed of the humans.
 
         output:
         - initial_state: initial full state of the environment. The state is a JAX array in the form:
@@ -595,6 +596,7 @@ class SocialNav(BaseEnv):
                        [*humanN_state],
                        [robot_px, robot_py, pad, pad..]].
                       The length of each sub_array is 6.
+        - key: PRNG key to be used in the next steps. (SAME AS THE INPUT ONE)
         - obs: observation of the initial state. The observation is a JAX array in the form:
                [[human1_px, human1_py, human1_vx, human1_vy, human1_radius],
                 [human2_px, human2_py, human2_vx, human2_vy, human2_radius],
@@ -604,11 +606,25 @@ class SocialNav(BaseEnv):
         - info: dictionary containing additional information about the environment.
         """
         ## Check input data is coherent with the environment
-        # TODO: Verify input data is coheren with the environment: humans_policy, n_humans
+        # TODO: Verify input data is coheren with the environment: n_humans
         ## Reset the environment with the custom episode data
         full_state = jnp.array(custom_episode["full_state"])
+        # If the humans policy is hsfm, convert the velocities to the body frame
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            full_state = lax.fori_loop(
+                0, 
+                self.n_humans, 
+                lambda i, x: x.at[i].set(jnp.array(
+                    [x[i,0],
+                    x[i,1],
+                    *jnp.matmul(jnp.array([[jnp.cos(x[i,4]), -jnp.sin(x[i,4])], [jnp.sin(x[i,4]), jnp.cos(x[i,4])]]), x[i,2:4]),
+                    x[i,4],
+                    x[i,5]]))
+                , full_state)
         humans_goal = jnp.array(custom_episode["humans_goal"])
-        humans_parameters = jnp.array(custom_episode["humans_parameters"])
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        humans_parameters = humans_parameters.at[:,0].set(jnp.array(custom_episode["humans_radius"]))
+        humans_parameters = humans_parameters.at[:,2].set(jnp.array(custom_episode["humans_speed"]))
         robot_goal = jnp.array(custom_episode["robot_goal"])
         # Obstacles
         static_obstacles = jnp.array(custom_episode["static_obstacles"])
@@ -620,5 +636,5 @@ class SocialNav(BaseEnv):
             "static_obstacles": static_obstacles, 
             "time": 0.,
             "current_scenario": custom_episode["scenario"]}
-        return full_state, self._get_obs(full_state, info, jnp.zeros((2,))), info
+        return full_state, key, self._get_obs(full_state, info, jnp.zeros((2,))), info
         

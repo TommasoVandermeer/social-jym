@@ -142,7 +142,8 @@ def test_k_trials(
     policy: BasePolicy, 
     model_params: dict, 
     time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
-    personal_space:float=0.5) -> tuple:
+    personal_space:float=0.5,
+    custom_episodes:dict=None) -> tuple:
     """
     This function tests a policy in a given environment for k trials and outputs a series of metrics.
 
@@ -158,6 +159,28 @@ def test_k_trials(
     output:
     - metrics: dict. A dictionary containing the metrics of the tests.
     """
+
+    # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
+    if custom_episodes is not None:
+        assert len(custom_episodes) == k, "The number of custom episodes must be equal to the number of trials."
+        custom_trials = True
+        custom_states = jnp.array([custom_episodes[i]["full_state"] for i in range(k)])
+        custom_robot_goals = jnp.array([custom_episodes[i]["robot_goal"] for i in range(k)])
+        custom_humans_goals = jnp.array([custom_episodes[i]["humans_goal"] for i in range(k)])
+        custom_static_obstacles = jnp.array([custom_episodes[i]["static_obstacles"] for i in range(k)])
+        custom_scenario = jnp.array([custom_episodes[i]["scenario"] for i in range(k)])
+        custom_humans_radius = jnp.array([custom_episodes[i]["humans_radius"] for i in range(k)])
+        custom_humans_speed = jnp.array([custom_episodes[i]["humans_speed"] for i in range(k)])
+    else:
+        custom_trials = False
+        # Dummy variables
+        custom_states = jnp.empty((k, env.n_humans+1, 6))
+        custom_robot_goals = jnp.empty((k, 2))
+        custom_humans_goals = jnp.empty((k, env.n_humans, 2))
+        custom_static_obstacles = jnp.empty((k, 1, 1, 2, 2))
+        custom_scenario = jnp.empty((k,), dtype=int)
+        custom_humans_radius = jnp.empty((k, env.n_humans))
+        custom_humans_speed = jnp.empty((k, env.n_humans))
 
     @loop_tqdm(k)
     @jit
@@ -182,7 +205,20 @@ def test_k_trials(
         seed, metrics = for_val
         policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
         ## Reset the environment
-        state, reset_key, obs, info = env.reset(reset_key)
+        state, reset_key, obs, info = lax.cond(
+            custom_trials, 
+            lambda x: env.reset_custom_episode(
+                x,
+                {"full_state": custom_states[i], 
+                 "robot_goal": custom_robot_goals[i], 
+                 "humans_goal": custom_humans_goals[i], 
+                 "static_obstacles": custom_static_obstacles[i], 
+                 "scenario": custom_scenario[i], 
+                 "humans_radius": custom_humans_radius[i], 
+                 "humans_speed": custom_humans_speed[i]}),
+            lambda x: env.reset(x), 
+            reset_key)
+        # state, reset_key, obs, info = env.reset(reset_key)
         initial_robot_position = state[-1,:2]
         robot_goal = info["robot_goal"]
         ## Episode loop
