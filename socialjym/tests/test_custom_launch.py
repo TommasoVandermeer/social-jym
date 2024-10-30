@@ -25,7 +25,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'circular_crossing',
+    'scenario': 'parallel_traffic',
     'humans_policy': 'sfm',
     'reward_function': reward_function
 }
@@ -36,9 +36,9 @@ env = SocialNav(**env_params)
 
 # Initialize robot policy
 vnet_params = load_crowdnav_policy(
-    "cadrl", 
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_1_sfm_hybrid_scenario/rl_model.pth"))
-policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
+    "sarl", 
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hybrid_scenario/rl_model.pth"))
+policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 
 # Load custom episodes data
 custom_data_dir = os.path.join(os.path.expanduser("~"),"Repos/social-jym/custom_episodes/",custom_data_file)

@@ -24,7 +24,7 @@ class SocialNav(BaseEnv):
             humans_policy='hsfm', 
             robot_visible=False, 
             circle_radius=7, 
-            traffic_height=5, # traffic_height=3 # Conform with Social-Navigation-PyEnvs
+            traffic_height=3, # traffic_height=3 # Conform with Social-Navigation-PyEnvs
             traffic_length=14,
             crowding_square_side=14,
             lidar_angular_range=jnp.pi,

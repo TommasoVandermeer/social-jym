@@ -125,8 +125,8 @@ class BaseEnv(ABC):
             @jit
             def _true_cond_bodi(i:int, info:dict, state:jnp.ndarray):
                 state = state.at[i,0:4].set(jnp.array([
-                        jnp.max(jnp.append(state[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2)+0.05, self.traffic_length/2+1)), 
-                        # jnp.max(jnp.append(state[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2), self.traffic_length/2)),
+                        # jnp.max(jnp.append(state[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2)+0.05, self.traffic_length/2+1)), 
+                        jnp.max(jnp.append(state[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2), self.traffic_length/2)), # Compliant with Social-Navigation-PyEnvs
                         jnp.clip(state[i,1], -self.traffic_height/2, self.traffic_height/2),
                         *state[i,2:4]]))
                 info["humans_goal"] = info["humans_goal"].at[i].set(jnp.array([info["humans_goal"][i,0], state[i,1]]))
@@ -137,8 +137,8 @@ class BaseEnv(ABC):
                 0, 
                 self.n_humans, 
                 lambda i, val: lax.cond(
-                    jnp.linalg.norm(val[1][i,0:2] - val[0]["humans_goal"][i]) <= val[0]["humans_parameters"][i,0] + 2, 
-                    # jnp.linalg.norm(val[1][i,0:2] - val[0]["humans_goal"][i]) <= 3,
+                    # jnp.linalg.norm(val[1][i,0:2] - val[0]["humans_goal"][i]) <= val[0]["humans_parameters"][i,0] + 2, 
+                    jnp.linalg.norm(val[1][i,0:2] - val[0]["humans_goal"][i]) <= 3, # Compliant with Social-Navigation-PyEnvs
                     lambda x: _true_cond_bodi(i, x[0], x[1]),
                     lambda x: x, 
                     val),
@@ -178,7 +178,7 @@ class BaseEnv(ABC):
         - new_state ((n_humans+1,6) or (n_humans+1,4)): jnp.ndarray containing the new state of the environment.
         """
         goals = jnp.vstack((info["humans_goal"], info["robot_goal"]))
-        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, *self.get_standard_humans_parameters(1)[0,1:]])))
+        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, 80., *self.get_standard_humans_parameters(1)[0,2:]])))
         static_obstacles = info["static_obstacles"]
         if self.robot_visible:
             new_state = jnp.vstack(
@@ -211,7 +211,7 @@ class BaseEnv(ABC):
         - new_state ((n_humans+1,6) or (n_humans+1,4)): jnp.ndarray containing the new state of the environment.
         """
         goals = jnp.vstack((info["humans_goal"], info["robot_goal"]))
-        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, *self.get_standard_humans_parameters(1)[0,1:-1], 0.1]))) # Add safety space of 0.1 to robot
+        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, 80., *self.get_standard_humans_parameters(1)[0,2:-1], 0.1]))) # Add safety space of 0.1 to robot
         static_obstacles = info["static_obstacles"]
         if self.robot_visible:
             new_state = self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)
