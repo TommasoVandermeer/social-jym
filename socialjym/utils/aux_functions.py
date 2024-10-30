@@ -113,10 +113,10 @@ def plot_state(
         if plot_time: ax.text(full_state[h,0],full_state[h,1], f"{num}", color=colors[h%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
         else: ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
     # Robot
-    circle = plt.Circle((full_state[-1,0],full_state[-1,1]), robot_radius, edgecolor="red", facecolor="red", fill=True, zorder=1)
+    circle = plt.Circle((full_state[-1,0],full_state[-1,1]), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
     ax.add_patch(circle)
-    if plot_time: ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color=colors[(len(full_state)-1)%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
-    else: ax.text(full_state[-1,0],full_state[-1,1], f"R", color="black", va="center", ha="center", size=10, zorder=1, weight='bold')
+    if plot_time: ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color="black", va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=3, weight='bold')
+    else: ax.text(full_state[-1,0],full_state[-1,1], f"R", color="black", va="center", ha="center", size=10, zorder=3, weight='bold')
 
 def plot_trajectory(ax:Axes, agents_positions:jnp.ndarray, humans_goal:jnp.ndarray, robot_goal:jnp.ndarray):
     colors = list(mcolors.TABLEAU_COLORS.values())
