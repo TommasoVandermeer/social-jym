@@ -21,7 +21,7 @@ reward_params = {
 reward_function = Reward1(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 5,
+    'n_humans': 25,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
@@ -50,33 +50,33 @@ n_episodes = len(custom_episodes)
 metrics = test_k_trials(n_episodes, 0, env, policy, vnet_params, reward_params["time_limit"], custom_episodes=custom_episodes)
 
 # Simulate some episodes
-episode_simulation_times = np.empty((n_episodes,))
-for i in range(n_episodes):
-    policy_key = random.PRNGKey(0)
-    reset_key = random.PRNGKey(0)
-    outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
-    state, reset_key, obs, info = env.reset_custom_episode(reset_key, custom_episodes[i])
-    all_states = np.array([state])
-    while outcome["nothing"]:
-        action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, 0.)
-        state, obs, info, reward, outcome = env.step(state,info,action,test=True)
-        all_states = np.vstack((all_states, [state]))
-    all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
-    ## Plot episode trajectory
-    figure, ax = plt.subplots(figsize=(10,10))
-    ax.axis('equal')
-    plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
-    for k in range(0,len(all_states),int(3/env_params['robot_dt'])):
-        plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], info['current_scenario'], info["humans_parameters"][:,0], env.robot_radius)
-    # plot last state
-    plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
-    plt.show()
-    ## Animate trajectory
-    animate_trajectory(
-        all_states, 
-        info['humans_parameters'][:,0], 
-        env.robot_radius, 
-        env_params['humans_policy'],
-        info['robot_goal'],
-        info['current_scenario'],
-        robot_dt=env_params['robot_dt'])
+# episode_simulation_times = np.empty((n_episodes,))
+# for i in range(n_episodes):
+#     policy_key = random.PRNGKey(0)
+#     reset_key = random.PRNGKey(0)
+#     outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
+#     state, reset_key, obs, info = env.reset_custom_episode(reset_key, custom_episodes[i])
+#     all_states = np.array([state])
+#     while outcome["nothing"]:
+#         action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, 0.)
+#         state, obs, info, reward, outcome = env.step(state,info,action,test=True)
+#         all_states = np.vstack((all_states, [state]))
+#     all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
+#     ## Plot episode trajectory
+#     figure, ax = plt.subplots(figsize=(10,10))
+#     ax.axis('equal')
+#     plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
+#     for k in range(0,len(all_states),int(3/env_params['robot_dt'])):
+#         plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], info['current_scenario'], info["humans_parameters"][:,0], env.robot_radius)
+#     # plot last state
+#     plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
+#     plt.show()
+#     ## Animate trajectory
+#     animate_trajectory(
+#         all_states, 
+#         info['humans_parameters'][:,0], 
+#         env.robot_radius, 
+#         env_params['humans_policy'],
+#         info['robot_goal'],
+#         info['current_scenario'],
+#         robot_dt=env_params['robot_dt'])

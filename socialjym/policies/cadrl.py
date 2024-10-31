@@ -43,20 +43,22 @@ class CADRL(BasePolicy):
         action_space = action_space.at[0].set(jnp.array([0., 0.])) # First action is to stay still
         action_space = lax.fori_loop(1,
                                      len(action_space), 
-                                     lambda i, acts: acts.at[i].set(jnp.array([speeds[i // self.rotation_samples] * jnp.cos(rotations[i % self.rotation_samples]),
-                                                                               speeds[i // self.rotation_samples] * jnp.sin(rotations[i % self.rotation_samples])])),
+                                     lambda i, acts: acts.at[i].set(jnp.array([
+                                        speeds[(i-1) % self.speed_samples] * jnp.cos(rotations[(i-1) // self.speed_samples]),
+                                        speeds[(i-1) % self.speed_samples] * jnp.sin(rotations[(i-1) // self.speed_samples])])),
                                      action_space)
         return action_space
 
     @partial(jit, static_argnames=("self"))
-    def _compute_action_value(self, next_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
+    def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
         # TODO: vmap this function
         n_humans = len(next_obs) - 1
-        # Apply robot action
-        next_obs = next_obs.at[n_humans,0:2].set(next_obs[n_humans,0:2] + action * self.dt)
-        next_obs = next_obs.at[n_humans,2:4].set(action)
         # Compute instantaneous reward
-        reward, _ = self.reward_function(next_obs, info, self.dt)
+        current_obs = current_obs.at[n_humans,2:4].set(action)
+        reward, _ = self.reward_function(current_obs, info, self.dt)
+        # Apply robot action
+        next_obs = next_obs.at[n_humans,2:4].set(action)
+        next_obs = next_obs.at[n_humans].set(self._propagate_obs(next_obs[-1]))
         # Re-parametrize observation, for each human: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
         vnet_inputs = self.batch_compute_vnet_input(next_obs[n_humans], next_obs[0:n_humans], info)
         # Compute the output of the value network (value of the state)
@@ -68,8 +70,8 @@ class CADRL(BasePolicy):
         return value, vnet_inputs
         
     @partial(jit, static_argnames=("self"))
-    def _batch_compute_action_value(self, next_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
-        return vmap(CADRL._compute_action_value, in_axes=(None,None,None,0,None))(self, next_obs, info, action, vnet_params)
+    def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
+        return vmap(CADRL._compute_action_value, in_axes=(None,None,None,None,0,None))(self, next_obs, current_obs, info, action, vnet_params)
     
     @partial(jit, static_argnames=("self"))
     def _propagate_obs(self, obs:jnp.ndarray) -> jnp.ndarray:
@@ -85,7 +87,7 @@ class CADRL(BasePolicy):
         vnet_input = jnp.zeros((self.vnet_input_size,))
         vnet_input = vnet_input.at[0].set(jnp.linalg.norm(info["robot_goal"] - robot_obs[0:2]))
         vnet_input = vnet_input.at[1].set(self.v_max)
-        vnet_input = vnet_input.at[2].set(0.)
+        vnet_input = vnet_input.at[2].set(robot_obs[5])
         vnet_input = vnet_input.at[3].set(robot_obs[4])
         vnet_input = vnet_input.at[4].set(robot_obs[2] * jnp.cos(rot) + robot_obs[3] * jnp.sin(rot))
         vnet_input = vnet_input.at[5].set(-robot_obs[2] * jnp.sin(rot) + robot_obs[3] * jnp.cos(rot))
@@ -120,7 +122,7 @@ class CADRL(BasePolicy):
             # Propagate humans state for dt time
             next_obs = jnp.vstack([self.batch_propagate_obs(obs[0:-1]),obs[-1]])
             # Compute action values
-            action_values, vnet_inputs = self._batch_compute_action_value(next_obs, info, self.action_space, vnet_params)
+            action_values, vnet_inputs = self._batch_compute_action_value(next_obs, obs, info, self.action_space, vnet_params)
             action = self.action_space[jnp.argmax(action_values)]
             vnet_input = vnet_inputs[jnp.argmax(action_values)]
             # Return action with highest value
