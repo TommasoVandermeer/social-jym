@@ -13,9 +13,9 @@ SCENARIOS = [
     "parallel_traffic", 
     "perpendicular_traffic", 
     "robot_crowding", 
-    "hybrid_scenario"]
+    "hybrid_scenario"] # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
 HUMAN_POLICIES = [
-    "orca",
+    "orca", # TODO: Implement JORCA (Jax based ORCA)
     "sfm", 
     "hsfm"]
 
@@ -32,6 +32,7 @@ class BaseEnv(ABC):
         traffic_height:float,
         traffic_length:float,
         crowding_square_side:float,
+        hybrid_scenario_subset: jnp.ndarray,
         lidar_angular_range:float,
         lidar_max_dist:float,
         lidar_num_rays:int
@@ -58,6 +59,7 @@ class BaseEnv(ABC):
         self.traffic_height = traffic_height
         self.traffic_length = traffic_length
         self.crowding_square_side = crowding_square_side
+        self.hybrid_scenario_subset = hybrid_scenario_subset
         self.lidar_angular_range = lidar_angular_range
         self.lidar_max_dist = lidar_max_dist
         self.lidar_num_rays = lidar_num_rays

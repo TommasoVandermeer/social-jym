@@ -27,6 +27,7 @@ class SocialNav(BaseEnv):
             traffic_height=3, # traffic_height=3 # Conform with Social-Navigation-PyEnvs
             traffic_length=14,
             crowding_square_side=14,
+            hybrid_scenario_subset=jnp.arange(0, len(SCENARIOS)-1, dtype=jnp.int32),
             lidar_angular_range=jnp.pi,
             lidar_max_dist=10.,
             lidar_num_rays=60,
@@ -43,6 +44,7 @@ class SocialNav(BaseEnv):
             traffic_height=traffic_height,
             traffic_length=traffic_length,
             crowding_square_side=crowding_square_side,
+            hybrid_scenario_subset=hybrid_scenario_subset,
             lidar_angular_range=lidar_angular_range, 
             lidar_max_dist=lidar_max_dist, 
             lidar_num_rays=lidar_num_rays)
@@ -90,8 +92,9 @@ class SocialNav(BaseEnv):
     def _reset(self, key:random.PRNGKey) -> tuple[jnp.ndarray, random.PRNGKey, dict]:
         key, subkey = random.split(key)
         if self.scenario == SCENARIOS.index('hybrid_scenario'):
-            # Randomly choose a scenario betweel all except "hybrid_scenario"
-            scenario = random.randint(subkey, shape=(), minval=0, maxval=len(SCENARIOS)-1)
+            # Randomly choose a scenario between all then ones included in the hybrid_scenario subset
+            randint = random.randint(subkey, shape=(), minval=0, maxval=len(self.hybrid_scenario_subset))
+            scenario = self.hybrid_scenario_subset[randint]
             key, subkey = random.split(key)
         else:
             scenario = self.scenario
@@ -194,8 +197,8 @@ class SocialNav(BaseEnv):
 
         # Randomly generate the humans' positions
         disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
-        # disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.traffic_length/2 + 1, 0.])) # Conform with Social-Navigation-PyEnvs
-        disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.traffic_length/2, 0.]))
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.traffic_length/2 + 1, 0.])) # Conform with Social-Navigation-PyEnvs
+        # disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.traffic_length/2, 0.]))
         
         @jit
         def _fori_body(i:int, for_val:tuple):
