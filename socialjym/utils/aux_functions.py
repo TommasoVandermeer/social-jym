@@ -387,7 +387,7 @@ def save_policy_params(
 
     if filename is None:
         today = date.today().strftime('%d_%m_%Y')
-        filename = f"{policy_name}_h{train_env_params['n_humans']}_{train_env_params['humans_policy']}_{train_env_params['scenario']}_r{reward_params['type'][-1]}_{today}.pkl"
+        filename = f"{policy_name}_nh{train_env_params['n_humans']}_hp{train_env_params['humans_policy']}_s{train_env_params['scenario']}_r{reward_params['type'][-1]}_{today}.pkl"
     else:
         filename = f"{filename}.pkl"
         

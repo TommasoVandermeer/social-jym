@@ -9,7 +9,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
-from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials
+from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, load_socialjym_policy, test_k_trials
 
 # Hyperparameters
 reward_params = {
@@ -34,10 +34,14 @@ custom_data_file = f"{env_params['scenario']}_{env_params['n_humans']}_humans.pk
 # Initialize and reset environment
 env = SocialNav(**env_params)
 
-# Initialize robot policy
-vnet_params = load_crowdnav_policy(
-    "sarl", 
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hybrid_scenario/rl_model.pth"))
+# Initialize CROWDNAV robot policy
+# vnet_params = load_crowdnav_policy(
+#     "sarl", 
+#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hybrid_scenario/rl_model.pth"))
+# policy = SARL(env.reward_function, dt=env_params['robot_dt'])
+
+# Initialize SOCIALJYM robot policy
+vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_nh5_hp2_s4_r1_04_11_2024.pkl"))
 policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 
 # Load custom episodes data

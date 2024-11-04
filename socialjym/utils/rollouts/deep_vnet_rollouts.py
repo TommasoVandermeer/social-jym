@@ -4,6 +4,8 @@ from typing import Callable
 from jax import jit, lax, random, vmap, debug
 import jax.numpy as jnp
 from jax_tqdm import loop_tqdm
+import pickle
+import os
 
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
@@ -27,15 +29,39 @@ def deep_vnet_rl_rollout(
         epsilon_start: float,
         epsilon_end: float,
         decay_rate: float,
-        time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
         target_update_interval: int = 50,
-        debugging: bool = False
+        custom_episodes: str = None,
+        debugging: bool = False,
 ) -> dict:
         
         # If policy is CADRL, the number of humans in the training environment must be 1
         if policy.name == "CADRL": assert env.n_humans == 1, "CADRL policy only supports training with one human."
         # For a correct shuffling of the buffer, the latter size must be a multiple of the number of batches times the batch size
         assert buffer_size % (num_batches * replay_buffer.batch_size) == 0, "The buffer size must be a multiple of the number of batches times the batch size."
+
+        # Load custom episodes if provided
+        if custom_episodes is not None: 
+                with open(custom_episodes, 'rb') as f:
+                        custom_episode_data = pickle.load(f)
+                train_episodes = len(custom_episode_data)
+                print(f"Custom episodes loaded: {train_episodes}")
+                # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
+                custom_states = jnp.array([custom_episode_data[i]["full_state"] for i in range(train_episodes)])
+                custom_robot_goals = jnp.array([custom_episode_data[i]["robot_goal"] for i in range(train_episodes)])
+                custom_humans_goals = jnp.array([custom_episode_data[i]["humans_goal"] for i in range(train_episodes)])
+                custom_static_obstacles = jnp.array([custom_episode_data[i]["static_obstacles"] for i in range(train_episodes)])
+                custom_scenario = jnp.array([custom_episode_data[i]["scenario"] for i in range(train_episodes)])
+                custom_humans_radius = jnp.array([custom_episode_data[i]["humans_radius"] for i in range(train_episodes)])
+                custom_humans_speed = jnp.array([custom_episode_data[i]["humans_speed"] for i in range(train_episodes)])
+        else:
+                # Dummy variables
+                custom_states = jnp.empty((train_episodes, env.n_humans+1, 6))
+                custom_robot_goals = jnp.empty((train_episodes, 2))
+                custom_humans_goals = jnp.empty((train_episodes, env.n_humans, 2))
+                custom_static_obstacles = jnp.empty((train_episodes, 1, 1, 2, 2))
+                custom_scenario = jnp.empty((train_episodes,), dtype=int)
+                custom_humans_radius = jnp.empty((train_episodes, env.n_humans))
+                custom_humans_speed = jnp.empty((train_episodes, env.n_humans))
 
         # Define the main rollout episode loop
         @loop_tqdm(train_episodes)
@@ -60,12 +86,24 @@ def deep_vnet_rl_rollout(
                 # Initialize the random keys
                 policy_key, buffer_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i)
                 # Reset the environment
-                state, reset_key, obs, info = env.reset(reset_key)
+                state, reset_key, obs, info = lax.cond(
+                custom_episodes is not None, 
+                lambda x: env.reset_custom_episode(
+                        x,
+                        {"full_state": custom_states[i], 
+                        "robot_goal": custom_robot_goals[i], 
+                        "humans_goal": custom_humans_goals[i], 
+                        "static_obstacles": custom_static_obstacles[i], 
+                        "scenario": custom_scenario[i], 
+                        "humans_radius": custom_humans_radius[i], 
+                        "humans_speed": custom_humans_speed[i]}),
+                lambda x: env.reset(x), 
+                reset_key)
                 # Episode loop
-                vnet_inputs = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans, policy.vnet_input_size))
-                rewards = jnp.empty((int(time_limit/env.robot_dt)+1,))
+                vnet_inputs = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1, env.n_humans, policy.vnet_input_size))
+                rewards = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1,))
                 init_outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
-                dones = jnp.empty((int(time_limit/env.robot_dt)+1,))
+                dones = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1,))
                 val_init = (state, obs, info, init_outcome, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, 0)
                 _, _, _, outcome, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, episode_steps = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, val_init)           
                 # Compute episode return
@@ -179,11 +217,35 @@ def deep_vnet_il_rollout(
         buffer_size: int,
         num_epochs: int,
         batch_size: int,
-        time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
+        custom_episodes: str = None,
 ) -> dict:
         
         # If policy is CADRL, the number of humans in the training environment must be 1
         if policy.name == "CADRL": assert env.n_humans == 1, "CADRL policy only supports training with one human."
+
+        # Load custom episodes if provided
+        if custom_episodes is not None: 
+                with open(custom_episodes, 'rb') as f:
+                        custom_episode_data = pickle.load(f)
+                train_episodes = len(custom_episode_data)
+                print(f"Custom episodes loaded: {train_episodes}")
+                # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
+                custom_states = jnp.array([custom_episode_data[i]["full_state"] for i in range(train_episodes)])
+                custom_robot_goals = jnp.array([custom_episode_data[i]["robot_goal"] for i in range(train_episodes)])
+                custom_humans_goals = jnp.array([custom_episode_data[i]["humans_goal"] for i in range(train_episodes)])
+                custom_static_obstacles = jnp.array([custom_episode_data[i]["static_obstacles"] for i in range(train_episodes)])
+                custom_scenario = jnp.array([custom_episode_data[i]["scenario"] for i in range(train_episodes)])
+                custom_humans_radius = jnp.array([custom_episode_data[i]["humans_radius"] for i in range(train_episodes)])
+                custom_humans_speed = jnp.array([custom_episode_data[i]["humans_speed"] for i in range(train_episodes)])
+        else:
+                # Dummy variables
+                custom_states = jnp.empty((train_episodes, env.n_humans+1, 6))
+                custom_robot_goals = jnp.empty((train_episodes, 2))
+                custom_humans_goals = jnp.empty((train_episodes, env.n_humans, 2))
+                custom_static_obstacles = jnp.empty((train_episodes, 1, 1, 2, 2))
+                custom_scenario = jnp.empty((train_episodes,), dtype=int)
+                custom_humans_radius = jnp.empty((train_episodes, env.n_humans))
+                custom_humans_speed = jnp.empty((train_episodes, env.n_humans))
 
         # Define the main rollout episode loop
         @loop_tqdm(train_episodes)
@@ -206,12 +268,24 @@ def deep_vnet_il_rollout(
                 # Initialize the random keys
                 policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i)
                 # Reset the environment
-                state, reset_key, obs, info = env.reset(reset_key)
+                state, reset_key, obs, info = lax.cond(
+                custom_episodes is not None, 
+                lambda x: env.reset_custom_episode(
+                        x,
+                        {"full_state": custom_states[i], 
+                        "robot_goal": custom_robot_goals[i], 
+                        "humans_goal": custom_humans_goals[i], 
+                        "static_obstacles": custom_static_obstacles[i], 
+                        "scenario": custom_scenario[i], 
+                        "humans_radius": custom_humans_radius[i], 
+                        "humans_speed": custom_humans_speed[i]}),
+                lambda x: env.reset(x), 
+                reset_key)
                 # For imitation learning, set the humans' safety space to 0.1
                 info["humans_parameters"] = info["humans_parameters"].at[:,-1].set(jnp.ones((env.n_humans,)) * 0.1) 
                 # Episode loop
-                vnet_inputs = jnp.empty((int(time_limit/env.robot_dt), env.n_humans, policy.vnet_input_size))
-                rewards = jnp.empty((int(time_limit/env.robot_dt),))
+                vnet_inputs = jnp.empty((int(env.reward_function.time_limit/env.robot_dt), env.n_humans, policy.vnet_input_size))
+                rewards = jnp.empty((int(env.reward_function.time_limit/env.robot_dt),))
                 init_outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
                 val_init = (state, obs, info, init_outcome, policy_key, vnet_inputs, rewards, 0)
                 _, _, _, outcome, policy_key, vnet_inputs, rewards, episode_steps = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, val_init)           
@@ -225,7 +299,11 @@ def deep_vnet_il_rollout(
                         lambda x: lax.fori_loop(
                                 0,
                                 episode_steps,
-                                lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], lax.fori_loop(k,episode_steps,lambda j, val: _compute_state_value_for_body(j, k, val),0.)), buff[1]), buff[1]+1),
+                                lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], lax.fori_loop(
+                                        k,
+                                        episode_steps,
+                                        lambda j, val: _compute_state_value_for_body(j, k, val),
+                                        0.)), buff[1]), buff[1]+1),
                                 (x[0], x[1])),
                         lambda x: x,
                         (buffer_state, current_buffer_size))
