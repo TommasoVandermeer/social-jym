@@ -236,7 +236,7 @@ def test_k_trials(
         def _compute_state_value_for_body(j:int, t:int, value:float):
             value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * all_rewards[j]
             return value 
-        metrics["returns"] = metrics["returns"].at[i].set(lax.fori_loop(0, episode_steps, lambda k, val: _compute_state_value_for_body(k, 0, val), 0.))
+        metrics["returns"] = metrics["returns"].at[i].set(lax.fori_loop(0, episode_steps, lambda rr, val: _compute_state_value_for_body(rr, 0, val), 0.))
         path_length = lax.fori_loop(0, episode_steps-1, lambda p, val: val + jnp.linalg.norm(all_states[p+1, -1, :2] - all_states[p, -1, :2]), 0.)
         metrics["episodic_spl"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.linalg.norm(robot_goal-initial_robot_position)/path_length), lambda x: x.at[i].set(0.), metrics["episodic_spl"])
         # Metrics computed only if the episode is successful

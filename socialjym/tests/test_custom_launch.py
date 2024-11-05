@@ -21,12 +21,12 @@ reward_params = {
 reward_function = Reward1(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 25,
+    'n_humans': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'parallel_traffic',
-    'humans_policy': 'sfm',
+    'scenario': 'circular_crossing',
+    'humans_policy': 'hsfm',
     'reward_function': reward_function
 }
 custom_data_file = f"{env_params['scenario']}_{env_params['n_humans']}_humans.pkl"
@@ -41,8 +41,8 @@ env = SocialNav(**env_params)
 # policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 
 # Initialize SOCIALJYM robot policy
-vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_nh5_hp2_s4_r1_04_11_2024.pkl"))
-policy = SARL(env.reward_function, dt=env_params['robot_dt'])
+vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_nh1_hp1_s4_r1_05_11_2024.pkl"))
+policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
 # Load custom episodes data
 custom_data_dir = os.path.join(os.path.expanduser("~"),"Repos/social-jym/custom_episodes/",custom_data_file)

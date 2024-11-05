@@ -27,7 +27,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'parallel_traffic',
+    'scenario': 'circular_crossing',
     'humans_policy': 'sfm',
     'reward_function': reward_function
 }
@@ -43,18 +43,18 @@ env = SocialNav(**env_params)
 #     "sarl", 
 #     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hybrid_scenario/rl_model.pth"))
 # policy = SARL(env.reward_function, dt=env_params['robot_dt'])
-vnet_params = load_crowdnav_policy(
-    "cadrl", 
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_1_sfm_hybrid_scenario/rl_model.pth"))
-policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
-
-## Load social-jym policy
-# vnet_params = load_socialjym_policy(
-#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_1_hsfm_hybrid_scenario_27_09_2024.pkl"))
+# vnet_params = load_crowdnav_policy(
+#     "cadrl", 
+#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_1_sfm_hybrid_scenario/rl_model.pth"))
 # policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
+## Load social-jym policy
+vnet_params = load_socialjym_policy(
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_nh1_hp1_s4_r1_05_11_2024.pkl"))
+policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
+
 ### Test Social-Navigation-PyEnvs policy
-metrics = test_k_trials(100, random_seed, env, policy, vnet_params, reward_params["time_limit"])
+# metrics = test_k_trials(100, random_seed, env, policy, vnet_params, reward_params["time_limit"])
 
 ### Simulate some episodes
 for i in range(n_episodes):

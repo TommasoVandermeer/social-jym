@@ -132,7 +132,6 @@ class SARL(CADRL):
 
     @partial(jit, static_argnames=("self"))
     def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
-        # TODO: vmap this function
         n_humans = len(next_obs) - 1
         # Compute instantaneous reward
         current_obs = current_obs.at[n_humans,2:4].set(action)
