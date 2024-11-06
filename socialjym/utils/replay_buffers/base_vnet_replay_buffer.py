@@ -45,15 +45,22 @@ class BaseVNetReplayBuffer(ABC):
         return experiences
 
     @partial(jit, static_argnames=("self"))
-    def shuffle(self, buffer_state: dict, key: random.PRNGKey) -> dict:
+    def shuffle(self, buffer_state: dict, key: random.PRNGKey, times: int = 1) -> dict:
             
             @partial(vmap, in_axes=(0, None))
             def shuffle_batch(indexes, buffer):
                 return tree_map(lambda x: x[indexes], buffer)
             
-            key, subkey = random.split(key)
-            indexes = random.permutation(subkey, self.buffer_size)
-            shuffled_buffer_state = shuffle_batch(indexes, buffer_state)
+            @jit
+            def _fori_body(i:int, val:tuple):
+                buffer_state, key = val
+                key, subkey = random.split(key)
+                indexes = random.permutation(subkey, self.buffer_size)
+                shuffled_buffer_state = shuffle_batch(indexes, buffer_state)
+                return shuffled_buffer_state, key
+            
+            val_end = lax.fori_loop(0, times, _fori_body, (buffer_state, key))
+            shuffled_buffer_state, key = val_end
             
             return shuffled_buffer_state, key
 

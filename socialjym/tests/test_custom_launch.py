@@ -21,11 +21,11 @@ reward_params = {
 reward_function = Reward1(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 5,
+    'n_humans': 25,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'circular_crossing',
+    'scenario': 'parallel_traffic',
     'humans_policy': 'hsfm',
     'reward_function': reward_function
 }

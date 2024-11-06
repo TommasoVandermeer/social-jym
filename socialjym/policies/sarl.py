@@ -9,22 +9,30 @@ from .cadrl import CADRL
 MLP_1_PARAMS = {
     "output_sizes": [150, 100],
     "activation": nn.relu,
-    "activate_final": True
+    "activate_final": True,
+    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
 }
 MLP_2_PARAMS = {
     "output_sizes": [100, 50],
     "activation": nn.relu,
-    "activate_final": False
+    "activate_final": False,
+    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
 }
 MLP_3_PARAMS = {
     "output_sizes": [150, 100, 100, 1],
     "activation": nn.relu,
-    "activate_final": False
+    "activate_final": False,
+    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
 }
 ATTENTION_LAYER_PARAMS = {
     "output_sizes": [100, 100, 1],
     "activation": nn.relu,
-    "activate_final": False
+    "activate_final": False,
+    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
 }
 
 class ValueNetwork(hk.Module):

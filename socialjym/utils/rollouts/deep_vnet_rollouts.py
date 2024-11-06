@@ -136,9 +136,9 @@ def deep_vnet_rl_rollout(
                         buffer_state, size, model_params, optimizer_state, losses = val
                         # Sample a batch of experiences from the replay buffer
                         experiences_batch = replay_buffer.iterate(
-                        buffer_state,
-                        size,
-                        ((((i * num_batches * replay_buffer.batch_size) % buffer_size) / replay_buffer.batch_size) + j)) 
+                                buffer_state,
+                                size,
+                                ((((i * num_batches * replay_buffer.batch_size) % buffer_size) / replay_buffer.batch_size) + j)) 
                         # Update the model parameters
                         model_params, optimizer_state, loss = policy.update(
                         model_params,
@@ -254,7 +254,7 @@ def deep_vnet_il_rollout(
                 @jit
                 def _while_body(val:tuple):
                         # Retrieve data from the tuple
-                        state, obs, info, outcome, policy_key, vnet_inputs, rewards, steps = val
+                        state, obs, info, outcome, vnet_inputs, rewards, steps = val
                         # Step
                         vnet_input = policy.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
                         state, obs, info, reward, outcome = env.imitation_learning_step(state, info)
@@ -262,33 +262,33 @@ def deep_vnet_il_rollout(
                         vnet_inputs = vnet_inputs.at[steps].set(vnet_input)
                         rewards = rewards.at[steps].set(reward)
                         steps += 1
-                        return (state, obs, info, outcome, policy_key, vnet_inputs, rewards, steps)
+                        return (state, obs, info, outcome, vnet_inputs, rewards, steps)
                 # Retrieve data from the tuple
                 model_params, buffer_state, current_buffer_size, returns = val
                 # Initialize the random keys
-                policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i)
+                reset_key = random.PRNGKey(random_seed + i)
                 # Reset the environment
                 state, reset_key, obs, info = lax.cond(
-                custom_episodes is not None, 
-                lambda x: env.reset_custom_episode(
-                        x,
-                        {"full_state": custom_states[i], 
-                        "robot_goal": custom_robot_goals[i], 
-                        "humans_goal": custom_humans_goals[i], 
-                        "static_obstacles": custom_static_obstacles[i], 
-                        "scenario": custom_scenario[i], 
-                        "humans_radius": custom_humans_radius[i], 
-                        "humans_speed": custom_humans_speed[i]}),
-                lambda x: env.reset(x), 
-                reset_key)
+                        custom_episodes is not None, 
+                        lambda x: env.reset_custom_episode(
+                                x,
+                                {"full_state": custom_states[i], 
+                                "robot_goal": custom_robot_goals[i], 
+                                "humans_goal": custom_humans_goals[i], 
+                                "static_obstacles": custom_static_obstacles[i], 
+                                "scenario": custom_scenario[i], 
+                                "humans_radius": custom_humans_radius[i], 
+                                "humans_speed": custom_humans_speed[i]}),
+                        lambda x: env.reset(x), 
+                        reset_key)
                 # For imitation learning, set the humans' safety space to 0.1
                 info["humans_parameters"] = info["humans_parameters"].at[:,-1].set(jnp.ones((env.n_humans,)) * 0.1) 
                 # Episode loop
                 vnet_inputs = jnp.empty((int(env.reward_function.time_limit/env.robot_dt), env.n_humans, policy.vnet_input_size))
                 rewards = jnp.empty((int(env.reward_function.time_limit/env.robot_dt),))
                 init_outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
-                val_init = (state, obs, info, init_outcome, policy_key, vnet_inputs, rewards, 0)
-                _, _, _, outcome, policy_key, vnet_inputs, rewards, episode_steps = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, val_init)           
+                val_init = (state, obs, info, init_outcome, vnet_inputs, rewards, 0)
+                _, _, _, outcome, vnet_inputs, rewards, episode_steps = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, val_init)           
                 # Update buffer state
                 @jit
                 def _compute_state_value_for_body(j:int, t:int, value:float):
@@ -325,7 +325,7 @@ def deep_vnet_il_rollout(
         model_params, buffer_state, current_buffer_size, returns = lax.fori_loop(0, train_episodes, _fori_body, val_init)
 
         # Initialize the buffer key
-        buffer_key = random.PRNGKey(random_seed)
+        buffer_key = random.PRNGKey(0) # We do not care to control the buffer shuffle
 
         # Update model parameters
         actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_size]))
@@ -358,6 +358,14 @@ def deep_vnet_il_rollout(
                 val_end = lax.fori_loop(0, optimization_steps, _model_update_fori_body, val_init)
                 val = (buffer_key, *val_end)
                 return val
+        
+        debug.print("Pre-shuffling the buffer...")
+        buffer_state, buffer_key = lax.cond(
+                actual_buffer_size == buffer_size, 
+                lambda x: replay_buffer.shuffle(x[0], x[1], 100),
+                lambda x: x,
+                (buffer_state, buffer_key))
+
         losses = jnp.empty([num_epochs,optimization_steps])
         val_init = (buffer_key, buffer_state, actual_buffer_size, model_params, optimizer_state, losses)
         debug.print("Optimizing model on generated experiences for {x} epochs...", x=num_epochs)
