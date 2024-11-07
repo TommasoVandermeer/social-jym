@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from functools import partial
-from jax import jit, vmap, tree_map, random, lax
+from jax import jit, vmap, tree_map, random, lax, debug
 import jax.numpy as jnp
 
 class BaseVNetReplayBuffer(ABC):
@@ -50,17 +50,18 @@ class BaseVNetReplayBuffer(ABC):
             @partial(vmap, in_axes=(0, None))
             def shuffle_batch(indexes, buffer):
                 return tree_map(lambda x: x[indexes], buffer)
-            
+
             @jit
             def _fori_body(i:int, val:tuple):
-                buffer_state, key = val
+                indexes, key = val
                 key, subkey = random.split(key)
-                indexes = random.permutation(subkey, self.buffer_size)
-                shuffled_buffer_state = shuffle_batch(indexes, buffer_state)
-                return shuffled_buffer_state, key
+                new_indexes = random.permutation(subkey, indexes)
+                return new_indexes, key
             
-            val_end = lax.fori_loop(0, times, _fori_body, (buffer_state, key))
-            shuffled_buffer_state, key = val_end
+            indexes = jnp.arange(self.buffer_size)
+            val_end = lax.fori_loop(0, times, _fori_body, (indexes, key))
+            indexes, key = val_end
+            shuffled_buffer_state = shuffle_batch(indexes, buffer_state)
             
             return shuffled_buffer_state, key
 

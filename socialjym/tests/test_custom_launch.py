@@ -26,7 +26,7 @@ env_params = {
     'humans_dt': 0.01,
     'robot_visible': True,
     'scenario': 'parallel_traffic',
-    'humans_policy': 'hsfm',
+    'humans_policy': 'sfm',
     'reward_function': reward_function
 }
 custom_data_file = f"{env_params['scenario']}_{env_params['n_humans']}_humans.pkl"
@@ -41,7 +41,7 @@ env = SocialNav(**env_params)
 # policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 
 # Initialize SOCIALJYM robot policy
-vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_nh1_hp1_s4_r1_05_11_2024.pkl"))
+vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_nh1_hp1_s4_r1_07_11_2024.pkl"))
 policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
 
 # Load custom episodes data

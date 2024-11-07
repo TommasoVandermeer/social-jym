@@ -14,7 +14,7 @@ from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_rl_rollout, de
 from socialjym.utils.aux_functions import epsilon_scaling_decay, plot_state, plot_trajectory, test_k_trials, save_policy_params
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 
-n_seeds = 10
+n_seeds = 2
 n_trials = 1000
 losses_at_last_epoch  = np.empty((n_seeds,))
 returns = np.empty((n_seeds,n_trials))
@@ -41,7 +41,7 @@ for seed in range(n_seeds):
         'scenario': 'hybrid_scenario',
         'hybrid_scenario_subset': jnp.array([0,1], np.int32), # Subset of the hybrid scenarios to use for training
         'reward_function': 'socialnav_reward1',
-        'custom_episodes': True, # If True, the episodes are loaded from a predefined set
+        'custom_episodes': False, # If True, the episodes are loaded from a predefined set
     }
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'socialnav_reward1': 
@@ -66,10 +66,10 @@ for seed in range(n_seeds):
     # Initialize robot policy and vnet params
     if training_hyperparams['policy_name'] == "cadrl": 
         policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
-        initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((policy.vnet_input_size,)))
+        initial_vnet_params = policy.model.init(0, jnp.zeros((policy.vnet_input_size,)))
     elif training_hyperparams['policy_name'] == "sarl":
         policy = SARL(env.reward_function, dt=env_params['robot_dt'])
-        initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
+        initial_vnet_params = policy.model.init(0, jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
     else: raise ValueError(f"{training_hyperparams['policy_name']} is not a valid policy name")
     # Initialize replay buffer
     replay_buffer = UniformVNetReplayBuffer(training_hyperparams['buffer_size'], training_hyperparams['batch_size'])
@@ -126,8 +126,8 @@ for seed in range(n_seeds):
 print("Loss at last epoch for each seed: \n", losses_at_last_epoch)
 # Plot boxplot of the returns for each seed
 figure, ax = plt.subplots(figsize=(10,10))
-ax.set(xlabel='Seed', ylabel='Return', xticks=np.arange(n_seeds+1), xticklabels=[""] + [str(i) for i in np.arange(n_seeds)], title='Seeds only change the weights and biases initialization')
-bplot = ax.boxplot(np.transpose(returns), showmeans=True, tick_labels=[str(i) for i in np.arange(n_seeds)], patch_artist=True, showfliers=False)
+ax.set(xlabel='Seed', ylabel='Return', title='Seeds only change the training episodes initial conditions')
+bplot = ax.boxplot(np.transpose(returns), tick_labels=[str(i) for i in np.arange(n_seeds)], showmeans=True, patch_artist=True, showfliers=False)
 for patch, color in zip(bplot['boxes'], list(mcolors.TABLEAU_COLORS.values())):
     patch.set_facecolor(color)
 plt.show()
