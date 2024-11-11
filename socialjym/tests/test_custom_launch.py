@@ -41,8 +41,8 @@ env = SocialNav(**env_params)
 # policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 
 # Initialize SOCIALJYM robot policy
-vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_nh1_hp1_s4_r1_07_11_2024.pkl"))
-policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
+vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_nh1_hp2_s4_r1_06_11_2024.pkl"))
+policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 
 # Load custom episodes data
 custom_data_dir = os.path.join(os.path.expanduser("~"),"Repos/social-jym/custom_episodes/",custom_data_file)

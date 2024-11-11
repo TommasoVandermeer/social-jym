@@ -15,9 +15,8 @@ from socialjym.utils.aux_functions import epsilon_scaling_decay, plot_state, plo
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 
 n_seeds = 10
-n_trials = 1000
-losses_at_last_epoch  = np.empty((n_seeds,))
-returns = np.empty((n_seeds,n_trials))
+rl_training_episodes = 10_000
+returns = np.empty((n_seeds,rl_training_episodes))
 
 for seed in range(n_seeds):
     print(f"\n\nSEED {seed}")
@@ -25,10 +24,10 @@ for seed in range(n_seeds):
         'random_seed': seed,
         'policy_name': 'cadrl', # 'cadrl' or 'sarl'
         'n_humans': 1,  # CADRL uses 1, SARL uses 5
-        'il_training_episodes': 3_000,
+        'il_training_episodes': 2_000,
         'il_learning_rate': 0.01,
         'il_num_epochs': 50, # Number of epochs to train the model after ending IL
-        'rl_training_episodes': 10_000,
+        'rl_training_episodes': rl_training_episodes,
         'rl_learning_rate': 0.001,
         'rl_num_batches': 100, # Number of batches to train the model after each RL episode
         'batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
@@ -66,10 +65,10 @@ for seed in range(n_seeds):
     # Initialize robot policy and vnet params
     if training_hyperparams['policy_name'] == "cadrl": 
         policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
-        initial_vnet_params = policy.model.init(0, jnp.zeros((policy.vnet_input_size,)))
+        initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((policy.vnet_input_size,)))
     elif training_hyperparams['policy_name'] == "sarl":
         policy = SARL(env.reward_function, dt=env_params['robot_dt'])
-        initial_vnet_params = policy.model.init(0, jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
+        initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
     else: raise ValueError(f"{training_hyperparams['policy_name']} is not a valid policy name")
     # Initialize replay buffer
     replay_buffer = UniformVNetReplayBuffer(training_hyperparams['buffer_size'], training_hyperparams['batch_size'])
@@ -110,24 +109,54 @@ for seed in range(n_seeds):
     buffer_state = il_out['buffer_state']
     current_buffer_size = il_out['current_buffer_size']
 
-    losses_at_last_epoch[seed] = il_out['losses'][-1]
+    # Initialize RL optimizer
+    optimizer = optax.sgd(learning_rate=training_hyperparams['rl_learning_rate'], momentum=0.9)
 
-    metrics = test_k_trials(
-        n_trials, 
-        training_hyperparams['il_training_episodes'], 
-        env, 
-        policy, 
-        il_model_params, 
-        reward_function.time_limit)
-    
-    returns[seed] = metrics['returns']
+    # Initialize custom episodes path
+    if training_hyperparams['custom_episodes']:
+        rl_custom_episodes_path = os.path.join(os.path.expanduser("~"),f"Repos/social-jym/custom_episodes/rl_{training_hyperparams['scenario']}_{training_hyperparams['n_humans']}_humans.pkl")
+    else:
+        rl_custom_episodes_path = None
 
-# Print the losses at the last epoch for each seed
-print("Loss at last epoch for each seed: \n", losses_at_last_epoch)
-# Plot boxplot of the returns for each seed
+    # Initialize RL rollout params
+    rl_rollout_params = {
+        'initial_vnet_params': il_model_params,
+        'train_episodes': training_hyperparams['rl_training_episodes'],
+        'random_seed': training_hyperparams['random_seed'] + training_hyperparams['il_training_episodes'],
+        'model': policy.model,
+        'optimizer': optimizer,
+        'buffer_state': buffer_state,
+        'current_buffer_size': current_buffer_size,
+        'policy': policy,
+        'env': env,
+        'replay_buffer': replay_buffer,
+        'buffer_size': training_hyperparams['buffer_size'],
+        'num_batches': training_hyperparams['rl_num_batches'],
+        'epsilon_decay_fn': epsilon_scaling_decay,
+        'epsilon_start': training_hyperparams['epsilon_start'],
+        'epsilon_end': training_hyperparams['epsilon_end'],
+        'decay_rate': training_hyperparams['epsilon_decay'],
+        'target_update_interval': training_hyperparams['target_update_interval'],
+        'custom_episodes': rl_custom_episodes_path,
+    }
+
+    # REINFORCEMENT LEARNING ROLLOUT
+    rl_out = deep_vnet_rl_rollout(**rl_rollout_params)
+
+    # Save the training returns
+    returns[seed] = rl_out['returns']    
+
+# Plot return curve for each seed
 figure, ax = plt.subplots(figsize=(10,10))
-ax.set(xlabel='Seed', ylabel='Return', title='Seeds only change the training episodes initial conditions')
-bplot = ax.boxplot(np.transpose(returns), tick_labels=[str(i) for i in np.arange(n_seeds)], showmeans=True, patch_artist=True, showfliers=False)
-for patch, color in zip(bplot['boxes'], list(mcolors.TABLEAU_COLORS.values())):
-    patch.set_facecolor(color)
+ax.set(
+    xlabel='Training episode', 
+    ylabel='Return moving average', 
+    title='Seeds change the training episodes initial conditions, shuffling and vnet initialization')
+window = 500
+for seed in range(n_seeds):
+    ax.plot(
+        np.arange(len(returns[seed])-(window-1))+window, 
+        jnp.convolve(returns[seed], jnp.ones(window,), 'valid') / window,
+        color = list(mcolors.TABLEAU_COLORS.values())[seed])
+figure.savefig(os.path.join(os.path.dirname(__file__),"rl_return_curves_for_different_seeds.eps"), format='eps')
 plt.show()
