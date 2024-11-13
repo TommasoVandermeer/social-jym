@@ -4,6 +4,7 @@ import optax
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.lines import Line2D
 import os
 
 from socialjym.envs.socialnav import SocialNav
@@ -14,9 +15,17 @@ from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_rl_rollout, de
 from socialjym.utils.aux_functions import epsilon_scaling_decay, plot_state, plot_trajectory, test_k_trials, save_policy_params
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 
-n_seeds = 10
+n_seeds = 2
+n_il_epochs = 50
+n_trials = 1000
 rl_training_episodes = 10_000
-returns = np.empty((n_seeds,rl_training_episodes))
+espilon_start = 0.5
+epsilon_end = 0.1
+
+loss_during_il = np.empty((n_seeds,n_il_epochs))
+returns_after_il = np.empty((n_seeds,n_trials))
+returns_during_rl = np.empty((n_seeds,rl_training_episodes))
+returns_after_rl = np.empty((n_seeds,n_trials))
 
 for seed in range(n_seeds):
     print(f"\n\nSEED {seed}")
@@ -26,13 +35,13 @@ for seed in range(n_seeds):
         'n_humans': 1,  # CADRL uses 1, SARL uses 5
         'il_training_episodes': 2_000,
         'il_learning_rate': 0.01,
-        'il_num_epochs': 50, # Number of epochs to train the model after ending IL
+        'il_num_epochs': n_il_epochs, # Number of epochs to train the model after ending IL
         'rl_training_episodes': rl_training_episodes,
         'rl_learning_rate': 0.001,
         'rl_num_batches': 100, # Number of batches to train the model after each RL episode
         'batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
-        'epsilon_start': 0.5,
-        'epsilon_end': 0.1,
+        'epsilon_start': espilon_start,
+        'epsilon_end': epsilon_end,
         'epsilon_decay': 4_000,
         'buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
         'target_update_interval': 50, # Number of episodes to wait before updating the target network for RL (the one used to compute the target state values)
@@ -108,6 +117,17 @@ for seed in range(n_seeds):
     il_model_params = il_out['model_params']
     buffer_state = il_out['buffer_state']
     current_buffer_size = il_out['current_buffer_size']
+    loss_during_il[seed] = il_out['losses']
+
+    # Execute tests to evaluate return after IL
+    metrics_after_il = test_k_trials(
+        n_trials, 
+        training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
+        env, 
+        policy, 
+        il_model_params, 
+        reward_function.time_limit)
+    returns_after_il[seed] = metrics_after_il['returns']
 
     # Initialize RL optimizer
     optimizer = optax.sgd(learning_rate=training_hyperparams['rl_learning_rate'], momentum=0.9)
@@ -144,19 +164,70 @@ for seed in range(n_seeds):
     rl_out = deep_vnet_rl_rollout(**rl_rollout_params)
 
     # Save the training returns
-    returns[seed] = rl_out['returns']    
+    rl_model_params = rl_out['model_params']
+    returns_during_rl[seed] = rl_out['returns']  
 
-# Plot return curve for each seed
+    # Execute tests to evaluate return after RL
+    metrics_after_rl = test_k_trials(
+        n_trials, 
+        training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
+        env, 
+        policy, 
+        rl_model_params, 
+        reward_function.time_limit)
+    returns_after_rl[seed] = metrics_after_rl['returns']  
+
+# Plot loss curve during IL for each seed
+figure0, ax0 = plt.subplots(figsize=(10,10))
+ax0.set(
+    xlabel='Epoch', 
+    ylabel='Loss', 
+    title='Loss during IL training for each seed')
+for seed in range(n_seeds):
+    ax0.plot(
+        np.arange(len(loss_during_il[seed])), 
+        loss_during_il[seed],
+        color = list(mcolors.TABLEAU_COLORS.values())[seed])
+figure0.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
+
+# Plot return during RL curve for each seed
 figure, ax = plt.subplots(figsize=(10,10))
+window = 500
 ax.set(
     xlabel='Training episode', 
-    ylabel='Return moving average', 
-    title='Seeds change the training episodes initial conditions, shuffling and vnet initialization')
-window = 500
+    ylabel=f"Return moving average over {window} episodes", 
+    title='Return during RL training for each seed')
 for seed in range(n_seeds):
     ax.plot(
-        np.arange(len(returns[seed])-(window-1))+window, 
-        jnp.convolve(returns[seed], jnp.ones(window,), 'valid') / window,
+        np.arange(len(returns_during_rl[seed])-(window-1))+window, 
+        jnp.convolve(returns_during_rl[seed], jnp.ones(window,), 'valid') / window,
         color = list(mcolors.TABLEAU_COLORS.values())[seed])
-figure.savefig(os.path.join(os.path.dirname(__file__),"rl_return_curves_for_different_seeds.eps"), format='eps')
-plt.show()
+figure.savefig(os.path.join(os.path.dirname(__file__),"return_curves_during_rl.eps"), format='eps')
+
+# Plot boxplot of the returns for each seed
+figure2, ax2 = plt.subplots(figsize=(10,10))
+ax2.set(xlabel='Seed', ylabel='Return', title='Return after IL and RL training for each seed')
+ax2.boxplot(np.transpose(returns_after_il), widths=0.4, patch_artist=True, 
+            boxprops=dict(facecolor="lightblue", edgecolor="lightblue", alpha=0.7),
+            whiskerprops=dict(color="blue", alpha=0.7),
+            capprops=dict(color="blue", alpha=0.7),
+            medianprops=dict(color="blue", alpha=0.7),
+            meanprops=dict(markerfacecolor="blue", markeredgecolor="blue"), 
+            showfliers=False,
+            showmeans=True, 
+            zorder=1)
+ax2.boxplot(np.transpose(returns_after_rl), widths=0.3, patch_artist=True, 
+            boxprops=dict(facecolor="lightgreen", edgecolor="lightgreen", alpha=0.4),
+            whiskerprops=dict(color="green", alpha=0.4),
+            capprops=dict(color="green", alpha=0.4),
+            medianprops=dict(color="green", alpha=0.4),
+            meanprops=dict(markerfacecolor="green", markeredgecolor="green"), 
+            showfliers=False,
+            showmeans=True,
+            zorder=2)
+legend_elements = [
+    Line2D([0], [0], color="lightblue", lw=4, label="After IL"),
+    Line2D([0], [0], color="lightgreen", lw=4, label="After RL")
+]
+ax2.legend(handles=legend_elements, loc="upper right")
+figure2.savefig(os.path.join(os.path.dirname(__file__),"return_curves_after_il_and_rl.eps"), format='png')
