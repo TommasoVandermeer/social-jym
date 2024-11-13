@@ -14,7 +14,7 @@ from socialjym.utils.replay_buffers.base_vnet_replay_buffer import BaseVNetRepla
 
 def deep_vnet_rl_rollout(
         initial_vnet_params: dict,
-        train_episodes: int,
+        train_episodes: int, # Number of episodes to train on, exploration episodes excluded
         random_seed: int,
         model: hk.Transformed,
         optimizer: optax.GradientTransformation,
@@ -31,6 +31,7 @@ def deep_vnet_rl_rollout(
         decay_rate: float,
         target_update_interval: int = 50,
         custom_episodes: str = None,
+        exploration_episodes: int = 0, # Number of episodes to explore before starting training
         debugging: bool = False,
 ) -> dict:
         
@@ -43,36 +44,43 @@ def deep_vnet_rl_rollout(
         if custom_episodes is not None: 
                 with open(custom_episodes, 'rb') as f:
                         custom_episode_data = pickle.load(f)
-                train_episodes = len(custom_episode_data)
-                print(f"Custom episodes loaded: {train_episodes}")
+                total_episodes = len(custom_episode_data)
+                train_episodes = total_episodes - exploration_episodes
+                print(f"Custom episodes loaded: {total_episodes}")
                 # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
-                custom_states = jnp.array([custom_episode_data[i]["full_state"] for i in range(train_episodes)])
-                custom_robot_goals = jnp.array([custom_episode_data[i]["robot_goal"] for i in range(train_episodes)])
-                custom_humans_goals = jnp.array([custom_episode_data[i]["humans_goal"] for i in range(train_episodes)])
-                custom_static_obstacles = jnp.array([custom_episode_data[i]["static_obstacles"] for i in range(train_episodes)])
-                custom_scenario = jnp.array([custom_episode_data[i]["scenario"] for i in range(train_episodes)])
-                custom_humans_radius = jnp.array([custom_episode_data[i]["humans_radius"] for i in range(train_episodes)])
-                custom_humans_speed = jnp.array([custom_episode_data[i]["humans_speed"] for i in range(train_episodes)])
+                custom_states = jnp.array([custom_episode_data[i]["full_state"] for i in range(total_episodes)])
+                custom_robot_goals = jnp.array([custom_episode_data[i]["robot_goal"] for i in range(total_episodes)])
+                custom_humans_goals = jnp.array([custom_episode_data[i]["humans_goal"] for i in range(total_episodes)])
+                custom_static_obstacles = jnp.array([custom_episode_data[i]["static_obstacles"] for i in range(total_episodes)])
+                custom_scenario = jnp.array([custom_episode_data[i]["scenario"] for i in range(total_episodes)])
+                custom_humans_radius = jnp.array([custom_episode_data[i]["humans_radius"] for i in range(total_episodes)])
+                custom_humans_speed = jnp.array([custom_episode_data[i]["humans_speed"] for i in range(total_episodes)])
         else:
+                total_episodes = train_episodes + exploration_episodes
                 # Dummy variables
-                custom_states = jnp.empty((train_episodes, env.n_humans+1, 6))
-                custom_robot_goals = jnp.empty((train_episodes, 2))
-                custom_humans_goals = jnp.empty((train_episodes, env.n_humans, 2))
-                custom_static_obstacles = jnp.empty((train_episodes, 1, 1, 2, 2))
-                custom_scenario = jnp.empty((train_episodes,), dtype=int)
-                custom_humans_radius = jnp.empty((train_episodes, env.n_humans))
-                custom_humans_speed = jnp.empty((train_episodes, env.n_humans))
+                custom_states = jnp.empty((total_episodes, env.n_humans+1, 6))
+                custom_robot_goals = jnp.empty((total_episodes, 2))
+                custom_humans_goals = jnp.empty((total_episodes, env.n_humans, 2))
+                custom_static_obstacles = jnp.empty((total_episodes, 1, 1, 2, 2))
+                custom_scenario = jnp.empty((total_episodes,), dtype=int)
+                custom_humans_radius = jnp.empty((total_episodes, env.n_humans))
+                custom_humans_speed = jnp.empty((total_episodes, env.n_humans))
 
         # Define the main rollout episode loop
-        @loop_tqdm(train_episodes)
+        @loop_tqdm(total_episodes)
         @jit
         def _fori_body(i: int, val:tuple):
+                ## Generate experience
                 @jit
                 def _while_body(val:tuple):
                         # Retrieve data from the tuple
                         state, obs, info, outcome, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, steps = val
                         # Step
-                        epsilon = epsilon_decay_fn(epsilon_start, epsilon_end, i, decay_rate)
+                        epsilon = lax.cond(
+                                i >= exploration_episodes,
+                                lambda x: epsilon_decay_fn(*x),
+                                lambda _: 1.0,
+                                (epsilon_start, epsilon_end, i - exploration_episodes, decay_rate))
                         action, policy_key, vnet_input = policy.act(policy_key, obs, info, model_params, epsilon)
                         state, obs, info, reward, outcome = env.step(state, info, action)
                         # Save data
@@ -131,61 +139,47 @@ def deep_vnet_rl_rollout(
                         (buffer_state,buffer_key))
                 ## Update model parameters - Iterate over the buffer in num_batches
                 @jit
-                def _model_update_fori_body(j:int, val:tuple):
-                        # Retrieve data from the tuple
-                        buffer_state, size, model_params, optimizer_state, losses = val
-                        # Sample a batch of experiences from the replay buffer
-                        experiences_batch = replay_buffer.iterate(
-                                buffer_state,
-                                size,
-                                ((((i * num_batches * replay_buffer.batch_size) % buffer_size) / replay_buffer.batch_size) + j)) 
-                        # Update the model parameters
-                        model_params, optimizer_state, loss = policy.update(
-                        model_params,
-                        optimizer,
-                        optimizer_state,
-                        experiences_batch)
-                        # Save the losses
-                        losses = losses.at[j].set(loss)
-                        return (buffer_state, size, model_params, optimizer_state, losses)
-                all_losses = jnp.empty([num_batches])
-                val_init = (buffer_state, actual_buffer_size, model_params, optimizer_state, all_losses)
-                buffer_state, _, model_params, optimizer_state, all_losses = lax.fori_loop(0, num_batches,_model_update_fori_body, val_init)
-                ## Update model parameters - Randomly sample experiences from the buffer
-                # @jit
-                # def _model_update_fori_body(j:int, val:tuple):
-                #         # Retrieve data from the tuple
-                #         buffer_key, buffer_state, size, model_params, optimizer_state, losses = val
-                #         # Sample a batch of experiences from the replay buffer
-                #         experiences_batch, buffer_key = replay_buffer.sample(
-                #         buffer_key,
-                #         buffer_state,
-                #         size)
-                #         # Update the model parameters
-                #         model_params, optimizer_state, loss = policy.update(
-                #         model_params,
-                #         optimizer,
-                #         optimizer_state,
-                #         experiences_batch)
-                #         # Save the losses
-                #         losses = losses.at[j].set(loss)
-                #         return (buffer_key, buffer_state, size, model_params, optimizer_state, losses)
-                # all_losses = jnp.empty([num_batches])
-                # val_init = (buffer_key, buffer_state, actual_buffer_size, model_params, optimizer_state, all_losses)
-                # buffer_key, buffer_state, _, model_params, optimizer_state, all_losses = lax.fori_loop(0, num_batches,_model_update_fori_body, val_init)
-                # Update target network
-                target_model_params = lax.cond(i % target_update_interval == 0, lambda x: model_params, lambda x: x, target_model_params)
-                # Save data
-                losses = losses.at[i].set(jnp.mean(all_losses))
-                returns = returns.at[i].set(cumulative_episode_reward)
-                # DEBUG: print the mean loss for this episode and the return
-                lax.cond(
-                        jnp.all(jnp.array([debugging, i % 100 == 0])),
-                        lambda _: debug.print("Episode {x} - Mean loss over {y} batches: {z} - Return: {w}", x=i, y=num_batches, z=losses[i], w=returns[i]),
+                def _model_update_cond_body(cond_val:tuple):
+                        model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns = cond_val
+                        @jit
+                        def _model_update_fori_body(j:int, val:tuple):
+                                # Retrieve data from the tuple
+                                buffer_state, size, model_params, optimizer_state, losses = val
+                                # Sample a batch of experiences from the replay buffer
+                                experiences_batch = replay_buffer.iterate(
+                                        buffer_state,
+                                        size,
+                                        (((((i-exploration_episodes) * num_batches * replay_buffer.batch_size) % buffer_size) / replay_buffer.batch_size) + j)) 
+                                # Update the model parameters
+                                model_params, optimizer_state, loss = policy.update(
+                                model_params,
+                                optimizer,
+                                optimizer_state,
+                                experiences_batch)
+                                # Save the losses
+                                losses = losses.at[j].set(loss)
+                                return (buffer_state, size, model_params, optimizer_state, losses)
+                        all_losses = jnp.empty([num_batches])
+                        val_init = (buffer_state, actual_buffer_size, model_params, optimizer_state, all_losses)
+                        buffer_state, _, model_params, optimizer_state, all_losses = lax.fori_loop(0, num_batches,_model_update_fori_body, val_init)
+                        # Update target network
+                        target_model_params = lax.cond((i-exploration_episodes) % target_update_interval == 0, lambda x: model_params, lambda x: x, target_model_params)
+                        # Save data
+                        losses = losses.at[i-exploration_episodes].set(jnp.mean(all_losses))
+                        returns = returns.at[i-exploration_episodes].set(cumulative_episode_reward)
+                        # DEBUG: print the mean loss for this episode and the return
+                        lax.cond(
+                                jnp.all(jnp.array([debugging, (i-exploration_episodes) % 100 == 0])),
+                                lambda _: debug.print("Episode {x} - Mean loss over {y} batches: {z} - Return: {w}", x=(i-exploration_episodes), y=num_batches, z=losses[i-exploration_episodes], w=returns[i-exploration_episodes]),
+                                lambda x: x, 
+                                None)
+                        return (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
+                # Update model parameters - val = (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
+                val = lax.cond(
+                        i >= exploration_episodes,
+                        _model_update_cond_body, 
                         lambda x: x, 
-                        None)
-                # Return the updated values
-                val = (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
+                        (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns))
                 return val
 
         # Initialize the array where to save data
@@ -196,7 +190,8 @@ def deep_vnet_rl_rollout(
         # Create initial values for training loop
         val_init = (initial_vnet_params, initial_vnet_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
         # Execute the training loop
-        vals = lax.fori_loop(0, train_episodes, _fori_body, val_init)
+        debug.print("Performing RL training for {x} episodes after {y} exploration episodes", x=train_episodes, y=exploration_episodes)
+        vals = lax.fori_loop(0, total_episodes, _fori_body, val_init)
 
         output_dict = {}
         keys = ["model_params", "target_model_params", "optimizer_state", "buffer_state", "current_buffer_size", "losses", "returns"]
