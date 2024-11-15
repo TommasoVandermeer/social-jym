@@ -6,7 +6,7 @@ from functools import partial
 from types import FunctionType
 
 from socialjym.utils.aux_functions import is_multiple
-from .base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES
+from .base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS
 
 class SocialNav(BaseEnv):
     """
@@ -31,6 +31,7 @@ class SocialNav(BaseEnv):
             lidar_angular_range=jnp.pi,
             lidar_max_dist=10.,
             lidar_num_rays=60,
+            kinematics='holonomic'
         ) -> None:
         ## BaseEnv initialization
         super().__init__(
@@ -47,7 +48,8 @@ class SocialNav(BaseEnv):
             hybrid_scenario_subset=hybrid_scenario_subset,
             lidar_angular_range=lidar_angular_range, 
             lidar_max_dist=lidar_max_dist, 
-            lidar_num_rays=lidar_num_rays)
+            lidar_num_rays=lidar_num_rays,
+            kinematics=kinematics)
         ## Args validation
         assert is_multiple(robot_dt, humans_dt), "The robot's time step must be a multiple of the humans' time step."
         ## Env initialization
@@ -76,7 +78,7 @@ class SocialNav(BaseEnv):
                 [human2_px, human2_py, human2_vx, human2_vy, human2_radius, padding],
                 ...
                 [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius, padding],
-                [robot_px, robot_py, robot_ux, robot_uy, robot_radius, robot_theta]].
+                [robot_px, robot_py, robot_u1, robot_u2, robot_radius, robot_theta]].
         """
         obs = jnp.zeros((self.n_humans+1, 6))
         if self.humans_policy == HUMAN_POLICIES.index('hsfm'): # In case of hsfm convert humans body velocities to linear velocities
@@ -605,7 +607,7 @@ class SocialNav(BaseEnv):
                 [human2_px, human2_py, human2_vx, human2_vy, human2_radius],
                 ...
                 [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius],
-                [robot_px, robot_py, robot_ux, robot_uy, robot_radius]].
+                [robot_px, robot_py, robot_u1, robot_u2, robot_radius]].
         - info: dictionary containing additional information about the environment.
         """
         ## Check input data is coherent with the environment

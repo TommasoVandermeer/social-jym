@@ -5,6 +5,7 @@ import haiku as hk
 from types import FunctionType
 
 from .cadrl import CADRL
+from socialjym.envs.base_env import ROBOT_KINEMATICS
 
 MLP_1_PARAMS = {
     "output_sizes": [150, 100],
@@ -122,15 +123,15 @@ def value_network(x):
     return vnet(x)
 
 class SARL(CADRL):
-    def __init__(self, reward_function:FunctionType, v_max=1., gamma=0.9, dt=0.25, speed_samples=5, rotation_samples=16) -> None:
+    def __init__(self, reward_function:FunctionType, v_max=1., gamma=0.9, dt=0.25, wheels_distance=0.7, kinematics='holonomic') -> None:
         # Configurable attributes
         super().__init__(
             reward_function=reward_function, 
             v_max=v_max, 
+            wheels_distance=wheels_distance,
             gamma=gamma, 
-            dt=dt, 
-            speed_samples=speed_samples, 
-            rotation_samples=rotation_samples
+            dt=dt,
+            kinematics=kinematics
         )
         # Default attributes
         self.name = "SARL"

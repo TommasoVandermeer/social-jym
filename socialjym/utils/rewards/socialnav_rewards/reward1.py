@@ -40,7 +40,7 @@ class Reward1(BaseReward):
         This is the classical sparse reward with personal space invasion penalization used in the Social Navigation literature.
 
         args:
-        - obs: observation of the current state of the environment
+        - obs: observation of the current state of the environment (IMPORTANT: action is embedded in here)
         - info: dictionary containing additional information about the environment
         - dt: time step of the simulation
 

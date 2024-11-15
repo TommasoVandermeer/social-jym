@@ -6,6 +6,7 @@ from types import FunctionType
 import optax
 
 from .base_policy import BasePolicy
+from socialjym.envs.base_env import ROBOT_KINEMATICS
 
 VN_PARAMS = {
     "output_sizes": [150, 100, 100, 1],
@@ -21,34 +22,83 @@ def value_network(x):
     return mlp(x)
 
 class CADRL(BasePolicy):
-    def __init__(self, reward_function:FunctionType, v_max=1., gamma=0.9, dt=0.25, speed_samples=5, rotation_samples=16) -> None:
+    def __init__(self, reward_function:FunctionType, v_max=1., gamma=0.9, dt=0.25, wheels_distance=0.7, kinematics='holonomic') -> None:
         # Configurable attributes
         super().__init__(gamma)
         self.reward_function = reward_function
         self.v_max = v_max
+        self.wheels_distance = wheels_distance # Distance between the wheels of the robot (used for unicycle kinematics). Value taken from real TurtleBot4 robot.
         self.dt = dt
-        self.speed_samples = speed_samples
-        self.rotation_samples = rotation_samples
-        self.action_space = self._build_action_space()
+        self.kinematics = ROBOT_KINEMATICS.index(kinematics)
         # Default attributes
         self.name = "CADRL"
         self.vnet_input_size = 13
         self.model = value_network
+        self.action_space = self._build_action_space()
 
     # Private methods
 
-    @partial(jit, static_argnames=("self"))
+    # @partial(jit, static_argnames=("self"))
     def _build_action_space(self) -> jnp.ndarray:
-        speeds = lax.fori_loop(0,self.speed_samples,lambda i, speeds: speeds.at[i].set((jnp.exp((i + 1) / self.speed_samples) - 1) / (jnp.e - 1) * self.v_max), jnp.zeros((self.speed_samples,)))
-        rotations = jnp.linspace(0, 2 * jnp.pi, self.rotation_samples, endpoint=False)
-        action_space = jnp.empty((self.speed_samples * self.rotation_samples + 1,2))
-        action_space = action_space.at[0].set(jnp.array([0., 0.])) # First action is to stay still
-        action_space = lax.fori_loop(1,
-                                     len(action_space), 
-                                     lambda i, acts: acts.at[i].set(jnp.array([
-                                        speeds[(i-1) % self.speed_samples] * jnp.cos(rotations[(i-1) // self.speed_samples]),
-                                        speeds[(i-1) % self.speed_samples] * jnp.sin(rotations[(i-1) // self.speed_samples])])),
-                                     action_space)
+        # TODO: Adjust this mess, it's not very readable
+        if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+            speed_samples = 5
+            rotation_samples = 16
+            speeds = lax.fori_loop(0,speed_samples,lambda i, speeds: speeds.at[i].set((jnp.exp((i + 1) / speed_samples) - 1) / (jnp.e - 1) * self.v_max), jnp.zeros((speed_samples,)))
+            rotations = jnp.linspace(0, 2 * jnp.pi, rotation_samples, endpoint=False)
+            action_space = jnp.empty((speed_samples * rotation_samples + 1,2))
+            action_space = action_space.at[0].set(jnp.array([0., 0.])) # First action is to stay still
+            action_space = lax.fori_loop(1,
+                                        len(action_space), 
+                                        lambda i, acts: acts.at[i].set(jnp.array([
+                                            speeds[(i-1) % speed_samples] * jnp.cos(rotations[(i-1) // speed_samples]),
+                                            speeds[(i-1) % speed_samples] * jnp.sin(rotations[(i-1) // speed_samples])])),
+                                        action_space)
+        elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'): # In this case speed samples are doubles and rotation samples are halved because of the kinematic constraints
+            ## METHOD 1
+            # speed_samples = 4
+            # angular_speed_samples = 19
+            # speeds = jnp.linspace(-self.v_max, self.v_max, speed_samples)
+            # angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), angular_speed_samples)
+            # action_space = jnp.empty((speed_samples * angular_speed_samples + 5,2))
+            # action_space = action_space.at[0].set(jnp.array([0., 0.])) # First action is to stay still
+            # action_space = action_space.at[1].set(jnp.array([self.v_max, 0.])) # Second action is to move forward at max speed
+            # action_space = action_space.at[2].set(jnp.array([-self.v_max, 0.])) # Second action is to move backwards at max speed
+            # action_space = action_space.at[3].set(jnp.array([0., self.v_max/(self.wheels_distance/2)])) # Second action is to rotate counter-clockwise at max speed
+            # action_space = action_space.at[4].set(jnp.array([0., -self.v_max/(self.wheels_distance/2)])) # Second action is to rotate clockwise at max speed
+            # action_space = lax.fori_loop(5,
+            #                             len(action_space), 
+            #                             lambda i, acts: acts.at[i].set(jnp.array([
+            #                                 (speeds[(i-5) // angular_speed_samples] / self.v_max) * (self.v_max - jnp.abs(angular_speeds[(i-5) % angular_speed_samples]) * (self.wheels_distance/2)),
+            #                                 angular_speeds[(i-5) % angular_speed_samples]])),
+            #                             action_space)
+            ## METHOD 2
+            action_space = jnp.empty((81,2))
+            action_space = action_space.at[0].set(jnp.array([0., 0.])) # First action is to stay still
+            action_space = action_space.at[1].set(jnp.array([self.v_max, 0.])) # Second action is to move forward at max speed
+            action_space = action_space.at[2].set(jnp.array([-self.v_max, 0.])) # Second action is to move backwards at max speed
+            action_space = action_space.at[3].set(jnp.array([0., self.v_max/(self.wheels_distance/2)])) # Second action is to rotate counter-clockwise at max speed
+            action_space = action_space.at[4].set(jnp.array([0., -self.v_max/(self.wheels_distance/2)])) # Second action is to rotate clockwise at max speed
+            action_space = action_space.at[5:7].set(jnp.c_[jnp.linspace(-self.v_max, 0, 4)[1:-1], jnp.zeros((2,))]) # Actions to move bacwards at different speeds
+            action_space = action_space.at[7:9].set(jnp.c_[jnp.linspace(0, self.v_max, 4)[1:-1], jnp.zeros((2,))]) # Actions to move forwards at different speeds
+            # half_w_samples = 9
+            # v_for_each_w = [1, 1, 2, 2, 2, 2, 2, 3, 3]
+            half_w_samples = 6
+            v_for_each_w = [2,2,3,3,4,4]
+            first_quadrant_points = jnp.empty((18,2))
+            for i in range(half_w_samples):
+                angular_speed = ((half_w_samples-i) / (half_w_samples + 2)) * (self.v_max/(self.wheels_distance/2))
+                for j in range(v_for_each_w[i]):
+                    first_quadrant_points = first_quadrant_points.at[sum(v_for_each_w[0:i])+j].set(jnp.array([
+                        ((j+1) / (v_for_each_w[i] + 1)) / self.v_max * (self.v_max - angular_speed * (self.wheels_distance/2)),
+                        angular_speed]))
+            second_quadrant_points = jnp.array([-first_quadrant_points[:,0], first_quadrant_points[:,1]]).T
+            third_quadrant_points = jnp.array([-first_quadrant_points[:,0], -first_quadrant_points[:,1]]).T
+            fourth_quadrant_points = jnp.array([first_quadrant_points[:,0], -first_quadrant_points[:,1]]).T
+            action_space = action_space.at[9:27].set(first_quadrant_points)
+            action_space = action_space.at[27:45].set(second_quadrant_points)
+            action_space = action_space.at[45:63].set(third_quadrant_points)
+            action_space = action_space.at[63:81].set(fourth_quadrant_points)
         return action_space
 
     @partial(jit, static_argnames=("self"))

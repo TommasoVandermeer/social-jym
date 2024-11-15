@@ -159,4 +159,4 @@ ax2.boxplot(np.transpose(returns_after_rl), widths=0.3, patch_artist=True,
             showfliers=False,
             showmeans=True,
             zorder=2)
-figure2.savefig(os.path.join(os.path.dirname(__file__),"return_curves_after_rl_no_il.eps"), format='png')
+figure2.savefig(os.path.join(os.path.dirname(__file__),"return_curves_after_rl_no_il.png"), format='png')

@@ -18,6 +18,9 @@ HUMAN_POLICIES = [
     "orca", # TODO: Implement JORCA (Jax based ORCA)
     "sfm", 
     "hsfm"]
+ROBOT_KINEMATICS = [
+    "holonomic",
+    "unicycle"]
 
 class BaseEnv(ABC):
     def __init__(
@@ -35,11 +38,13 @@ class BaseEnv(ABC):
         hybrid_scenario_subset: jnp.ndarray,
         lidar_angular_range:float,
         lidar_max_dist:float,
-        lidar_num_rays:int
+        lidar_num_rays:int,
+        kinematics:str
     ) -> None:
         ## Args validation
         assert scenario in SCENARIOS, f"Invalid scenario. Choose one of {SCENARIOS}"
         assert humans_policy in HUMAN_POLICIES, f"Invalid human policy. Choose one of {HUMAN_POLICIES}"
+        assert kinematics in ROBOT_KINEMATICS, f"Invalid robot kinematics. Choose one of {ROBOT_KINEMATICS}"
         ## Env initialization
         self.robot_radius = robot_radius
         self.humans_dt = humans_dt
@@ -63,6 +68,8 @@ class BaseEnv(ABC):
         self.lidar_angular_range = lidar_angular_range
         self.lidar_max_dist = lidar_max_dist
         self.lidar_num_rays = lidar_num_rays
+        self.kinematics = ROBOT_KINEMATICS.index(kinematics)
+        
 
     # --- Private methods ---
 

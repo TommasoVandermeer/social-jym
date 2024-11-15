@@ -204,7 +204,8 @@ ax2.boxplot(np.transpose(returns_after_il), widths=0.4, patch_artist=True,
             meanprops=dict(markerfacecolor="blue", markeredgecolor="blue"), 
             showfliers=False,
             showmeans=True, 
-            zorder=1)
+            zorder=1,
+            tick_labels=[f"({espilon_starts[i]} , {epsilon_ends[i]})" for i in range(n_espilons)])
 ax2.boxplot(np.transpose(returns_after_rl), widths=0.3, patch_artist=True, 
             boxprops=dict(facecolor="lightcoral", edgecolor="lightcoral", alpha=0.4),
             whiskerprops=dict(color="coral", alpha=0.4),
