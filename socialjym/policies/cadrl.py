@@ -23,6 +23,12 @@ def value_network(x):
 
 class CADRL(BasePolicy):
     def __init__(self, reward_function:FunctionType, v_max=1., gamma=0.9, dt=0.25, wheels_distance=0.7, kinematics='holonomic') -> None:
+        # Inputs validation
+        assert v_max > 0, "v_max must be positive"
+        assert dt > 0, "dt must be positive"
+        assert wheels_distance > 0, "wheels_distance must be positive"
+        assert kinematics in ROBOT_KINEMATICS, f"kinematics must be one of {ROBOT_KINEMATICS}"
+        assert reward_function.kinematics == ROBOT_KINEMATICS.index(kinematics), "Reward function kinematics must match the robot policy kinematics"
         # Configurable attributes
         super().__init__(gamma)
         self.reward_function = reward_function
@@ -126,7 +132,11 @@ class CADRL(BasePolicy):
     
     @partial(jit, static_argnames=("self"))
     def _propagate_obs(self, obs:jnp.ndarray) -> jnp.ndarray:
-        obs = obs.at[0:2].set(obs[0:2] + obs[2:4] * self.dt)
+        if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+            obs = obs.at[0:2].set(obs[0:2] + obs[2:4] * self.dt)
+        elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+            obs = obs.at[0:2].set(obs[0:2] + jnp.array([obs[2] * jnp.cos(obs[5]),obs[2] * jnp.sin(obs[5])]) * self.dt)
+            obs = obs.at[5].set(obs[5] + obs[3] * self.dt)
         return obs
 
     @partial(jit, static_argnames=("self"))

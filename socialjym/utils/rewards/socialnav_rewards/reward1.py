@@ -4,6 +4,7 @@ from functools import partial
 
 from socialjym.utils.aux_functions import batch_point_to_line_distance
 from socialjym.utils.rewards.base_reward import BaseReward
+from socialjym.envs.base_env import ROBOT_KINEMATICS
 
 class Reward1(BaseReward):
     def __init__(
@@ -12,6 +13,7 @@ class Reward1(BaseReward):
         collision_penalty: float=-0.25, 
         discomfort_distance: float=0.2, 
         time_limit: float=50.,
+        kinematics: str='holonomic'
     ) -> None:
         # Check input parameters
         assert goal_reward > 0, "goal_reward must be positive"
@@ -24,6 +26,7 @@ class Reward1(BaseReward):
         self.collision_penalty = collision_penalty
         self.discomfort_distance = discomfort_distance
         self.time_limit = time_limit
+        self.kinematics = ROBOT_KINEMATICS.index(kinematics)
 
     @partial(jit, static_argnames=("self"))
     def __call__(
@@ -54,7 +57,11 @@ class Reward1(BaseReward):
         humans_radiuses = obs[0:len(obs)-1,4]
         robot_radius = obs[-1,4]
         time = info["time"]
-        next_robot_pos = robot_pos + obs[-1,2:4] * dt
+        # Compute next positions
+        if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+            next_robot_pos = robot_pos + obs[-1,2:4] * dt
+        elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+            next_robot_pos = robot_pos + jnp.array([jnp.cos(obs[-1,5]), jnp.sin(obs[-1,5])]) * obs[-1,2] * dt
         next_humans_pos = humans_pos + obs[0:len(obs)-1,2:4] * dt
         # Collision and discomfort detection with humans (within a duration of dt)
         distances = batch_point_to_line_distance(jnp.zeros((len(obs)-1,2)), humans_pos - robot_pos, next_humans_pos - next_robot_pos) - (humans_radiuses + robot_radius)

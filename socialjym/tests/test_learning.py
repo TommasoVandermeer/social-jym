@@ -21,6 +21,7 @@ n_trials = 1000
 rl_training_episodes = 10_000
 espilon_start = 0.5
 epsilon_end = 0.1
+kinematics = 'holonomic'
 
 loss_during_il = np.empty((n_seeds,n_il_epochs))
 returns_after_il = np.empty((n_seeds,n_trials))
@@ -31,6 +32,7 @@ for seed in range(n_seeds):
     print(f"\n\nSEED {seed}")
     training_hyperparams = {
         'random_seed': seed,
+        'kinematics': kinematics,
         'policy_name': 'cadrl', # 'cadrl' or 'sarl'
         'n_humans': 1,  # CADRL uses 1, SARL uses 5
         'il_training_episodes': 2_000,
@@ -53,7 +55,7 @@ for seed in range(n_seeds):
     }
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'socialnav_reward1': 
-        reward_function = Reward1()
+        reward_function = Reward1(kinematics=training_hyperparams['kinematics'])
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
     # Environment parameters
@@ -68,15 +70,16 @@ for seed in range(n_seeds):
         'humans_policy': training_hyperparams['humans_policy'],
         'circle_radius': 7,
         'reward_function': reward_function,
+        'kinematics': training_hyperparams['kinematics'],
     }
     # Initialize environment
     env = SocialNav(**env_params)
     # Initialize robot policy and vnet params
     if training_hyperparams['policy_name'] == "cadrl": 
-        policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
+        policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'])
         initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((policy.vnet_input_size,)))
     elif training_hyperparams['policy_name'] == "sarl":
-        policy = SARL(env.reward_function, dt=env_params['robot_dt'])
+        policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'])
         initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
     else: raise ValueError(f"{training_hyperparams['policy_name']} is not a valid policy name")
     # Initialize replay buffer

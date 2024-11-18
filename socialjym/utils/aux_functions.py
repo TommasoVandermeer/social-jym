@@ -80,7 +80,8 @@ def plot_state(
         traffic_height=3, 
         traffic_length=14, 
         crowding_square_side=14,
-        plot_time=True):
+        plot_time=True,
+        kinematics:str='holonomic') -> None:
     """
     Plots a given single state of the environment.
 
@@ -113,10 +114,16 @@ def plot_state(
         if plot_time: ax.text(full_state[h,0],full_state[h,1], f"{num}", color=colors[h%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
         else: ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
     # Robot
+    if kinematics == 'unicycle':
+        head = plt.Circle((full_state[-1,0] + np.cos(full_state[-1,4]) * robot_radius, full_state[-1,1] + np.sin(full_state[-1,4]) * robot_radius), 0.1, color='black', zorder=1)
+        ax.add_patch(head)
     circle = plt.Circle((full_state[-1,0],full_state[-1,1]), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
     ax.add_patch(circle)
-    if plot_time: ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color="black", va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=3, weight='bold')
-    else: ax.text(full_state[-1,0],full_state[-1,1], f"R", color="black", va="center", ha="center", size=10, zorder=3, weight='bold')
+    # Time/Label
+    if plot_time: 
+        ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color="black", va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=3, weight='bold')
+    else: 
+        ax.text(full_state[-1,0],full_state[-1,1], f"R", color="black", va="center", ha="center", size=10, zorder=3, weight='bold')
 
 def plot_trajectory(ax:Axes, agents_positions:jnp.ndarray, humans_goal:jnp.ndarray, robot_goal:jnp.ndarray):
     colors = list(mcolors.TABLEAU_COLORS.values())
@@ -337,6 +344,7 @@ def animate_trajectory(
     scenario:int,
     robot_dt:float=0.25,
     lidar_measurements=None,
+    kinematics:str='holonomic',
     ) -> None:
 
     # TODO: Add a progress bar,
@@ -357,7 +365,7 @@ def animate_trajectory(
                 Line2D([0], [0], color='white', marker='*', markersize=10, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Goal')],
             bbox_to_anchor=(0.99, 0.5), loc='center left')
         ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
-        plot_state(ax, frame*robot_dt, states[frame], humans_policy, scenario, humans_radiuses, robot_radius, plot_time=False)
+        plot_state(ax, frame*robot_dt, states[frame], humans_policy, scenario, humans_radiuses, robot_radius, plot_time=False, kinematics=kinematics)
         if lidar_measurements is not None:
             plot_lidar_measurements(ax, lidar_measurements[frame], states[frame][-1], robot_radius)
 

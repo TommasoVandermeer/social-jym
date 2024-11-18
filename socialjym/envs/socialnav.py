@@ -51,7 +51,9 @@ class SocialNav(BaseEnv):
             lidar_num_rays=lidar_num_rays,
             kinematics=kinematics)
         ## Args validation
+        assert humans_dt <= robot_dt, "The humans' time step must be less or equal than the robot's time step."
         assert is_multiple(robot_dt, humans_dt), "The robot's time step must be a multiple of the humans' time step."
+        assert reward_function.kinematics == self.kinematics, "The reward function's kinematics must be the same as the environment's kinematics."
         ## Env initialization
         self.robot_dt = robot_dt
         self.reward_function = reward_function
@@ -87,7 +89,10 @@ class SocialNav(BaseEnv):
             obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], linear_velocities[i,0], linear_velocities[i,1], info['humans_parameters'][i,0], 0.])), obs)
         elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'): # For sfm and orca policies the state already contains the linear velocities
             obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], state[i,2], state[i,3], info['humans_parameters'][i,0], 0.])), obs)
-        obs = obs.at[-1].set(jnp.array([*state[-1,0:2], *action, self.robot_radius, 0.]))
+        if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+            obs = obs.at[-1].set(jnp.array([*state[-1,0:2], *action, self.robot_radius, 0.]))
+        elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+            obs = obs.at[-1].set(jnp.array([*state[-1,0:2], *action, self.robot_radius, state[-1,4]]))
         return obs
 
     @partial(jit, static_argnames=("self"))
@@ -154,8 +159,6 @@ class SocialNav(BaseEnv):
                     goal_angles[i],
                     0.]))
                 , full_state)
-            # Robot
-            full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:4], jnp.pi/2, *full_state[self.n_humans,5:]]))
         elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
             # Humans
             full_state = lax.fori_loop(
@@ -168,8 +171,8 @@ class SocialNav(BaseEnv):
                     0,
                     0.]))
                 , full_state)
-            # Robot
-            full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:]]))
+        # Robot
+        full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:4], jnp.pi/2, *full_state[self.n_humans,5:]]))
 
         # Assign the humans' and robot goals
         humans_goal = lax.fori_loop(
@@ -332,7 +335,7 @@ class SocialNav(BaseEnv):
                     0.]))
                 , full_state)
         # Robot
-        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:4], -jnp.pi/2, *full_state[self.n_humans,5:]]))
 
         # Assign the humans' and robot goals
         humans_goal = lax.fori_loop(
@@ -414,7 +417,7 @@ class SocialNav(BaseEnv):
                     0.]))
                 , full_state)
         # Robot
-        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-2], *full_state[self.n_humans,2:]]))
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-2], *full_state[self.n_humans,2:4], jnp.pi, *full_state[self.n_humans,5:]]))
 
         # Assign the humans' and robot goals
         humans_goal = lax.fori_loop(
@@ -474,8 +477,14 @@ class SocialNav(BaseEnv):
                 (state[:,0:4], info))
             new_state, new_info = out
             new_state = jnp.pad(new_state, ((0,0),(0,2)))
-        # Compute action by derivative of robot position
-        action = (new_state[-1,0:2] - state[-1,0:2]) / self.robot_dt
+        # Compute action by derivative of robot position and orientation
+        dp = new_state[-1,0:2] - state[-1,0:2]
+        if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+            action = dp / self.robot_dt
+        elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+            if self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+                new_state = new_state.at[-1,4].set(jnp.arctan2(*jnp.flip(dp)))
+            action = jnp.array([jnp.linalg.norm(dp) / self.robot_dt, (new_state[-1,4] - state[-1,4]) / self.robot_dt])
         ### Compute reward and outcome - WARNING: The old state is passed, not the updated one (but with the correct action applied)
         reward, outcome = self.reward_function(self._get_obs(state, old_info, action), old_info, self.robot_dt)
         return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome
@@ -504,7 +513,10 @@ class SocialNav(BaseEnv):
         ### Update state and info
         if self.robot_visible:
             if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
-                fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*jnp.flip(action)), 0.])]) # HSFM fictitious state
+                if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*jnp.flip(action)), 0.])]) # HSFM fictitious state
+                elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], action[0], 0., state[-1,4], action[1]])]) # HSFM fictitious state
                 out = lax.fori_loop(
                     0,
                     int(self.robot_dt/self.humans_dt),
@@ -512,7 +524,10 @@ class SocialNav(BaseEnv):
                     (fictitious_state, info))
                 new_state, new_info = out
             elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
-                fictitious_state = jnp.vstack([state[0:self.n_humans][:,0:4], jnp.array([*state[-1,0:2], *action])]) # SFM or ORCA fictitious state
+                if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+                    fictitious_state = jnp.vstack([state[0:self.n_humans][:,0:4], jnp.array([*state[-1,0:2], *action])]) # SFM or ORCA fictitious state
+                elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+                    fictitious_state = jnp.vstack([state[0:self.n_humans][:,0:4], jnp.array([*state[-1,0:2], jnp.cos(state[-1,4]) * action[0], jnp.sin(state[-1,4]) * action[0]])]) # SFM or ORCA fictitious state
                 out = lax.fori_loop(
                     0,
                     int(self.robot_dt/self.humans_dt),
@@ -563,7 +578,7 @@ class SocialNav(BaseEnv):
                        [*human2_state],
                        ...
                        [*humanN_state],
-                       [robot_px, robot_py, pad, pad..]].
+                       [robot_px, robot_py, pad, pad, robot_theta, pad]].
                       The length of each sub_array is 6.
         - new_key: PRNG key to be used in the next steps.
         - obs: observation of the initial state. The observation is a JAX array in the form:
@@ -599,7 +614,7 @@ class SocialNav(BaseEnv):
                        [*human2_state],
                        ...
                        [*humanN_state],
-                       [robot_px, robot_py, pad, pad..]].
+                       [robot_px, robot_py, robot_theta, pad..]].
                       The length of each sub_array is 6.
         - key: PRNG key to be used in the next steps. (SAME AS THE INPUT ONE)
         - obs: observation of the initial state. The observation is a JAX array in the form:
