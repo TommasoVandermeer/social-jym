@@ -6,7 +6,7 @@ from types import FunctionType
 import optax
 
 from .base_policy import BasePolicy
-from socialjym.envs.base_env import ROBOT_KINEMATICS
+from socialjym.envs.base_env import ROBOT_KINEMATICS, wrap_angle
 
 VN_PARAMS = {
     "output_sizes": [150, 100, 100, 1],
@@ -136,22 +136,27 @@ class CADRL(BasePolicy):
             obs = obs.at[0:2].set(obs[0:2] + obs[2:4] * self.dt)
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
             obs = obs.at[0:2].set(obs[0:2] + jnp.array([obs[2] * jnp.cos(obs[5]),obs[2] * jnp.sin(obs[5])]) * self.dt)
-            obs = obs.at[5].set(obs[5] + obs[3] * self.dt)
+            obs = obs.at[5].set(wrap_angle(obs[5] + obs[3] * self.dt))
         return obs
 
     @partial(jit, static_argnames=("self"))
     def _compute_vnet_input(self, robot_obs:jnp.ndarray, human_obs:jnp.ndarray, info:dict) -> jnp.ndarray:
-        # Robot observation: [x,y,ux,uy,radius]
+        # Robot observation: [x,y,u1,u2,radius,theta]. Holonomic robot: [u1=vx,u2=vy]. Unicycle robot: [u1=v,u2=w].
         # Human observation: [x,y,vx,vy,radius]
         # Re-parametrized observation: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
         rot = jnp.atan2(info["robot_goal"][1] - robot_obs[1],info["robot_goal"][0] - robot_obs[0])
         vnet_input = jnp.zeros((self.vnet_input_size,))
         vnet_input = vnet_input.at[0].set(jnp.linalg.norm(info["robot_goal"] - robot_obs[0:2]))
         vnet_input = vnet_input.at[1].set(self.v_max)
-        vnet_input = vnet_input.at[2].set(robot_obs[5])
         vnet_input = vnet_input.at[3].set(robot_obs[4])
-        vnet_input = vnet_input.at[4].set(robot_obs[2] * jnp.cos(rot) + robot_obs[3] * jnp.sin(rot))
-        vnet_input = vnet_input.at[5].set(-robot_obs[2] * jnp.sin(rot) + robot_obs[3] * jnp.cos(rot))
+        if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+            vnet_input = vnet_input.at[2].set(0.)
+            vnet_input = vnet_input.at[4].set(robot_obs[2] * jnp.cos(rot) + robot_obs[3] * jnp.sin(rot))
+            vnet_input = vnet_input.at[5].set(-robot_obs[2] * jnp.sin(rot) + robot_obs[3] * jnp.cos(rot))
+        elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):  
+            vnet_input = vnet_input.at[2].set(wrap_angle(robot_obs[5] - rot))
+            vnet_input = vnet_input.at[4].set(robot_obs[2] * jnp.cos(robot_obs[5]) * jnp.cos(rot) + robot_obs[2]  * jnp.sin(robot_obs[5]) * jnp.sin(rot))
+            vnet_input = vnet_input.at[5].set(-robot_obs[2] * jnp.cos(robot_obs[5]) * jnp.sin(rot) + robot_obs[2]  * jnp.sin(robot_obs[5]) * jnp.cos(rot))
         vnet_input = vnet_input.at[6].set((human_obs[0] - robot_obs[0]) * jnp.cos(rot) + (human_obs[1] - robot_obs[1]) * jnp.sin(rot))
         vnet_input = vnet_input.at[7].set(-(human_obs[0] - robot_obs[0]) * jnp.sin(rot) + (human_obs[1] - robot_obs[1]) * jnp.cos(rot))
         vnet_input = vnet_input.at[8].set(human_obs[2] * jnp.cos(rot) + human_obs[3] * jnp.sin(rot))

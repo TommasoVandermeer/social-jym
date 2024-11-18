@@ -167,6 +167,8 @@ def test_k_trials(
     - metrics: dict. A dictionary containing the metrics of the tests.
     """
 
+    # TODO: Impelement unicycle kinematics case
+
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
     if custom_episodes is not None:
         assert len(custom_episodes) == k, "The number of custom episodes must be equal to the number of trials."

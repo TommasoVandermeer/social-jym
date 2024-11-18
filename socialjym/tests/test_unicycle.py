@@ -4,17 +4,45 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 import os
+import optax
+import matplotlib.colors as mcolors
+from matplotlib.lines import Line2D
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
+from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
+from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_il_rollout, deep_vnet_rl_rollout
 
 ### Hyperparameters
 random_seed = 13_000 # Usually we train with 3_000 IL episodes and 10_000 RL episodes
 n_episodes = 50
 kinematics = 'unicycle'
+training_hyperparams = {
+    'random_seed': 0,
+    'kinematics': kinematics,
+    'policy_name': 'cadrl', # 'cadrl' or 'sarl'
+    'n_humans': 1,  # CADRL uses 1, SARL uses 5
+    'il_training_episodes': 2_000,
+    'il_learning_rate': 0.01,
+    'il_num_epochs': 50, # Number of epochs to train the model after ending IL
+    'rl_training_episodes': 10_000,
+    'rl_learning_rate': 0.001,
+    'rl_num_batches': 100, # Number of batches to train the model after each RL episode
+    'batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
+    'epsilon_start': 0.5,
+    'epsilon_end': 0.1,
+    'epsilon_decay': 4_000,
+    'buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
+    'target_update_interval': 50, # Number of episodes to wait before updating the target network for RL (the one used to compute the target state values)
+    'humans_policy': 'sfm',
+    'scenario': 'hybrid_scenario',
+    'hybrid_scenario_subset': jnp.array([0,1], np.int32), # Subset of the hybrid scenarios to use for training
+    'reward_function': 'socialnav_reward1',
+    'custom_episodes': False, # If True, the episodes are loaded from a predefined set
+}
 reward_params = {
     'goal_reward': 1.,
     'collision_penalty': -0.25,
@@ -25,16 +53,17 @@ reward_params = {
 reward_function = Reward1(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 25,
+    'n_humans': training_hyperparams['n_humans'],
     'robot_dt': 0.25,
     'humans_dt': 0.01,
-    'robot_visible': True,
-    'scenario': 'circular_crossing',
-    'humans_policy': 'sfm',
+    'robot_visible': False,
+    'scenario': training_hyperparams['scenario'],
+    'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+    'humans_policy': training_hyperparams['humans_policy'],
+    'circle_radius': 7,
     'reward_function': reward_function,
-    'kinematics': kinematics
+    'kinematics': training_hyperparams['kinematics'],
 }
-
 
 ### Initialize and reset environment
 env = SocialNav(**env_params)
@@ -46,7 +75,7 @@ policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinema
 # Plot (v,w) action space
 plt.scatter(policy.action_space[:,0], policy.action_space[:,1])
 plt.gca().set_aspect('equal', adjustable='box')
-plt.title(f"Action space (V,w) - Wheelbase: {policy.wheels_distance/2} - Vmax: {policy.v_max}")
+plt.title(f"Action space (V,w) - Wheelbase: {policy.wheels_distance/2}m - Vmax: {policy.v_max}m/s")
 plt.xlabel("V (m/s)")
 plt.ylabel("w (r/s)")
 plt.show()
@@ -58,9 +87,9 @@ plt.scatter(pxy_action_space[:,0], pxy_action_space[:,1])
 for i, orientation in enumerate(orientations):
     plt.arrow(pxy_action_space[i,0], pxy_action_space[i,1], orientation[0], orientation[1], color='black', head_width=0.02, alpha=0.5)
 plt.gca().set_aspect('equal', adjustable='box')
-plt.title("All robot positions and orientations applying action space (V,w) starting from P=(0,0), theta=0 and integrating at robot dt")
-plt.xlabel("x")
-plt.ylabel("y")
+plt.title("All robot positions and orientations applying action space (V,w) starting from Px=Py=0m, theta=0r and integrating at robot dt")
+plt.xlabel("x (m)")
+plt.ylabel("y (m)")
 plt.show()
 # Plot (px,py,thetha) for each action starting from (0,0,0) integrating at humans dt
 @jit
@@ -79,7 +108,166 @@ plt.scatter(pxy_theta[:,0], pxy_theta[:,1])
 for i, orientation in enumerate(orientations):
     plt.arrow(pxy_theta[i,0], pxy_theta[i,1], orientation[0], orientation[1], color='black', head_width=0.005, alpha=0.5)
 plt.gca().set_aspect('equal', adjustable='box')
-plt.title("All robot positions and orientations applying action space (V,w) starting from P=(0,0), theta=0 and integrating at humans dt")
-plt.xlabel("x")
-plt.ylabel("y")
+plt.title("All robot positions and orientations applying action space (V,w) starting from Px=Py=0m, theta=0r and integrating at humans dt")
+plt.xlabel("x (x)")
+plt.ylabel("y (m)")
 plt.show()
+
+### LEARNING
+loss_during_il = np.empty((50,))
+returns_after_il = np.empty((1000,))
+returns_during_rl = np.empty((10_000,))
+returns_after_rl = np.empty((1000,))
+# Initialize robot policy and vnet params 
+initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((policy.vnet_input_size,)))
+# Initialize replay buffer
+replay_buffer = UniformVNetReplayBuffer(training_hyperparams['buffer_size'], training_hyperparams['batch_size'])
+# Initialize IL optimizer
+optimizer = optax.sgd(learning_rate=training_hyperparams['il_learning_rate'], momentum=0.9)
+# Initialize buffer state
+buffer_state = {
+    'vnet_inputs': jnp.empty((training_hyperparams['buffer_size'], env.n_humans, policy.vnet_input_size)),
+    'targets': jnp.empty((training_hyperparams['buffer_size'],1)),
+}
+# Initialize custom episodes path
+if training_hyperparams['custom_episodes']:
+    il_custom_episodes_path = os.path.join(os.path.expanduser("~"),f"Repos/social-jym/custom_episodes/il_{training_hyperparams['scenario']}_{training_hyperparams['n_humans']}_humans.pkl")
+else:
+    il_custom_episodes_path = None
+# Initialize IL rollout params
+il_rollout_params = {
+    'initial_vnet_params': initial_vnet_params,
+    'train_episodes': training_hyperparams['il_training_episodes'],
+    'random_seed': training_hyperparams['random_seed'],
+    'optimizer': optimizer,
+    'buffer_state': buffer_state,
+    'current_buffer_size': 0,
+    'policy': policy,
+    'env': env,
+    'replay_buffer': replay_buffer,
+    'buffer_size': training_hyperparams['buffer_size'],
+    'num_epochs': training_hyperparams['il_num_epochs'],
+    'batch_size': training_hyperparams['batch_size'],
+    'custom_episodes': il_custom_episodes_path
+}
+
+# IMITATION LEARNING ROLLOUT
+il_out = deep_vnet_il_rollout(**il_rollout_params)
+
+# Save the IL model parameters, buffer state, and keys
+il_model_params = il_out['model_params']
+buffer_state = il_out['buffer_state']
+current_buffer_size = il_out['current_buffer_size']
+loss_during_il = il_out['losses']
+
+# Execute tests to evaluate return after IL
+metrics_after_il = test_k_trials(
+    1000, 
+    training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
+    env, 
+    policy, 
+    il_model_params, 
+    reward_function.time_limit)
+returns_after_il = metrics_after_il['returns']
+
+# Initialize RL optimizer
+optimizer = optax.sgd(learning_rate=training_hyperparams['rl_learning_rate'], momentum=0.9)
+
+# Initialize custom episodes path
+if training_hyperparams['custom_episodes']:
+    rl_custom_episodes_path = os.path.join(os.path.expanduser("~"),f"Repos/social-jym/custom_episodes/rl_{training_hyperparams['scenario']}_{training_hyperparams['n_humans']}_humans.pkl")
+else:
+    rl_custom_episodes_path = None
+
+# Initialize RL rollout params
+rl_rollout_params = {
+    'initial_vnet_params': il_model_params,
+    'train_episodes': training_hyperparams['rl_training_episodes'],
+    'random_seed': training_hyperparams['random_seed'] + training_hyperparams['il_training_episodes'],
+    'model': policy.model,
+    'optimizer': optimizer,
+    'buffer_state': buffer_state,
+    'current_buffer_size': current_buffer_size,
+    'policy': policy,
+    'env': env,
+    'replay_buffer': replay_buffer,
+    'buffer_size': training_hyperparams['buffer_size'],
+    'num_batches': training_hyperparams['rl_num_batches'],
+    'epsilon_decay_fn': 4_000,
+    'epsilon_start': training_hyperparams['epsilon_start'],
+    'epsilon_end': training_hyperparams['epsilon_end'],
+    'decay_rate': training_hyperparams['epsilon_decay'],
+    'target_update_interval': training_hyperparams['target_update_interval'],
+    'custom_episodes': rl_custom_episodes_path,
+}
+
+# REINFORCEMENT LEARNING ROLLOUT
+rl_out = deep_vnet_rl_rollout(**rl_rollout_params)
+
+# Save the training returns
+rl_model_params = rl_out['model_params']
+returns_during_rl = rl_out['returns']  
+
+# Execute tests to evaluate return after RL
+metrics_after_rl = test_k_trials(
+    1000, 
+    training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
+    env, 
+    policy, 
+    rl_model_params, 
+    reward_function.time_limit)
+returns_after_rl = metrics_after_rl['returns']  
+
+### FINAL PLOTS
+# Plot loss curve during IL for each seed
+figure0, ax0 = plt.subplots(figsize=(10,10))
+ax0.set(
+    xlabel='Epoch', 
+    ylabel='Loss', 
+    title='Loss during IL training for each seed')
+ax0.plot(
+    np.arange(len(loss_during_il)), 
+    loss_during_il,
+    color = list(mcolors.TABLEAU_COLORS.values()))
+figure0.savefig(os.path.join(os.path.dirname(__file__),"CADRL_UNICYCLE_loss_curves_during_il.eps"), format='eps')
+
+# Plot return during RL curve for each seed
+figure, ax = plt.subplots(figsize=(10,10))
+window = 500
+ax.set(
+    xlabel='Training episode', 
+    ylabel=f"Return moving average over {window} episodes", 
+    title='Return during RL training for each seed')
+ax.plot(
+    np.arange(len(returns_during_rl)-(window-1))+window, 
+    jnp.convolve(returns_during_rl, jnp.ones(window,), 'valid') / window,
+    color = list(mcolors.TABLEAU_COLORS.values()))
+figure.savefig(os.path.join(os.path.dirname(__file__),"CADRL_UNICYCLE_return_curves_during_rl.eps"), format='eps')
+
+# Plot boxplot of the returns for each seed
+figure2, ax2 = plt.subplots(figsize=(10,10))
+ax2.set(xlabel='Seed', ylabel='Return', title='Return after IL and RL training for each seed')
+ax2.boxplot(returns_after_il, widths=0.4, patch_artist=True, 
+            boxprops=dict(facecolor="lightblue", edgecolor="lightblue", alpha=0.7),
+            whiskerprops=dict(color="blue", alpha=0.7),
+            capprops=dict(color="blue", alpha=0.7),
+            medianprops=dict(color="blue", alpha=0.7),
+            meanprops=dict(markerfacecolor="blue", markeredgecolor="blue"), 
+            showfliers=False,
+            showmeans=True, 
+            zorder=1)
+ax2.boxplot(returns_after_rl, widths=0.3, patch_artist=True, 
+            boxprops=dict(facecolor="lightcoral", edgecolor="lightcoral", alpha=0.4),
+            whiskerprops=dict(color="coral", alpha=0.4),
+            capprops=dict(color="coral", alpha=0.4),
+            medianprops=dict(color="coral", alpha=0.4),
+            meanprops=dict(markerfacecolor="coral", markeredgecolor="coral"), 
+            showfliers=False,
+            showmeans=True,
+            zorder=2)
+legend_elements = [
+    Line2D([0], [0], color="lightblue", lw=4, label="After IL"),
+    Line2D([0], [0], color="lightcoral", lw=4, label="After RL")
+]
+ax2.legend(handles=legend_elements, loc="upper right")
+figure2.savefig(os.path.join(os.path.dirname(__file__),"CADRL_UNICYCLE_return_curves_after_il_and_rl.png"), format='png')

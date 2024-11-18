@@ -21,7 +21,7 @@ n_trials = 1000
 rl_training_episodes = 10_000
 espilon_start = 0.5
 epsilon_end = 0.1
-kinematics = 'holonomic'
+kinematics = 'unicycle'
 
 loss_during_il = np.empty((n_seeds,n_il_epochs))
 returns_after_il = np.empty((n_seeds,n_trials))

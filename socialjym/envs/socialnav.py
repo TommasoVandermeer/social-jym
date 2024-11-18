@@ -6,7 +6,7 @@ from functools import partial
 from types import FunctionType
 
 from socialjym.utils.aux_functions import is_multiple
-from .base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS
+from .base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS, wrap_angle
 
 class SocialNav(BaseEnv):
     """
@@ -484,7 +484,7 @@ class SocialNav(BaseEnv):
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
             if self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
                 new_state = new_state.at[-1,4].set(jnp.arctan2(*jnp.flip(dp)))
-            action = jnp.array([jnp.linalg.norm(dp) / self.robot_dt, (new_state[-1,4] - state[-1,4]) / self.robot_dt])
+            action = jnp.array([jnp.linalg.norm(dp) / self.robot_dt, wrap_angle(new_state[-1,4] - state[-1,4]) / self.robot_dt])
         ### Compute reward and outcome - WARNING: The old state is passed, not the updated one (but with the correct action applied)
         reward, outcome = self.reward_function(self._get_obs(state, old_info, action), old_info, self.robot_dt)
         return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome
@@ -517,41 +517,30 @@ class SocialNav(BaseEnv):
                     fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*jnp.flip(action)), 0.])]) # HSFM fictitious state
                 elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
                     fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], action[0], 0., state[-1,4], action[1]])]) # HSFM fictitious state
-                out = lax.fori_loop(
-                    0,
-                    int(self.robot_dt/self.humans_dt),
-                    lambda _ , x: self._update_state_info(*x, action),
-                    (fictitious_state, info))
-                new_state, new_info = out
             elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
                 if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans][:,0:4], jnp.array([*state[-1,0:2], *action])]) # SFM or ORCA fictitious state
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], *action, 0., 0.])]) # SFM or ORCA fictitious state
                 elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans][:,0:4], jnp.array([*state[-1,0:2], jnp.cos(state[-1,4]) * action[0], jnp.sin(state[-1,4]) * action[0]])]) # SFM or ORCA fictitious state
-                out = lax.fori_loop(
-                    0,
-                    int(self.robot_dt/self.humans_dt),
-                    lambda _ , x: self._update_state_info(*x, action),
-                    (fictitious_state, info))
-                new_state, new_info = out
-                new_state = jnp.pad(new_state, ((0,0),(0,2)))
-            new_state = new_state.at[-1,2:].set(jnp.array([0., 0., 0., 0.]))
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.cos(state[-1,4]) * action[0], jnp.sin(state[-1,4]) * action[0], state[-1,4], 0.])]) # SFM or ORCA fictitious state
+            out = lax.fori_loop(
+                0,
+                int(self.robot_dt/self.humans_dt),
+                lambda _ , x: self._update_state_info(*x, action),
+                (fictitious_state, info))
+            new_state, new_info = out
+            # Overwrite the robot fictitious state with the real one
+            new_state = new_state.at[-1,2:].set(jnp.array([
+                0., 
+                0., 
+                new_state[-1,4] * int(self.kinematics == ROBOT_KINEMATICS.index('unicycle')), # If robot is holonomic 0 is passed as robot theta
+                0.]))
         else:
-            if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
-                out = lax.fori_loop(
-                    0,
-                    int(self.robot_dt/self.humans_dt),
-                    lambda _ , x: self._update_state_info(*x, action),
-                    (state, info))
-                new_state, new_info = out
-            elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
-                out = lax.fori_loop(
-                    0,
-                    int(self.robot_dt/self.humans_dt),
-                    lambda _ , x: self._update_state_info(*x, action),
-                    (state[:,0:4], info))
-                new_state, new_info = out
-                new_state = jnp.pad(new_state, ((0,0),(0,2)))
+            out = lax.fori_loop(
+                0,
+                int(self.robot_dt/self.humans_dt),
+                lambda _ , x: self._update_state_info(*x, action),
+                (state, info))
+            new_state, new_info = out
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):

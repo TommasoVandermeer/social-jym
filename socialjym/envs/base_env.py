@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from functools import partial
-from jax import jit, vmap, lax
+from jax import jit, vmap, lax, debug
 import jax.numpy as jnp
 
 from jhsfm.hsfm import step as hsfm_humans_step
@@ -21,6 +21,24 @@ HUMAN_POLICIES = [
 ROBOT_KINEMATICS = [
     "holonomic",
     "unicycle"]
+
+@jit
+def wrap_angle(theta:float) -> float:
+    """
+    This function wraps the angle to the interval [-pi, pi]
+    
+    args:
+    - theta: angle to be wrapped
+    
+    output:
+    - wrapped_theta: angle wrapped to the interval [-pi, pi]
+    """
+    wrapped_theta = lax.cond(
+        theta == jnp.pi,
+        lambda x: x,
+        lambda x: (x + jnp.pi) % (2 * jnp.pi) - jnp.pi,
+        theta)
+    return wrapped_theta
 
 class BaseEnv(ABC):
     def __init__(
@@ -175,40 +193,52 @@ class BaseEnv(ABC):
     ) -> tuple:
         """
         This function updates the state and the info of the environment given the current state, the info and the action taken by the robot.
-        The state shape depends on the human motion model used ((n_humans+1,6) for hsfm and (n_humans+1,4) for sfm).
-        The last row of the state matrix corresponds to the robot state, which must be given in the correct form based on the human motion model used.
+        The state shape is ((n_humans+1,6). The last row of the state matrix corresponds to the robot state, which must be given in the correct form based 
+        on the human motion model used.
 
         args:
-        - state ((n_humans+1,6) or (n_humans+1,4)): jnp.ndarray containing the state of the environment.
+        - state ((n_humans+1,6): jnp.ndarray containing the state of the environment.
         - info (dict): dictionary containing the information of the environment.
         - action (2,): jnp.ndarray containing the action taken by the robot.
 
         output:
-        - new_state ((n_humans+1,6) or (n_humans+1,4)): jnp.ndarray containing the new state of the environment.
+        - new_state ((n_humans+1,6): jnp.ndarray containing the new state of the environment.
         """
         goals = jnp.vstack((info["humans_goal"], info["robot_goal"]))
         parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, 80., *self.get_standard_humans_parameters(1)[0,2:]])))
         static_obstacles = info["static_obstacles"]
         # Humans update
-        if self.robot_visible:
-            new_state = jnp.vstack(
-                [self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
-                state[-1]])
-        else:
-            new_state = jnp.vstack(
-                [self.humans_step(state[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
-                state[-1]])
+        if self.humans_policy == HUMAN_POLICIES.index("hsfm"):
+            if self.robot_visible:
+                new_state = jnp.vstack(
+                    [self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
+                    state[-1]])
+            else:
+                new_state = jnp.vstack(
+                    [self.humans_step(state[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
+                    state[-1]])
+        elif self.humans_policy == HUMAN_POLICIES.index("sfm") or self.humans_policy == HUMAN_POLICIES.index("orca"):
+            if self.robot_visible:
+                new_state = jnp.vstack(
+                    [self.humans_step(state[:,0:4], goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
+                    state[-1,0:4]])
+            else:
+                new_state = jnp.vstack(
+                    [self.humans_step(state[0:self.n_humans,0:4], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
+                    state[-1,0:4]])
+            new_state = jnp.pad(new_state, ((0,0),(0,2)))
         # Robot update
         if self.kinematics == ROBOT_KINEMATICS.index("holonomic"):
             new_state = new_state.at[-1,0:2].set(jnp.array([
                 state[-1,0]+action[0]*self.humans_dt, 
                 state[-1,1]+action[1]*self.humans_dt]))
         elif self.kinematics == ROBOT_KINEMATICS.index("unicycle"):
-            new_state = new_state.at[-1,0:5].set(jnp.array([
+            new_state = new_state.at[-1].set(jnp.array([
                 state[-1,0]+action[0]*jnp.cos(state[-1,4])*self.humans_dt, 
                 state[-1,1]+action[0]*jnp.sin(state[-1,4])*self.humans_dt,
                 *state[-1,2:4],
-                state[-1,4]+action[1]*self.humans_dt]))
+                wrap_angle(state[-1,4]+action[1]*self.humans_dt),
+                state[-1,5]]))
         new_info, new_state = self._scenario_based_state_post_update(new_state, info)
         return (new_state, new_info)
 
