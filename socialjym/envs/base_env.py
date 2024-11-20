@@ -233,12 +233,21 @@ class BaseEnv(ABC):
                 state[-1,0]+action[0]*self.humans_dt, 
                 state[-1,1]+action[1]*self.humans_dt]))
         elif self.kinematics == ROBOT_KINEMATICS.index("unicycle"):
-            new_state = new_state.at[-1].set(jnp.array([
-                state[-1,0]+action[0]*jnp.cos(state[-1,4])*self.humans_dt, 
-                state[-1,1]+action[0]*jnp.sin(state[-1,4])*self.humans_dt,
-                *state[-1,2:4],
-                wrap_angle(state[-1,4]+action[1]*self.humans_dt),
-                state[-1,5]]))
+            new_state = lax.cond(
+                action[1] != 0,
+                lambda x: x.at[-1].set(jnp.array([
+                    state[-1,0]+(action[0]/action[1])*(jnp.sin(state[-1,4]+action[1]*self.humans_dt)-jnp.sin(state[-1,4])),
+                    state[-1,1]+(action[0]/action[1])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+action[1]*self.humans_dt)),
+                    *state[-1,2:4],
+                    wrap_angle(state[-1,4]+action[1]*self.humans_dt),
+                    state[-1,5]])),
+                lambda x: x.at[-1].set(jnp.array([
+                    state[-1,0]+action[0]*self.humans_dt*jnp.cos(state[-1,4]),
+                    state[-1,1]+action[0]*self.humans_dt*jnp.sin(state[-1,4]),
+                    *state[-1,2:]])),
+                new_state)
+            if self.robot_visible and (self.humans_policy == HUMAN_POLICIES.index("sfm") or self.humans_policy == HUMAN_POLICIES.index("orca")):
+                new_state = new_state.at[-1,2:4].set(jnp.array([action[0] * jnp.cos(new_state[-1,4]), action[0] * jnp.sin(new_state[-1,4])]))
         new_info, new_state = self._scenario_based_state_post_update(new_state, info)
         return (new_state, new_info)
 
@@ -267,9 +276,9 @@ class BaseEnv(ABC):
         if self.robot_visible:
             new_state = self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)
         else:
-            new_state = jnp.vstack(
-                [self.humans_step(state[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
-                self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)[self.n_humans]])
+            new_state = jnp.vstack([
+                self.humans_step(state[0:-1], goals[0:-1], parameters[0:-1], static_obstacles, self.humans_dt), 
+                self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)[-1]])
         new_info, new_state = self._scenario_based_state_post_update(new_state, info)
         return (new_state, new_info)
 

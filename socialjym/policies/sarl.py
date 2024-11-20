@@ -5,7 +5,6 @@ import haiku as hk
 from types import FunctionType
 
 from .cadrl import CADRL
-from socialjym.envs.base_env import ROBOT_KINEMATICS
 
 MLP_1_PARAMS = {
     "output_sizes": [150, 100],
@@ -143,11 +142,11 @@ class SARL(CADRL):
     def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
         n_humans = len(next_obs) - 1
         # Compute instantaneous reward
-        current_obs = current_obs.at[n_humans,2:4].set(action)
+        current_obs = current_obs.at[-1,2:4].set(action)
         reward, _ = self.reward_function(current_obs, info, self.dt)
         # Apply robot action
-        next_obs = next_obs.at[n_humans,2:4].set(action)
-        next_obs = next_obs.at[n_humans].set(self._propagate_obs(next_obs[-1]))
+        next_obs = next_obs.at[-1,2:4].set(action)
+        next_obs = next_obs.at[-1].set(self._propagate_robot_obs(next_obs[-1]))
         # Re-parametrize observation, for each human: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
         vnet_inputs = self.batch_compute_vnet_input(next_obs[n_humans], next_obs[0:n_humans], info)
         # Compute the output of the value network (value of the state)
@@ -172,7 +171,7 @@ class SARL(CADRL):
         
         def _forward_pass(key):
             # Propagate humans state for dt time
-            next_obs = jnp.vstack([self.batch_propagate_obs(obs[0:-1]),obs[-1]])
+            next_obs = jnp.vstack([self.batch_propagate_human_obs(obs[0:-1]),obs[-1]])
             # Compute action values
             action_values, vnet_inputs = self._batch_compute_action_value(next_obs, obs, info, self.action_space, vnet_params)
             action = self.action_space[jnp.argmax(action_values)]

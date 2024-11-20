@@ -12,7 +12,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
-from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
+from socialjym.utils.aux_functions import epsilon_scaling_decay, plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy, save_policy_params
 from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
 from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_il_rollout, deep_vnet_rl_rollout
 
@@ -69,7 +69,14 @@ env_params = {
 env = SocialNav(**env_params)
 
 ### Initialize robot policy
-policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
+# Initialize robot policy and vnet params
+if training_hyperparams['policy_name'] == "cadrl": 
+    policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
+    initial_vnet_params = policy.model.init(random.key(training_hyperparams['random_seed']), jnp.zeros((policy.vnet_input_size,)))
+elif training_hyperparams['policy_name'] == "sarl":
+    policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
+    initial_vnet_params = policy.model.init(random.key(training_hyperparams['random_seed']), jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
+else: raise ValueError(f"{training_hyperparams['policy_name']} is not a valid policy name")
 
 ### Plot action space
 # Plot (v,w) action space
@@ -79,36 +86,33 @@ plt.title(f"Action space (V,w) - Wheelbase: {policy.wheels_distance/2}m - Vmax: 
 plt.xlabel("V (m/s)")
 plt.ylabel("w (r/s)")
 plt.show()
-# Plot (px,py,thetha) for each action starting from (0,0,0) integrating at robot dt
-pxy_action_space = policy.action_space[:,0:2] * jnp.array([jnp.cos(0), jnp.sin(0)])
-theta_action_space = policy.action_space[:,1] * env_params['robot_dt']
-orientations = jnp.ones((len(policy.action_space), 2)) * 0.15 * jnp.array([jnp.cos(theta_action_space), jnp.sin(theta_action_space)]).T
-plt.scatter(pxy_action_space[:,0], pxy_action_space[:,1])
-for i, orientation in enumerate(orientations):
-    plt.arrow(pxy_action_space[i,0], pxy_action_space[i,1], orientation[0], orientation[1], color='black', head_width=0.02, alpha=0.5)
-plt.gca().set_aspect('equal', adjustable='box')
-plt.title("All robot positions and orientations applying action space (V,w) starting from Px=Py=0m, theta=0r and integrating at robot dt")
-plt.xlabel("x (m)")
-plt.ylabel("y (m)")
-plt.show()
-# Plot (px,py,thetha) for each action starting from (0,0,0) integrating at humans dt
-@jit
-def integrate_action_space(i:int, val:jnp.ndarray) -> jnp.ndarray:
-    x, action_space = val
-    x = x.at[:,0:2].set(x[:,0:2] + (action_space[:,0] * jnp.array([jnp.cos(x[:,2]), jnp.sin(x[:,2])]) * env_params['humans_dt']).T)
-    x = x.at[:,2].set(x[:,2] + action_space[:,1] * env_params['humans_dt'])
-    return x, action_space
-pxy_theta, action_space = lax.fori_loop(
-    0, 
-    int(env_params['robot_dt']/env_params['humans_dt']), 
-    integrate_action_space, 
-    (jnp.zeros((len(policy.action_space),3)), policy.action_space))
+# Plot (px,py,theta) for each action starting from (0,0,0) with analytical integration
+def exact_integration_of_action_space(x:jnp.ndarray, action:jnp.ndarray) -> jnp.ndarray:
+    @jit
+    def exact_integration_with_zero_omega(x:jnp.ndarray) -> jnp.ndarray:
+        x = x.at[0].set(x[0] + action[0] * jnp.cos(x[2]) * env_params['robot_dt'])
+        x = x.at[1].set(x[1] + action[0] * jnp.sin(x[2]) * env_params['robot_dt'])
+        return x
+    @jit
+    def exact_integration_with_non_zero_omega(x:jnp.ndarray) -> jnp.ndarray:
+        x = x.at[0].set(x[0] + (action[0]/action[1]) * (jnp.sin(x[2] + action[1] * env_params['robot_dt']) - jnp.sin(x[2])))
+        x = x.at[1].set(x[1] + (action[0]/action[1]) * (jnp.cos(x[2]) - jnp.cos(x[2] + action[1] * env_params['robot_dt'])))
+        x = x.at[2].set(x[2] + action[1] * env_params['robot_dt'])
+        return x
+    x = lax.cond(
+        action[1] != 0,
+        exact_integration_with_non_zero_omega,
+        exact_integration_with_zero_omega,
+        x)
+    return x
+vmapped_exact_integration_of_action_space = vmap(exact_integration_of_action_space, in_axes=(0, 0))
+pxy_theta = vmapped_exact_integration_of_action_space(jnp.zeros((len(policy.action_space),3)), policy.action_space)
 orientations = jnp.ones((len(policy.action_space), 2)) * 0.05 * jnp.array([jnp.cos(pxy_theta[:,2]), jnp.sin(pxy_theta[:,2])]).T
 plt.scatter(pxy_theta[:,0], pxy_theta[:,1])
 for i, orientation in enumerate(orientations):
     plt.arrow(pxy_theta[i,0], pxy_theta[i,1], orientation[0], orientation[1], color='black', head_width=0.005, alpha=0.5)
 plt.gca().set_aspect('equal', adjustable='box')
-plt.title("All robot positions and orientations applying action space (V,w) starting from Px=Py=0m, theta=0r and integrating at humans dt")
+plt.title("All robot positions and orientations applying action space (V,w) starting from Px=Py=0m, theta=0r and using exact (analytical) integration")
 plt.xlabel("x (x)")
 plt.ylabel("y (m)")
 plt.show()
@@ -118,8 +122,6 @@ loss_during_il = np.empty((50,))
 returns_after_il = np.empty((1000,))
 returns_during_rl = np.empty((10_000,))
 returns_after_rl = np.empty((1000,))
-# Initialize robot policy and vnet params 
-initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((policy.vnet_input_size,)))
 # Initialize replay buffer
 replay_buffer = UniformVNetReplayBuffer(training_hyperparams['buffer_size'], training_hyperparams['batch_size'])
 # Initialize IL optimizer
@@ -193,7 +195,7 @@ rl_rollout_params = {
     'replay_buffer': replay_buffer,
     'buffer_size': training_hyperparams['buffer_size'],
     'num_batches': training_hyperparams['rl_num_batches'],
-    'epsilon_decay_fn': 4_000,
+    'epsilon_decay_fn': epsilon_scaling_decay,
     'epsilon_start': training_hyperparams['epsilon_start'],
     'epsilon_end': training_hyperparams['epsilon_end'],
     'decay_rate': training_hyperparams['epsilon_decay'],
@@ -218,6 +220,15 @@ metrics_after_rl = test_k_trials(
     reward_function.time_limit)
 returns_after_rl = metrics_after_rl['returns']  
 
+### SAVE TRAINED POLICY PARAMS
+save_policy_params(
+    training_hyperparams['policy_name'], 
+    rl_model_params, 
+    env.get_parameters(), 
+    reward_function.get_parameters(), 
+    training_hyperparams, 
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/"))
+
 ### FINAL PLOTS
 # Plot loss curve during IL for each seed
 figure0, ax0 = plt.subplots(figsize=(10,10))
@@ -228,7 +239,7 @@ ax0.set(
 ax0.plot(
     np.arange(len(loss_during_il)), 
     loss_during_il,
-    color = list(mcolors.TABLEAU_COLORS.values()))
+    color = list(mcolors.TABLEAU_COLORS.values())[0])
 figure0.savefig(os.path.join(os.path.dirname(__file__),"CADRL_UNICYCLE_loss_curves_during_il.eps"), format='eps')
 
 # Plot return during RL curve for each seed
@@ -241,7 +252,7 @@ ax.set(
 ax.plot(
     np.arange(len(returns_during_rl)-(window-1))+window, 
     jnp.convolve(returns_during_rl, jnp.ones(window,), 'valid') / window,
-    color = list(mcolors.TABLEAU_COLORS.values()))
+    color = list(mcolors.TABLEAU_COLORS.values())[0])
 figure.savefig(os.path.join(os.path.dirname(__file__),"CADRL_UNICYCLE_return_curves_during_rl.eps"), format='eps')
 
 # Plot boxplot of the returns for each seed

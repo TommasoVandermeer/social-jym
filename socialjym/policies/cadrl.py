@@ -44,10 +44,9 @@ class CADRL(BasePolicy):
 
     # Private methods
 
-    # @partial(jit, static_argnames=("self"))
     def _build_action_space(self) -> jnp.ndarray:
-        # TODO: Adjust this mess, it's not very readable
         if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+            # The number of actions will be equal to (speed_samples * rotation_samples + 1)
             speed_samples = 5
             rotation_samples = 16
             speeds = lax.fori_loop(0,speed_samples,lambda i, speeds: speeds.at[i].set((jnp.exp((i + 1) / speed_samples) - 1) / (jnp.e - 1) * self.v_max), jnp.zeros((speed_samples,)))
@@ -60,62 +59,40 @@ class CADRL(BasePolicy):
                                             speeds[(i-1) % speed_samples] * jnp.cos(rotations[(i-1) // speed_samples]),
                                             speeds[(i-1) % speed_samples] * jnp.sin(rotations[(i-1) // speed_samples])])),
                                         action_space)
-        elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'): # In this case speed samples are doubles and rotation samples are halved because of the kinematic constraints
-            ## METHOD 1
-            # speed_samples = 4
-            # angular_speed_samples = 19
-            # speeds = jnp.linspace(-self.v_max, self.v_max, speed_samples)
-            # angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), angular_speed_samples)
-            # action_space = jnp.empty((speed_samples * angular_speed_samples + 5,2))
-            # action_space = action_space.at[0].set(jnp.array([0., 0.])) # First action is to stay still
-            # action_space = action_space.at[1].set(jnp.array([self.v_max, 0.])) # Second action is to move forward at max speed
-            # action_space = action_space.at[2].set(jnp.array([-self.v_max, 0.])) # Second action is to move backwards at max speed
-            # action_space = action_space.at[3].set(jnp.array([0., self.v_max/(self.wheels_distance/2)])) # Second action is to rotate counter-clockwise at max speed
-            # action_space = action_space.at[4].set(jnp.array([0., -self.v_max/(self.wheels_distance/2)])) # Second action is to rotate clockwise at max speed
-            # action_space = lax.fori_loop(5,
-            #                             len(action_space), 
-            #                             lambda i, acts: acts.at[i].set(jnp.array([
-            #                                 (speeds[(i-5) // angular_speed_samples] / self.v_max) * (self.v_max - jnp.abs(angular_speeds[(i-5) % angular_speed_samples]) * (self.wheels_distance/2)),
-            #                                 angular_speeds[(i-5) % angular_speed_samples]])),
-            #                             action_space)
-            ## METHOD 2
-            action_space = jnp.empty((81,2))
-            action_space = action_space.at[0].set(jnp.array([0., 0.])) # First action is to stay still
-            action_space = action_space.at[1].set(jnp.array([self.v_max, 0.])) # Second action is to move forward at max speed
-            action_space = action_space.at[2].set(jnp.array([-self.v_max, 0.])) # Second action is to move backwards at max speed
-            action_space = action_space.at[3].set(jnp.array([0., self.v_max/(self.wheels_distance/2)])) # Second action is to rotate counter-clockwise at max speed
-            action_space = action_space.at[4].set(jnp.array([0., -self.v_max/(self.wheels_distance/2)])) # Second action is to rotate clockwise at max speed
-            action_space = action_space.at[5:7].set(jnp.c_[jnp.linspace(-self.v_max, 0, 4)[1:-1], jnp.zeros((2,))]) # Actions to move bacwards at different speeds
-            action_space = action_space.at[7:9].set(jnp.c_[jnp.linspace(0, self.v_max, 4)[1:-1], jnp.zeros((2,))]) # Actions to move forwards at different speeds
-            # half_w_samples = 9
-            # v_for_each_w = [1, 1, 2, 2, 2, 2, 2, 3, 3]
-            half_w_samples = 6
-            v_for_each_w = [2,2,3,3,4,4]
-            first_quadrant_points = jnp.empty((18,2))
-            for i in range(half_w_samples):
-                angular_speed = ((half_w_samples-i) / (half_w_samples + 2)) * (self.v_max/(self.wheels_distance/2))
-                for j in range(v_for_each_w[i]):
-                    first_quadrant_points = first_quadrant_points.at[sum(v_for_each_w[0:i])+j].set(jnp.array([
-                        ((j+1) / (v_for_each_w[i] + 1)) / self.v_max * (self.v_max - angular_speed * (self.wheels_distance/2)),
-                        angular_speed]))
-            second_quadrant_points = jnp.array([-first_quadrant_points[:,0], first_quadrant_points[:,1]]).T
-            third_quadrant_points = jnp.array([-first_quadrant_points[:,0], -first_quadrant_points[:,1]]).T
-            fourth_quadrant_points = jnp.array([first_quadrant_points[:,0], -first_quadrant_points[:,1]]).T
-            action_space = action_space.at[9:27].set(first_quadrant_points)
-            action_space = action_space.at[27:45].set(second_quadrant_points)
-            action_space = action_space.at[45:63].set(third_quadrant_points)
-            action_space = action_space.at[63:81].set(fourth_quadrant_points)
+        elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+            # The number of actions will be equal to (samples**2) (which corresponds to the number of positive linear velocities)
+            # The linear velocities are crossed with (samples * 2 -1) angular speeds to create the feasible action space)
+            samples = 9 
+            angular_speeds = jnp.append(
+                jnp.linspace(-self.v_max/(self.wheels_distance/2), 0, samples, endpoint=False),
+                jnp.linspace(0, self.v_max/(self.wheels_distance/2), samples))
+            speeds = jnp.linspace(0, self.v_max, samples)
+            unconstrained_action_space = jnp.empty((len(angular_speeds)*len(speeds),2))
+            unconstrained_action_space = lax.fori_loop(
+                0,
+                len(angular_speeds),
+                lambda i, x: lax.fori_loop(
+                    0,
+                    len(speeds),
+                    lambda j, y: lax.cond(
+                        jnp.all(jnp.array([i<len(angular_speeds)-j, i>j])),
+                        lambda z: z.at[i*len(speeds)+j].set(jnp.array([speeds[j],angular_speeds[i]])),
+                        lambda z: z.at[i*len(speeds)+j].set(jnp.array([jnp.nan,jnp.nan])),
+                        y),
+                    x),
+                unconstrained_action_space)
+            action_space = unconstrained_action_space[~jnp.isnan(unconstrained_action_space).any(axis=1)]
         return action_space
 
     @partial(jit, static_argnames=("self"))
     def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
         n_humans = len(next_obs) - 1
         # Compute instantaneous reward
-        current_obs = current_obs.at[n_humans,2:4].set(action)
+        current_obs = current_obs.at[-1,2:4].set(action)
         reward, _ = self.reward_function(current_obs, info, self.dt)
         # Apply robot action
-        next_obs = next_obs.at[n_humans,2:4].set(action)
-        next_obs = next_obs.at[n_humans].set(self._propagate_obs(next_obs[-1]))
+        next_obs = next_obs.at[-1,2:4].set(action)
+        next_obs = next_obs.at[-1].set(self._propagate_robot_obs(next_obs[-1]))
         # Re-parametrize observation, for each human: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
         vnet_inputs = self.batch_compute_vnet_input(next_obs[n_humans], next_obs[0:n_humans], info)
         # Compute the output of the value network (value of the state)
@@ -131,12 +108,27 @@ class CADRL(BasePolicy):
         return vmap(CADRL._compute_action_value, in_axes=(None,None,None,None,0,None))(self, next_obs, current_obs, info, action, vnet_params)
     
     @partial(jit, static_argnames=("self"))
-    def _propagate_obs(self, obs:jnp.ndarray) -> jnp.ndarray:
+    def _propagate_human_obs(self, obs:jnp.ndarray) -> jnp.ndarray:
+        return obs.at[:2].set(obs[0:2] + obs[2:4] * self.dt)
+    
+    @partial(jit, static_argnames=("self"))
+    def _propagate_robot_obs(self, obs:jnp.ndarray) -> jnp.ndarray:
         if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
             obs = obs.at[0:2].set(obs[0:2] + obs[2:4] * self.dt)
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-            obs = obs.at[0:2].set(obs[0:2] + jnp.array([obs[2] * jnp.cos(obs[5]),obs[2] * jnp.sin(obs[5])]) * self.dt)
-            obs = obs.at[5].set(wrap_angle(obs[5] + obs[3] * self.dt))
+            obs = lax.cond(
+                obs[3] != 0,
+                lambda x: x.at[:].set(jnp.array([
+                    x[0] + (x[2]/x[3]) * (jnp.sin(x[5] + x[3] * self.dt) - jnp.sin(x[5])),
+                    x[1] + (x[2]/x[3]) * (jnp.cos(x[5]) - jnp.cos(x[5] + x[3] * self.dt)),
+                    *x[2:5],
+                    wrap_angle(x[5] + x[3] * self.dt)
+                ])),
+                lambda x: x.at[:2].set(jnp.array([
+                    x[0] + x[2] * self.dt * jnp.cos(x[5]),
+                    x[1] + x[2] * self.dt * jnp.sin(x[5])
+                ])),
+                obs)
         return obs
 
     @partial(jit, static_argnames=("self"))
@@ -173,8 +165,8 @@ class CADRL(BasePolicy):
         return vmap(CADRL._compute_vnet_input,in_axes=(None,None,0,None))(self, robot_obs, humans_obs, info)
 
     @partial(jit, static_argnames=("self"))
-    def batch_propagate_obs(self, obs:jnp.ndarray) -> jnp.ndarray:
-        return vmap(CADRL._propagate_obs, in_axes=(None, 0))(self, obs)
+    def batch_propagate_human_obs(self, obs:jnp.ndarray) -> jnp.ndarray:
+        return vmap(CADRL._propagate_human_obs, in_axes=(None, 0))(self, obs)
 
     @partial(jit, static_argnames=("self"))
     def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, vnet_params:dict, epsilon:float) -> jnp.ndarray:
@@ -186,7 +178,7 @@ class CADRL(BasePolicy):
         
         def _forward_pass(key):
             # Propagate humans state for dt time
-            next_obs = jnp.vstack([self.batch_propagate_obs(obs[0:-1]),obs[-1]])
+            next_obs = jnp.vstack([self.batch_propagate_human_obs(obs[0:-1]),obs[-1]])
             # Compute action values
             action_values, vnet_inputs = self._batch_compute_action_value(next_obs, obs, info, self.action_space, vnet_params)
             action = self.action_space[jnp.argmax(action_values)]

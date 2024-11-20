@@ -43,7 +43,7 @@ class Reward1(BaseReward):
         This is the classical sparse reward with personal space invasion penalization used in the Social Navigation literature.
 
         args:
-        - obs: observation of the current state of the environment (IMPORTANT: action is embedded in here)
+        - obs: observation of the current state of the environment (IMPORTANT: action is embedded in here and its (Vx,Vy) in case of holonomic kinematics and (v,w) in case of unicycle kinematics)
         - info: dictionary containing additional information about the environment
         - dt: time step of the simulation
 
@@ -56,13 +56,24 @@ class Reward1(BaseReward):
         robot_goal = info["robot_goal"]
         humans_radiuses = obs[0:len(obs)-1,4]
         robot_radius = obs[-1,4]
+        action = obs[-1,2:4]
         time = info["time"]
         # Compute next positions
         if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-            next_robot_pos = robot_pos + obs[-1,2:4] * dt
+            next_robot_pos = robot_pos + action * dt
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-            next_robot_pos = robot_pos + jnp.array([jnp.cos(obs[-1,5]), jnp.sin(obs[-1,5])]) * obs[-1,2] * dt
-        next_humans_pos = humans_pos + obs[0:len(obs)-1,2:4] * dt
+            next_robot_pos = lax.cond(
+                action[1] != 0,
+                lambda x: x.at[:].set(jnp.array([
+                    x[0] + (action[0]/action[1]) * (jnp.sin(obs[-1,5] + action[1] * dt) - jnp.sin(obs[-1,5])),
+                    x[1] + (action[0]/action[1]) * (jnp.cos(obs[-1,5]) - jnp.cos(obs[-1,5] + action[1] * dt))
+                ])),
+                lambda x: x.at[:].set(jnp.array([
+                    x[0] + action[0] * dt * jnp.cos(obs[-1,5]),
+                    x[1] + action[0] * dt * jnp.sin(obs[-1,5])
+                ])),
+                robot_pos)
+        next_humans_pos = humans_pos + obs[0:-1,2:4] * dt
         # Collision and discomfort detection with humans (within a duration of dt)
         distances = batch_point_to_line_distance(jnp.zeros((len(obs)-1,2)), humans_pos - robot_pos, next_humans_pos - next_robot_pos) - (humans_radiuses + robot_radius)
         collision = jnp.any(distances < 0)
@@ -73,7 +84,6 @@ class Reward1(BaseReward):
         # Timeout
         timeout = jnp.all(jnp.array([time >= self.time_limit, jnp.logical_not(collision), jnp.logical_not(reached_goal)]))
         # Compute reward
-        # reward = - (jnp.linalg.norm(next_robot_pos - robot_goal)/100) # Debug reward (agent should always move towards the goal)
         reward = 0.
         reward = lax.cond(reached_goal, lambda r: r + self.goal_reward, lambda r: r, reward) # Reward for reaching the goal
         reward = lax.cond(collision, lambda r: r + self.collision_penalty, lambda r: r, reward) # Penalty for collision

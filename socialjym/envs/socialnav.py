@@ -484,7 +484,7 @@ class SocialNav(BaseEnv):
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
             if self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
                 new_state = new_state.at[-1,4].set(jnp.arctan2(*jnp.flip(dp)))
-            action = jnp.array([jnp.linalg.norm(dp) / self.robot_dt, wrap_angle(new_state[-1,4] - state[-1,4]) / self.robot_dt])
+            action = jnp.array([jnp.linalg.norm(dp / self.robot_dt), wrap_angle(new_state[-1,4] - state[-1,4]) / self.robot_dt])
         ### Compute reward and outcome - WARNING: The old state is passed, not the updated one (but with the correct action applied)
         reward, outcome = self.reward_function(self._get_obs(state, old_info, action), old_info, self.robot_dt)
         return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome
@@ -546,7 +546,7 @@ class SocialNav(BaseEnv):
         def _test_outcome(val:tuple):
             state, info, outcome = val
             outcome["success"] = jnp.linalg.norm(state[-1,0:2] - info["robot_goal"]) < self.robot_radius
-            outcome["failure"] = jnp.any(jnp.linalg.norm(state[0:self.n_humans,0:2] - state[-1,0:2], axis=1) < info["humans_parameters"][:,0])
+            outcome["failure"] = jnp.any(jnp.linalg.norm(state[0:self.n_humans,0:2] - state[-1,0:2], axis=1) < (info["humans_parameters"][:,0] + self.robot_radius))
             outcome["timeout"] = jnp.all(jnp.array([outcome["timeout"], jnp.logical_not(outcome["failure"]), jnp.logical_not(outcome["success"])]))
             outcome["nothing"] = jnp.logical_not(jnp.any(jnp.array([outcome["success"], outcome["failure"], outcome["timeout"]])))
             return outcome

@@ -14,22 +14,25 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_t
 ### Hyperparameters
 random_seed = 13_000 # Usually we train with 3_000 IL episodes and 10_000 RL episodes
 n_episodes = 50
+kinematics = 'unicycle'
 reward_params = {
     'goal_reward': 1.,
     'collision_penalty': -0.25,
     'discomfort_distance': 0.2,
     'time_limit': 50.,
+    'kinematics': kinematics,
 }
 reward_function = Reward1(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 25,
+    'n_humans': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
     'scenario': 'circular_crossing',
     'humans_policy': 'sfm',
-    'reward_function': reward_function
+    'reward_function': reward_function,
+    'kinematics': kinematics,
 }
 
 
@@ -50,8 +53,8 @@ env = SocialNav(**env_params)
 
 ## Load social-jym policy
 vnet_params = load_socialjym_policy(
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_nh1_hp1_s4_r1_05_11_2024.pkl"))
-policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_k1_nh1_hp1_s4_r1_19_11_2024.pkl"))
+policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
 ### Test Social-Navigation-PyEnvs policy
 # metrics = test_k_trials(100, random_seed, env, policy, vnet_params, reward_params["time_limit"])
@@ -73,9 +76,9 @@ for i in range(n_episodes):
     # ax.axis('equal')
     # plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
     # for k in range(0,len(all_states),int(3/env_params['robot_dt'])):
-    #     plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
+    #     plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius, kinematics=env_params['kinematics'])
     # # plot last state
-    # plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius)
+    # plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius, kinematics=env_params['kinematics'])
     # plt.show()
 
     ## Animate trajectory
@@ -86,4 +89,6 @@ for i in range(n_episodes):
         env_params['humans_policy'],
         info['robot_goal'],
         info['current_scenario'],
-        robot_dt=env_params['robot_dt'])
+        robot_dt=env_params['robot_dt'],
+        kinematics=env_params['kinematics'])
+    
