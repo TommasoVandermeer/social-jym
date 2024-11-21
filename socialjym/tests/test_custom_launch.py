@@ -41,7 +41,7 @@ env = SocialNav(**env_params)
 # policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 
 # Initialize SOCIALJYM robot policy
-vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_nh1_hp2_s4_r1_06_11_2024.pkl"))
+vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_k1_nh5_hp2_s4_r1_20_11_2024.pkl"))
 policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 
 # Load custom episodes data

@@ -25,11 +25,11 @@ reward_params = {
 reward_function = Reward1(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 5,
+    'n_humans': 15,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'circular_crossing',
+    'scenario': 'parallel_traffic',
     'humans_policy': 'sfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
@@ -53,11 +53,11 @@ env = SocialNav(**env_params)
 
 ## Load social-jym policy
 vnet_params = load_socialjym_policy(
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_k1_nh1_hp1_s4_r1_19_11_2024.pkl"))
-policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_k1_nh5_hp2_s4_r1_20_11_2024.pkl"))
+policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
 ### Test Social-Navigation-PyEnvs policy
-# metrics = test_k_trials(100, random_seed, env, policy, vnet_params, reward_params["time_limit"])
+metrics = test_k_trials(100, random_seed, env, policy, vnet_params, reward_params["time_limit"])
 
 ### Simulate some episodes
 for i in range(n_episodes):

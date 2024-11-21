@@ -546,7 +546,7 @@ class SocialNav(BaseEnv):
         def _test_outcome(val:tuple):
             state, info, outcome = val
             outcome["success"] = jnp.linalg.norm(state[-1,0:2] - info["robot_goal"]) < self.robot_radius
-            outcome["failure"] = jnp.any(jnp.linalg.norm(state[0:self.n_humans,0:2] - state[-1,0:2], axis=1) < (info["humans_parameters"][:,0] + self.robot_radius))
+            outcome["failure"] = jnp.all(jnp.array([jnp.any(jnp.linalg.norm(state[0:self.n_humans,0:2] - state[-1,0:2], axis=1) < (info["humans_parameters"][:,0] + self.robot_radius)), jnp.logical_not(outcome["success"])]))
             outcome["timeout"] = jnp.all(jnp.array([outcome["timeout"], jnp.logical_not(outcome["failure"]), jnp.logical_not(outcome["success"])]))
             outcome["nothing"] = jnp.logical_not(jnp.any(jnp.array([outcome["success"], outcome["failure"], outcome["timeout"]])))
             return outcome
