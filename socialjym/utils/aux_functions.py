@@ -68,6 +68,15 @@ def point_to_line_distance(point:jnp.ndarray, line_start:jnp.ndarray, line_end:j
 def batch_point_to_line_distance(points:jnp.ndarray, line_starts:jnp.ndarray, line_ends:jnp.ndarray) -> jnp.ndarray:
     return vmap(point_to_line_distance, in_axes=(0, 0, 0))(points, line_starts, line_ends)
 
+@jit
+def binary_to_decimal(binary:jnp.array) -> int:
+    decimal = lax.fori_loop(
+        0,
+        len(binary),
+        lambda i, x: x + (2 ** i) * binary[len(binary) - 1 -i],
+        0)
+    return decimal
+
 def plot_state(
         ax:Axes, 
         time:float, 

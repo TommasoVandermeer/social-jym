@@ -72,7 +72,7 @@ class SocialNav(BaseEnv):
         args:
         - state: current state of the environment.
         - info: dictionary containing additional information about the environment.
-        - action: action to be taken by the robot.
+        - action: action to be taken by the robot (vx,vy) or (v,w).
 
         output:
         - obs: observation of the current state. It is in the form:
