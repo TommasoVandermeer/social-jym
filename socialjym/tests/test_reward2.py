@@ -1,4 +1,4 @@
-from socialjym.utils.rewards.socialnav_rewards.reward2 import RewardAblation
+from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 
 # Define reward parameters
 reward_params = {
@@ -6,7 +6,6 @@ reward_params = {
     'collision_penalty': -0.25,
     'discomfort_distance': 0.2,
     'time_limit': 50.,
-    'kinematics': 'unicycle',
     'target_reached_reward': True,
     'collision_penalty_reward': True,
     'discomfort_penalty_reward': True,
@@ -16,5 +15,5 @@ reward_params = {
     'heading_deviation_from_goal_penalty_reward': True,
     'pass_right_penalty_reward': True,
 }
-reward_function = RewardAblation(**reward_params)
+reward_function = Reward2(**reward_params)
 print(reward_function.type)
