@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.lines import Line2D
 import os
+import pickle
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.policies.cadrl import CADRL
@@ -21,12 +22,15 @@ n_trials = 1000
 rl_training_episodes = 10_000
 espilon_start = 0.5
 epsilon_end = 0.1
-kinematics = 'unicycle'
+kinematics = 'holonomic'
+n_humans_for_tests = [5, 10, 15, 20, 25]
 
 loss_during_il = np.empty((n_seeds,n_il_epochs))
-returns_after_il = np.empty((n_seeds,n_trials))
+returns_after_il = np.empty((len(n_humans_for_tests),n_seeds,n_trials))
+success_rate_after_il = np.empty((len(n_humans_for_tests),n_seeds))
 returns_during_rl = np.empty((n_seeds,rl_training_episodes))
-returns_after_rl = np.empty((n_seeds,n_trials))
+returns_after_rl = np.empty((len(n_humans_for_tests),n_seeds,n_trials))
+success_rate_after_rl = np.empty((len(n_humans_for_tests),n_seeds))
 
 for seed in range(n_seeds):
     print(f"\n\nSEED {seed}")
@@ -123,14 +127,30 @@ for seed in range(n_seeds):
     loss_during_il[seed] = il_out['losses']
 
     # Execute tests to evaluate return after IL
-    metrics_after_il = test_k_trials(
-        n_trials, 
-        training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
-        env, 
-        policy, 
-        il_model_params, 
-        reward_function.time_limit)
-    returns_after_il[seed] = metrics_after_il['returns']
+    for test, n_humans in enumerate(n_humans_for_tests):
+        test_env_params = {
+            'robot_radius': 0.3,
+            'n_humans': n_humans,
+            'robot_dt': 0.25,
+            'humans_dt': 0.01,
+            'robot_visible': True,
+            'scenario': training_hyperparams['scenario'],
+            'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+            'humans_policy': training_hyperparams['humans_policy'],
+            'circle_radius': 7,
+            'reward_function': reward_function,
+            'kinematics': training_hyperparams['kinematics'],
+        }
+        test_env = SocialNav(**test_env_params)
+        metrics_after_il = test_k_trials(
+            n_trials, 
+            training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
+            test_env, 
+            policy, 
+            il_model_params, 
+            reward_function.time_limit)
+        returns_after_il[test,seed] = metrics_after_il['returns']
+        success_rate_after_il[test,seed] = metrics_after_il['successes'] / n_trials
 
     # Initialize RL optimizer
     optimizer = optax.sgd(learning_rate=training_hyperparams['rl_learning_rate'], momentum=0.9)
@@ -171,14 +191,42 @@ for seed in range(n_seeds):
     returns_during_rl[seed] = rl_out['returns']  
 
     # Execute tests to evaluate return after RL
-    metrics_after_rl = test_k_trials(
-        n_trials, 
-        training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
-        env, 
-        policy, 
-        rl_model_params, 
-        reward_function.time_limit)
-    returns_after_rl[seed] = metrics_after_rl['returns']  
+    for test, n_humans in enumerate(n_humans_for_tests):
+        test_env_params = {
+            'robot_radius': 0.3,
+            'n_humans': n_humans,
+            'robot_dt': 0.25,
+            'humans_dt': 0.01,
+            'robot_visible': True,
+            'scenario': training_hyperparams['scenario'],
+            'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+            'humans_policy': training_hyperparams['humans_policy'],
+            'circle_radius': 7,
+            'reward_function': reward_function,
+            'kinematics': training_hyperparams['kinematics'],
+        }
+        test_env = SocialNav(**test_env_params)
+        metrics_after_rl = test_k_trials(
+            n_trials, 
+            training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
+            test_env, 
+            policy, 
+            rl_model_params, 
+            reward_function.time_limit)
+        returns_after_rl[test,seed] = metrics_after_rl['returns']  
+        success_rate_after_rl[test,seed] = metrics_after_rl['successes'] / n_trials
+
+# Save all output data
+output_data = {
+    'loss_during_il': loss_during_il,
+    'returns_after_il': returns_after_il,
+    'success_rate_after_il': success_rate_after_il,
+    'returns_during_rl': returns_during_rl,
+    'returns_after_rl': returns_after_rl,
+    'success_rate_after_rl': success_rate_after_rl
+}
+with open(os.path.join(os.path.dirname(__file__),"output_data_test_learning.pkl"), 'wb') as f:
+    pickle.dump(output_data, f)
 
 # Plot loss curve during IL for each seed
 figure0, ax0 = plt.subplots(figsize=(10,10))
@@ -208,29 +256,54 @@ for seed in range(n_seeds):
 figure.savefig(os.path.join(os.path.dirname(__file__),"return_curves_during_rl.eps"), format='eps')
 
 # Plot boxplot of the returns for each seed
-figure2, ax2 = plt.subplots(figsize=(10,10))
-ax2.set(xlabel='Seed', ylabel='Return', title='Return after IL and RL training for each seed')
-ax2.boxplot(np.transpose(returns_after_il), widths=0.4, patch_artist=True, 
-            boxprops=dict(facecolor="lightblue", edgecolor="lightblue", alpha=0.7),
-            whiskerprops=dict(color="blue", alpha=0.7),
-            capprops=dict(color="blue", alpha=0.7),
-            medianprops=dict(color="blue", alpha=0.7),
-            meanprops=dict(markerfacecolor="blue", markeredgecolor="blue"), 
-            showfliers=False,
-            showmeans=True, 
-            zorder=1)
-ax2.boxplot(np.transpose(returns_after_rl), widths=0.3, patch_artist=True, 
-            boxprops=dict(facecolor="lightcoral", edgecolor="lightcoral", alpha=0.4),
-            whiskerprops=dict(color="coral", alpha=0.4),
-            capprops=dict(color="coral", alpha=0.4),
-            medianprops=dict(color="coral", alpha=0.4),
-            meanprops=dict(markerfacecolor="coral", markeredgecolor="coral"), 
-            showfliers=False,
-            showmeans=True,
-            zorder=2)
-legend_elements = [
-    Line2D([0], [0], color="lightblue", lw=4, label="After IL"),
-    Line2D([0], [0], color="lightcoral", lw=4, label="After RL")
-]
-ax2.legend(handles=legend_elements, loc="upper right")
-figure2.savefig(os.path.join(os.path.dirname(__file__),"return_curves_after_il_and_rl.png"), format='png')
+for test, n_humans in enumerate(n_humans_for_tests):
+    figure2, ax2 = plt.subplots(figsize=(10,10))
+    ax2.set(xlabel='Seed', ylabel='Return', title=f'Return after IL and RL training for each seed - {n_trials} trials - {n_humans} humans')
+    ax2.boxplot(np.transpose(returns_after_il[test]), widths=0.4, patch_artist=True, 
+                boxprops=dict(facecolor="lightblue", edgecolor="lightblue", alpha=0.7),
+                whiskerprops=dict(color="blue", alpha=0.7),
+                capprops=dict(color="blue", alpha=0.7),
+                medianprops=dict(color="blue", alpha=0.7),
+                meanprops=dict(markerfacecolor="blue", markeredgecolor="blue"), 
+                showfliers=False,
+                showmeans=True, 
+                zorder=1)
+    ax2.boxplot(np.transpose(returns_after_rl[test]), widths=0.3, patch_artist=True, 
+                boxprops=dict(facecolor="lightcoral", edgecolor="lightcoral", alpha=0.4),
+                whiskerprops=dict(color="coral", alpha=0.4),
+                capprops=dict(color="coral", alpha=0.4),
+                medianprops=dict(color="coral", alpha=0.4),
+                meanprops=dict(markerfacecolor="coral", markeredgecolor="coral"), 
+                showfliers=False,
+                showmeans=True,
+                zorder=2)
+    legend_elements = [
+        Line2D([0], [0], color="lightblue", lw=4, label="After IL"),
+        Line2D([0], [0], color="lightcoral", lw=4, label="After RL")
+    ]
+    ax2.legend(handles=legend_elements, loc="upper right")
+    figure2.savefig(os.path.join(os.path.dirname(__file__),f"return_curves_after_il_and_rl_{n_humans}humans.png"), format='png')
+
+# Plot success rate after IL and RL for each seed
+figure3, ax3 = plt.subplots(2,1,figsize=(10,10))
+ax3[0].set(
+    xlabel='Number of humans', 
+    ylabel='Success rate', 
+    title=f'Success rate after IL training for each seed - {n_trials} trials', 
+    xticks=np.arange(len(n_humans_for_tests)), 
+    xticklabels=n_humans_for_tests, 
+    yticks=[i/10 for i in range(11)], 
+    ylim=[0,1.1])
+ax3[1].set(
+    xlabel='Number of humans', 
+    ylabel='Success rate', 
+    title=f'Success rate after RL training for each seed - {n_trials} trials', 
+    xticks=np.arange(len(n_humans_for_tests)), 
+    xticklabels=n_humans_for_tests, 
+    yticks=[i/10 for i in range(11)], 
+    ylim=[0,1.1])
+for seed in range(n_seeds):
+    ax3[0].plot(success_rate_after_il[:,seed])
+    ax3[1].plot(success_rate_after_rl[:,seed])
+figure3.savefig(os.path.join(os.path.dirname(__file__),f"success_rate_curves_after_il_and_rl_{n_humans}humans.eps"), format='eps')
+    

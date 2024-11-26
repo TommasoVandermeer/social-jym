@@ -1,4 +1,4 @@
-from jax import jit, lax, vmap
+from jax import jit, lax, vmap, debug
 import jax.numpy as jnp
 from functools import partial
 
@@ -8,7 +8,19 @@ from socialjym.envs.base_env import ROBOT_KINEMATICS, wrap_angle
 
 @jit
 def batch_wrap_angle(angles:jnp.ndarray) -> jnp.ndarray:
-    return vmap(wrap_angle(angles), in_axes=0)
+    return vmap(wrap_angle, in_axes=0)(angles)
+
+@jit
+def _set_nan_if_false(x:float, y:bool) -> float:
+    return lax.cond(
+        y,
+        lambda x: x,
+        lambda _: jnp.nan,
+        x)
+
+@jit
+def _batch_set_nan_if_false(x:jnp.ndarray, y:jnp.ndarray) -> jnp.ndarray:
+    return vmap(_set_nan_if_false, in_axes=(0,0))(x,y)
 
 class Reward2(BaseReward):
     def __init__(
@@ -20,7 +32,6 @@ class Reward2(BaseReward):
         time_penalty_reward: bool=True,
         high_rotation_penalty_reward: bool=True,
         heading_deviation_from_goal_penalty_reward: bool=True,
-        pass_right_penalty_reward: bool=True,
         time_limit: float=50.,
         goal_reward: float=1., 
         collision_penalty: float=-0.25, 
@@ -50,9 +61,7 @@ class Reward2(BaseReward):
         self.time_penalty_reward = time_penalty_reward
         self.high_rotation_penalty_reward = high_rotation_penalty_reward
         self.heading_deviation_from_goal_penalty_reward = heading_deviation_from_goal_penalty_reward
-        self.pass_right_penalty_reward = pass_right_penalty_reward
         self.binary_reward = jnp.array([
-            pass_right_penalty_reward,
             heading_deviation_from_goal_penalty_reward,
             high_rotation_penalty_reward,
             time_penalty_reward,
@@ -78,29 +87,6 @@ class Reward2(BaseReward):
         self.kinematics = ROBOT_KINEMATICS.index('unicycle')   
 
     @partial(jit, static_argnames=("self"))
-    def _batch_is_heading_collision_free(
-        self,
-        headings:float, 
-        robot_position:jnp.ndarray,
-        robot_lin_velocity:jnp.ndarray, 
-        robot_radius:float,
-        humans_positions:jnp.ndarray, 
-        humans_velocities:jnp.ndarray,
-        humans_radiuses:jnp.ndarray
-    ) -> bool:
-        return vmap(
-            Reward2._is_collision_free_for_all_humans(
-                self,
-                headings,
-                robot_position,
-                robot_lin_velocity,
-                robot_radius,
-                humans_positions,
-                humans_velocities,
-                humans_radiuses), 
-            in_axes=(None, 0, None, None, None, None, None, None))
-
-    @partial(jit, static_argnames=("self"))
     def _is_collision_free_for_single_human(
         self,
         heading:float, 
@@ -112,11 +98,11 @@ class Reward2(BaseReward):
         human_radius:float
     ) -> bool:
         theta_vab = jnp.atan2(
-            robot_lin_velocity[1] * jnp.sin(heading) - human_velocity[1], 
+            robot_lin_velocity[0] * jnp.sin(heading) - human_velocity[1], 
             robot_lin_velocity[0] * jnp.cos(heading) - human_velocity[0])
         theta = jnp.arctan2(human_position[1] - robot_position[1], human_position[0] - robot_position[0])
         beta = jnp.arcsin((robot_radius + human_radius) / jnp.linalg.norm(human_position - robot_position))
-        return jnp.all(jnp.array([theta_vab > theta - beta, theta_vab < theta + beta]))
+        return jnp.all(jnp.array([theta_vab < theta - beta, theta_vab > theta + beta]))
     
     @partial(jit, static_argnames=("self"))
     def _is_collision_free_for_all_humans(
@@ -130,7 +116,8 @@ class Reward2(BaseReward):
         humans_radiuses:jnp.ndarray
     ) -> bool:
         return jnp.all(vmap(
-            Reward2._is_collision_free_for_single_human(
+            Reward2._is_collision_free_for_single_human, 
+            in_axes=(None, None, None, None, None, 0, 0, 0))(
                 self,
                 heading, 
                 robot_position, 
@@ -138,8 +125,30 @@ class Reward2(BaseReward):
                 robot_radius, 
                 humans_positions,
                 humans_velocities,
-                humans_radiuses), 
-            in_axes=(None, None, None, None, None, 0, 0, 0)))
+                humans_radiuses))
+
+    @partial(jit, static_argnames=("self"))
+    def _batch_is_heading_collision_free(
+        self,
+        headings:float, 
+        robot_position:jnp.ndarray,
+        robot_lin_velocity:jnp.ndarray, 
+        robot_radius:float,
+        humans_positions:jnp.ndarray, 
+        humans_velocities:jnp.ndarray,
+        humans_radiuses:jnp.ndarray
+    ) -> bool:
+        return vmap(
+            Reward2._is_collision_free_for_all_humans, 
+            in_axes=(None, 0, None, None, None, None, None, None))(
+                self,
+                headings,
+                robot_position,
+                robot_lin_velocity,
+                robot_radius,
+                humans_positions,
+                humans_velocities,
+                humans_radiuses)
 
     @partial(jit, static_argnames=("self"))
     def __call__(
@@ -218,9 +227,15 @@ class Reward2(BaseReward):
                 humans_pos, 
                 humans_velocities, 
                 humans_radiuses)
+            # debug.print("feasible_headings: {x}", x=feasible_headings)
             goal_heading = jnp.arctan2(robot_goal[1] - robot_pos[1], robot_goal[0] - robot_pos[0])
             headings_diff = jnp.abs(batch_wrap_angle(headings - goal_heading))
-            desired_heading = headings[jnp.argmin(headings_diff[feasible_headings])]
+            headings_diff = _batch_set_nan_if_false(headings_diff, feasible_headings)
+            desired_heading = lax.cond(
+                jnp.all(jnp.logical_not(feasible_headings)), # If no feasible heading is found, desired heading is nan (the reward contribution will be 0)
+                lambda _: jnp.nan,
+                lambda _: headings[jnp.nanargmin(headings_diff)],
+                None)
             return desired_heading    
         desired_heading = lax.cond(
             jnp.all(jnp.array([self.heading_deviation_from_goal_penalty_reward, jnp.logical_not(reached_goal)])),
@@ -275,12 +290,10 @@ class Reward2(BaseReward):
             reward)
         # Active heading direction
         reward = lax.cond(
-            jnp.all(jnp.array([self.heading_deviation_from_goal_penalty_reward, jnp.logical_not(reached_goal)])), 
+            jnp.all(jnp.array([self.heading_deviation_from_goal_penalty_reward, jnp.logical_not(reached_goal), jnp.logical_not(jnp.isnan(desired_heading))])), 
             lambda r: r + self.heading_deviation_weight * wrap_angle(self.max_heading_deviation - jnp.abs(desired_heading)),
             lambda r: r, 
             reward)
-        # Pass right penalty
-        # TODO: Impelement this contribution
         ### COMPUTE OUTCOME ###
         outcome = {
             "nothing": jnp.logical_not(jnp.any(jnp.array([collision,reached_goal,timeout]))),
