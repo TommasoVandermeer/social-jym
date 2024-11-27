@@ -61,7 +61,7 @@ vnet_params = load_socialjym_policy(
 policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
 ### Test Social-Navigation-PyEnvs policy
-# metrics = test_k_trials(100, random_seed, env, policy, vnet_params, reward_params["time_limit"])
+metrics = test_k_trials(100, random_seed, env, policy, vnet_params, reward_params["time_limit"])
 
 ### Simulate some episodes
 for i in range(n_episodes):

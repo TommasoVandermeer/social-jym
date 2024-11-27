@@ -127,10 +127,24 @@ for opt in range(2):
         loss_during_il[opt,seed] = il_out['losses']
 
         # Execute tests to evaluate return after IL
+        test_env_params = {
+            'robot_radius': 0.3,
+            'n_humans': 5,
+            'robot_dt': 0.25,
+            'humans_dt': 0.01,
+            'robot_visible': True,
+            'scenario': training_hyperparams['scenario'],
+            'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+            'humans_policy': training_hyperparams['humans_policy'],
+            'circle_radius': 7,
+            'reward_function': reward_function,
+            'kinematics': training_hyperparams['kinematics'],
+        }
+        test_env = SocialNav(**test_env_params)
         metrics_after_il = test_k_trials(
             n_trials, 
             training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
-            env, 
+            test_env, 
             policy, 
             il_model_params, 
             reward_function.time_limit)
@@ -181,7 +195,7 @@ for opt in range(2):
         metrics_after_rl = test_k_trials(
             n_trials, 
             training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
-            env, 
+            test_env, 
             policy, 
             rl_model_params, 
             reward_function.time_limit)

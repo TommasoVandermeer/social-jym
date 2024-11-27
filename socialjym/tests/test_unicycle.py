@@ -17,8 +17,8 @@ from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNe
 from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_il_rollout, deep_vnet_rl_rollout
 
 ### Hyperparameters
-random_seed = 13_000 # Usually we train with 3_000 IL episodes and 10_000 RL episodes
-n_episodes = 50
+random_seed = 0
+n_epochs = 50
 kinematics = 'unicycle'
 training_hyperparams = {
     'random_seed': 0,
@@ -27,7 +27,7 @@ training_hyperparams = {
     'n_humans': 1,  # CADRL uses 1, SARL uses 5
     'il_training_episodes': 2_000,
     'il_learning_rate': 0.01,
-    'il_num_epochs': 50, # Number of epochs to train the model after ending IL
+    'il_num_epochs': n_epochs, # Number of epochs to train the model after ending IL
     'rl_training_episodes': 10_000,
     'rl_learning_rate': 0.001,
     'rl_num_batches': 100, # Number of batches to train the model after each RL episode
@@ -118,7 +118,7 @@ plt.ylabel("y (m)")
 plt.show()
 
 ### LEARNING
-loss_during_il = np.empty((50,))
+loss_during_il = np.empty((n_epochs,))
 returns_after_il = np.empty((1000,))
 returns_during_rl = np.empty((10_000,))
 returns_after_rl = np.empty((1000,))

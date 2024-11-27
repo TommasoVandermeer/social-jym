@@ -264,8 +264,8 @@ def test_k_trials(
             0, 
             int(time_limit/env.robot_dt)+1, 
             lambda s, x: lax.cond(
-                s < episode_steps,
-                lambda y: y.at[s].set(all_actions[s]),
+                s < episode_steps-1,
+                lambda y: y.at[s].set((all_states[s+1, -1, :2] - all_states[s, -1, :2]) / env.robot_dt),
                 lambda y: y.at[s].set(jnp.array([jnp.nan,jnp.nan])), 
                 x),
             jnp.empty((int(time_limit/env.robot_dt)+1, 2)))
@@ -274,7 +274,7 @@ def test_k_trials(
             0,
             int(time_limit/env.robot_dt)+1,
             lambda a, x: lax.cond(
-                a < episode_steps-1,
+                a < episode_steps-2,
                 lambda y: y.at[a].set((speeds[a+1] - speeds[a]) / env.robot_dt),
                 lambda y: y.at[a].set(jnp.array([jnp.nan,jnp.nan])),
                 x),
@@ -284,7 +284,7 @@ def test_k_trials(
             0,
             int(time_limit/env.robot_dt)+1,
             lambda j, x: lax.cond(
-                j < episode_steps-2,
+                j < episode_steps-3,
                 lambda y: y.at[j].set((accelerations[j+1] - accelerations[j]) / env.robot_dt),
                 lambda y: y.at[j].set(jnp.array([jnp.nan,jnp.nan])),
                 x),
