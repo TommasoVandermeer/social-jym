@@ -183,3 +183,19 @@ class SARL(CADRL):
         explore = random.uniform(subkey) < epsilon
         action, key, vnet_input = lax.cond(explore, _random_action, _forward_pass, key)
         return action, key, vnet_input
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_act(
+        self,
+        keys,
+        obses,
+        infos,
+        vnet_params,
+        epsilon):
+        return vmap(CADRL.act, in_axes=(None, 0, 0, 0, None, None))(
+            self,
+            keys, 
+            obses, 
+            infos, 
+            vnet_params, 
+            epsilon)

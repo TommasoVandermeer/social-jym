@@ -39,7 +39,7 @@ class Reward2(BaseReward):
         progress_to_goal_weight: float=0.15,
         time_penalty: float=0.01,
         angular_speed_bound: float=2.,
-        angular_speed_penalty_weight: float=0.6,
+        angular_speed_penalty_weight: float=0.1,
         n_heading_samples: int=30,
         max_heading_deviation: float=jnp.pi/6,
         heading_deviation_weight: float=0.6

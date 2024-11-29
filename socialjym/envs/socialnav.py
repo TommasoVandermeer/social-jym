@@ -554,6 +554,10 @@ class SocialNav(BaseEnv):
         return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome
 
     @partial(jit, static_argnames=("self"))
+    def batch_step(self, states:jnp.ndarray, infos:dict, actions:jnp.ndarray, test:bool=False):
+        return vmap(SocialNav.step, in_axes=(None, 0, 0, 0, None))(self, states, infos, actions, test)
+
+    @partial(jit, static_argnames=("self"))
     def reset(self, key:random.PRNGKey) -> tuple:
         """
         Given a PRNG key, this function resets the environment to start a new episode returning a stochastic initial state.
@@ -581,6 +585,10 @@ class SocialNav(BaseEnv):
         initial_state, key, info = self._reset(key)
         return initial_state, key, self._get_obs(initial_state, info, jnp.zeros((2,))), info
     
+    @partial(jit, static_argnames=("self"))
+    def batch_reset(self, keys):
+        return vmap(SocialNav.reset, in_axes=(None,0))(self, keys)
+
     @partial(jit, static_argnames=("self"))
     def reset_custom_episode(self, key:random.PRNGKey, custom_episode:dict) -> tuple:
         """

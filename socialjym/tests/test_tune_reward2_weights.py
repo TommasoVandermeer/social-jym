@@ -15,7 +15,13 @@ from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 random_seed = 0
 n_episodes = 1000
 n_humans = 5
-robot_policy = 'random'
+robot_policy = 'random' # 'cadrl', 'sarl', 'random'
+# Reward terms params
+ds = 0.2 # Discomfort distance
+wp = 0.03 # Progress to goal weight
+wt = 0.005 # Time penalty weight
+wr = 0.07 # High rotation penalty weight
+w_bound = 2. # Rotation bound
 
 # Initialize and reset environment
 env_params = {
@@ -27,7 +33,7 @@ env_params = {
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': jnp.array([0,1], dtype=jnp.int32),
     'humans_policy': 'hsfm',
-    'reward_function': Reward1(kinematics='unicycle'),
+    'reward_function': Reward1(kinematics='unicycle', discomfort_distance=ds),
     'kinematics': 'unicycle',
 }
 env = SocialNav(**env_params)
@@ -49,10 +55,6 @@ else:
 ### Initialize all the rewards we need to save all contributions
 # Progress to goal reward
 reward_params_1 = {
-    'goal_reward': 1.,
-    'collision_penalty': -0.25,
-    'discomfort_distance': 0.2,
-    'time_limit': 50.,
     'target_reached_reward': False,
     'collision_penalty_reward': False,
     'discomfort_penalty_reward': False,
@@ -60,14 +62,11 @@ reward_params_1 = {
     'time_penalty_reward': False,
     'high_rotation_penalty_reward': False,
     'heading_deviation_from_goal_penalty_reward': False,
+    'progress_to_goal_weight': wp,
 }
 reward_function_1 = Reward2(**reward_params_1)
 # Time penalty reward
 reward_params_2 = {
-    'goal_reward': 1.,
-    'collision_penalty': -0.25,
-    'discomfort_distance': 0.2,
-    'time_limit': 50.,
     'target_reached_reward': False,
     'collision_penalty_reward': False,
     'discomfort_penalty_reward': False,
@@ -75,14 +74,11 @@ reward_params_2 = {
     'time_penalty_reward': True,
     'high_rotation_penalty_reward': False,
     'heading_deviation_from_goal_penalty_reward': False,
+    'time_penalty': wt,
 }
 reward_function_2 = Reward2(**reward_params_2)
 # High rotation penalty reward
 reward_params_3 = {
-    'goal_reward': 1.,
-    'collision_penalty': -0.25,
-    'discomfort_distance': 0.2,
-    'time_limit': 50.,
     'target_reached_reward': False,
     'collision_penalty_reward': False,
     'discomfort_penalty_reward': False,
@@ -90,6 +86,8 @@ reward_params_3 = {
     'time_penalty_reward': False,
     'high_rotation_penalty_reward': True,
     'heading_deviation_from_goal_penalty_reward': False,
+    'angular_speed_bound': w_bound,
+    'angular_speed_penalty_weight': wr,
 }
 reward_function_3 = Reward2(**reward_params_3)
 
@@ -166,7 +164,7 @@ figure, ax = plt.subplots(figsize=(10, 10))
 ax.set(
     xlabel='Reward type', 
     ylabel='Return', 
-    title=f'Cumulative reward for each reward type - {n_episodes} trials - {n_humans} humans - robot policy: {robot_policy}',  
+    title=f'Cumulative reward for each reward type - {n_episodes} trials - {n_humans} humans - robot policy: {robot_policy}\nDs: {ds}, Wp: {wp}, Wt: {wt}, Wr: {wr}, Wbound: {w_bound}',  
     xticklabels=['Base', 'Progress to goal', 'Time penalty', 'High rotation penalty'],
     ylim=(-2, 1))
 ax.grid()
