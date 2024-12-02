@@ -159,7 +159,8 @@ def test_k_trials(
     model_params: dict, 
     time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
     personal_space:float=0.5,
-    custom_episodes:dict=None) -> tuple:
+    custom_episodes:dict=None,
+    print_avg_metrics:bool=True) -> tuple:
     """
     This function tests a policy in a given environment for k trials and outputs a series of metrics.
 
@@ -331,19 +332,20 @@ def test_k_trials(
     print(f"\nExecuting {k} tests with {env.n_humans} humans...")
     _, metrics = lax.fori_loop(0, k, _fori_body, (random_seed, metrics))
     # Print results
-    print("RESULTS")
-    print(f"Success rate: {round(metrics['successes']/k,2):.2f}")
-    print(f"Collision rate: {round(metrics['collisions']/k,2):.2f}")
-    print(f"Timeout rate: {round(metrics['timeouts']/k,2):.2f}")
-    print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
-    print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
-    print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
-    print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
-    print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
-    print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
-    print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
-    print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
-    print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
+    if print_avg_metrics:
+        print("RESULTS")
+        print(f"Success rate: {round(metrics['successes']/k,2):.2f}")
+        print(f"Collision rate: {round(metrics['collisions']/k,2):.2f}")
+        print(f"Timeout rate: {round(metrics['timeouts']/k,2):.2f}")
+        print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
+        print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
+        print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
+        print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
+        print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
+        print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
+        print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
+        print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
+        print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
     return metrics
                 
 def animate_trajectory(
