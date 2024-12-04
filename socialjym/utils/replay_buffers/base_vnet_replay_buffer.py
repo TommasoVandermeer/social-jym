@@ -43,6 +43,10 @@ class BaseVNetReplayBuffer(ABC):
 
         experiences = iterate_batch(indexes, buffer_state)
         return experiences
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_iterate(self, buffer_state:dict, current_buffer_size:int, iterations:int) -> dict:
+        return vmap(BaseVNetReplayBuffer.iterate, in_axes=(None, None, None, 0))(self, buffer_state, current_buffer_size, iterations)
 
     @partial(jit, static_argnames=("self"))
     def shuffle(self, buffer_state: dict, key: random.PRNGKey, times: int = 1) -> dict:

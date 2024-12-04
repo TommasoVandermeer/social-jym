@@ -1,7 +1,7 @@
 import haiku as hk
 import optax
 from typing import Callable
-from jax import jit, lax, random, vmap, debug
+from jax import jit, lax, random, vmap, debug, tree_map
 import jax.numpy as jnp
 from jax_tqdm import loop_tqdm
 import pickle
@@ -137,7 +137,8 @@ def deep_vnet_rl_rollout(
                         lambda _: replay_buffer.shuffle(buffer_state, buffer_key), 
                         lambda x: x, 
                         (buffer_state,buffer_key))
-                ## Update model parameters - Iterate over the buffer in num_batches
+                ### Update model parameters
+                ## Iterate over the buffer in num_batches
                 @jit
                 def _model_update_cond_body(cond_val:tuple):
                         model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns = cond_val
@@ -174,6 +175,30 @@ def deep_vnet_rl_rollout(
                                 lambda x: x, 
                                 None)
                         return (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
+                ## Compute aggregated gradients and average loss over num_batches of batch_size experiences (vectoriezed. Faster but different)
+                # @jit
+                # def _model_update_cond_body(cond_val:tuple):
+                #         model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns = cond_val
+                #         # Compute aggregated gradients and average loss
+                #         experiences_batches = replay_buffer.batch_iterate(buffer_state, actual_buffer_size, jnp.arange(num_batches)+((((i-exploration_episodes) * num_batches * replay_buffer.batch_size) % buffer_size) / replay_buffer.batch_size))
+                #         batch_loss, batch_grads = policy.batch_compute_loss_and_gradients(model_params, experiences_batches)
+                #         loss = jnp.mean(batch_loss)
+                #         grads = tree_map(lambda x: jnp.sum(x, axis=0), batch_grads)
+                #         # Update the model parameters
+                #         updates, optimizer_state = optimizer.update(grads, optimizer_state)
+                #         model_params = optax.apply_updates(model_params, updates)
+                #         # Update target network
+                #         target_model_params = lax.cond((i-exploration_episodes) % target_update_interval == 0, lambda x: model_params, lambda x: x, target_model_params)
+                #         # Save data
+                #         losses = losses.at[i-exploration_episodes].set(loss)
+                #         returns = returns.at[i-exploration_episodes].set(cumulative_episode_reward)
+                #         # DEBUG: print the mean loss for this episode and the return
+                #         lax.cond(
+                #                 jnp.all(jnp.array([debugging, (i-exploration_episodes) % 100 == 0])),
+                #                 lambda _: debug.print("Episode {x} - Mean loss over {y} batches: {z} - Return: {w}", x=(i-exploration_episodes), y=num_batches, z=losses[i-exploration_episodes], w=returns[i-exploration_episodes]),
+                #                 lambda x: x, 
+                #                 None)
+                #         return (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
                 # Update model parameters - val = (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
                 val = lax.cond(
                         i >= exploration_episodes,
@@ -329,6 +354,7 @@ def deep_vnet_il_rollout(
         @loop_tqdm(num_epochs)
         @jit
         def _epoch_fori_body(j:int, val:tuple):
+                ### Loop over optimization steps
                 @jit
                 def _model_update_fori_body(k:int, val:tuple):
                         # Retrieve data from the tuple

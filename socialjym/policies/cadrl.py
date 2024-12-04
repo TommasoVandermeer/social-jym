@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, debug, nn, value_and_grad
+from jax import random, jit, vmap, lax, debug, nn, value_and_grad, tree_map
 from functools import partial
 import haiku as hk
 from types import FunctionType
@@ -207,14 +207,13 @@ class CADRL(BasePolicy):
             vnet_params,
             epsilon)
 
-    @partial(jit, static_argnames=("self","optimizer"))
-    def update(self, 
-               current_vnet_params:dict, 
-               optimizer:optax.GradientTransformation, 
-               optimizer_state: jnp.ndarray, 
-               experiences:dict[str:jnp.ndarray],
-               # Experiences: {"vnet_inputs":jnp.ndarray, "targets":jnp.ndarray,}
-               ) -> tuple:
+    @partial(jit, static_argnames=("self"))
+    def _compute_loss_and_gradients(
+        self, 
+        current_vnet_params:dict,  
+        experiences:dict[str:jnp.ndarray],
+        # Experiences: {"vnet_inputs":jnp.ndarray, "targets":jnp.ndarray,}
+    ) -> tuple:
         
         @jit
         def _batch_loss_function(
@@ -246,6 +245,28 @@ class CADRL(BasePolicy):
             current_vnet_params, 
             vnet_inputs,
             targets)
+        return loss, grads
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_compute_loss_and_gradients(
+        self, 
+        current_vnet_params:dict, 
+        experiences:dict[str:jnp.ndarray],
+        # Experiences: {"vnet_inputs":jnp.ndarray, "targets":jnp.ndarray,}
+    ) -> tuple:
+        return vmap(CADRL._compute_loss_and_gradients, in_axes=(None, None, 0))(self, current_vnet_params, experiences)
+    
+    @partial(jit, static_argnames=("self","optimizer"))
+    def update(
+        self, 
+        current_vnet_params:dict, 
+        optimizer:optax.GradientTransformation, 
+        optimizer_state: jnp.ndarray, 
+        experiences:dict[str:jnp.ndarray],
+        # Experiences: {"vnet_inputs":jnp.ndarray, "targets":jnp.ndarray,}
+    ) -> tuple:
+        # Compute loss and gradients
+        loss, grads = self._compute_loss_and_gradients(current_vnet_params, experiences)
         # Compute parameter updates
         updates, optimizer_state = optimizer.update(grads, optimizer_state)
         # Apply updates

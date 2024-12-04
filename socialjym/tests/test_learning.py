@@ -23,7 +23,7 @@ rl_training_episodes = 10_000
 espilon_start = 0.5
 epsilon_end = 0.1
 kinematics = 'holonomic'
-n_humans_for_tests = [5, 10, 15, 20, 25]
+n_humans_for_tests = [5]
 
 loss_during_il = np.empty((n_seeds,n_il_epochs))
 returns_after_il = np.empty((len(n_humans_for_tests),n_seeds,n_trials))
@@ -37,8 +37,8 @@ for seed in range(n_seeds):
     training_hyperparams = {
         'random_seed': seed,
         'kinematics': kinematics,
-        'policy_name': 'cadrl', # 'cadrl' or 'sarl'
-        'n_humans': 1,  # CADRL uses 1, SARL uses 5
+        'policy_name': 'sarl', # 'cadrl' or 'sarl'
+        'n_humans': 5,  # CADRL uses 1, SARL uses 5
         'il_training_episodes': 2_000,
         'il_learning_rate': 0.01,
         'il_num_epochs': n_il_epochs, # Number of epochs to train the model after ending IL

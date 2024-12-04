@@ -14,7 +14,7 @@ from socialjym.utils.aux_functions import load_socialjym_policy, test_k_trials
 
 # Hyperparameters
 random_seed = 1
-n_simulations = 100
+n_simulations = 1000
 kinematics = 'unicycle'
 reward_params = {
     'goal_reward': 1.,
