@@ -77,6 +77,14 @@ def binary_to_decimal(binary:jnp.array) -> int:
         0)
     return decimal
 
+def decimal_to_binary(decimal:int, n_bits:int) -> jnp.array:
+    binary = lax.fori_loop(
+        0,
+        n_bits,
+        lambda i, x: x.at[n_bits - i -1].set(bool(decimal % 2)),
+        jnp.zeros((n_bits,), dtype=bool))
+    return binary
+
 def plot_state(
         ax:Axes, 
         time:float, 
@@ -291,6 +299,36 @@ def test_k_trials(
                 x),
             jnp.empty((int(time_limit/env.robot_dt)+1, 2)))
         metrics["average_jerk"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(jnp.linalg.norm(jerks, axis=1))), lambda x: x.at[i].set(jnp.nan), metrics["average_jerk"])
+        angular_speeds = lax.fori_loop(
+            0,
+            int(time_limit/env.robot_dt)+1,
+            lambda s, x: lax.cond(
+                s < episode_steps-1,
+                lambda y: y.at[s].set((all_states[s+1, -1, 4] - all_states[s, -1, 4]) / env.robot_dt),
+                lambda y: y.at[s].set(jnp.nan),
+                x),
+            jnp.empty((int(time_limit/env.robot_dt)+1,)))
+        metrics["average_angular_speed"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(angular_speeds)), lambda x: x.at[i].set(jnp.nan), metrics["average_angular_speed"])
+        angular_accelerations = lax.fori_loop(
+            0,
+            int(time_limit/env.robot_dt)+1,
+            lambda a, x: lax.cond(
+                a < episode_steps-2,
+                lambda y: y.at[a].set((angular_speeds[a+1] - angular_speeds[a]) / env.robot_dt),
+                lambda y: y.at[a].set(jnp.nan),
+                x),
+            jnp.empty((int(time_limit/env.robot_dt)+1,)))
+        metrics["average_angular_acceleration"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(angular_accelerations)), lambda x: x.at[i].set(jnp.nan), metrics["average_angular_acceleration"])
+        angular_jerks = lax.fori_loop(
+            0,
+            int(time_limit/env.robot_dt)+1,
+            lambda j, x: lax.cond(
+                j < episode_steps-3,
+                lambda y: y.at[j].set((angular_accelerations[j+1] - angular_accelerations[j]) / env.robot_dt),
+                lambda y: y.at[j].set(jnp.nan),
+                x),
+            jnp.empty((int(time_limit/env.robot_dt)+1,)))
+        metrics["average_angular_jerk"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(angular_jerks)), lambda x: x.at[i].set(jnp.nan), metrics["average_angular_jerk"])
         min_distances = lax.fori_loop(
             0,
             int(time_limit/env.robot_dt)+1,
@@ -324,6 +362,9 @@ def test_k_trials(
         "average_speed": jnp.empty((k,)),
         "average_acceleration": jnp.empty((k,)),
         "average_jerk": jnp.empty((k,)),
+        "average_angular_speed": jnp.empty((k,)),
+        "average_angular_acceleration": jnp.empty((k,)),
+        "average_angular_jerk": jnp.empty((k,)),
         "min_distance": jnp.empty((k,)),
         "space_compliance": jnp.empty((k,)),
         "episodic_spl": jnp.empty((k,)),
@@ -346,6 +387,10 @@ def test_k_trials(
         print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
         print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
         print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
+        if policy.kinematics == 'unicycle':
+            print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
+            print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
+            print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
     return metrics
                 
 def animate_trajectory(
