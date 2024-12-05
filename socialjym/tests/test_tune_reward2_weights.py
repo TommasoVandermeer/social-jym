@@ -61,7 +61,6 @@ reward_params_1 = {
     'progress_to_goal_reward': True,
     'time_penalty_reward': False,
     'high_rotation_penalty_reward': False,
-    'heading_deviation_from_goal_penalty_reward': False,
     'progress_to_goal_weight': wp,
 }
 reward_function_1 = Reward2(**reward_params_1)
@@ -73,7 +72,6 @@ reward_params_2 = {
     'progress_to_goal_reward': False,
     'time_penalty_reward': True,
     'high_rotation_penalty_reward': False,
-    'heading_deviation_from_goal_penalty_reward': False,
     'time_penalty': wt,
 }
 reward_function_2 = Reward2(**reward_params_2)
@@ -85,7 +83,6 @@ reward_params_3 = {
     'progress_to_goal_reward': False,
     'time_penalty_reward': False,
     'high_rotation_penalty_reward': True,
-    'heading_deviation_from_goal_penalty_reward': False,
     'angular_speed_bound': w_bound,
     'angular_speed_penalty_weight': wr,
 }

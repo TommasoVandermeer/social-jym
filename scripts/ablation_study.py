@@ -240,6 +240,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
         rl_model_params, 
         env.get_parameters(), 
         reward_function.get_parameters(), 
+        training_hyperparams, 
         os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/"),
         filename=f"sarl_unicycle_reward_{reward_type_decimal}_{training_hyperparams['scenario']}_{date.today().strftime('%d_%m_%Y')}.pkl"
     )

@@ -24,7 +24,6 @@ reward_params = {
     'progress_to_goal_reward': False,
     'time_penalty_reward': False,
     'high_rotation_penalty_reward': False,
-    'heading_deviation_from_goal_penalty_reward': True,
 }
 reward_function = Reward2(**reward_params)
 print("Reward type: ", reward_function.type)
