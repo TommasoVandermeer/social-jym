@@ -402,3 +402,236 @@ def deep_vnet_il_rollout(
                 "returns": returns}
 
         return output_dict
+
+def deep_vnet_batch_rl_rollout(
+        initial_vnet_params: dict,
+        train_iterations: int, # Number of episodes to train on, exploration episodes excluded
+        random_seed: int,
+        model: hk.Transformed,
+        optimizer: optax.GradientTransformation,
+        buffer_state: dict,
+        policy: BasePolicy,
+        env: BaseEnv,
+        replay_buffer: BaseVNetReplayBuffer,
+        buffer_size: int,
+        current_buffer_size: int,
+        num_batches: int,
+        epsilon_decay_fn: Callable,
+        epsilon_start: float,
+        epsilon_end: float,
+        decay_rate: float,
+        target_update_interval: int = 50,
+        episodes_per_iteration: int = 100, # Number of episodes per iteration
+        exploration_iterations: int = 0, # Number of episodes to explore before starting training
+        debugging: bool = False,
+) -> dict:
+        
+        # If policy is CADRL, the number of humans in the training environment must be 1
+        if policy.name == "CADRL": assert env.n_humans == 1, "CADRL policy only supports training with one human."
+        # For a correct shuffling of the buffer, the latter size must be a multiple of the number of batches times the batch size
+        assert buffer_size % (num_batches * replay_buffer.batch_size) == 0, "The buffer size must be a multiple of the number of batches times the batch size."
+
+        total_iterations = train_iterations + exploration_iterations
+
+        # Define the main rollout episode loop
+        @loop_tqdm(total_iterations)
+        @jit
+        def _fori_body(i: int, val:tuple):
+                ## Generate experience
+                @jit
+                def _while_body(val:tuple):
+                        states, obses, infos, dones, policy_keys, all_vnet_inputs, all_rewards, steps, all_outcomes, all_dones, end_steps = val
+                        # Compute actions
+                        epsilon = lax.cond(
+                                i >= exploration_iterations,
+                                lambda x: epsilon_decay_fn(*x),
+                                lambda _: 1.0,
+                                (epsilon_start, epsilon_end, i - exploration_iterations, decay_rate))
+                        actions, policy_keys, vnet_inputs = policy.batch_act(policy_keys, obses, infos, model_params, epsilon)
+                        # Make environment step
+                        states, obses, infos, rewards, outcomes = env.batch_step(states, infos, actions)
+                        # Save data
+                        all_vnet_inputs = vnet_inputs.at[steps].set(vnet_inputs)
+                        all_rewards = rewards.at[steps].set(rewards)
+                        all_outcomes = tree_map(lambda x: x.at[steps].set(outcomes), all_outcomes)
+                        all_dones = dones.at[steps].set(jnp.logical_not(outcomes["nothing"]))
+                        # Update dones
+                        dones = jnp.logical_or(jnp.logical_not(outcomes['nothing']),dones)
+                        # Increment step counter and update end_steps
+                        steps += 1
+                        @jit
+                        def _update_end_steps(done:bool, end_step:int, step:int):
+                                return lax.cond(
+                                jnp.logical_and(done, end_step > step), 
+                                lambda _: step,
+                                lambda x: x, 
+                                end_step)
+                        end_steps = vmap(_update_end_steps, in_axes=(0,0,None))(dones, end_steps, steps)
+                        return states, obses, infos, dones, policy_keys, all_vnet_inputs, all_rewards, steps, all_outcomes, all_dones, end_steps
+                # Retrieve data from the tuple
+                model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns = val
+                # Initialize the random keys
+                policy_key = vmap(random.PRNGKey)(jnp.zeros(episodes_per_iteration, dtype=int) + random_seed + i * episodes_per_iteration)
+                buffer_key = random.PRNGKey(random_seed + i * episodes_per_iteration)
+                reset_key = vmap(random.PRNGKey)(jnp.zeros(episodes_per_iteration, dtype=int) + random_seed + i * episodes_per_iteration)
+                # Reset the environment
+                states, _, obses, infos = env.batch_reset(reset_key)
+                # Episode loop
+                vnet_inputs = jnp.empty((episodes_per_iteration, int(env.reward_function.time_limit/env.robot_dt)+1, env.n_humans, policy.vnet_input_size))
+                rewards = jnp.zeros((episodes_per_iteration, int(env.reward_function.time_limit/env.robot_dt)+1,))
+                all_dones = jnp.zeros((episodes_per_iteration, int(env.reward_function.time_limit/env.robot_dt)+1,))
+                all_outcomes = {
+                        "nothing": jnp.zeros((episodes_per_iteration, int(env.reward_function.time_limit/env.robot_dt)+1,), dtype=bool),
+                        "success": jnp.zeros((episodes_per_iteration, int(env.reward_function.time_limit/env.robot_dt)+1,), dtype=bool),
+                        "failure": jnp.zeros((episodes_per_iteration, int(env.reward_function.time_limit/env.robot_dt)+1,), dtype=bool),
+                        "timeout": jnp.zeros((episodes_per_iteration, int(env.reward_function.time_limit/env.robot_dt)+1,), dtype=bool)
+                }
+                val_init = (
+                        states, 
+                        obses, 
+                        infos, 
+                        jnp.zeros(episodes_per_iteration, dtype=bool), 
+                        policy_key, 
+                        vnet_inputs, 
+                        rewards, 
+                        0, 
+                        all_outcomes, 
+                        all_dones, 
+                        jnp.ones(episodes_per_iteration, dtype=int)*int(env.reward_function.time_limit/env.robot_dt))
+                _, _, _, _, policy_key, vnet_inputs, rewards, max_steps, all_outcomes, dones, end_steps = lax.while_loop(lambda x: jnp.logical_not(jnp.all(x[3])), _while_body, val_init)           
+                # Get each episode outcome
+                @jit
+                def _get_outcome(outcomes:dict, end_step:int):
+                        return {
+                                "nothing": outcomes["nothing"][end_step],
+                                "success": outcomes["success"][end_step],
+                                "failure": outcomes["failure"][end_step],
+                                "timeout": outcomes["timeout"][end_step]
+                        }
+                @jit
+                def _batch_get_outcome(all_outcomes:dict, end_steps:int):
+                        return vmap(_get_outcome, in_axes=(0,0))(all_outcomes, end_steps)
+                outcomes = _batch_get_outcome(all_outcomes, end_steps)
+                # Compute episodes return
+                @jit 
+                def _compute_cumulative_reward(rewards:jnp.ndarray, n_steps:int):     
+                        @jit
+                        def _compute_discounted_reward(j:int, t:int, reward:float):
+                                value = pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * reward
+                                return value 
+                        @jit
+                        def _compute_state_value(js:int, init_t:int, rewards:float):
+                                return vmap(_compute_state_value, in_axes=(0, None, None))(js, init_t, rewards)
+                        return jnp.sum(_compute_discounted_reward(jnp.arange(n_steps), 0, rewards))
+                @jit
+                def _batch_compute_cumulative_reward(rewards:jnp.ndarray, n_steps:jnp.ndarray):
+                        return vmap(_compute_cumulative_reward, in_axes=(0,0))(rewards, n_steps)
+                cumulative_episode_rewards = _batch_compute_cumulative_reward(rewards, end_steps)
+
+                # TODO: Update buffer in a parallel manner
+                # The idea is to vmap over each episode step and over all batched episodes. 
+                # If the episode is successful and the step is < end_step, overwrite the entry of the experience buffer.
+                # Update buffer state
+                # buffer_state, current_buffer_size = lax.cond(
+                #         jnp.any(jnp.array([outcome["success"], outcome["failure"]])), # Add only experiences of successful or failed episodes
+                #         lambda x: lax.fori_loop(
+                #                 0,
+                #                 episode_steps,
+                #                 lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], rewards[k] + (1 - dones[k]) * pow(policy.gamma, policy.dt * policy.v_max) * jnp.squeeze(model.apply(target_model_params, None, vnet_inputs[k+1]))), buff[1]), buff[1]+1),
+                #                 (x[0], x[1])),
+                #         lambda x: x,
+                #         (buffer_state, current_buffer_size))
+                
+                # Shuffle the buffer if this is full (otherwise it is not possible without making a mess) and the number of experiences used is equal to buffer size
+                actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_size]))
+                buffer_state, buffer_key = lax.cond(
+                        jnp.all(jnp.array([actual_buffer_size == buffer_size, ((i * num_batches * replay_buffer.batch_size) % buffer_size) == 0]),), 
+                        lambda _: replay_buffer.shuffle(buffer_state, buffer_key), 
+                        lambda x: x, 
+                        (buffer_state,buffer_key))
+                ### Update model parameters
+                ## Iterate over the buffer in num_batches
+                # @jit
+                # def _model_update_cond_body(cond_val:tuple):
+                #         model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns = cond_val
+                #         @jit
+                #         def _model_update_fori_body(j:int, val:tuple):
+                #                 # Retrieve data from the tuple
+                #                 buffer_state, size, model_params, optimizer_state, losses = val
+                #                 # Sample a batch of experiences from the replay buffer
+                #                 experiences_batch = replay_buffer.iterate(
+                #                         buffer_state,
+                #                         size,
+                #                         (((((i-exploration_iterations) * num_batches * replay_buffer.batch_size) % buffer_size) / replay_buffer.batch_size) + j)) 
+                #                 # Update the model parameters
+                #                 model_params, optimizer_state, loss = policy.update(
+                #                 model_params,
+                #                 optimizer,
+                #                 optimizer_state,
+                #                 experiences_batch)
+                #                 # Save the losses
+                #                 losses = losses.at[j].set(loss)
+                #                 return (buffer_state, size, model_params, optimizer_state, losses)
+                #         all_losses = jnp.empty([num_batches])
+                #         val_init = (buffer_state, actual_buffer_size, model_params, optimizer_state, all_losses)
+                #         buffer_state, _, model_params, optimizer_state, all_losses = lax.fori_loop(0, num_batches,_model_update_fori_body, val_init)
+                #         # Update target network
+                #         target_model_params = lax.cond((i-exploration_iterations) % target_update_interval == 0, lambda x: model_params, lambda x: x, target_model_params)
+                #         # Save data
+                #         losses = losses.at[i-exploration_iterations].set(jnp.mean(all_losses))
+                #         returns = returns.at[i-exploration_iterations].set(jnp.mean(cumulative_episode_rewards))
+                #         # DEBUG: print the mean loss for this episode and the return
+                #         lax.cond(
+                #                 jnp.all(jnp.array([debugging, (i-exploration_iterations) % 100 == 0])),
+                #                 lambda _: debug.print("Episode {x} - Mean loss over {y} batches: {z} - Return: {w}", x=(i-exploration_iterations), y=num_batches, z=losses[i-exploration_iterations], w=returns[i-exploration_iterations]),
+                #                 lambda x: x, 
+                #                 None)
+                #         return (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
+                ## Compute aggregated gradients and average loss over num_batches of batch_size experiences (vectoriezed. Faster but different)
+                @jit
+                def _model_update_cond_body(cond_val:tuple):
+                        model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns = cond_val
+                        # Compute aggregated gradients and average loss
+                        experiences_batches = replay_buffer.batch_iterate(buffer_state, actual_buffer_size, jnp.arange(num_batches)+((((i-exploration_iterations) * num_batches * replay_buffer.batch_size) % buffer_size) / replay_buffer.batch_size))
+                        batch_loss, batch_grads = policy.batch_compute_loss_and_gradients(model_params, experiences_batches)
+                        loss = jnp.mean(batch_loss)
+                        grads = tree_map(lambda x: jnp.sum(x, axis=0), batch_grads)
+                        # Update the model parameters
+                        updates, optimizer_state = optimizer.update(grads, optimizer_state)
+                        model_params = optax.apply_updates(model_params, updates)
+                        # Update target network
+                        target_model_params = lax.cond((i-exploration_iterations) % target_update_interval == 0, lambda x: model_params, lambda x: x, target_model_params)
+                        # Save data
+                        losses = losses.at[i-exploration_iterations].set(loss)
+                        returns = returns.at[i-exploration_iterations].set(jnp.mean(cumulative_episode_rewards))
+                        # DEBUG: print the mean loss for this episode and the return
+                        lax.cond(
+                                jnp.all(jnp.array([debugging, (i-exploration_iterations) % 100 == 0])),
+                                lambda _: debug.print("Episode {x} - Mean loss over {y} batches: {z} - Return: {w}", x=(i-exploration_iterations), y=num_batches, z=losses[i-exploration_iterations], w=returns[i-exploration_iterations]),
+                                lambda x: x, 
+                                None)
+                        return (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
+                # Update model parameters - val = (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
+                val = lax.cond(
+                        i >= exploration_iterations,
+                        _model_update_cond_body, 
+                        lambda x: x, 
+                        (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns))
+                return val
+
+        # Initialize the array where to save data
+        losses = jnp.empty([train_iterations], dtype=jnp.float32)
+        returns = jnp.empty([train_iterations], dtype=jnp.float32)
+        # Initialize the model parameters
+        optimizer_state = optimizer.init(initial_vnet_params)
+        # Create initial values for training loop
+        val_init = (initial_vnet_params, initial_vnet_params, optimizer_state, buffer_state, current_buffer_size, losses, returns)
+        # Execute the training loop
+        debug.print("Performing RL training for {x} iterations after {y} exploration iterations", x=train_iterations, y=exploration_iterations)
+        vals = lax.fori_loop(0, total_iterations, _fori_body, val_init)
+
+        output_dict = {}
+        keys = ["model_params", "target_model_params", "optimizer_state", "buffer_state", "current_buffer_size", "losses", "returns"]
+        for idx, value in enumerate(vals): output_dict[keys[idx]] = value
+
+        return output_dict

@@ -11,7 +11,7 @@ import pickle as pkl
 import os
 from datetime import date
 
-from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, wrap_angle
+from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS, wrap_angle
 from socialjym.policies.base_policy import BasePolicy
 
 @jit
@@ -387,7 +387,7 @@ def test_k_trials(
         print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
         print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
         print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
-        if policy.kinematics == 'unicycle':
+        if policy.kinematics == ROBOT_KINEMATICS.index('unicycle'):
             print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
             print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
             print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")

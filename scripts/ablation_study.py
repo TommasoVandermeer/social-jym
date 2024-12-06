@@ -242,7 +242,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
         reward_function.get_parameters(), 
         training_hyperparams, 
         os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/"),
-        filename=f"sarl_{humans_policy}_unicycle_reward_{reward_type_decimal}_{training_hyperparams['scenario']}_{date.today().strftime('%d_%m_%Y')}.pkl"
+        filename=f"sarl_{humans_policy}_unicycle_reward_{reward_type_decimal}_{training_hyperparams['scenario']}_{date.today().strftime('%d_%m_%Y')}"
     )
     # Execute tests to evaluate return after RL
     for test, n_humans in enumerate(test_n_humans):
