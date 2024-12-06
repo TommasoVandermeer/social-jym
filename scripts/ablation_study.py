@@ -21,7 +21,7 @@ from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 
 random_seed = 0
 n_il_epochs = 50
-n_rl_episodes = 10_000
+n_rl_episodes = 30_000
 n_test_trials = 1000
 test_n_humans = [5,15,25]
 humans_policy = 'hsfm'
@@ -242,7 +242,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
         reward_function.get_parameters(), 
         training_hyperparams, 
         os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/"),
-        filename=f"sarl_unicycle_reward_{reward_type_decimal}_{training_hyperparams['scenario']}_{date.today().strftime('%d_%m_%Y')}.pkl"
+        filename=f"sarl_{humans_policy}_unicycle_reward_{reward_type_decimal}_{training_hyperparams['scenario']}_{date.today().strftime('%d_%m_%Y')}.pkl"
     )
     # Execute tests to evaluate return after RL
     for test, n_humans in enumerate(test_n_humans):

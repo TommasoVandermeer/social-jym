@@ -42,7 +42,7 @@ for seed in range(n_seeds):
         'il_training_episodes': 2_000,
         'il_learning_rate': 0.01,
         'il_num_epochs': n_il_epochs, # Number of epochs to train the model after ending IL
-        'rl_training_episodes': rl_training_episodes,
+        'rl_training_episodes': rl_training_episodes, # Holonomic kinematics 10.000 episodes, Unicycle kinematics 30.000 episodes
         'rl_learning_rate': 0.001,
         'rl_num_batches': 100, # Number of batches to train the model after each RL episode
         'batch_size': 100, # Number of experiences to sample from the replay buffer for each model update

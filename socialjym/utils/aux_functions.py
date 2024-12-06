@@ -11,7 +11,7 @@ import pickle as pkl
 import os
 from datetime import date
 
-from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES
+from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, wrap_angle
 from socialjym.policies.base_policy import BasePolicy
 
 @jit
@@ -304,7 +304,7 @@ def test_k_trials(
             int(time_limit/env.robot_dt)+1,
             lambda s, x: lax.cond(
                 s < episode_steps-1,
-                lambda y: y.at[s].set((all_states[s+1, -1, 4] - all_states[s, -1, 4]) / env.robot_dt),
+                lambda y: y.at[s].set(wrap_angle(all_states[s+1, -1, 4] - all_states[s, -1, 4]) / env.robot_dt),
                 lambda y: y.at[s].set(jnp.nan),
                 x),
             jnp.empty((int(time_limit/env.robot_dt)+1,)))

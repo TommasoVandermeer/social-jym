@@ -7,6 +7,7 @@ import os
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
+from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
@@ -25,12 +26,12 @@ reward_params = {
 reward_function = Reward1(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 25,
+    'n_humans': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'parallel_traffic',
-    'humans_policy': 'sfm',
+    'scenario': 'circular_crossing',
+    'humans_policy': 'hsfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
 }
