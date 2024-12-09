@@ -451,10 +451,22 @@ def deep_vnet_batch_rl_rollout(
                         # Make environment step
                         states, obses, infos, rewards, outcomes = env.batch_step(states, infos, actions)
                         # Save data
-                        all_vnet_inputs = vnet_inputs.at[steps].set(vnet_inputs)
-                        all_rewards = rewards.at[steps].set(rewards)
-                        all_outcomes = tree_map(lambda x: x.at[steps].set(outcomes), all_outcomes)
-                        all_dones = dones.at[steps].set(jnp.logical_not(outcomes["nothing"]))
+                        @jit
+                        def _batch_update_data(done, all_vnet_inputs, all_rewards, all_outcomes, all_dones, vnet_inputs, rewards, outcomes):
+                                @jit
+                                def _update_data(val:tuple):
+                                        all_vnet_inputs, all_rewards, all_outcomes, all_dones, vnet_input, reward, outcome = val
+                                        all_vnet_inputs = vnet_inputs.at[steps].set(vnet_input)
+                                        all_rewards = rewards.at[steps].set(reward)
+                                        all_outcomes = tree_map(lambda x: x.at[steps].set(outcome), all_outcomes)
+                                        all_dones = dones.at[steps].set(jnp.logical_not(outcome["nothing"]))
+                                        return all_vnet_inputs, all_rewards, all_outcomes, all_dones
+                                return lax.cond(
+                                        done,
+                                        lambda x: x,
+                                        lambda _: vmap(_update_data, in_axes=(0,0,0,0,0,0,0))(all_vnet_inputs, all_rewards, all_outcomes, all_dones, vnet_inputs, rewards, outcomes),
+                                        (all_vnet_inputs, all_rewards, all_outcomes, all_dones))
+                        all_vnet_inputs, all_rewards, all_outcomes, all_dones = _batch_update_data(all_vnet_inputs, all_rewards, all_outcomes, all_dones, vnet_inputs, rewards, outcomes)
                         # Update dones
                         dones = jnp.logical_or(jnp.logical_not(outcomes['nothing']),dones)
                         # Increment step counter and update end_steps
@@ -513,35 +525,36 @@ def deep_vnet_batch_rl_rollout(
                         return vmap(_get_outcome, in_axes=(0,0))(all_outcomes, end_steps)
                 outcomes = _batch_get_outcome(all_outcomes, end_steps)
                 # Compute episodes return
-                @jit 
-                def _compute_cumulative_reward(rewards:jnp.ndarray, n_steps:int):     
-                        @jit
-                        def _compute_discounted_reward(j:int, t:int, reward:float):
-                                value = pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * reward
-                                return value 
-                        @jit
-                        def _compute_state_value(js:int, init_t:int, rewards:float):
-                                return vmap(_compute_state_value, in_axes=(0, None, None))(js, init_t, rewards)
-                        return jnp.sum(_compute_discounted_reward(jnp.arange(n_steps), 0, rewards))
                 @jit
                 def _batch_compute_cumulative_reward(rewards:jnp.ndarray, n_steps:jnp.ndarray):
+                        @jit 
+                        def _compute_cumulative_reward(rewards:jnp.ndarray, n_steps:int):     
+                                @jit
+                                def _compute_discounted_reward(j:int, t:int, reward:float):
+                                        value = pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * reward
+                                        return value 
+                                return jnp.sum(vmap(_compute_discounted_reward, in_axes=(0, None, None))(jnp.arange(n_steps), 0, rewards))
                         return vmap(_compute_cumulative_reward, in_axes=(0,0))(rewards, n_steps)
                 cumulative_episode_rewards = _batch_compute_cumulative_reward(rewards, end_steps)
-
-                # TODO: Update buffer in a parallel manner
-                # The idea is to vmap over each episode step and over all batched episodes. 
-                # If the episode is successful and the step is < end_step, overwrite the entry of the experience buffer.
-                # Update buffer state
-                # buffer_state, current_buffer_size = lax.cond(
-                #         jnp.any(jnp.array([outcome["success"], outcome["failure"]])), # Add only experiences of successful or failed episodes
-                #         lambda x: lax.fori_loop(
-                #                 0,
-                #                 episode_steps,
-                #                 lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], rewards[k] + (1 - dones[k]) * pow(policy.gamma, policy.dt * policy.v_max) * jnp.squeeze(model.apply(target_model_params, None, vnet_inputs[k+1]))), buff[1]), buff[1]+1),
-                #                 (x[0], x[1])),
-                #         lambda x: x,
-                #         (buffer_state, current_buffer_size))
-                
+                # Update buffer state - WARNING: this might be a bottleneck since it's a double for loop but there is no way to vectorize it since each episode has a different length
+                @jit
+                def _add_episode_to_buffer(i, val:tuple):
+                        buffer_state, current_buffer_size, outcomes, episode_steps, vnet_inputs, rewards, dones = val
+                        buffer_state, current_buffer_size = lax.cond(
+                                jnp.any(jnp.array([outcomes["success"][i], outcomes["failure"][i]])), # Add only experiences of successful or failed episodes
+                                lambda x: lax.fori_loop(
+                                        0,
+                                        episode_steps[i],
+                                        lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[i,k], rewards[i,k] + (1 - dones[i,k]) * pow(policy.gamma, policy.dt * policy.v_max) * jnp.squeeze(model.apply(target_model_params, None, vnet_inputs[i,k+1]))), buff[1]), buff[1]+1),
+                                        (x[0], x[1])),
+                                lambda x: x,
+                                (buffer_state, current_buffer_size))
+                        return buffer_state, current_buffer_size, outcomes, end_steps, vnet_inputs, rewards, dones
+                buffer_state, current_buffer_size, _, _, _, _, _ = lax.fori_loop(
+                        0, 
+                        episodes_per_iteration, 
+                        _add_episode_to_buffer, 
+                        (buffer_state, current_buffer_size, outcomes, end_steps, vnet_inputs, rewards, dones))
                 # Shuffle the buffer if this is full (otherwise it is not possible without making a mess) and the number of experiences used is equal to buffer size
                 actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_size]))
                 buffer_state, buffer_key = lax.cond(

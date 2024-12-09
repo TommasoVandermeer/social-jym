@@ -78,11 +78,10 @@ def binary_to_decimal(binary:jnp.array) -> int:
     return decimal
 
 def decimal_to_binary(decimal:int, n_bits:int) -> jnp.array:
-    binary = lax.fori_loop(
-        0,
-        n_bits,
-        lambda i, x: x.at[n_bits - i -1].set(bool(decimal % 2)),
-        jnp.zeros((n_bits,), dtype=bool))
+    binary = jnp.zeros((n_bits,), dtype=bool)
+    for bit in range(n_bits):
+        binary = binary.at[n_bits - bit - 1].set(bool(decimal % 2))
+        decimal = decimal // 2
     return binary
 
 def plot_state(
