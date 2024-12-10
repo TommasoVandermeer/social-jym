@@ -307,7 +307,7 @@ def test_k_trials(
                 lambda y: y.at[s].set(jnp.nan),
                 x),
             jnp.empty((int(time_limit/env.robot_dt)+1,)))
-        metrics["average_angular_speed"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(angular_speeds)), lambda x: x.at[i].set(jnp.nan), metrics["average_angular_speed"])
+        metrics["average_angular_speed"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(jnp.abs(angular_speeds))), lambda x: x.at[i].set(jnp.nan), metrics["average_angular_speed"])
         angular_accelerations = lax.fori_loop(
             0,
             int(time_limit/env.robot_dt)+1,
@@ -317,7 +317,7 @@ def test_k_trials(
                 lambda y: y.at[a].set(jnp.nan),
                 x),
             jnp.empty((int(time_limit/env.robot_dt)+1,)))
-        metrics["average_angular_acceleration"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(angular_accelerations)), lambda x: x.at[i].set(jnp.nan), metrics["average_angular_acceleration"])
+        metrics["average_angular_acceleration"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(jnp.abs(angular_accelerations))), lambda x: x.at[i].set(jnp.nan), metrics["average_angular_acceleration"])
         angular_jerks = lax.fori_loop(
             0,
             int(time_limit/env.robot_dt)+1,
@@ -327,7 +327,7 @@ def test_k_trials(
                 lambda y: y.at[j].set(jnp.nan),
                 x),
             jnp.empty((int(time_limit/env.robot_dt)+1,)))
-        metrics["average_angular_jerk"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(angular_jerks)), lambda x: x.at[i].set(jnp.nan), metrics["average_angular_jerk"])
+        metrics["average_angular_jerk"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.nanmean(jnp.abs(angular_jerks))), lambda x: x.at[i].set(jnp.nan), metrics["average_angular_jerk"])
         min_distances = lax.fori_loop(
             0,
             int(time_limit/env.robot_dt)+1,

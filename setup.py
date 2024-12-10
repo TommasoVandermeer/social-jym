@@ -11,5 +11,6 @@ setup(
     'dm-haiku>=0.0.12',
     'optax>=0.2.3',
     'notebook>=7.2.2',
+    'pandas>=2.2.3',
     ]
 )
