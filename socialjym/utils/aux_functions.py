@@ -264,7 +264,7 @@ def test_k_trials(
             return value 
         metrics["returns"] = metrics["returns"].at[i].set(lax.fori_loop(0, episode_steps, lambda rr, val: _compute_state_value_for_body(rr, 0, val), 0.))
         path_length = lax.fori_loop(0, episode_steps-1, lambda p, val: val + jnp.linalg.norm(all_states[p+1, -1, :2] - all_states[p, -1, :2]), 0.)
-        metrics["episodic_spl"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.linalg.norm(robot_goal-initial_robot_position)/path_length), lambda x: x.at[i].set(0.), metrics["episodic_spl"])
+        metrics["episodic_spl"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.min(jnp.array([1.,jnp.linalg.norm(robot_goal-initial_robot_position)/path_length]))), lambda x: x.at[i].set(0.), metrics["episodic_spl"])
         # Metrics computed only if the episode is successful
         metrics["path_length"] = lax.cond(outcome["success"], lambda x: x.at[i].set(path_length), lambda x: x.at[i].set(jnp.nan), metrics["path_length"])
         metrics["times_to_goal"] = lax.cond(outcome["success"], lambda x: x.at[i].set((episode_steps-1) * env.robot_dt), lambda x: x.at[i].set(jnp.nan), metrics["times_to_goal"])

@@ -35,14 +35,14 @@ w_bound = 2. # Rotation bound
 
 # List of trained policies. It's len() must be 2**len(reward_terms)
 policies = [
-    'sarl_hsfm_unicycle_reward_0_circular_crossing_DATE.pkl',
-    'sarl_hsfm_unicycle_reward_1_circular_crossing_DATE.pkl',
-    'sarl_hsfm_unicycle_reward_2_circular_crossing_DATE.pkl',
-    'sarl_hsfm_unicycle_reward_3_circular_crossing_DATE.pkl',
-    'sarl_hsfm_unicycle_reward_4_circular_crossing_DATE.pkl',
-    'sarl_hsfm_unicycle_reward_5_circular_crossing_DATE.pkl',
-    'sarl_hsfm_unicycle_reward_6_circular_crossing_DATE.pkl',
-    'sarl_hsfm_unicycle_reward_7_circular_crossing_DATE.pkl',
+    'sarl_hsfm_unicycle_reward_0_circular_crossing_09_12_2024.pkl',
+    'sarl_hsfm_unicycle_reward_1_circular_crossing_09_12_2024.pkl',
+    'sarl_hsfm_unicycle_reward_2_circular_crossing_10_12_2024.pkl',
+    'sarl_hsfm_unicycle_reward_3_circular_crossing_10_12_2024.pkl',
+    'sarl_hsfm_unicycle_reward_4_circular_crossing_10_12_2024.pkl',
+    'sarl_hsfm_unicycle_reward_5_circular_crossing_10_12_2024.pkl',
+    'sarl_hsfm_unicycle_reward_6_circular_crossing_10_12_2024.pkl',
+    'sarl_hsfm_unicycle_reward_7_circular_crossing_11_12_2024.pkl',
 ]
 
 all_metrics_after_rl = {
@@ -104,7 +104,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
         test_env = SocialNav(**test_env_params)
         metrics_after_rl = test_k_trials(
             n_test_trials, 
-            32.000, 
+            32_000, 
             test_env, 
             policy, 
             rl_model_params, 

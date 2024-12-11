@@ -133,7 +133,7 @@ figure.suptitle(f"Metrics after RL training for each test - {n_test_trials} tria
 figure.subplots_adjust(hspace=0.5, wspace=0.5, bottom=0.05, top=0.90, left=0.1, right=0.87)
 idx = 0
 for key, values in all_metrics_after_rl.items():
-    if key == "successes" or key == "collisions" or key == "timeouts" or key == "returns":
+    if key == "successes" or key == "collisions" or key == "timeouts":
         continue
     else:
         i = idx // 3
