@@ -27,6 +27,7 @@ n_rl_episodes = 30_000
 n_test_trials = 1000
 test_n_humans = [5,15,25]
 humans_policy = 'hsfm'
+scenario = 'hybrid_scenario'
 # Reward terms params
 reward_terms = ['progress_to_goal', 'time_penalty', 'high_rotation_penalty']
 ds = 0.2 # Discomfort distance
@@ -37,6 +38,7 @@ w_bound = 1. # Rotation bound
 
 # Initialize arrays to store training metrics
 loss_during_il = jnp.empty((2**len(reward_terms),n_il_epochs))
+loss_during_rl = jnp.empty((2**len(reward_terms),n_rl_episodes))
 returns_after_il = jnp.empty((2**len(reward_terms),len(test_n_humans),n_test_trials))
 success_rate_after_il = jnp.empty((2**len(reward_terms),len(test_n_humans)))
 returns_during_rl = jnp.empty((2**len(reward_terms),n_rl_episodes))
@@ -116,7 +118,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
         'buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
         'target_update_interval': 50, # Number of episodes to wait before updating the target network for RL (the one used to compute the target state values)
         'humans_policy': humans_policy,
-        'scenario': 'hybrid_scenario',
+        'scenario': scenario,
         'hybrid_scenario_subset': jnp.array([0,1,2,3], dtype=jnp.int32),
         'reward_function': reward_function.type,
         'custom_episodes': False, # If True, the episodes are loaded from a predefined set
@@ -177,6 +179,16 @@ for reward_type_decimal in range(2**(len(reward_terms))):
     buffer_state = il_out['buffer_state']
     current_buffer_size = il_out['current_buffer_size']
     loss_during_il = loss_during_il.at[reward_type_decimal].set(il_out['losses'])
+    # Save the IL policy parameters
+    save_policy_params(
+        training_hyperparams['policy_name'], 
+        il_model_params, 
+        env.get_parameters(), 
+        reward_function.get_parameters(), 
+        training_hyperparams, 
+        os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/"),
+        filename=f"sarl_after_IL_{humans_policy}_unicycle_reward_{reward_type_decimal}_{training_hyperparams['scenario']}_{date.today().strftime('%d_%m_%Y')}"
+    )
     # Execute tests to evaluate return after IL
     for test, n_humans in enumerate(test_n_humans):
         test_env_params = {
@@ -233,10 +245,11 @@ for reward_type_decimal in range(2**(len(reward_terms))):
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = deep_vnet_rl_rollout(**rl_rollout_params)
-    # Save the training returns
+    # Save the training returns and losses
     rl_model_params = rl_out['model_params']
+    loss_during_rl = loss_during_rl.at[reward_type_decimal].set(rl_out['losses'])
     returns_during_rl = returns_during_rl.at[reward_type_decimal].set(rl_out['returns']) 
-    # Save the policy parameters
+    # Save the RL policy parameters
     save_policy_params(
         training_hyperparams['policy_name'], 
         rl_model_params, 
@@ -244,7 +257,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
         reward_function.get_parameters(), 
         training_hyperparams, 
         os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/"),
-        filename=f"sarl_{humans_policy}_unicycle_reward_{reward_type_decimal}_{training_hyperparams['scenario']}_{date.today().strftime('%d_%m_%Y')}"
+        filename=f"sarl_after_RL_{humans_policy}_unicycle_reward_{reward_type_decimal}_{training_hyperparams['scenario']}_{date.today().strftime('%d_%m_%Y')}"
     )
     # Execute tests to evaluate return after RL
     for test, n_humans in enumerate(test_n_humans):
@@ -264,7 +277,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
         test_env = SocialNav(**test_env_params)
         metrics_after_rl = test_k_trials(
             n_test_trials, 
-            training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'], 
+            training_hyperparams['il_training_episodes'] + training_hyperparams['rl_training_episodes'] + n_test_trials, 
             test_env, 
             policy, 
             rl_model_params, 
@@ -276,6 +289,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
 # Save all output data
 training_data = {
     'loss_during_il': loss_during_il,
+    'loss_during_rl': loss_during_rl,
     'returns_after_il': returns_after_il,
     'success_rate_after_il': success_rate_after_il,
     'returns_during_rl': returns_during_rl,
