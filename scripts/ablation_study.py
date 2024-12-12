@@ -32,8 +32,8 @@ reward_terms = ['progress_to_goal', 'time_penalty', 'high_rotation_penalty']
 ds = 0.2 # Discomfort distance
 wp = 0.03 # Progress to goal weight
 wt = 0.005 # Time penalty weight
-wr = 0.07 # High rotation penalty weight
-w_bound = 2. # Rotation bound
+wr = 0.035 # High rotation penalty weight
+w_bound = 1. # Rotation bound
 
 # Initialize arrays to store training metrics
 loss_during_il = jnp.empty((2**len(reward_terms),n_il_epochs))
@@ -112,11 +112,11 @@ for reward_type_decimal in range(2**(len(reward_terms))):
         'batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
         'epsilon_start': 0.5,
         'epsilon_end': 0.1,
-        'epsilon_decay': 4_000,
+        'epsilon_decay': int(0.4*n_rl_episodes), # Number of episodes to decay epsilon from start to end
         'buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
         'target_update_interval': 50, # Number of episodes to wait before updating the target network for RL (the one used to compute the target state values)
         'humans_policy': humans_policy,
-        'scenario': 'circular_crossing',
+        'scenario': 'hybrid_scenario',
         'hybrid_scenario_subset': jnp.array([0,1,2,3], dtype=jnp.int32),
         'reward_function': reward_function.type,
         'custom_episodes': False, # If True, the episodes are loaded from a predefined set

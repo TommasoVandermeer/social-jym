@@ -15,13 +15,13 @@ from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 random_seed = 0
 n_episodes = 1000
 n_humans = 5
-robot_policy = 'random' # 'cadrl', 'sarl', 'random'
+robot_policy = 'sarl' # 'cadrl', 'sarl', 'random'
 # Reward terms params
 ds = 0.2 # Discomfort distance
 wp = 0.03 # Progress to goal weight
 wt = 0.005 # Time penalty weight
-wr = 0.07 # High rotation penalty weight
-w_bound = 2. # Rotation bound
+wr = 0.035 # High rotation penalty weight
+w_bound = 1. # Rotation bound
 
 # Initialize and reset environment
 env_params = {
@@ -30,7 +30,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'hybrid_scenario',
+    'scenario': 'circular_crossing',
     'hybrid_scenario_subset': jnp.array([0,1], dtype=jnp.int32),
     'humans_policy': 'hsfm',
     'reward_function': Reward1(kinematics='unicycle', discomfort_distance=ds),
@@ -44,7 +44,7 @@ if (robot_policy == 'cadrl') or (robot_policy == 'random'):
     vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_k1_nh1_hp1_s4_r1_20_11_2024.pkl"))
 elif robot_policy == 'sarl':
     policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics='unicycle')
-    vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_k1_nh5_hp2_s4_r1_20_11_2024.pkl"))
+    vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_hsfm_unicycle_reward_0_circular_crossing_09_12_2024.pkl"))
 
 # Epsilon greedy policy
 if robot_policy == 'random':

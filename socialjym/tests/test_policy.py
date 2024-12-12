@@ -24,9 +24,27 @@ reward_params = {
     'kinematics': kinematics,
 }
 reward_function = Reward1(**reward_params)
+# ds = 0.2 # Discomfort distance
+# wp = 0.03 # Progress to goal weight
+# wt = 0.005 # Time penalty weight
+# wr = 0.07 # High rotation penalty weight
+# w_bound = 2. # Rotation bound
+# reward_function = Reward2(
+#         target_reached_reward = True,
+#         collision_penalty_reward = True,
+#         discomfort_penalty_reward = True,
+#         progress_to_goal_reward = 1,
+#         time_penalty_reward = 1,
+#         high_rotation_penalty_reward = 1,
+#         discomfort_distance=ds,
+#         progress_to_goal_weight=wp,
+#         time_penalty=wt,
+#         angular_speed_bound=w_bound,
+#         angular_speed_penalty_weight=wr
+#     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 5,
+    'n_humans': 25,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
@@ -58,7 +76,7 @@ env = SocialNav(**env_params)
 # policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
 vnet_params = load_socialjym_policy(
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_hsfm_unicycle_reward_1_circular_crossing_06_12_2024.pkl"))
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_hsfm_unicycle_reward_6_circular_crossing_10_12_2024.pkl"))
 policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
 ### Test Social-Navigation-PyEnvs policy
