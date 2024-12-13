@@ -146,44 +146,31 @@ class SocialNav(BaseEnv):
             disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
             return (disturbed_points, key)
     
-        final_for_val = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
-        disturbed_points, key = final_for_val
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
         goal_angles = jnp.arctan2(-disturbed_points[:,1], -disturbed_points[:,0])
 
         # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
         if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
             # Humans
-            full_state = lax.fori_loop(
-                0, 
-                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
-                    [disturbed_points[i,0],
-                    disturbed_points[i,1],
-                    0.,
-                    0.,
-                    goal_angles[i],
-                    0.]))
-                , full_state)
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], goal_angles[:-1]))
         elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
             # Humans
-            full_state = lax.fori_loop(
-                0, 
-                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
-                    [disturbed_points[i,0],
-                    disturbed_points[i,1],
-                    0.,
-                    0.,
-                    0,
-                    0.]))
-                , full_state)
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
         # Robot
-        full_state = full_state.at[self.n_humans].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:4], jnp.pi/2, *full_state[self.n_humans,5:]]))
+        full_state = full_state.at[-1].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:4], jnp.pi/2, *full_state[self.n_humans,5:]]))
 
         # Assign the humans' and robot goals
-        humans_goal = lax.fori_loop(
-            0, 
-            self.n_humans, 
-            lambda i, humans_goal: humans_goal.at[i].set(self.circle_radius * jnp.array([jnp.cos(goal_angles[i]), jnp.sin(goal_angles[i])])),
-            humans_goal)
+        humans_goal = self.circle_radius * jnp.array([jnp.cos(goal_angles[:-1]), jnp.sin(goal_angles[:-1])]).T
         robot_goal = np.array([0., self.circle_radius])
 
         # Obstacles
@@ -240,36 +227,27 @@ class SocialNav(BaseEnv):
                 return (disturbed_points, key, valid)
             disturbed_points, key = for_val
             disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
-            return (disturbed_points, key)
+            return disturbed_points, key
     
-        final_for_val = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
-        disturbed_points, key = final_for_val
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
 
         # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
         if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
             # Humans
-            full_state = lax.fori_loop(
-                0, 
-                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
-                    [disturbed_points[i,0],
-                    disturbed_points[i,1],
-                    0.,
-                    0.,
-                    jnp.pi,
-                    0.]))
-                , full_state)
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.ones((self.n_humans,)) * jnp.pi))
         elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
             # Humans
-            full_state = lax.fori_loop(
-                0, 
-                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
-                    [disturbed_points[i,0],
-                    disturbed_points[i,1],
-                    0.,
-                    0.,
-                    0,
-                    0.]))
-                , full_state)
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
         # Robot
         full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
 
@@ -323,36 +301,27 @@ class SocialNav(BaseEnv):
                 return (disturbed_points, key, valid)
             disturbed_points, key = for_val
             disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
-            return (disturbed_points, key)
+            return disturbed_points, key
     
-        final_for_val = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
-        disturbed_points, key = final_for_val
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
 
         # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
         if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
             # Humans
-            full_state = lax.fori_loop(
-                0, 
-                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
-                    [disturbed_points[i,0],
-                    disturbed_points[i,1],
-                    0.,
-                    0.,
-                    jnp.pi,
-                    0.]))
-                , full_state)
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.ones((self.n_humans,)) * jnp.pi))
         elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
             # Humans
-            full_state = lax.fori_loop(
-                0, 
-                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
-                    [disturbed_points[i,0],
-                    disturbed_points[i,1],
-                    0.,
-                    0.,
-                    0,
-                    0.]))
-                , full_state)
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
         # Robot
         full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:4], -jnp.pi/2, *full_state[self.n_humans,5:]]))
 
@@ -407,36 +376,27 @@ class SocialNav(BaseEnv):
                 return (disturbed_points, key, valid)
             disturbed_points, key = for_val
             disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
-            return (disturbed_points, key)
+            return disturbed_points, key
     
-        final_for_val = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
-        disturbed_points, key = final_for_val
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
 
         # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
         if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
             # Humans
-            full_state = lax.fori_loop(
-                0, 
-                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
-                    [disturbed_points[i,0],
-                    disturbed_points[i,1],
-                    0.,
-                    0.,
-                    jnp.pi,
-                    0.]))
-                , full_state)
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-2], jnp.ones((self.n_humans,)) * jnp.pi))
         elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
             # Humans
-            full_state = lax.fori_loop(
-                0, 
-                self.n_humans, lambda i, full_state: full_state.at[i].set(jnp.array(
-                    [disturbed_points[i,0],
-                    disturbed_points[i,1],
-                    0.,
-                    0.,
-                    0,
-                    0.]))
-                , full_state)
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-2], jnp.zeros((self.n_humans,))))
         # Robot
         full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-2], *full_state[self.n_humans,2:4], jnp.pi, *full_state[self.n_humans,5:]]))
 
@@ -545,12 +505,11 @@ class SocialNav(BaseEnv):
                     fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], *action, 0., 0.])]) # SFM or ORCA fictitious state
                 elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
                     fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.cos(state[-1,4]) * action[0], jnp.sin(state[-1,4]) * action[0], state[-1,4], 0.])]) # SFM or ORCA fictitious state
-            out = lax.fori_loop(
+            new_state, new_info = lax.fori_loop(
                 0,
                 int(self.robot_dt/self.humans_dt),
                 lambda _ , x: self._update_state_info(*x, action),
                 (fictitious_state, info))
-            new_state, new_info = out
             # Overwrite the robot fictitious state with the real one
             new_state = new_state.at[-1,2:].set(jnp.array([
                 0., 
@@ -558,12 +517,11 @@ class SocialNav(BaseEnv):
                 new_state[-1,4] * int(self.kinematics == ROBOT_KINEMATICS.index('unicycle')), # If robot is holonomic 0 is passed as robot theta
                 0.]))
         else:
-            out = lax.fori_loop(
+            new_state, new_info = lax.fori_loop(
                 0,
                 int(self.robot_dt/self.humans_dt),
                 lambda _ , x: self._update_state_info(*x, action),
                 (state, info))
-            new_state, new_info = out
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):
@@ -675,6 +633,7 @@ class SocialNav(BaseEnv):
             "humans_parameters": humans_parameters, 
             "static_obstacles": static_obstacles, 
             "time": 0.,
-            "current_scenario": custom_episode["scenario"]}
+            "current_scenario": custom_episode["scenario"],
+            "humans_delay": jnp.zeros((self.n_humans,)),}
         return full_state, key, self._get_obs(full_state, info, jnp.zeros((2,))), info
         

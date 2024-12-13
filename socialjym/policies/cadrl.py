@@ -62,12 +62,9 @@ class CADRL(BasePolicy):
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
             # The number of actions will be equal to (samples**2) (which corresponds to the number of positive linear velocities)
             # The linear velocities are crossed with (samples * 2 -1) angular speeds to create the feasible action space)
-            samples = 8
-            # angular_speeds = jnp.append(
-            #     jnp.linspace(-self.v_max/(self.wheels_distance/2), 0, samples),
-            #     jnp.linspace(0, self.v_max/(self.wheels_distance/2), samples))
-            angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 2*samples+1)
-            speeds = jnp.linspace(0, self.v_max, samples+1)
+            samples = 9
+            angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 2*samples-1)
+            speeds = jnp.linspace(0, self.v_max, samples)
             unconstrained_action_space = jnp.empty((len(angular_speeds)*len(speeds),2))
             unconstrained_action_space = lax.fori_loop(
                 0,

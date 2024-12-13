@@ -138,59 +138,63 @@ class BaseEnv(ABC):
 
         @jit
         def _update_circular_crossing(val:tuple):
+            @jit
+            def _update_human_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float) -> jnp.ndarray:
+                goal = lax.cond(
+                    jnp.linalg.norm(position - goal) <= radius,
+                    lambda x: -x,
+                    lambda x: x,
+                    goal)
+                return goal
             info, state = val
-            info["humans_goal"] = lax.fori_loop(
-                0, 
-                self.n_humans, 
-                lambda i, goals: lax.cond(
-                    jnp.linalg.norm(state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0], 
-                    lambda x: x.at[i].set(-info["humans_goal"][i]), 
-                    lambda x: x, 
-                    goals),
-                info["humans_goal"])
+            info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0))(state[:-1,0:2], info["humans_goal"], info["humans_parameters"][:,0])
             return (info, state)
         
         @jit
         def _update_delayed_circular_crossing(val:tuple):
+            @jit
+            def _update_human_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, delay:float, time:float) -> jnp.ndarray:
+                goal = lax.cond(
+                    jnp.all(jnp.array([jnp.linalg.norm(position - goal) <= radius, time >= delay])),
+                    lambda x: -x,
+                    lambda x: x,
+                    goal)
+                return goal
             info, state = val
-            info["humans_goal"] = lax.fori_loop(
-                0, 
-                self.n_humans, 
-                lambda i, goals: lax.cond(
-                    jnp.all(jnp.array([jnp.linalg.norm(state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0], info["time"] >= info["humans_delay"][i]])), 
-                    lambda x: x.at[i].set(-info["humans_goal"][i]), 
-                    lambda x: x, 
-                    goals),
-                info["humans_goal"])
+            info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0,0,None))(state[:-1,0:2], info["humans_goal"], info["humans_parameters"][:,0], info["humans_delay"], info["time"])
             return (info, state)
         
         @jit
         def _update_traffic_scenarios(val:tuple):
             @jit
-            def _true_cond_bodi(i:int, info:dict, state:jnp.ndarray):
-                state = state.at[i,0:4].set(jnp.array([
-                        # jnp.max(jnp.append(state[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2)+0.05, self.traffic_length/2+1)), 
-                        jnp.max(jnp.append(state[:,0]+(jnp.max(jnp.append(info["humans_parameters"][:,0],self.robot_radius))*2)+(jnp.max(info["humans_parameters"][:,-1])*2), self.traffic_length/2)), # Compliant with Social-Navigation-PyEnvs
-                        jnp.clip(state[i,1], -self.traffic_height/2, self.traffic_height/2),
-                        *state[i,2:4]]))
-                info["humans_goal"] = info["humans_goal"].at[i].set(jnp.array([info["humans_goal"][i,0], state[i,1]]))
-                return (info, state)
-
+            def _update_human_state_and_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray) -> tuple:
+                position, goal = lax.cond(
+                    # jnp.linalg.norm(position - goal) <= radius + 2,
+                    jnp.linalg.norm(position - goal) <= 3, # Compliant with Social-Navigation-PyEnvs
+                    lambda _: (
+                        jnp.array([
+                        # jnp.max(jnp.append(positions[:,0]+(jnp.max(jnp.append(radiuses,self.robot_radius))*2)+(jnp.max(safety_spaces)*2)+0.05, self.traffic_length/2+1)), 
+                        jnp.max(jnp.append(positions[:,0] + (jnp.max(jnp.append(radiuses, self.robot_radius))*2)+(jnp.max(safety_spaces)*2), self.traffic_length/2)), # Compliant with Social-Navigation-PyEnvs
+                        jnp.clip(position[1], -self.traffic_height/2, self.traffic_height/2)]
+                        ),
+                        jnp.array([goal[0], position[1]]),
+                    ),
+                    lambda x: x,
+                    (position, goal))
+                return position, goal
             info, state = val
-            out = lax.fori_loop(
-                0, 
-                self.n_humans, 
-                lambda i, val: lax.cond(
-                    # jnp.linalg.norm(val[1][i,0:2] - val[0]["humans_goal"][i]) <= val[0]["humans_parameters"][i,0] + 2, 
-                    jnp.linalg.norm(val[1][i,0:2] - val[0]["humans_goal"][i]) <= 3, # Compliant with Social-Navigation-PyEnvs
-                    lambda x: _true_cond_bodi(i, x[0], x[1]),
-                    lambda x: x, 
-                    val),
-                (info, state))
-            info, state = out
-            return (info, state)
+            new_positions, new_goals = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None))(
+                state[:-1,0:2], 
+                info["humans_goal"], 
+                info["humans_parameters"][:,0], 
+                state[:,0:2], 
+                info["humans_parameters"][:,0], 
+                info["humans_parameters"][:,-1])
+            state = state.at[:-1,0:2].set(new_positions)
+            info["humans_goal"] = info["humans_goal"].at[:].set(new_goals)
+            return info, state
 
-        info_and_state = lax.switch(
+        new_info, new_state = lax.switch(
             info["current_scenario"], 
             [_update_circular_crossing, 
             _update_traffic_scenarios, 
@@ -198,8 +202,6 @@ class BaseEnv(ABC):
             lambda x: x,
             _update_delayed_circular_crossing,], 
             (info, state))
-        new_info, new_state = info_and_state
-            
         return new_info, new_state
 
     @partial(jit, static_argnames=("self"))

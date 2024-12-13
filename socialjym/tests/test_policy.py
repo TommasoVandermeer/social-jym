@@ -48,8 +48,8 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'delayed_circular_crossing',
-    'humans_policy': 'hsfm',
+    'scenario': 'hybrid_scenario',
+    'humans_policy': 'sfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
 }
@@ -80,7 +80,7 @@ vnet_params = load_socialjym_policy(
 policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
 ### Test Social-Navigation-PyEnvs policy
-# metrics = test_k_trials(100, random_seed, env, policy, vnet_params, reward_params["time_limit"])
+# metrics = test_k_trials(1000, random_seed, env, policy, vnet_params, reward_params["time_limit"])
 
 ### Simulate some episodes
 for i in range(n_episodes):
