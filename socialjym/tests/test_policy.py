@@ -44,11 +44,11 @@ reward_function = Reward1(**reward_params)
 #     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 25,
+    'n_humans': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'circular_crossing',
+    'scenario': 'delayed_circular_crossing',
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
@@ -76,7 +76,7 @@ env = SocialNav(**env_params)
 # policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
 vnet_params = load_socialjym_policy(
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_hsfm_unicycle_reward_6_circular_crossing_10_12_2024.pkl"))
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_hsfm_unicycle_reward_0_circular_crossing_09_12_2024.pkl"))
 policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
 ### Test Social-Navigation-PyEnvs policy

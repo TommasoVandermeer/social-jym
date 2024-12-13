@@ -13,6 +13,7 @@ SCENARIOS = [
     "parallel_traffic", 
     "perpendicular_traffic", 
     "robot_crowding", 
+    "delayed_circular_crossing",
     "hybrid_scenario"] # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
 HUMAN_POLICIES = [
     "orca", # TODO: Implement JORCA (Jax based ORCA)
@@ -57,7 +58,8 @@ class BaseEnv(ABC):
         lidar_angular_range:float,
         lidar_max_dist:float,
         lidar_num_rays:int,
-        kinematics:str
+        kinematics:str,
+        max_cc_delay:float,
     ) -> None:
         ## Args validation
         assert scenario in SCENARIOS, f"Invalid scenario. Choose one of {SCENARIOS}"
@@ -87,6 +89,7 @@ class BaseEnv(ABC):
         self.lidar_max_dist = lidar_max_dist
         self.lidar_num_rays = lidar_num_rays
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
+        self.max_cc_delay = max_cc_delay
         
 
     # --- Private methods ---
@@ -148,6 +151,20 @@ class BaseEnv(ABC):
             return (info, state)
         
         @jit
+        def _update_delayed_circular_crossing(val:tuple):
+            info, state = val
+            info["humans_goal"] = lax.fori_loop(
+                0, 
+                self.n_humans, 
+                lambda i, goals: lax.cond(
+                    jnp.all(jnp.array([jnp.linalg.norm(state[i,0:2] - info["humans_goal"][i]) <= info["humans_parameters"][i,0], info["time"] >= info["humans_delay"][i]])), 
+                    lambda x: x.at[i].set(-info["humans_goal"][i]), 
+                    lambda x: x, 
+                    goals),
+                info["humans_goal"])
+            return (info, state)
+        
+        @jit
         def _update_traffic_scenarios(val:tuple):
             @jit
             def _true_cond_bodi(i:int, info:dict, state:jnp.ndarray):
@@ -178,7 +195,8 @@ class BaseEnv(ABC):
             [_update_circular_crossing, 
             _update_traffic_scenarios, 
             _update_traffic_scenarios, 
-            lambda x: x], 
+            lambda x: x,
+            _update_delayed_circular_crossing,], 
             (info, state))
         new_info, new_state = info_and_state
             

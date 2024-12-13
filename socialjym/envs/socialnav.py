@@ -31,7 +31,8 @@ class SocialNav(BaseEnv):
             lidar_angular_range=jnp.pi,
             lidar_max_dist=10.,
             lidar_num_rays=60,
-            kinematics='holonomic'
+            kinematics='holonomic',
+            max_cc_delay = 5.,
         ) -> None:
         ## BaseEnv initialization
         super().__init__(
@@ -49,7 +50,9 @@ class SocialNav(BaseEnv):
             lidar_angular_range=lidar_angular_range, 
             lidar_max_dist=lidar_max_dist, 
             lidar_num_rays=lidar_num_rays,
-            kinematics=kinematics)
+            kinematics=kinematics,
+            max_cc_delay=max_cc_delay
+            )
         ## Args validation
         assert humans_dt <= robot_dt, "The humans' time step must be less or equal than the robot's time step."
         assert is_multiple(robot_dt, humans_dt), "The robot's time step must be a multiple of the humans' time step."
@@ -108,7 +111,8 @@ class SocialNav(BaseEnv):
         full_state, info = lax.switch(scenario, [self._generate_circular_crossing_episode, 
                                                 self._generate_parallel_traffic_episode,
                                                 self._generate_perpendicular_traffic_episode,
-                                                self._generate_robot_crowding_episode], subkey)
+                                                self._generate_robot_crowding_episode,
+                                                self._generate_delayed_circular_crossing_episode], subkey)
         return full_state, key, info
     
     @partial(jit, static_argnames=("self"))
@@ -191,9 +195,22 @@ class SocialNav(BaseEnv):
             "humans_parameters": humans_parameters, 
             "static_obstacles": static_obstacles, 
             "time": 0.,
-            "current_scenario": SCENARIOS.index('circular_crossing')}
+            "current_scenario": SCENARIOS.index('circular_crossing'),
+            "humans_delay": jnp.zeros((self.n_humans,)),
+        }
         return full_state, info
     
+    @partial(jit, static_argnames=("self"))
+    def _generate_delayed_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        key, subkey = random.split(key)
+        full_state, info = self._generate_circular_crossing_episode(key)
+        possible_delays = jnp.arange(0., self.max_cc_delay + self.robot_dt, self.robot_dt)
+        info["humans_delay"] = info["humans_delay"].at[:].set(random.choice(subkey, possible_delays, shape=(self.n_humans,)))
+        info["current_scenario"] = SCENARIOS.index('delayed_circular_crossing')
+        # The next waypoint of humans is set to be its initial position
+        info["humans_goal"] = info["humans_goal"].at[:].set(-info["humans_goal"])
+        return full_state, info
+
     @partial(jit, static_argnames=("self"))
     def _generate_parallel_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
         full_state = jnp.zeros((self.n_humans+1, 6))
@@ -273,7 +290,9 @@ class SocialNav(BaseEnv):
             "humans_parameters": humans_parameters, 
             "static_obstacles": static_obstacles, 
             "time": 0.,
-            "current_scenario": SCENARIOS.index('parallel_traffic')}
+            "current_scenario": SCENARIOS.index('parallel_traffic'),
+            "humans_delay": jnp.zeros((self.n_humans,)),
+        }
         return full_state, info
 
     @partial(jit, static_argnames=("self"))
@@ -354,7 +373,9 @@ class SocialNav(BaseEnv):
             "humans_parameters": humans_parameters, 
             "static_obstacles": static_obstacles, 
             "time": 0.,
-            "current_scenario": SCENARIOS.index('perpendicular_traffic')}
+            "current_scenario": SCENARIOS.index('perpendicular_traffic'),
+            "humans_delay": jnp.zeros((self.n_humans,)),
+        }
         return full_state, info
 
     @partial(jit, static_argnames=("self"))
@@ -436,7 +457,9 @@ class SocialNav(BaseEnv):
             "humans_parameters": humans_parameters, 
             "static_obstacles": static_obstacles, 
             "time": 0.,
-            "current_scenario": SCENARIOS.index('robot_crowding')}
+            "current_scenario": SCENARIOS.index('robot_crowding'),
+            "humans_delay": jnp.zeros((self.n_humans,)),
+        }
         return full_state, info
 
     # --- Public methods ---

@@ -25,6 +25,7 @@ n_rl_episodes = 30_000
 n_test_trials = 1000
 test_n_humans = [5,15,25]
 humans_policy = 'hsfm'
+scenario = 'hybrid_scenario'
 # Reward terms params
 reward_terms = ['progress_to_goal', 'time_penalty', 'high_rotation_penalty']
 ds = 0.2 # Discomfort distance
@@ -94,7 +95,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
             'robot_dt': 0.25,
             'humans_dt': 0.01,
             'robot_visible': True,
-            'scenario': 'circular_crossing',
+            'scenario': scenario,
             'hybrid_scenario_subset': jnp.array([0,1,2,3], dtype=jnp.int32),
             'humans_policy': humans_policy,
             'circle_radius': 7,
@@ -104,7 +105,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
         test_env = SocialNav(**test_env_params)
         metrics_after_rl = test_k_trials(
             n_test_trials, 
-            32_000, 
+            32_000 + n_test_trials, 
             test_env, 
             policy, 
             rl_model_params, 
