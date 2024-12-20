@@ -104,7 +104,8 @@ def deep_vnet_rl_rollout(
                         "static_obstacles": custom_static_obstacles[i], 
                         "scenario": custom_scenario[i], 
                         "humans_radius": custom_humans_radius[i], 
-                        "humans_speed": custom_humans_speed[i]}),
+                        "humans_speed": custom_humans_speed[i],
+                        "humans_delay": jnp.zeros(env.n_humans)}),
                 lambda x: env.reset(x), 
                 reset_key)
                 # Episode loop
@@ -298,7 +299,8 @@ def deep_vnet_il_rollout(
                                 "static_obstacles": custom_static_obstacles[i], 
                                 "scenario": custom_scenario[i], 
                                 "humans_radius": custom_humans_radius[i], 
-                                "humans_speed": custom_humans_speed[i]}),
+                                "humans_speed": custom_humans_speed[i],
+                                "humans_delay": jnp.zeros(env.n_humans)}),
                         lambda x: env.reset(x), 
                         reset_key)
                 # For imitation learning, set the humans' safety space to 0.1
