@@ -87,12 +87,12 @@ with open(os.path.join(os.path.dirname(__file__),"scenarios_length_test_data.pkl
     all_metrics = pickle.load(f)
 
 # Plot results
-scenarios_labels = ["CC", "PaT", "Pet", "RC", "DCC"]
+scenarios_labels = ["CC", "PaT", "PeT", "RC", "DCC"]
 time_to_goal = all_metrics["times_to_goal"]
 path_length = all_metrics["path_length"]
 figure, ax = plt.subplots(2, 3, figsize=(10, 6))
 figure.subplots_adjust(hspace=0.5, wspace=0.5, top=0.8)
-figure.suptitle(f"Scenarios tuning\n{circle_radius}m circle radius - {traffic_height}m traffic heightv - {traffic_length}m traffic length - {crowding_square_side}m crowding square side - {max_cc_delay}s max CC delay")
+figure.suptitle(f"Scenarios tuning\n{circle_radius}m circle radius - {traffic_height}m traffic height - {traffic_length}m traffic length - {crowding_square_side}m crowding square side - {max_cc_delay}s max CC delay")
 for i, n_humans in enumerate(n_humans_tests):
     ax[0, i].grid()
     ax[0, i].set_title(f"{n_humans} humans")
