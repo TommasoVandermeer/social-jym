@@ -58,8 +58,7 @@ metrics = test_k_trials(n_episodes, 0, env, policy, vnet_params, reward_params["
 # for i in range(n_episodes):
 #     policy_key = random.PRNGKey(0)
 #     reset_key = random.PRNGKey(0)
-#     outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
-#     state, reset_key, obs, info = env.reset_custom_episode(reset_key, custom_episodes[i])
+#     state, reset_key, obs, info, outcome = env.reset_custom_episode(reset_key, custom_episodes[i])
 #     all_states = np.array([state])
 #     while outcome["nothing"]:
 #         action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, 0.)

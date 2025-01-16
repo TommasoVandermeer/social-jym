@@ -562,9 +562,10 @@ class SocialNav(BaseEnv):
                 [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius],
                 [robot_px, robot_py, robot_ux, robot_uy, robot_radius]].
         - info: dictionary containing additional information about the environment.
+        - outcome: dictionary indicating whether the episode is in a terminal state or not.
         """
         initial_state, key, info = self._reset(key)
-        return initial_state, key, self._get_obs(initial_state, info, jnp.zeros((2,))), info
+        return initial_state, key, self._get_obs(initial_state, info, jnp.zeros((2,))), info, {"success": False, "failure": False, "timeout": False, "nothing": True}
     
     @partial(jit, static_argnames=("self"))
     def batch_reset(self, keys):
@@ -602,6 +603,7 @@ class SocialNav(BaseEnv):
                 [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius],
                 [robot_px, robot_py, robot_u1, robot_u2, robot_radius]].
         - info: dictionary containing additional information about the environment.
+        - outcome: dictionary indicating whether the episode is in a terminal state or not.
         """
         ## Check input data is coherent with the environment
         # TODO: Verify input data is coheren with the environment: n_humans
@@ -635,5 +637,5 @@ class SocialNav(BaseEnv):
             "time": 0.,
             "current_scenario": custom_episode["scenario"],
             "humans_delay": jnp.zeros((self.n_humans,)),}
-        return full_state, key, self._get_obs(full_state, info, jnp.zeros((2,))), info
+        return full_state, key, self._get_obs(full_state, info, jnp.zeros((2,))), info, {"success": False, "failure": False, "timeout": False, "nothing": True}
         

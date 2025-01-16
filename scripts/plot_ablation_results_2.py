@@ -14,7 +14,7 @@ n_test_trials = 1000
 reward_terms = ['progress_to_goal', 'time_penalty', 'high_rotation_penalty']
 humans_policy = 'hsfm'
 train_scenario = 'hybrid_scenario'
-train_hybrid_scenario_subset = jnp.array([1,2,3,4], dtype=jnp.int32) # Exclude nnormal circular crossing
+train_hybrid_scenario_subset = jnp.array([1,2,3,4], dtype=jnp.int32) # Exclude normal circular crossing
 test_scenarios = ['parallel_traffic', 'perpendicular_traffic', 'robot_crowding', 'delayed_circular_crossing']
 scenarios_labels = ["PaT", "PeT", "RC", "DCC"]
 
@@ -25,6 +25,13 @@ with open(os.path.join(os.path.dirname(__file__), "metrics_after_rl_ablation_stu
     all_metrics_after_rl = pickle.load(f)
 with open(os.path.join(os.path.dirname(__file__), "training_data_ablation_study.pkl"), "rb") as f:
     training_data = pickle.load(f)
+
+##########################
+# all_metrics_after_il_ablation_study is in the form: reward x scenario x n_humans x n_trials
+# metrics_after_rl_ablation_study is in the form: reward x scenario x n_humans x n_trials
+##########################
+print(jnp.nanargmax(all_metrics_after_rl["times_to_goal"][7,0,2,:]))
+print(all_metrics_after_rl["times_to_goal"][7,0,2,840], all_metrics_after_rl["times_to_goal"][0,0,2,840])
 
 #### PLOTS ####
 ## TRAINING DATA ##

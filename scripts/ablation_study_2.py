@@ -198,6 +198,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
     )
     # Execute tests to evaluate return after IL
     for s_idx, scenario in enumerate(test_scenarios):
+        print(f"## Test scenario {scenario} ##")
         for h_idx, n_humans in enumerate(test_n_humans):
             test_env_params = {
                 'robot_radius': 0.3,
@@ -269,6 +270,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
     )
     # Execute tests to evaluate return after RL
     for s_idx, scenario in enumerate(test_scenarios):
+        print(f"## Test scenario {scenario} ##")
         for h_idx, n_humans in enumerate(test_n_humans):
             test_env_params = {
                 'robot_radius': 0.3,

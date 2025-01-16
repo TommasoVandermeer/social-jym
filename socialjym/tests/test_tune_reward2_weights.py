@@ -115,7 +115,7 @@ def _fori_body(i:int, for_val:tuple):
     seed, metrics = for_val
     policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
     ## Reset the environment
-    state, reset_key, obs, info = env.reset(reset_key)
+    state, reset_key, obs, info, init_outcome = env.reset(reset_key)
     ## Episode loop
     all_actions = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1, 2))
     all_states = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1, env.n_humans+1, 6))
@@ -123,7 +123,6 @@ def _fori_body(i:int, for_val:tuple):
     all_rewards_1 = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1,))
     all_rewards_2 = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1,))
     all_rewards_3 = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1,))
-    init_outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
     while_val_init = (state, obs, info, init_outcome, policy_key, 0, all_actions, all_states, all_rewards_0, all_rewards_1, all_rewards_2, all_rewards_3)
     _, _, _, outcome, policy_key, episode_steps, all_actions, all_states, all_rewards_0, all_rewards_1, all_rewards_2, all_rewards_3 = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
     ## Update metrics

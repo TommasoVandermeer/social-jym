@@ -231,7 +231,7 @@ def test_k_trials(
         seed, metrics = for_val
         policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
         ## Reset the environment
-        state, reset_key, obs, info = lax.cond(
+        state, reset_key, obs, info, init_outcome = lax.cond(
             custom_trials, 
             lambda x: env.reset_custom_episode(
                 x,
@@ -244,14 +244,13 @@ def test_k_trials(
                  "humans_speed": custom_humans_speed[i]}),
             lambda x: env.reset(x), 
             reset_key)
-        # state, reset_key, obs, info = env.reset(reset_key)
+        # state, reset_key, obs, info, init_outcome = env.reset(reset_key)
         initial_robot_position = state[-1,:2]
         robot_goal = info["robot_goal"]
         ## Episode loop
         all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
         all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
         all_rewards = jnp.empty((int(time_limit/env.robot_dt)+1,))
-        init_outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
         while_val_init = (state, obs, info, init_outcome, policy_key, 0, all_actions, all_states, all_rewards)
         _, _, _, outcome, policy_key, episode_steps, all_actions, all_states, all_rewards = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
         ## Update metrics

@@ -28,7 +28,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'circular_crossing',
+    'scenario': 'robot_crowding',
     'hybrid_scenario_subset': jnp.array([0,1], dtype=jnp.int32),
     'humans_policy': 'hsfm',
     'reward_function': reward_function,

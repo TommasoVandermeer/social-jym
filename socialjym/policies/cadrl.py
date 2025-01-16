@@ -22,7 +22,20 @@ def value_network(x):
     return mlp(x)
 
 class CADRL(BasePolicy):
-    def __init__(self, reward_function:FunctionType, v_max=1., gamma=0.9, dt=0.25, wheels_distance=0.7, kinematics='holonomic') -> None:
+    def __init__(
+            self, 
+            reward_function:FunctionType, 
+            v_max:float = 1., 
+            gamma:float = 0.9, 
+            dt:float = 0.25, 
+            wheels_distance:float = 0.7, 
+            kinematics:str = 'holonomic', 
+            noise:bool = False, # If True, noise is added to humams positions and velocities
+            noise_sigma_percentage:float = 0., # Standard deviation of the noise as a percentage of the absolute value of the difference between the robot and the humans
+            # position_noise_sigma_percentage_radius:float = 0., # Standard deviation of the noise as a percentage of the ditance between the robot and the humans
+            # position_noise_sigma_angle:float = 0., # Standard deviation of the noise on the angle of humans' position in the robot frame
+            # velocity_noise_sigma_percentage:float = 0., # Standard deviation of the noise as a percentage of the (vx,vy) coordinates of humans' velocity in the robot frame
+        ) -> None:
         # Inputs validation
         assert v_max > 0, "v_max must be positive"
         assert dt > 0, "dt must be positive"
@@ -36,6 +49,11 @@ class CADRL(BasePolicy):
         self.wheels_distance = wheels_distance # Distance between the wheels of the robot (used for unicycle kinematics). Value taken from real TurtleBot4 robot.
         self.dt = dt
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
+        self.noise = noise
+        self.noise_sigma_percentage = noise_sigma_percentage
+        # self.position_noise_sigma_percentage_radius = position_noise_sigma_percentage_radius
+        # self.position_noise_sigma_angle = position_noise_sigma_angle
+        # self.velocity_noise_sigma_percentage = velocity_noise_sigma_percentage
         # Default attributes
         self.name = "CADRL"
         self.vnet_input_size = 13
@@ -98,13 +116,35 @@ class CADRL(BasePolicy):
         # Take the minimum among all outputs (representing the worst case scenario)
         min_vnet_output = jnp.min(vnet_outputs)
         # Compute the final value of the action
-        value = reward + pow(self.gamma,self.dt * self.v_max) * min_vnet_output
+        value = reward + pow(self.gamma, self.dt * self.v_max) * min_vnet_output
         return value, vnet_inputs
         
     @partial(jit, static_argnames=("self"))
     def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
         return vmap(CADRL._compute_action_value, in_axes=(None,None,None,None,0,None))(self, next_obs, current_obs, info, action, vnet_params)
     
+    @partial(jit, static_argnames=("self"))
+    def _add_noise_to_human_obs(self, human_obs:jnp.ndarray, robot_pos:jnp.ndarray, key:random.PRNGKey) -> jnp.ndarray:
+        # ## Add noise to human position
+        # key1, key2, key3 = random.split(key, 3)
+        # r = jnp.linalg.norm(human_obs[0:2] - robot_pos) * (1. + random.normal(key1, (1,), dtype=jnp.float32)[0] * self.position_noise_sigma_percentage_radius)
+        # theta = jnp.arctan2(human_obs[1] - robot_pos[1], human_obs[0] - robot_pos[0]) + (random.normal(key2, (1,), dtype=jnp.float32)[0] * self.position_noise_sigma_angle)
+        # human_obs = human_obs.at[0].set(robot_pos[0] + r * jnp.cos(theta))
+        # human_obs = human_obs.at[1].set(robot_pos[1] + r * jnp.sin(theta))
+        # ## Add noise to human velocity
+        # human_obs = human_obs.at[2:4].set(human_obs[2:4] + random.normal(key3, (2,), dtype=jnp.float32) * (self.velocity_noise_sigma_percentage * jnp.abs(human_obs[2:4])))
+        
+        ## Add noise
+        human_obs = human_obs.at[0:2].set(human_obs[0:2] + random.normal(key, (2,), dtype=jnp.float32) * (self.noise_sigma_percentage * jnp.abs(human_obs[0:2] - robot_pos)))
+        human_obs = human_obs.at[2:4].set(human_obs[2:4] + random.normal(key, (2,), dtype=jnp.float32) * (self.noise_sigma_percentage * jnp.abs(human_obs[2:4])))
+        return human_obs
+
+    @partial(jit, static_argnames=("self"))
+    def _batch_add_noise_to_human_obs(self, obs:jnp.ndarray, key:random.PRNGKey) -> jnp.ndarray:
+        keys = random.split(key, len(obs)-1)
+        noisy_obs = obs.at[:-1].set(vmap(CADRL._add_noise_to_human_obs, in_axes=(None,0,None,0))(self, obs[:-1], obs[-1,0:2], keys))
+        return noisy_obs
+
     @partial(jit, static_argnames=("self"))
     def _propagate_human_obs(self, obs:jnp.ndarray) -> jnp.ndarray:
         return obs.at[:2].set(obs[0:2] + obs[2:4] * self.dt)
@@ -169,12 +209,20 @@ class CADRL(BasePolicy):
     @partial(jit, static_argnames=("self"))
     def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, vnet_params:dict, epsilon:float) -> jnp.ndarray:
         
-        def _random_action(key):
+        @jit
+        def _random_action(val):
+            obs, info, _, key = val
             key, subkey = random.split(key)
             vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
             return random.choice(subkey, self.action_space), key, vnet_inputs
         
-        def _forward_pass(key):
+        @jit
+        def _forward_pass(val):
+            obs, info, vnet_params, key = val
+            # Add noise to humans' observations
+            if self.noise:
+                key, subkey = random.split(key)
+                obs = self._batch_add_noise_to_human_obs(obs, subkey)
             # Propagate humans state for dt time
             next_obs = jnp.vstack([self.batch_propagate_human_obs(obs[0:-1]),obs[-1]])
             # Compute action values
@@ -186,7 +234,7 @@ class CADRL(BasePolicy):
         
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
-        action, key, vnet_input = lax.cond(explore, _random_action, _forward_pass, key)
+        action, key, vnet_input = lax.cond(explore, _random_action, _forward_pass, (obs, info, vnet_params, key))
         return action, key, vnet_input
 
     @partial(jit, static_argnames=("self"))

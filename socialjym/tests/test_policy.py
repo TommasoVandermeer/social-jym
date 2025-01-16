@@ -79,15 +79,14 @@ vnet_params = load_socialjym_policy(
     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_hsfm_unicycle_reward_0_circular_crossing_09_12_2024.pkl"))
 policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
-### Test Social-Navigation-PyEnvs policy
+### Test policy
 # metrics = test_k_trials(1000, random_seed, env, policy, vnet_params, reward_params["time_limit"])
 
 ### Simulate some episodes
 for i in range(n_episodes):
     policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i)
-    outcome = {"success": 0, "failure": 0, "timeout": 0, "nothing": 1}
     episode_start_time = time.time()
-    state, reset_key, obs, info = env.reset(reset_key)
+    state, reset_key, obs, info, outcome = env.reset(reset_key)
     all_states = np.array([state])
     while outcome["nothing"]:
         action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, 0.)

@@ -122,7 +122,20 @@ def value_network(x):
     return vnet(x)
 
 class SARL(CADRL):
-    def __init__(self, reward_function:FunctionType, v_max=1., gamma=0.9, dt=0.25, wheels_distance=0.7, kinematics='holonomic') -> None:
+    def __init__(
+            self, 
+            reward_function:FunctionType, 
+            v_max=1., 
+            gamma=0.9, 
+            dt=0.25, 
+            wheels_distance=0.7, 
+            kinematics='holonomic',
+            noise = False, # If True, noise is added to humams positions and velocities
+            noise_sigma_percentage:float = 0., # Standard deviation of the noise as a percentage of the absolute value of the difference between the robot and the humans
+            # position_noise_sigma_percentage_radius = 0., # Standard deviation of the noise as a percentage of the ditance between the robot and the humans
+            # position_noise_sigma_angle = 0., # Standard deviation of the noise on the angle of humans' position in the robot frame
+            # velocity_noise_sigma_percentage = 0., # Standard deviation of the noise as a percentage of the (vx,vy) coordinates of humans' velocity in the robot frame
+        ) -> None:
         # Configurable attributes
         super().__init__(
             reward_function=reward_function, 
@@ -130,7 +143,12 @@ class SARL(CADRL):
             wheels_distance=wheels_distance,
             gamma=gamma, 
             dt=dt,
-            kinematics=kinematics
+            kinematics=kinematics,
+            noise=noise,
+            noise_sigma_percentage=noise_sigma_percentage,
+            # position_noise_sigma_percentage_radius = position_noise_sigma_percentage_radius,
+            # position_noise_sigma_angle = position_noise_sigma_angle,
+            # velocity_noise_sigma_percentage = velocity_noise_sigma_percentage,
         )
         # Default attributes
         self.name = "SARL"
@@ -164,12 +182,20 @@ class SARL(CADRL):
     @partial(jit, static_argnames=("self"))
     def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, vnet_params:dict, epsilon:float) -> jnp.ndarray:
         
-        def _random_action(key):
+        @jit
+        def _random_action(val):
+            obs, info, _, key = val
             key, subkey = random.split(key)
             vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
             return random.choice(subkey, self.action_space), key, vnet_inputs
         
-        def _forward_pass(key):
+        @jit
+        def _forward_pass(val):
+            obs, info, vnet_params, key = val
+            # Add noise to humans' observations
+            if self.noise:
+                key, subkey = random.split(key)
+                obs = self._batch_add_noise_to_human_obs(obs, subkey)
             # Propagate humans state for dt time
             next_obs = jnp.vstack([self.batch_propagate_human_obs(obs[0:-1]),obs[-1]])
             # Compute action values
@@ -181,7 +207,7 @@ class SARL(CADRL):
         
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
-        action, key, vnet_input = lax.cond(explore, _random_action, _forward_pass, key)
+        action, key, vnet_input = lax.cond(explore, _random_action, _forward_pass, (obs, info, vnet_params, key))
         return action, key, vnet_input
     
     @partial(jit, static_argnames=("self"))

@@ -50,8 +50,7 @@ initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((env_
 ### Simulate some episodes
 for i in range(n_episodes):
     policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i)
-    outcome = {"success": 0, "failure": 0, "timeout": 0, "nothing": 1}
-    state, reset_key, obs, info = env.reset(reset_key)
+    state, reset_key, obs, info, outcome = env.reset(reset_key)
     all_states = np.array([state])
     while outcome["nothing"]:
         action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)

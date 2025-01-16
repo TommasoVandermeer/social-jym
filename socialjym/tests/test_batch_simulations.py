@@ -47,7 +47,7 @@ vnet_params = load_socialjym_policy(os.path.join(os.path.expanduser("~"),"Repos/
 # Simulate some episodes
 policy_keys = vmap(random.PRNGKey)(jnp.arange(n_simulations, dtype=int) + random_seed)
 reset_keys = vmap(random.PRNGKey)(jnp.arange(n_simulations, dtype=int) + random_seed)
-states, reset_keys, obses, infos = env.batch_reset(reset_keys)
+states, reset_keys, obses, infos, outcomes = env.batch_reset(reset_keys)
 output = {
     'all_outcomes': {
         'nothing': jnp.zeros((n_simulations, int(env.reward_function.time_limit/env.robot_dt)), dtype=bool),
