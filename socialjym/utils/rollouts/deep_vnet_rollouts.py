@@ -94,24 +94,23 @@ def deep_vnet_rl_rollout(
                 # Initialize the random keys
                 policy_key, buffer_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i)
                 # Reset the environment
-                state, reset_key, obs, info = lax.cond(
-                custom_episodes is not None, 
-                lambda x: env.reset_custom_episode(
-                        x,
-                        {"full_state": custom_states[i], 
-                        "robot_goal": custom_robot_goals[i], 
-                        "humans_goal": custom_humans_goals[i], 
-                        "static_obstacles": custom_static_obstacles[i], 
-                        "scenario": custom_scenario[i], 
-                        "humans_radius": custom_humans_radius[i], 
-                        "humans_speed": custom_humans_speed[i],
-                        "humans_delay": jnp.zeros(env.n_humans)}),
-                lambda x: env.reset(x), 
-                reset_key)
+                state, reset_key, obs, info, init_outcome = lax.cond(
+                        custom_episodes is not None, 
+                        lambda x: env.reset_custom_episode(
+                                x,
+                                {"full_state": custom_states[i], 
+                                "robot_goal": custom_robot_goals[i], 
+                                "humans_goal": custom_humans_goals[i], 
+                                "static_obstacles": custom_static_obstacles[i], 
+                                "scenario": custom_scenario[i], 
+                                "humans_radius": custom_humans_radius[i], 
+                                "humans_speed": custom_humans_speed[i],
+                                "humans_delay": jnp.zeros(env.n_humans)}),
+                        lambda x: env.reset(x), 
+                        reset_key)
                 # Episode loop
                 vnet_inputs = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1, env.n_humans, policy.vnet_input_size))
                 rewards = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1,))
-                init_outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
                 dones = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1,))
                 val_init = (state, obs, info, init_outcome, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, 0)
                 _, _, _, outcome, policy_key, buffer_state, current_buffer_size, vnet_inputs, rewards, dones, episode_steps = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, val_init)           
@@ -289,7 +288,7 @@ def deep_vnet_il_rollout(
                 # Initialize the random keys
                 reset_key = random.PRNGKey(random_seed + i)
                 # Reset the environment
-                state, reset_key, obs, info = lax.cond(
+                state, reset_key, obs, info, init_outcome = lax.cond(
                         custom_episodes is not None, 
                         lambda x: env.reset_custom_episode(
                                 x,
@@ -308,7 +307,6 @@ def deep_vnet_il_rollout(
                 # Episode loop
                 vnet_inputs = jnp.empty((int(env.reward_function.time_limit/env.robot_dt), env.n_humans, policy.vnet_input_size))
                 rewards = jnp.empty((int(env.reward_function.time_limit/env.robot_dt),))
-                init_outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
                 val_init = (state, obs, info, init_outcome, vnet_inputs, rewards, 0)
                 _, _, _, outcome, vnet_inputs, rewards, episode_steps = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, val_init)           
                 # Update buffer state

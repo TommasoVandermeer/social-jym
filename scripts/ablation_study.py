@@ -303,6 +303,14 @@ with open(os.path.join(os.path.dirname(__file__),"metrics_after_il_ablation_stud
 with open(os.path.join(os.path.dirname(__file__),"metrics_after_rl_ablation_study.pkl"), 'wb') as f:
     pickle.dump(all_metrics_after_rl, f)
 
+# Load all output data
+with open(os.path.join(os.path.dirname(__file__), "metrics_after_il_ablation_study.pkl"), "rb") as f:
+    all_metrics_after_il = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__), "metrics_after_rl_ablation_study.pkl"), "rb") as f:
+    all_metrics_after_rl = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__), "training_data_ablation_study.pkl"), "rb") as f:
+    training_data = pickle.load(f)
+
 #### PLOTS ####
 ## TRAINING DATA ##
 
