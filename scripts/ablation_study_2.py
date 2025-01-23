@@ -21,18 +21,19 @@ from socialjym.utils.aux_functions import epsilon_scaling_decay, plot_state, plo
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 
-only_base_and_full_rewards = True
+only_base_and_full_rewards = False
 random_seed = 0
 n_il_epochs = 50
-n_rl_episodes = 20_000
+n_rl_episodes = 30_000
 n_test_trials = 1000
 # Train and test environments
 test_n_humans = [5,15,25]
 humans_policy = 'hsfm'
 train_scenario = 'delayed_circular_crossing'
 train_hybrid_scenario_subset = jnp.array([1,2,3,4], dtype=jnp.int32) # Exclude normal circular crossing
-test_scenarios = ['parallel_traffic', 'perpendicular_traffic', 'robot_crowding', 'delayed_circular_crossing']
-scenarios_labels = ["PaT", "PeT", "RC", "DCC"]
+test_scenarios = ['delayed_circular_crossing'] # ['parallel_traffic', 'perpendicular_traffic', 'robot_crowding', 'delayed_circular_crossing']
+scenarios_labels = ['DCC'] # ["PaT", "PeT", "RC", "DCC"]
+plot_one_test_scenario_only = None # If not None, plot only this test scenario
 test_envs = ['sfm', 'hsfm']
 # Reward terms parameters
 reward_terms = ['progress_to_goal', 'time_penalty', 'high_rotation_penalty']
@@ -329,6 +330,15 @@ with open(os.path.join(os.path.dirname(__file__), "training_data_ablation_study.
 #### PLOTS ####
 ## TRAINING DATA ##
 
+# Create figure folder
+if not os.path.exists(os.path.join(os.path.dirname(__file__), "figures")):
+    os.makedirs(os.path.join(os.path.dirname(__file__), "figures"))
+figure_folder = os.path.join(os.path.dirname(__file__), "figures")
+
+# Compute scenario idx
+if plot_one_test_scenario_only is not None:
+    test_scen_idx = test_scenarios.index(plot_one_test_scenario_only)
+
 # Plot loss curve during IL for each reward
 figure, ax = plt.subplots(figsize=(10,10))
 ax.set(
@@ -347,7 +357,7 @@ if (only_base_and_full_rewards):
     ax.legend(["Reward {}".format(i) for i in [0, 2**len(reward_terms)-1]], loc="center right")
 else:
     ax.legend(["Reward {}".format(i) for i in range(len(training_data["loss_during_il"]))])
-figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il_ablation_study.eps"), format='eps')
+figure.savefig(os.path.join(figure_folder,"loss_curves_during_il_ablation_study.eps"), format='eps')
 
 # Plot returns during RL for each reward
 figure, ax = plt.subplots(figsize=(10,10))
@@ -369,11 +379,10 @@ if (only_base_and_full_rewards):
     figure.legend(["Reward {}".format(i) for i in [0, 2**len(reward_terms)-1]], loc="center right")
 else:
     figure.legend(["Reward {}".format(i) for i in range(len(training_data["returns_during_rl"]))], loc="center right")
-figure.savefig(os.path.join(os.path.dirname(__file__),"return_curves_during_rl_ablation_study.eps"), format='eps')
+figure.savefig(os.path.join(figure_folder,"return_curves_during_rl_ablation_study.eps"), format='eps')
 
 # Plot return after IL and RL for each reward
 figure, ax = plt.subplots(int(len(training_data['returns_after_il'])/2), 2, figsize=(10,10))
-ax.set_rasterized(True)
 figure.suptitle(f"Return after IL and RL training for each test.\nAll test scenarios - All test environments - {n_test_trials} trials")
 legend_elements = [
     Line2D([0], [0], color="lightblue", lw=4, label="After IL"),
@@ -426,7 +435,7 @@ for reward in range(len(training_data['returns_after_il'])):
                 showfliers=False,
                 showmeans=True,
                 zorder=2)
-figure.savefig(os.path.join(os.path.dirname(__file__),f"return_boxplots_after_il_and_rl_ablation_study.pdf"), format='pdf')
+figure.savefig(os.path.join(figure_folder,f"return_boxplots_after_il_and_rl_ablation_study.pdf"), format='pdf')
 
 # Plot success rate after IL and RL for each reward
 figure, ax = plt.subplots(2,1,figsize=(10,10))
@@ -452,20 +461,23 @@ ax[1].grid()
 for reward in range(len(training_data['success_rate_after_il'])):
     if (only_base_and_full_rewards) and (reward > 0 and reward < 2**(len(reward_terms))-1):
         continue
-    ax[0].plot(np.mean(training_data['success_rate_after_il'][reward], axis=0))
-    ax[1].plot(np.mean(training_data['success_rate_after_rl'][reward], axis=0))
+    if plot_one_test_scenario_only is not None:
+        ax[0].plot(np.mean(training_data['success_rate_after_il'][reward][test_scen_idx], axis=0))
+        ax[1].plot(np.mean(training_data['success_rate_after_rl'][reward][test_scen_idx], axis=0))
+    else:
+        ax[0].plot(np.mean(training_data['success_rate_after_il'][reward], axis=(0,1)))
+        ax[1].plot(np.mean(training_data['success_rate_after_rl'][reward], axis=(0,1)))
 if (only_base_and_full_rewards):
     figure.legend(["Reward {}".format(i) for i in [0, 2**len(reward_terms)-1]], loc="center right")
 else:
     figure.legend(["Reward {}".format(i) for i in range(len(training_data["success_rate_after_il"]))], loc="center right")
-figure.savefig(os.path.join(os.path.dirname(__file__),f"success_rate_curves_after_il_and_rl_ablation_study.eps"), format='eps')
+figure.savefig(os.path.join(figure_folder,f"success_rate_curves_after_il_and_rl_ablation_study.eps"), format='eps')
 
 ## TESTING DATA ##
 # Plot boxplot of time to goal, path length, angular_speed, space_compliance after RL for base reward and reward with all contributions
 # TODO: Rewrite this plot code, it sucks
 for e_idx, test_human_policy in enumerate(test_envs):
     figure, ax = plt.subplots(4,len(test_n_humans),figsize=(10,10))
-    ax.set_rasterized(True)
     figure.suptitle(f"Tested on {test_human_policy}")
     figure.subplots_adjust(hspace=0.7, wspace=0.5, top=0.9, bottom=0.05, left=0.07, right=0.9)
     for i, n_humans in enumerate(test_n_humans):
@@ -705,14 +717,13 @@ for e_idx, test_human_policy in enumerate(test_envs):
     ]
     figure.legend(handles=legend_elements, loc="center right")
     # Save figure
-    figure.savefig(os.path.join(os.path.dirname(__file__),f"some_metrics_boxplots_after_rl_full_and_base_all_scenarios_ablation_study_{test_human_policy}.pdf"), format='pdf')
+    figure.savefig(os.path.join(figure_folder,f"some_metrics_boxplots_after_rl_full_and_base_all_scenarios_ablation_study_{test_human_policy}.pdf"), format='pdf')
 
 
 # Plot boxplot of each metric (aggregatedby test scenario) after RL for base reward and reward with all contributions
 for e_idx, test_human_policy in enumerate(test_envs):
     figure, ax = plt.subplots(math.ceil((len(all_metrics_after_rl)-4)/3), 3, figsize=(10,10))
-    ax.set_rasterized(True)
-    figure.suptitle(f"Metrics after RL training for each test for base and full rewards\nAll test scenarios - Humans policy {test_human_policy.upper()} - {n_test_trials} trials")
+    figure.suptitle(f"Metrics after RL training for each test for base and full rewards\nTest scenario {plot_one_test_scenario_only if plot_one_test_scenario_only is not None else 'All'} - Humans policy {test_human_policy.upper()} - {n_test_trials} trials")
     figure.subplots_adjust(hspace=0.5, wspace=0.5, bottom=0.05, top=0.90, left=0.1, right=0.87)
     legend_elements = [
         Line2D([0], [0], color="lightblue", lw=4, label="Reward 0"),
@@ -732,9 +743,14 @@ for e_idx, test_human_policy in enumerate(test_envs):
             ax[i,j].set_xticks(test_n_humans, labels=test_n_humans)
             ax[i,j].grid()
             # Base reward
-            unclean_data = jnp.zeros((len(test_n_humans),n_test_trials*len(test_scenarios)))
-            for h_idx in range(len(test_n_humans)):
-                unclean_data = unclean_data.at[h_idx].set(values[0,:,e_idx,h_idx,:].flatten())
+            if plot_one_test_scenario_only is not None:
+                unclean_data = jnp.zeros((len(test_n_humans),n_test_trials))
+                for h_idx in range(len(test_n_humans)):
+                    unclean_data = unclean_data.at[h_idx].set(values[0,test_scen_idx,e_idx,h_idx,:].flatten())
+            else:
+                unclean_data = jnp.zeros((len(test_n_humans),n_test_trials*len(test_scenarios)))
+                for h_idx in range(len(test_n_humans)):
+                    unclean_data = unclean_data.at[h_idx].set(values[0,:,e_idx,h_idx,:].flatten())
             data = pd.DataFrame(np.transpose(unclean_data), columns=test_n_humans)
             data = data.dropna()
             ax[i,j].boxplot(data, widths=0.4, patch_artist=True, 
@@ -748,9 +764,14 @@ for e_idx, test_human_policy in enumerate(test_envs):
                 showmeans=True, 
                 zorder=1)
             # Full reward
-            unclean_data = jnp.zeros((len(test_n_humans),n_test_trials*len(test_scenarios)))
-            for h_idx in range(len(test_n_humans)):
-                unclean_data = unclean_data.at[h_idx].set(values[-1,:,e_idx,h_idx,:].flatten())
+            if plot_one_test_scenario_only is not None:
+                unclean_data = jnp.zeros((len(test_n_humans),n_test_trials))
+                for h_idx in range(len(test_n_humans)):
+                    unclean_data = unclean_data.at[h_idx].set(values[-1,test_scen_idx,e_idx,h_idx,:].flatten())
+            else:
+                unclean_data = jnp.zeros((len(test_n_humans),n_test_trials*len(test_scenarios)))
+                for h_idx in range(len(test_n_humans)):
+                    unclean_data = unclean_data.at[h_idx].set(values[-1,:,e_idx,h_idx,:].flatten())
             data = pd.DataFrame(np.transpose(unclean_data), columns=test_n_humans)
             data = data.dropna()
             ax[i,j].boxplot(data, widths=0.3, patch_artist=True, 
@@ -764,12 +785,12 @@ for e_idx, test_human_policy in enumerate(test_envs):
                     showmeans=True,
                     zorder=2)
             idx += 1
-    figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_boxplots_after_rl_full_and_base_ablation_study_{test_human_policy}.pdf"), format='pdf')
+    figure.savefig(os.path.join(figure_folder,f"metrics_boxplots_after_rl_full_and_base_ablation_study_{test_human_policy}.pdf"), format='pdf')
 
 # Plot curves of each metric (aggregated by test scenario) after RL for each reward
 for e_idx, test_human_policy in enumerate(test_envs):
     figure, ax = plt.subplots(math.ceil((len(all_metrics_after_rl)-4)/3), 3, figsize=(10,10))
-    figure.suptitle(f"Metrics after RL training for each test\nAll test scenarios - Humans policy {test_human_policy.upper()} - {n_test_trials} trials")
+    figure.suptitle(f"Metrics after RL training for each test\nTest scenario {plot_one_test_scenario_only if plot_one_test_scenario_only is not None else 'All'} - Humans policy {test_human_policy.upper()} - {n_test_trials} trials")
     figure.subplots_adjust(hspace=0.5, wspace=0.5, bottom=0.05, top=0.90, left=0.1, right=0.87)
     idx = 0
     for key, values in all_metrics_after_rl.items():
@@ -786,13 +807,16 @@ for e_idx, test_human_policy in enumerate(test_envs):
             for reward in range(len(values)):
                 if (only_base_and_full_rewards) and (reward > 0 and reward < 2**(len(reward_terms))-1):
                     continue
-                ax[i,j].plot(test_n_humans, np.nanmean(values[reward,:,e_idx], axis=(0,2)), color=list(mcolors.TABLEAU_COLORS.values())[reward])
+                if plot_one_test_scenario_only is not None:
+                    ax[i,j].plot(test_n_humans, np.nanmean(values[reward,test_scen_idx,e_idx], axis=1), color=list(mcolors.TABLEAU_COLORS.values())[reward])
+                else:
+                    ax[i,j].plot(test_n_humans, np.nanmean(values[reward,:,e_idx], axis=(0,2)), color=list(mcolors.TABLEAU_COLORS.values())[reward])
             idx += 1
     if (only_base_and_full_rewards):
         figure.legend(["Reward {}".format(i) for i in [0, 2**len(reward_terms)-1]], loc="center right")
     else:
         figure.legend(["Reward {}".format(i) for i in range(len(all_metrics_after_rl["times_to_goal"]))], loc="center right")
-    figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_after_rl_ablation_study_{test_human_policy}.eps"), format='eps')
+    figure.savefig(os.path.join(figure_folder,f"metrics_after_rl_ablation_study_{test_human_policy}.eps"), format='eps')
 
 # Plot boxplots side to side for each metric (aggregated by test scenario) after RL for tests with all rewards (one figure for each n_humans test)
 for e_idx, test_human_policy in enumerate(test_envs):
@@ -813,14 +837,24 @@ for e_idx, test_human_policy in enumerate(test_envs):
                 ax[i,j].grid()
                 # All rewards
                 if only_base_and_full_rewards:
-                    unclean_data = jnp.zeros((2,n_test_trials*len(test_scenarios)))
-                    for r, reward in enumerate([0, 2**len(reward_terms)-1]):
-                        unclean_data = unclean_data.at[r].set(values[reward,:,e_idx,test].flatten())
+                    if plot_one_test_scenario_only is not None:
+                        unclean_data = jnp.zeros((2,n_test_trials))
+                        for r, reward in enumerate([0, 2**len(reward_terms)-1]):
+                            unclean_data = unclean_data.at[r].set(values[reward,test_scen_idx,e_idx,test].flatten())
+                    else:
+                        unclean_data = jnp.zeros((2,n_test_trials*len(test_scenarios)))
+                        for r, reward in enumerate([0, 2**len(reward_terms)-1]):
+                            unclean_data = unclean_data.at[r].set(values[reward,:,e_idx,test].flatten())
                     data = pd.DataFrame(np.transpose(unclean_data), columns=["Reward {}".format(i) for i in [0, 2**len(reward_terms)-1]])
                 else:
-                    unclean_data = jnp.zeros((len(values),n_test_trials*len(test_scenarios)))
-                    for reward in range(len(values)):
-                        unclean_data = unclean_data.at[reward].set(values[reward,:,e_idx,test].flatten())
+                    if plot_one_test_scenario_only is not None:
+                        unclean_data = jnp.zeros((len(values),n_test_trials))
+                        for reward in range(len(values)):
+                            unclean_data = unclean_data.at[reward].set(values[reward,test_scen_idx,e_idx,test].flatten())
+                    else:
+                        unclean_data = jnp.zeros((len(values),n_test_trials*len(test_scenarios)))
+                        for reward in range(len(values)):
+                            unclean_data = unclean_data.at[reward].set(values[reward,:,e_idx,test].flatten())
                     data = pd.DataFrame(np.transpose(unclean_data), columns=["Reward {}".format(i) for i in range(len(values))])
                 data = data.dropna()
                 bplots = ax[i,j].boxplot(
@@ -840,4 +874,4 @@ for e_idx, test_human_policy in enumerate(test_envs):
                 continue
             legend_elements.append(Line2D([0], [0], color=list(mcolors.TABLEAU_COLORS.values())[i], lw=4, label=f"Reward {i}"))
         figure.legend(handles=legend_elements, loc="center right")
-        figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_boxplots_after_rl_{n_humans}humans_{test_human_policy}_ablation_study.eps"), format='eps')
+        figure.savefig(os.path.join(figure_folder,f"metrics_boxplots_after_rl_{n_humans}humans_{test_human_policy}_ablation_study.eps"), format='eps')
