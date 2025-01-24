@@ -875,3 +875,81 @@ for e_idx, test_human_policy in enumerate(test_envs):
             legend_elements.append(Line2D([0], [0], color=list(mcolors.TABLEAU_COLORS.values())[i], lw=4, label=f"Reward {i}"))
         figure.legend(handles=legend_elements, loc="center right")
         figure.savefig(os.path.join(figure_folder,f"metrics_boxplots_after_rl_{n_humans}humans_{test_human_policy}_ablation_study.eps"), format='eps')
+
+# Plot boxplot of each metric (aggregatedby test scenario) after RL for base reward and reward with all contributions
+metrics_labels = {
+    "times_to_goal": "Time to goal ($s$)",
+    "average_speed": "Average speed ($m/s$)",
+    "average_acceleration": "Average acceleration ($m/s^2$)",
+    "average_jerk": "Average jerk ($m/s^3$)",
+    "average_angular_speed": "Average angular speed ($r/s$)",
+    "average_angular_acceleration": "Average angular acceleration ($r/s^2$)",
+    "average_angular_jerk": "Average angular jerk ($r/s^3$)",
+    "space_compliance": "Space compliance",
+    "path_length": "Path length ($m$)",
+}
+for e_idx, test_human_policy in enumerate(test_envs):
+    figure, ax = plt.subplots(math.ceil(len(metrics_labels)/3), 3, figsize=(10,10))
+    figure.suptitle(f"Metrics after RL training for each test for base and full rewards\nTest scenario {plot_one_test_scenario_only if plot_one_test_scenario_only is not None else 'All'} - Humans policy {test_human_policy.upper()} - {n_test_trials} trials")
+    figure.subplots_adjust(hspace=0.5, wspace=0.5, bottom=0.05, top=0.90, left=0.1, right=0.87)
+    legend_elements = [
+        Line2D([0], [0], color="lightblue", lw=4, label="Reward 0"),
+        Line2D([0], [0], color="lightcoral", lw=4, label="Reward {}".format(2**len(reward_terms)-1))
+    ]
+    figure.legend(handles=legend_elements, loc="center right")
+    idx = 0
+    for key, values in all_metrics_after_rl.items():
+        if key in ["successes", "collisions", "timeouts", "episodic_spl", "returns", "min_distance"]:
+            continue
+        else:
+            i = idx // 3
+            j = idx % 3
+            ax[i,j].set(
+                xlabel='N° humans',
+                title=metrics_labels[key],)
+            ax[i,j].set_xticks(test_n_humans, labels=test_n_humans)
+            ax[i,j].grid()
+            # Base reward
+            if plot_one_test_scenario_only is not None:
+                unclean_data = jnp.zeros((len(test_n_humans),n_test_trials))
+                for h_idx in range(len(test_n_humans)):
+                    unclean_data = unclean_data.at[h_idx].set(values[0,test_scen_idx,e_idx,h_idx,:].flatten())
+            else:
+                unclean_data = jnp.zeros((len(test_n_humans),n_test_trials*len(test_scenarios)))
+                for h_idx in range(len(test_n_humans)):
+                    unclean_data = unclean_data.at[h_idx].set(values[0,:,e_idx,h_idx,:].flatten())
+            data = pd.DataFrame(np.transpose(unclean_data), columns=test_n_humans)
+            data = data.dropna()
+            ax[i,j].boxplot(data, widths=0.4, patch_artist=True, 
+                boxprops=dict(facecolor='lightblue', edgecolor='lightblue', alpha=0.7),
+                tick_labels=test_n_humans,
+                whiskerprops=dict(color='blue', alpha=0.7),
+                capprops=dict(color='blue', alpha=0.7),
+                medianprops=dict(color='blue', alpha=0.7),
+                meanprops=dict(markerfacecolor='blue', markeredgecolor='blue'), 
+                showfliers=False,
+                showmeans=True, 
+                zorder=1)
+            # Full reward
+            if plot_one_test_scenario_only is not None:
+                unclean_data = jnp.zeros((len(test_n_humans),n_test_trials))
+                for h_idx in range(len(test_n_humans)):
+                    unclean_data = unclean_data.at[h_idx].set(values[-1,test_scen_idx,e_idx,h_idx,:].flatten())
+            else:
+                unclean_data = jnp.zeros((len(test_n_humans),n_test_trials*len(test_scenarios)))
+                for h_idx in range(len(test_n_humans)):
+                    unclean_data = unclean_data.at[h_idx].set(values[-1,:,e_idx,h_idx,:].flatten())
+            data = pd.DataFrame(np.transpose(unclean_data), columns=test_n_humans)
+            data = data.dropna()
+            ax[i,j].boxplot(data, widths=0.3, patch_artist=True, 
+                    boxprops=dict(facecolor="lightcoral", edgecolor="lightcoral", alpha=0.4),
+                    tick_labels=test_n_humans,
+                    whiskerprops=dict(color="coral", alpha=0.4),
+                    capprops=dict(color="coral", alpha=0.4),
+                    medianprops=dict(color="coral", alpha=0.4),
+                    meanprops=dict(markerfacecolor="coral", markeredgecolor="coral"), 
+                    showfliers=False,
+                    showmeans=True,
+                    zorder=2)
+            idx += 1
+    figure.savefig(os.path.join(figure_folder,f"1_metrics_boxplots_after_rl_full_and_base_ablation_study_{test_human_policy}.pdf"), format='pdf')

@@ -12,12 +12,12 @@ from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import load_crowdnav_policy, test_k_trials
 
 ### Hyperparameters
-noise_sigma_percentage_levels = [0., 0.15, 0.2, 0.3]
+noise_sigma_percentage_levels = [0., 0.1, 0.2, 0.3]
 test_environments = ["sfm", "hsfm"]
 test_scenarios = ["circular_crossing", "parallel_traffic"]
 random_seed = 0 
 n_humans = 15
-n_test_trials = 100
+n_test_trials = 500
 kinematics = 'holonomic'
 reward_params = {
     'goal_reward': 1.,
@@ -33,23 +33,24 @@ vnet_params_dirs = [
     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hybrid_scenario/rl_model.pth"),
 ]
 policy_labels = ["SARL-HS-ORCA","SARL-HS-SFM","SARL-HS-HSFM"]
-
+empty_trials_outcomes_array = jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels)))
+empty_trials_metrics_array = jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels),n_test_trials))
 all_metrics = {
-    "successes": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels))), 
-    "collisions": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels))), 
-    "timeouts": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels))), 
-    "returns": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "times_to_goal": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "average_speed": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "average_acceleration": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "average_jerk": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "average_angular_speed": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "average_angular_acceleration": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "average_angular_jerk": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "min_distance": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "space_compliance": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "episodic_spl": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials)),
-    "path_length": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels), n_test_trials))
+    "successes": empty_trials_outcomes_array, 
+    "collisions": empty_trials_outcomes_array, 
+    "timeouts": empty_trials_outcomes_array, 
+    "returns": empty_trials_metrics_array,
+    "times_to_goal": empty_trials_metrics_array,
+    "average_speed": empty_trials_metrics_array,
+    "average_acceleration": empty_trials_metrics_array,
+    "average_jerk": empty_trials_metrics_array,
+    "average_angular_speed": empty_trials_metrics_array,
+    "average_angular_acceleration": empty_trials_metrics_array,
+    "average_angular_jerk": empty_trials_metrics_array,
+    "min_distance": empty_trials_metrics_array,
+    "space_compliance": empty_trials_metrics_array,
+    "episodic_spl": empty_trials_metrics_array,
+    "path_length": empty_trials_metrics_array
 }
 
 ### Test loop
@@ -101,24 +102,44 @@ with open(os.path.join(os.path.dirname(__file__),"metrics_noisy_tests.pkl"), 'rb
     all_metrics = pickle.load(f)
 
 ### Plot results
+# Matplotlib font
+from matplotlib import rc
+font = {'weight' : 'regular',
+        'size'   : 23}
+rc('font', **font)
 # Plot curves of each metric (aggregated by test scenario) after RL for each reward
-figure, ax = plt.subplots(math.ceil((len(all_metrics)-4)/3), 3, figsize=(10,10))
-figure.suptitle(f"Metrics after RL training for each test with noise - All test scenarios - All test environments - {n_test_trials} trials")
-figure.subplots_adjust(hspace=0.6, wspace=0.5, bottom=0.05, top=0.90, left=0.08, right=0.82)
-idx = 0
-for key, values in all_metrics.items():
-    if key == "successes" or key == "collisions" or key == "timeouts":
-        continue
-    else:
-        i = idx // 3
-        j = idx % 3
-        ax[i,j].set(
-            xlabel='Noise sigma (%)', 
-            ylabel=key)
-        ax[i,j].set_xticks(noise_sigma_percentage_levels, labels=[n*100 for n in noise_sigma_percentage_levels])
-        ax[i,j].grid()
-        for policy in range(len(values)):
-            ax[i,j].plot(noise_sigma_percentage_levels, jnp.nanmean(values[policy], axis=(0,1,3)), color=list(mcolors.TABLEAU_COLORS.values())[policy])
-        idx += 1
-figure.legend(policy_labels, loc="center right", title="Policy")
-figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_after_rl_noisy_tests.eps"), format='eps')
+exclude_metrics = ["collisions", "timeouts", "average_speed", "returns", "average_angular_speed", "average_angular_acceleration", "average_angular_jerk"]
+metrics_data = {
+    "successes": {"row_position": 0, "col_position": 0, "label": "Success rate", "ylim": [0.4,1.1], "yticks": [i/10 for i in range(4,11)]}, 
+    "times_to_goal": {"row_position": 0, "col_position": 1, "label": "Time to goal ($s$)"},
+    "path_length": {"row_position": 1, "col_position": 0, "label": "Path length ($m$)"}, 
+    "episodic_spl": {"row_position": 1, "col_position": 1, "label": "SPL", "ylim": [0,1], "yticks": [i/10 for i in range(11)]},
+    "space_compliance": {"row_position": 2, "col_position": 0, "label": "Space compliance", "ylim": [0,1]},
+    "average_acceleration": {"row_position": 2, "col_position": 1, "label": "Acceleration ($m/s^2$)"},
+    "average_jerk": {"row_position": 3, "col_position": 0, "label": "Jerk ($m/s^3$)"},
+    "min_distance": {"row_position": 3, "col_position": 1, "label": "Min. dist. to humans ($m$)"},
+}
+for e_idx, test_env in enumerate(test_environments):
+    figure, ax = plt.subplots(math.ceil((len(all_metrics)-len(exclude_metrics))/2), 2, figsize=(18,18))
+    figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.07, hspace=0.3, wspace=0.3)
+    for key, values in all_metrics.items():
+        if key in exclude_metrics:
+            continue
+        else:
+            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set(
+                xlabel='Noise $\sigma$ (%)',
+                ylabel=metrics_data[key]["label"])
+            if "ylim" in metrics_data[key]:
+                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_ylim(metrics_data[key]["ylim"])
+            if "yticks" in metrics_data[key]:
+                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_yticks(metrics_data[key]["yticks"])
+            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_xticks(noise_sigma_percentage_levels, labels=[n*100 for n in noise_sigma_percentage_levels])
+            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].grid()
+            for policy in range(len(values)):
+                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
+                    noise_sigma_percentage_levels, 
+                    jnp.nanmean(values[policy,e_idx], axis=(0,2)) if key != "successes" else jnp.nanmean(values[policy,e_idx], axis=(0)) / n_test_trials,
+                    color=list(mcolors.TABLEAU_COLORS.values())[policy],
+                    linewidth=2,)
+    figure.legend(policy_labels, loc="center right", title=f"Policy tested\non {test_env.upper()}")
+    figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_after_rl_noisy_tests_on_{test_env}.eps"), format='eps')
