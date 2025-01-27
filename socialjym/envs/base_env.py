@@ -14,6 +14,7 @@ SCENARIOS = [
     "perpendicular_traffic", 
     "robot_crowding", 
     "delayed_circular_crossing",
+    "circular_crossing_with_static_obstacles",
     "hybrid_scenario"] # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
 HUMAN_POLICIES = [
     "orca", # TODO: Implement JORCA (Jax based ORCA)
@@ -193,6 +194,24 @@ class BaseEnv(ABC):
             state = state.at[:-1,0:2].set(new_positions)
             info["humans_goal"] = info["humans_goal"].at[:].set(new_goals)
             return info, state
+        
+        @jit
+        def _update_circular_crossing_with_static_obstacles(val:tuple):
+            @jit
+            def _update_human_goal(idx:int, position:jnp.ndarray, goal:jnp.ndarray, radius:float) -> jnp.ndarray:
+                goal = lax.cond(
+                    (jnp.linalg.norm(position - goal) <= radius) & (idx > (self.n_humans / 2) - 0.5),
+                    lambda x: -x,
+                    lambda x: x,
+                    goal)
+                return goal
+            info, state = val
+            info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0,0))(
+                jnp.arange(self.n_humans), 
+                state[:-1,0:2], 
+                info["humans_goal"], 
+                info["humans_parameters"][:,0])
+            return (info, state)
 
         new_info, new_state = lax.switch(
             info["current_scenario"], 
@@ -200,7 +219,8 @@ class BaseEnv(ABC):
             _update_traffic_scenarios, 
             _update_traffic_scenarios, 
             lambda x: x,
-            _update_delayed_circular_crossing,], 
+            _update_delayed_circular_crossing,
+            _update_circular_crossing_with_static_obstacles], 
             (info, state))
         return new_info, new_state
 

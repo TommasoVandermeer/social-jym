@@ -44,7 +44,7 @@ initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((env_
 
 # Warm up the environment and policy - Dummy step and act to jit compile the functions 
 # (this way, computation time will only reflect execution and not compilation)
-state, _, _, info = env.reset(random.key(0))
+state, _, _, info, _ = env.reset(random.key(0))
 _, obs, _, _, _ = env.step(state,info,jnp.zeros((2,)))
 _ = env.imitation_learning_step(state,info)
 _ = env.get_lidar_measurements(obs[-1,:2], jnp.atan2(*jnp.flip(obs[-1,2:4])), obs[:-1,:2], info["humans_parameters"][:,0])
@@ -54,9 +54,8 @@ _ = policy.act(random.key(0), obs, info, initial_vnet_params, 0.1)
 episode_simulation_times = np.empty((n_episodes,))
 for i in range(n_episodes):
     policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
-    outcome = {"nothing": True, "success": False, "failure": False, "timeout": False}
     episode_start_time = time.time()
-    state, reset_key, obs, info = env.reset(reset_key)
+    state, reset_key, obs, info, outcome = env.reset(reset_key)
     lidar_measurements = env.get_lidar_measurements(obs[-1,:2], jnp.atan2(*jnp.flip(obs[-1,2:4])), obs[:-1,:2], info["humans_parameters"][:,0])
 
     info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.1) # Set humans' safety space to 0.1
