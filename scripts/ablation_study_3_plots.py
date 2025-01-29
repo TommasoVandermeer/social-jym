@@ -95,7 +95,7 @@ for r_idx in range(2**len(reward_terms)):
                     title=metrics[key]['label'],)
                 ax[i,j].set_xticks(test_n_humans, labels=test_n_humans)
                 ax[i,j].grid()
-                # Base reward
+                # First train env
                 unclean_data = jnp.zeros((len(test_n_humans),test_n_trials*len(test_scenarios)))
                 for h_idx in range(len(test_n_humans)):
                     unclean_data = unclean_data.at[h_idx].set(values[0,0,r_idx,0,e_idx,h_idx,:].flatten())
@@ -111,7 +111,7 @@ for r_idx in range(2**len(reward_terms)):
                     showfliers=False,
                     showmeans=True, 
                     zorder=1)
-                # Full reward
+                # Second train env
                 unclean_data = jnp.zeros((len(test_n_humans),test_n_trials*len(test_scenarios)))
                 for h_idx in range(len(test_n_humans)):
                     unclean_data = unclean_data.at[h_idx].set(values[0,1,r_idx,0,e_idx,h_idx,:].flatten())
@@ -128,4 +128,4 @@ for r_idx in range(2**len(reward_terms)):
                         showmeans=True,
                     zorder=2)
             idx += 1
-    figure.savefig(os.path.join(figure_folder,f"metrics_boxplots_after_rl_train_env_benchmark_{test_env}_R{r_idx}.pdf"), format='pdf')
+        figure.savefig(os.path.join(figure_folder,f"metrics_boxplots_after_rl_train_env_benchmark_{test_env}_R{r_idx}.pdf"), format='pdf')

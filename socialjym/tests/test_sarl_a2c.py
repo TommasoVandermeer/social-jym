@@ -7,13 +7,11 @@ import os
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
-from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
-from socialjym.policies.cadrl import CADRL
-from socialjym.policies.sarl import SARL
+from socialjym.policies.sarl_a2c import SARLA2C
 from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
 
 ### Hyperparameters
-random_seed = 13_000 # Usually we train with 3_000 IL episodes and 10_000 RL episodes
+random_seed = 0
 n_episodes = 50
 kinematics = 'unicycle'
 reward_params = {
@@ -24,24 +22,6 @@ reward_params = {
     'kinematics': kinematics,
 }
 reward_function = Reward1(**reward_params)
-# ds = 0.2 # Discomfort distance
-# wp = 0.03 # Progress to goal weight
-# wt = 0.005 # Time penalty weight
-# wr = 0.07 # High rotation penalty weight
-# w_bound = 2. # Rotation bound
-# reward_function = Reward2(
-#         target_reached_reward = True,
-#         collision_penalty_reward = True,
-#         discomfort_penalty_reward = True,
-#         progress_to_goal_reward = 1,
-#         time_penalty_reward = 1,
-#         high_rotation_penalty_reward = 1,
-#         discomfort_distance=ds,
-#         progress_to_goal_weight=wp,
-#         time_penalty=wt,
-#         angular_speed_bound=w_bound,
-#         angular_speed_penalty_weight=wr
-#     )
 env_params = {
     'robot_radius': 0.3,
     'n_humans': 5,
@@ -58,29 +38,10 @@ env_params = {
 ### Initialize and reset environment
 env = SocialNav(**env_params)
 
-### Initialize robot policy
-
-## Load Social-Navigation-PyEnvs policy vnet params
-# vnet_params = load_crowdnav_policy(
-#     "sarl", 
-#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hybrid_scenario/rl_model.pth"))
-# policy = SARL(env.reward_function, dt=env_params['robot_dt'])
-# vnet_params = load_crowdnav_policy(
-#     "cadrl", 
-#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_1_sfm_hybrid_scenario/rl_model.pth"))
-# policy = CADRL(env.reward_function, dt=env_params['robot_dt'])
-
-## Load social-jym policy
-# vnet_params = load_socialjym_policy(
-#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_k1_nh1_hp1_s4_r1_20_11_2024.pkl"))
-# policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
-
-vnet_params = load_socialjym_policy(
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_k1_nh5_hp2_s4_r1_20_11_2024.pkl"))
-policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
-
-### Test policy
-# metrics = test_k_trials(1000, random_seed, env, policy, vnet_params, reward_params["time_limit"])
+### Initialize policy
+policy = SARLA2C(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
+critic_params = policy.critic.init(random_seed, jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
+actor_params = policy.actor.init(random_seed, jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
 
 ### Simulate some episodes
 for i in range(n_episodes):
@@ -89,7 +50,7 @@ for i in range(n_episodes):
     state, reset_key, obs, info, outcome = env.reset(reset_key)
     all_states = np.array([state])
     while outcome["nothing"]:
-        action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, 0.)
+        action, policy_key, _ = policy.act(policy_key, obs, info, actor_params, 0.)
         state, obs, info, reward, outcome = env.step(state,info,action,test=True) 
         all_states = np.vstack((all_states, [state]))
 

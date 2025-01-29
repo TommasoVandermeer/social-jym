@@ -175,7 +175,7 @@ class SARL(CADRL):
     
     @partial(jit, static_argnames=("self"))
     def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
-        return vmap(CADRL._compute_action_value, in_axes=(None,None,None,None,0,None))(self, next_obs, current_obs, info, action, vnet_params)
+        return vmap(SARL._compute_action_value, in_axes=(None,None,None,None,0,None))(self, next_obs, current_obs, info, action, vnet_params)
 
     # Public methods
 
@@ -218,7 +218,7 @@ class SARL(CADRL):
         infos,
         vnet_params,
         epsilon):
-        return vmap(CADRL.act, in_axes=(None, 0, 0, 0, None, None))(
+        return vmap(SARL.act, in_axes=(None, 0, 0, 0, None, None))(
             self,
             keys, 
             obses, 
