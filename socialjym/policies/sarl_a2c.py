@@ -43,12 +43,13 @@ class Actor(hk.Module):
     def __call__(
             self, 
             x: jnp.ndarray,
-            gaussian_key: random.PRNGKey,
+            **kwargs:dict,
         ) -> jnp.ndarray:
         """
         Computes the value of the state given the input x of shape (# of humans, length of reparametrized state)
         """
-
+        gaussian_key = kwargs.get("gaussian_key", random.PRNGKey(0))
+        sample = kwargs.get("sample", True) # If false, the mean of the action distribution is returned
         # Save self state variables
         size = x.shape # (# of humans, length of reparametrized state)
         self_state = x[0,:self.robot_state_size] # The robot state is repeated in each row of axis 1, we take the first one
@@ -76,31 +77,39 @@ class Actor(hk.Module):
         # debug.print("Weighted Feature size: {x}", x=weighted_features.shape)
         # Compute state value
         mlp4_input = jnp.concatenate([self_state, weighted_features], axis=0)
+
+        ### TODO: Does it make sense to output a single sigma for both wheels? Ensuring they explore the same amount of space
+
         # debug.print("Joint State/MLP4 input size: {x}", x=mlp4_input.shape)
         if self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
             mu_Vleft, mu_Vright, sigma_Vleft, sigma_Vright = self.mlp4(mlp4_input)
             sigma_Vleft = nn.softplus(sigma_Vleft) + 1e-5
             sigma_Vright = nn.softplus(sigma_Vright) + 1e-5
             key1, key2 = random.split(gaussian_key)
-            vleft = mu_Vleft + sigma_Vleft * random.normal(key1)
-            vright = mu_Vright + sigma_Vright * random.normal(key2)
-            ## Bouind the wheels speed with HARD CLIPPING (gradients discontinuity and risk of vanishing gradients)
+            vleft = mu_Vleft + sigma_Vleft * random.normal(key1) * jnp.squeeze(jnp.array([sample], dtype=int)) 
+            vright = mu_Vright + sigma_Vright * random.normal(key2) * jnp.squeeze(jnp.array([sample], dtype=int))
+            ## Bouind the final action with HARD CLIPPING (gradients discontinuity)
             # vleft = jnp.clip(vleft, -self.max_speed, self.max_speed)
             # vright = jnp.clip(vright, -self.max_speed, self.max_speed)
-            ## Bound the wheels speed with SMOOTH CLIPPING (ensures gradient continuity)
+            ## v = jnp.abs((vleft + vright) / 2) # Robot can only go forward
+            # v = nn.relu((vleft + vright) / 2) # Robot can only go forward
+            ## Bound the final action with SMOOTH CLIPPING (ensures gradient continuity)
             vleft = self.max_speed * jnp.tanh(vleft / self.max_speed)
             vright = self.max_speed * jnp.tanh(vright / self.max_speed)
-            # WARNING: Robot can also go backwards
-            action = jnp.array([(vleft + vright) / 2, (vright - vleft) / self.wheels_distance])
+            v = (vleft + vright) / 2
+            ## v = v * jnp.tanh(v / 0.1) # Robot can only go forward. The smaller the denominator, the more the function is similar to abs (but less numerically stable)
+            v = nn.leaky_relu(v) # Robot can only go forward
+            ## Build final action
+            action = jnp.array([v, (vright - vleft) / self.wheels_distance])
         elif self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-            mu_Vx, mu_Vy, sigma_Vx, sigmaVy = self.mlp4(mlp4_input)
+            mu_Vx, mu_Vy, sigma_Vx, sigma_Vy = self.mlp4(mlp4_input)
             sigma_Vx = nn.softplus(sigma_Vx) + 1e-5
-            sigmaVy = nn.softplus(sigmaVy) + 1e-5
+            sigma_Vy = nn.softplus(sigma_Vy) + 1e-5
             key1, key2 = random.split(gaussian_key)
-            vx = mu_Vx + sigma_Vx * random.normal(key1)
-            vy = mu_Vy + sigmaVy * random.normal(key2)
+            vx = mu_Vx + sigma_Vx * random.normal(key1) * jnp.squeeze(jnp.array([sample], dtype=int))
+            vy = mu_Vy + sigma_Vy * random.normal(key2) * jnp.squeeze(jnp.array([sample], dtype=int))
             norm = jnp.linalg.norm(jnp.array([vx, vy]))
-            ## Bound the norm of the velocity with HARD CLIPPING (gradients discontinuity and risk of vanishing gradients)
+            ## Bound the norm of the velocity with HARD CLIPPING (gradients discontinuity)
             # scaling_factor = jnp.clip(norm, 0., self.max_speed) / (norm + 1e-5)
             # vx = vx * scaling_factor
             # vy = vy * scaling_factor
@@ -108,6 +117,7 @@ class Actor(hk.Module):
             scaling_factor = jnp.tanh(norm / self.max_speed) / (norm + 1e-5)
             vx = vx * scaling_factor
             vy = vy * scaling_factor
+            ## Build final action
             action = jnp.array([vx, vy])
         return action
 
@@ -138,9 +148,9 @@ class SARLA2C(CADRL):
         self.name = "SARL-A2C"
         self.critic = critic_network
         @hk.transform
-        def actor_network(x:jnp.ndarray, gaussian_key:random.PRNGKey):
+        def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
             actor = Actor(kinematics=kinematics, max_speed=v_max, wheels_distance=wheels_distance)
-            return actor(x, gaussian_key)
+            return actor(x, **kwargs)
         self.actor = actor_network
 
     # Private methods
@@ -150,8 +160,8 @@ class SARLA2C(CADRL):
     # Public methods
 
     @partial(jit, static_argnames=("self"))
-    def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, actor_params:dict, epsilon:float) -> jnp.ndarray:
-        
+    def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, actor_params:dict, sample=False) -> jnp.ndarray:
+
         # Add noise to human observations
         if self.noise:
             key, subkey = random.split(key)
@@ -159,7 +169,8 @@ class SARLA2C(CADRL):
         # Compute actor input
         actor_input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
         # Compute action 
-        action = self.actor.apply(actor_params, None, actor_input, gaussian_key=key)
+        key, subkey = random.split(key)
+        action = self.actor.apply(actor_params, None, actor_input, gaussian_key=key, sample=sample)
 
         return action, key, actor_input
     
@@ -170,14 +181,14 @@ class SARLA2C(CADRL):
         obses,
         infos,
         vnet_params,
-        epsilon):
+        sample):
         return vmap(SARLA2C.act, in_axes=(None, 0, 0, 0, None, None))(
             self,
             keys, 
             obses, 
             infos, 
             vnet_params, 
-            epsilon)
+            sample)
     
     @partial(jit, static_argnames=("self","optimizer"))
     def update(

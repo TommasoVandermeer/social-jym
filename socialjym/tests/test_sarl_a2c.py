@@ -8,7 +8,7 @@ import os
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.policies.sarl_a2c import SARLA2C
-from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
+from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory
 
 ### Hyperparameters
 random_seed = 0
@@ -43,6 +43,25 @@ policy = SARLA2C(env.reward_function, dt=env_params['robot_dt'], kinematics=kine
 critic_params = policy.critic.init(random_seed, jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
 actor_params = policy.actor.init(random_seed, jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
 
+### Watch n_samples action sampled from actor output at the initial state
+n_samples = 10_000
+state, reset_key, obs, info, outcome = env.reset(random.PRNGKey(random_seed))
+keys = random.split(random.PRNGKey(random_seed), n_samples)
+actions, _, _ = vmap(policy.act, in_axes=(0, None, None, None, None))(keys, obs, info, actor_params, True)
+figure, ax = plt.subplots(figsize=(10,10))
+figure.suptitle(f'{n_samples} actor outputs at the initial state')
+ax.axis('equal')
+ax.plot(actions[:,0], actions[:,1], 'o')
+if kinematics == 'unicycle':
+    ax.set_xlabel('v ($m/s$)')
+    ax.set_ylabel('$\omega$ $(rad/s)$')
+else:
+    ax.set_xlabel('vx ($m/s$)')
+    ax.set_ylabel('vy $(m/s)$')
+mean_action, _, _ = policy.act(random.PRNGKey(random_seed), obs, info, actor_params, False)
+ax.plot(mean_action[0], mean_action[1], 'ro')
+plt.show()
+
 ### Simulate some episodes
 for i in range(n_episodes):
     policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i)
@@ -50,7 +69,7 @@ for i in range(n_episodes):
     state, reset_key, obs, info, outcome = env.reset(reset_key)
     all_states = np.array([state])
     while outcome["nothing"]:
-        action, policy_key, _ = policy.act(policy_key, obs, info, actor_params, 0.)
+        action, policy_key, _ = policy.act(policy_key, obs, info, actor_params, True)
         state, obs, info, reward, outcome = env.step(state,info,action,test=True) 
         all_states = np.vstack((all_states, [state]))
 
