@@ -1,5 +1,6 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, debug, nn
+from jax import random, jit, vmap, lax, debug, nn, value_and_grad
+from jax.scipy.stats.norm import pdf
 from functools import partial
 import haiku as hk
 from types import FunctionType
@@ -10,6 +11,67 @@ from .cadrl import CADRL
 from .sarl import value_network as critic_network
 from .sarl import MLP_1_PARAMS, MLP_2_PARAMS, ATTENTION_LAYER_PARAMS
 
+@partial(jit, static_argnames=("kinematics"))
+def _sample_action(
+    kinematics:int, 
+    sample:bool,
+    key:random.PRNGKey,
+    mu1:float,
+    mu2:float,
+    sigma1:float,
+    sigma2:float,
+    max_speed:float,
+    wheels_distance:float=0.7
+) -> jnp.ndarray:
+    key1, key2 = random.split(key)
+    if kinematics == ROBOT_KINEMATICS.index('unicycle'):
+        vleft = mu1 + sigma1 * random.normal(key1) * jnp.squeeze(jnp.array([sample], dtype=int)) 
+        vright = mu2 + sigma2 * random.normal(key2) * jnp.squeeze(jnp.array([sample], dtype=int))
+        sampled_action = jnp.array([vleft, vright])
+        ## Bouind the final action with HARD CLIPPING (gradients discontinuity)
+        # vleft = jnp.clip(vleft, -max_speed, max_speed)
+        # vright = jnp.clip(vright, -max_speed, max_speed)
+        ## v = jnp.abs((vleft + vright) / 2) # Robot can only go forward
+        # v = nn.relu((vleft + vright) / 2) # Robot can only go forward
+        ## Bound the final action with SMOOTH CLIPPING (ensures gradient continuity)
+        vleft = max_speed * jnp.tanh(vleft / max_speed)
+        vright = max_speed * jnp.tanh(vright / max_speed)
+        v = (vleft + vright) / 2
+        ## v = v * jnp.tanh(v / 0.1) # Robot can only go forward. The smaller the denominator, the more the function is similar to abs (but less numerically stable)
+        v = nn.leaky_relu(v) # Robot can only go forward. This is not soft clipping, but it is not constant below zero.
+        ## Build final action
+        action = jnp.array([v, (vright - vleft) / wheels_distance])
+    elif kinematics == ROBOT_KINEMATICS.index('holonomic'):
+        vx = mu1 + sigma1 * random.normal(key1) * jnp.squeeze(jnp.array([sample], dtype=int))
+        vy = mu2 + sigma2 * random.normal(key2) * jnp.squeeze(jnp.array([sample], dtype=int))
+        sampled_action = jnp.array([vx, vy])
+        norm = jnp.linalg.norm(jnp.array([vx, vy]))
+        ## Bound the norm of the velocity with HARD CLIPPING (gradients discontinuity)
+        # scaling_factor = jnp.clip(norm, 0., max_speed) / (norm + EPSILON)
+        # vx = vx * scaling_factor
+        # vy = vy * scaling_factor
+        ## Bound the norm of the velocity with SMOOTH CLIPPING (ensures gradients continuity)
+        scaling_factor = jnp.tanh(norm / max_speed) / (norm + EPSILON)
+        vx = vx * scaling_factor
+        vy = vy * scaling_factor
+        ## Build final action
+        action = jnp.array([vx, vy])
+    return action, sampled_action
+
+@partial(jit, static_argnames=("kinematics"))
+def batch_sample_action(
+    kinematics:int,
+    sample:bool,
+    keys:random.PRNGKey,
+    mu1:jnp.ndarray,
+    mu2:jnp.ndarray,
+    sigma1:jnp.ndarray,
+    sigma2:jnp.ndarray,
+    max_speed:float,
+    wheels_distance:float=0.7
+) -> jnp.ndarray:
+    return vmap(_sample_action, in_axes=(None, None, 0, None, None, None, None, None, None))(kinematics, sample, keys, mu1, mu2, sigma1, sigma2, max_speed, wheels_distance)
+
 MLP_4_PARAMS = {
     "output_sizes": [150, 100, 100, 4], # Output: [mu_Vleft, mu_Vright, sigma_Vleft, sigma_Vright]
     "activation": nn.relu,
@@ -17,6 +79,8 @@ MLP_4_PARAMS = {
     "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
     "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
 }
+
+EPSILON = 1e-5
 
 class Actor(hk.Module):
     def __init__(
@@ -77,49 +141,32 @@ class Actor(hk.Module):
         # debug.print("Weighted Feature size: {x}", x=weighted_features.shape)
         # Compute state value
         mlp4_input = jnp.concatenate([self_state, weighted_features], axis=0)
-
-        ### TODO: Does it make sense to output a single sigma for both wheels? Ensuring they explore the same amount of space
-
+        # Compute normal distribution parameters
+        mu1, mu2, sigma1, sigma2 = self.mlp4(mlp4_input)
         # debug.print("Joint State/MLP4 input size: {x}", x=mlp4_input.shape)
-        if self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-            mu_Vleft, mu_Vright, sigma_Vleft, sigma_Vright = self.mlp4(mlp4_input)
-            sigma_Vleft = nn.softplus(sigma_Vleft) + 1e-5
-            sigma_Vright = nn.softplus(sigma_Vright) + 1e-5
-            key1, key2 = random.split(gaussian_key)
-            vleft = mu_Vleft + sigma_Vleft * random.normal(key1) * jnp.squeeze(jnp.array([sample], dtype=int)) 
-            vright = mu_Vright + sigma_Vright * random.normal(key2) * jnp.squeeze(jnp.array([sample], dtype=int))
-            ## Bouind the final action with HARD CLIPPING (gradients discontinuity)
-            # vleft = jnp.clip(vleft, -self.max_speed, self.max_speed)
-            # vright = jnp.clip(vright, -self.max_speed, self.max_speed)
-            ## v = jnp.abs((vleft + vright) / 2) # Robot can only go forward
-            # v = nn.relu((vleft + vright) / 2) # Robot can only go forward
-            ## Bound the final action with SMOOTH CLIPPING (ensures gradient continuity)
-            vleft = self.max_speed * jnp.tanh(vleft / self.max_speed)
-            vright = self.max_speed * jnp.tanh(vright / self.max_speed)
-            v = (vleft + vright) / 2
-            ## v = v * jnp.tanh(v / 0.1) # Robot can only go forward. The smaller the denominator, the more the function is similar to abs (but less numerically stable)
-            v = nn.leaky_relu(v) # Robot can only go forward
-            ## Build final action
-            action = jnp.array([v, (vright - vleft) / self.wheels_distance])
-        elif self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-            mu_Vx, mu_Vy, sigma_Vx, sigma_Vy = self.mlp4(mlp4_input)
-            sigma_Vx = nn.softplus(sigma_Vx) + 1e-5
-            sigma_Vy = nn.softplus(sigma_Vy) + 1e-5
-            key1, key2 = random.split(gaussian_key)
-            vx = mu_Vx + sigma_Vx * random.normal(key1) * jnp.squeeze(jnp.array([sample], dtype=int))
-            vy = mu_Vy + sigma_Vy * random.normal(key2) * jnp.squeeze(jnp.array([sample], dtype=int))
-            norm = jnp.linalg.norm(jnp.array([vx, vy]))
-            ## Bound the norm of the velocity with HARD CLIPPING (gradients discontinuity)
-            # scaling_factor = jnp.clip(norm, 0., self.max_speed) / (norm + 1e-5)
-            # vx = vx * scaling_factor
-            # vy = vy * scaling_factor
-            ## Bound the norm of the velocity with SMOOTH CLIPPING (ensures gradients continuity)
-            scaling_factor = jnp.tanh(norm / self.max_speed) / (norm + 1e-5)
-            vx = vx * scaling_factor
-            vy = vy * scaling_factor
-            ## Build final action
-            action = jnp.array([vx, vy])
-        return action
+        ### TODO: Does it make sense to output a single sigma for both wheels? Ensuring they explore the same amount of space
+        # Standard deviation must be strictly greater than zero
+        sigma1 = nn.softplus(sigma1) + EPSILON
+        sigma2 = nn.softplus(sigma2) + EPSILON
+        # Sample action
+        action, sampled_action = _sample_action(
+            self.kinematics, 
+            sample, 
+            gaussian_key, 
+            mu1, 
+            mu2, 
+            sigma1, 
+            sigma2, 
+            self.max_speed, 
+            self.wheels_distance)
+        # Save distributions data
+        distributions = {
+            "mu1": mu1,
+            "mu2": mu2,
+            "sigma1": sigma1,
+            "sigma2": sigma2
+        }
+        return action, sampled_action, distributions
 
 class SARLA2C(CADRL):
     def __init__(
@@ -155,7 +202,99 @@ class SARLA2C(CADRL):
 
     # Private methods
 
-    ####
+    @partial(jit, static_argnames=("self"))
+    def _compute_log_pdf_value(
+        self, 
+        mu1:jnp.ndarray, 
+        sigma1:jnp.ndarray,
+        mu2:jnp.ndarray,
+        sigma2:jnp.ndarray, 
+        action:jnp.ndarray
+    ) -> jnp.ndarray:
+        return jnp.log(pdf(action[0], mu1, sigma1) * pdf(action[1], mu2, sigma2))
+
+    @partial(jit, static_argnames=("self"))
+    def _compute_loss_and_gradients(
+        self, 
+        current_critic_params:dict, 
+        current_actor_params:dict, 
+        experiences:dict[str:jnp.ndarray],
+        # Experiences: {"inputs":jnp.ndarray, "critic_targets":jnp.ndarray, "sample_actions":jnp.ndarray},
+    ) -> tuple:
+        
+        @jit
+        def _batch_critic_loss_function(
+            current_critic_params:dict,
+            inputs:jnp.ndarray,
+            critic_targets:jnp.ndarray,  
+            ) -> jnp.ndarray:
+            
+            @partial(vmap, in_axes=(None, 0, 0))
+            def _loss_function(
+                current_critic_params:dict,
+                input:jnp.ndarray,
+                target:jnp.ndarray, 
+                ) -> jnp.ndarray:
+                # Compute the prediction
+                prediction = self.critic.apply(current_critic_params, None, input)
+                # Compute the loss
+                return jnp.square(target - prediction)
+            
+            losses = _loss_function(
+                current_critic_params,
+                inputs,
+                critic_targets)
+            return jnp.mean(losses), losses
+        
+        @jit
+        def _batch_actor_loss_function(
+            current_actor_params:dict,
+            inputs:jnp.ndarray,
+            sample_actions:jnp.ndarray,
+            advantages:jnp.ndarray,  
+            ) -> jnp.ndarray:
+            
+            @partial(vmap, in_axes=(None, 0, 0, 0))
+            def _loss_function(
+                current_actor_params:dict,
+                input:jnp.ndarray,
+                sample_action:jnp.ndarray,
+                advantage:jnp.ndarray, 
+                ) -> jnp.ndarray:
+                # Compute the prediction
+                _, _, distrs = self.actor.apply(current_actor_params, None, input, random.PRNGKey(0))
+                # Compute the log probability of the action
+                log_pdf = self._compute_log_pdf_value(
+                    distrs["mu1"],
+                    distrs["sigma1"],
+                    distrs["mu2"],
+                    distrs["sigma2"],
+                    sample_action)
+                # Compute the loss
+                return - log_pdf * advantage
+            
+            return jnp.mean(_loss_function(
+                    current_actor_params,
+                    inputs,
+                    sample_actions,
+                    advantages))
+
+        inputs = experiences["inputs"]
+        critic_targets = experiences["critic_targets"]
+        sample_actions = experiences["sample_actions"]
+        # Compute critic loss and gradients
+        loss_and_advantages, critic_grads = value_and_grad(_batch_critic_loss_function, has_aux=True)(
+            current_critic_params, 
+            inputs,
+            critic_targets)
+        critic_loss, advantages = loss_and_advantages
+        # Compute actor loss and gradients
+        actor_loss, actor_grads = value_and_grad(_batch_actor_loss_function)(
+            current_actor_params, 
+            inputs,
+            sample_actions, 
+            advantages)
+        return critic_loss, critic_grads, actor_loss, actor_grads
     
     # Public methods
 
@@ -170,9 +309,9 @@ class SARLA2C(CADRL):
         actor_input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
         # Compute action 
         key, subkey = random.split(key)
-        action = self.actor.apply(actor_params, None, actor_input, gaussian_key=key, sample=sample)
+        action, sampled_action, distrs = self.actor.apply(actor_params, None, actor_input, gaussian_key=key, sample=sample)
 
-        return action, key, actor_input
+        return action, key, actor_input, sampled_action, distrs
     
     @partial(jit, static_argnames=("self"))
     def batch_act(
@@ -190,17 +329,33 @@ class SARLA2C(CADRL):
             vnet_params, 
             sample)
     
-    @partial(jit, static_argnames=("self","optimizer"))
+    @partial(jit, static_argnames=("self","actor_optimizer","critic_optimizer"))
     def update(
         self, 
-        current_vnet_params:dict, 
-        optimizer:optax.GradientTransformation, 
-        optimizer_state: jnp.ndarray, 
-        experiences:dict[str:jnp.ndarray],
-        # Experiences: {"vnet_inputs":jnp.ndarray, "targets":jnp.ndarray,}
+        critic_params:dict, 
+        actor_params:dict,
+        actor_optimizer:optax.GradientTransformation, 
+        actor_opt_state: jnp.ndarray, 
+        critic_optimizer:optax.GradientTransformation,
+        critic_opt_state: jnp.ndarray,
+        experiences:dict[str:jnp.ndarray], 
+        # experiences: {"inputs":jnp.ndarray, "critic_targets":jnp.ndarray, "sample_actions":jnp.ndarray},
     ) -> tuple:
-        pass
-        # Compute loss and gradients
+        # Compute loss and gradients for actor and critic
+        critic_loss, critic_grads, actor_loss, actor_grads = self._compute_loss_and_gradients(
+            critic_params, 
+            actor_params,
+            experiences,
+        )
+        ## CRITIC
         # Compute parameter updates
+        critic_updates, critic_opt_state = critic_optimizer.update(critic_grads, critic_opt_state)
         # Apply updates
-        # return updated_vnet_params, optimizer_state, loss
+        updated_critic_params = optax.apply_updates(critic_params, critic_updates)
+        ## ACTOR
+        # Compute parameter updates
+        actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
+        # Apply updates
+        updated_actor_params = optax.apply_updates(actor_params, actor_updates)
+        
+        return updated_critic_params, updated_actor_params, critic_opt_state, actor_opt_state, critic_loss, actor_loss

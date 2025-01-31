@@ -7,7 +7,7 @@ import os
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
-from socialjym.policies.sarl_a2c import SARLA2C
+from socialjym.policies.sarl_a2c import SARLA2C, batch_sample_action
 from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory
 
 ### Hyperparameters
@@ -44,10 +44,21 @@ critic_params = policy.critic.init(random_seed, jnp.zeros((env_params['n_humans'
 actor_params = policy.actor.init(random_seed, jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
 
 ### Watch n_samples action sampled from actor output at the initial state
-n_samples = 10_000
+n_samples = 100_000
 state, reset_key, obs, info, outcome = env.reset(random.PRNGKey(random_seed))
+mean_action, _, _, sampled_action, distrs = policy.act(random.PRNGKey(random_seed), obs, info, actor_params, False)
 keys = random.split(random.PRNGKey(random_seed), n_samples)
-actions, _, _ = vmap(policy.act, in_axes=(0, None, None, None, None))(keys, obs, info, actor_params, True)
+actions, sampled_actions = batch_sample_action(
+    policy.kinematics, 
+    True,
+    keys,
+    distrs["mu1"],
+    distrs["sigma1"],
+    distrs["mu2"],
+    distrs["sigma2"],
+    policy.v_max,
+    policy.wheels_distance)
+# Action samples in the (v,omega) space
 figure, ax = plt.subplots(figsize=(10,10))
 figure.suptitle(f'{n_samples} actor outputs at the initial state')
 ax.axis('equal')
@@ -58,9 +69,37 @@ if kinematics == 'unicycle':
 else:
     ax.set_xlabel('vx ($m/s$)')
     ax.set_ylabel('vy $(m/s)$')
-mean_action, _, _ = policy.act(random.PRNGKey(random_seed), obs, info, actor_params, False)
 ax.plot(mean_action[0], mean_action[1], 'ro')
 plt.show()
+# Distribution of each action component
+figure, ax = plt.subplots(1,2, figsize=(10,10))
+figure.suptitle(f'{n_samples} actor outputs at the initial state')
+ax[0].hist(actions[:,0], bins=100, density=True)
+ax[1].hist(actions[:,1], bins=100, density=True)
+ax[0].axvline(mean_action[0], color='red', linestyle='dashed', linewidth=2)
+ax[1].axvline(mean_action[1], color='red', linestyle='dashed', linewidth=2)
+if kinematics == 'unicycle':
+    ax[0].set_title('v ($m/s$)')
+    ax[1].set_title('$\omega$ $(rad/s)$')
+else:
+    ax[0].set_title('vx ($m/s$)')
+    ax[1].set_title('vy $(m/s)$')
+plt.show()
+# Distribution of v_left and v_right in case of unicycle kinematics
+if kinematics == 'unicycle':
+    figure, ax = plt.subplots(1,2, figsize=(10,10))
+    figure.suptitle(f'{n_samples} actor outputs at the initial state')
+    v_right = (2 * actions[:,0] + actions[:,1] * policy.wheels_distance) / 2
+    v_left = (2 * actions[:,0] - actions[:,1] * policy.wheels_distance) / 2
+    mean_action_v_right = (2 * mean_action[0] + mean_action[1] * policy.wheels_distance) / 2
+    mean_action_v_left = (2 * mean_action[0] - mean_action[1] * policy.wheels_distance) / 2
+    ax[0].hist(v_left, bins=100, density=True)
+    ax[1].hist(v_right, bins=100, density=True)
+    ax[0].axvline(mean_action_v_left, color='red', linestyle='dashed', linewidth=2)
+    ax[1].axvline(mean_action_v_right, color='red', linestyle='dashed', linewidth=2)
+    ax[0].set_title('v_left ($m/s$)')
+    ax[1].set_title('v_right $(m/s)$')
+    plt.show()
 
 ### Simulate some episodes
 for i in range(n_episodes):
@@ -69,7 +108,7 @@ for i in range(n_episodes):
     state, reset_key, obs, info, outcome = env.reset(reset_key)
     all_states = np.array([state])
     while outcome["nothing"]:
-        action, policy_key, _ = policy.act(policy_key, obs, info, actor_params, True)
+        action, policy_key, _, sampled_action, distrs = policy.act(policy_key, obs, info, actor_params, True)
         state, obs, info, reward, outcome = env.step(state,info,action,test=True) 
         all_states = np.vstack((all_states, [state]))
 

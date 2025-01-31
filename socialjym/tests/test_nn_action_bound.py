@@ -18,8 +18,8 @@ def f_soft(key, mean, sigma, max_speed, wheel_distance=0.7):
     vleft = max_speed * jnp.tanh(vleft / max_speed)
     vright = max_speed * jnp.tanh(vright / max_speed)
     v = (vleft + vright) / 2
-    #  v = v * jnp.tanh(v / 0.1) # Robot can only go forward
-    v = nn.leaky_relu(v) # Robot can only go forward
+    # v = v * jnp.tanh(v / 0.1) # Robot can only go forward
+    v = nn.leaky_relu(v) # Robot can only go forward. This is not soft clipping, but it is not constant below zero.
     action = jnp.array([v, (vright - vleft) / wheel_distance])
     return action
 
@@ -31,7 +31,8 @@ def f_hard(key, mean, sigma, max_speed, wheel_distance):
     ## Bouind the final action with HARD CLIPPING (gradients discontinuity)
     vleft = jnp.clip(vleft, -max_speed, max_speed)
     vright = jnp.clip(vright, -max_speed, max_speed)
-    v = jnp.abs((vleft + vright) / 2) # Robot can only go forward
+    # v = jnp.abs((vleft + vright) / 2) # Robot can only go forward
+    v = nn.relu((vleft + vright) / 2) # Robot can only go forward
     action = jnp.array([v, (vright - vleft) / wheel_distance])
     return action
 
