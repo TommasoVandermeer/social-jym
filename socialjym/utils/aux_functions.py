@@ -188,7 +188,8 @@ def test_k_trials(
     - metrics: dict. A dictionary containing the metrics of the tests.
     """
 
-    # TODO: Impelement unicycle kinematics case
+    # Check if the policy is A2C, if so the episode loop slightly changes
+    a2c = (policy.name == "SARL-A2C")
 
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
     if custom_episodes is not None:
@@ -221,7 +222,10 @@ def test_k_trials(
             # Retrieve data from the tuple
             state, obs, info, outcome, policy_key, steps, all_actions, all_states, all_rewards = while_val
             # Make a step in the environment
-            action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
+            if a2c:
+                action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
+            else:
+                action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
             state, obs, info, reward, outcome = env.step(state,info,action,test=True)
             # Save data
             all_actions = all_actions.at[steps].set(action)

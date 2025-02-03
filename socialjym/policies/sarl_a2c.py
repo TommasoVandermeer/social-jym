@@ -220,6 +220,7 @@ class SARLA2C(CADRL):
         current_actor_params:dict, 
         experiences:dict[str:jnp.ndarray],
         # Experiences: {"inputs":jnp.ndarray, "critic_targets":jnp.ndarray, "sample_actions":jnp.ndarray},
+        imitation_learning:bool,
     ) -> tuple:
         
         @jit
@@ -255,14 +256,14 @@ class SARLA2C(CADRL):
             ) -> jnp.ndarray:
             
             @partial(vmap, in_axes=(None, 0, 0, 0))
-            def _loss_function(
+            def _rl_loss_function(
                 current_actor_params:dict,
                 input:jnp.ndarray,
                 sample_action:jnp.ndarray,
                 advantage:jnp.ndarray, 
                 ) -> jnp.ndarray:
                 # Compute the prediction
-                _, _, distrs = self.actor.apply(current_actor_params, None, input, random.PRNGKey(0))
+                _, _, distrs = self.actor.apply(current_actor_params, None, input)
                 # Compute the log probability of the action
                 log_pdf = self._compute_log_pdf_value(
                     distrs["mu1"],
@@ -271,13 +272,27 @@ class SARLA2C(CADRL):
                     distrs["sigma2"],
                     sample_action)
                 # Compute the loss
-                return - log_pdf * advantage
+                return jnp.squeeze(- log_pdf * advantage)
+
+            @partial(vmap, in_axes=(None, 0, 0, 0))
+            def _il_loss_function(
+                current_actor_params:dict,
+                input:jnp.ndarray,
+                sample_action:jnp.ndarray,
+                advantage:jnp.ndarray, 
+                ) -> jnp.ndarray:
+                # Compute the prediction (here we should input a key but for now we work only with mean actions)
+                action, _, _ = self.actor.apply(current_actor_params, None, input, sample=False)
+                # Compute the loss
+                return 0.5 * jnp.sum(jnp.square(action - sample_action))
             
-            return jnp.mean(_loss_function(
-                    current_actor_params,
-                    inputs,
-                    sample_actions,
-                    advantages))
+            losses = lax.cond(
+                imitation_learning,
+                lambda x: _il_loss_function(*x),
+                lambda x: _rl_loss_function(*x),
+                (current_actor_params, inputs, sample_actions, advantages),
+            )
+            return jnp.mean(losses)
 
         inputs = experiences["inputs"]
         critic_targets = experiences["critic_targets"]
@@ -340,12 +355,14 @@ class SARLA2C(CADRL):
         critic_opt_state: jnp.ndarray,
         experiences:dict[str:jnp.ndarray], 
         # experiences: {"inputs":jnp.ndarray, "critic_targets":jnp.ndarray, "sample_actions":jnp.ndarray},
+        imitation_learning:bool=False,
     ) -> tuple:
         # Compute loss and gradients for actor and critic
         critic_loss, critic_grads, actor_loss, actor_grads = self._compute_loss_and_gradients(
             critic_params, 
             actor_params,
             experiences,
+            imitation_learning,
         )
         ## CRITIC
         # Compute parameter updates
@@ -357,5 +374,4 @@ class SARLA2C(CADRL):
         actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
         # Apply updates
         updated_actor_params = optax.apply_updates(actor_params, actor_updates)
-        
         return updated_critic_params, updated_actor_params, critic_opt_state, actor_opt_state, critic_loss, actor_loss
