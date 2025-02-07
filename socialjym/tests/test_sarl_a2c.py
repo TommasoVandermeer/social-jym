@@ -7,7 +7,7 @@ import os
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
-from socialjym.policies.sarl_a2c import SARLA2C, batch_sample_action
+from socialjym.policies.sarl_a2c import SARLA2C
 from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory
 
 ### Hyperparameters
@@ -48,16 +48,12 @@ n_samples = 100_000
 state, reset_key, obs, info, outcome = env.reset(random.PRNGKey(random_seed))
 mean_action, _, _, sampled_action, distrs = policy.act(random.PRNGKey(random_seed), obs, info, actor_params, False)
 keys = random.split(random.PRNGKey(random_seed), n_samples)
-actions, sampled_actions = batch_sample_action(
-    policy.kinematics, 
-    True,
+actions, sampled_actions = policy.batch_sample_action(
     keys,
     distrs["mu1"],
-    distrs["sigma1"],
     distrs["mu2"],
-    distrs["sigma2"],
-    policy.v_max,
-    policy.wheels_distance)
+    sigma=1
+)
 # Action samples in the (v,omega) space
 figure, ax = plt.subplots(figsize=(10,10))
 figure.suptitle(f'{n_samples} actor outputs at the initial state')

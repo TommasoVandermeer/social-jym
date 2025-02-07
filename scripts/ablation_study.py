@@ -17,7 +17,7 @@ from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
 from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
 from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_rl_rollout, deep_vnet_il_rollout
-from socialjym.utils.aux_functions import epsilon_scaling_decay, plot_state, plot_trajectory, test_k_trials, save_policy_params, decimal_to_binary
+from socialjym.utils.aux_functions import linear_decay, plot_state, plot_trajectory, test_k_trials, save_policy_params, decimal_to_binary
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 
@@ -236,7 +236,7 @@ for reward_type_decimal in range(2**(len(reward_terms))):
         'replay_buffer': replay_buffer,
         'buffer_size': training_hyperparams['buffer_size'],
         'num_batches': training_hyperparams['rl_num_batches'],
-        'epsilon_decay_fn': epsilon_scaling_decay,
+        'epsilon_decay_fn': linear_decay,
         'epsilon_start': training_hyperparams['epsilon_start'],
         'epsilon_end': training_hyperparams['epsilon_end'],
         'decay_rate': training_hyperparams['epsilon_decay'],

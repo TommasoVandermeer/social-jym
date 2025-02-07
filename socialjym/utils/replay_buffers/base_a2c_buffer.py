@@ -1,5 +1,6 @@
 from functools import partial
 from jax import jit
+from jax import numpy as jnp
 
 from .base_vnet_replay_buffer import BaseVNetReplayBuffer
 
@@ -26,6 +27,17 @@ class BaseA2CBuffer(BaseVNetReplayBuffer):
         buffer_state["inputs"] = buffer_state["inputs"].at[filling_idx].set(input)
         buffer_state["critic_targets"] = buffer_state["critic_targets"].at[filling_idx].set(critic_target)
         buffer_state["sample_actions"] = buffer_state["sample_actions"].at[filling_idx].set(sample_action)
+
+        return buffer_state
+    
+    @partial(jit, static_argnames=("self"))
+    def empty(
+        self,
+        buffer_state: dict,
+    ):
+        buffer_state["inputs"] = buffer_state["inputs"].at[:,:,:].set(0)
+        buffer_state["critic_targets"] = buffer_state["critic_targets"].at[:].set(0)
+        buffer_state["sample_actions"] = buffer_state["sample_actions"].at[:,:].set(0)
 
         return buffer_state
     

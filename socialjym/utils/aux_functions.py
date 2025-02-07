@@ -15,9 +15,9 @@ from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KI
 from socialjym.policies.base_policy import BasePolicy
 
 @jit
-def epsilon_scaling_decay(epsilon_start:float, epsilon_end:float, current_episode:int, decay_rate:float) -> float:
-    epsilon = lax.cond(current_episode < decay_rate, lambda x: epsilon_start + (epsilon_end - epsilon_start) / decay_rate * x, lambda x: epsilon_end, current_episode)
-    return epsilon
+def linear_decay(start:float, end:float, current_iteration:int, decay_rate:float) -> float:
+    value = lax.cond(current_iteration < decay_rate, lambda x: start + (end - start) / decay_rate * x, lambda x: end, current_iteration)
+    return value
 
 @jit
 def is_multiple(number:float, dividend:float, tolerance:float=1e-7) -> bool:
@@ -223,7 +223,7 @@ def test_k_trials(
             state, obs, info, outcome, policy_key, steps, all_actions, all_states, all_rewards = while_val
             # Make a step in the environment
             if a2c:
-                action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
+                action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sigma=0.)
             else:
                 action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
             state, obs, info, reward, outcome = env.step(state,info,action,test=True)
