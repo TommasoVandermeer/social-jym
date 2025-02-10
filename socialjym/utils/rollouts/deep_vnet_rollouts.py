@@ -82,7 +82,7 @@ def deep_vnet_rl_rollout(
                                 lambda _: 1.0,
                                 (epsilon_start, epsilon_end, i - exploration_episodes, decay_rate))
                         action, policy_key, vnet_input = policy.act(policy_key, obs, info, model_params, epsilon)
-                        state, obs, info, reward, outcome = env.step(state, info, action)
+                        state, obs, info, reward, outcome, _ = env.step(state, info, action)
                         # Save data
                         vnet_inputs = vnet_inputs.at[steps].set(vnet_input)
                         rewards = rewards.at[steps].set(reward)
@@ -449,7 +449,7 @@ def deep_vnet_batch_rl_rollout(
                                 (epsilon_start, epsilon_end, i - exploration_iterations, decay_rate))
                         actions, policy_keys, vnet_inputs = policy.batch_act(policy_keys, obses, infos, model_params, epsilon)
                         # Make environment step
-                        states, obses, infos, rewards, outcomes = env.batch_step(states, infos, actions)
+                        states, obses, infos, rewards, outcomes, _ = env.batch_step(states, infos, actions, policy_keys) # policy_keys just acts as placeholder
                         # Save data
                         @jit
                         def _batch_update_data(done, all_vnet_inputs, all_rewards, all_outcomes, all_dones, vnet_inputs, rewards, outcomes):

@@ -102,7 +102,7 @@ def _fori_body(i:int, for_val:tuple):
         all_rewards_2 = all_rewards_2.at[steps].set(reward_function_2(obs, info, env_params['robot_dt'])[0])
         all_rewards_3 = all_rewards_3.at[steps].set(reward_function_3(obs, info, env_params['robot_dt'])[0])
         # Step the environment
-        state, obs, info, reward, outcome = env.step(state,info,action,test=True)
+        state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
         # Save data
         all_actions = all_actions.at[steps].set(action)
         all_states = all_states.at[steps].set(state)

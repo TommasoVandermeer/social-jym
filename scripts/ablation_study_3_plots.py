@@ -172,8 +172,8 @@ for m_idx, metric in enumerate(metrics_to_plot):
 figure.savefig(os.path.join(figure_folder,f"1.pdf"), format='pdf')
 
 # Plot boxplot of each metric for base reward  in all train envs
-exclude_metrics = ["successes", "collisions", "timeouts", "episodic_spl", "returns", "min_distance"]
-figure, ax = plt.subplots(math.ceil((len(metrics)-len(exclude_metrics))/3), 3, figsize=(10,10))
+metrics_to_plot = ["times_to_goal", "path_length", "space_compliance", "average_speed", "average_acceleration", "average_jerk", "average_angular_speed", "average_angular_acceleration", "average_angular_jerk"]
+figure, ax = plt.subplots(3, 3, figsize=(10,10))
 figure.subplots_adjust(hspace=0.7, wspace=0.3, bottom=0.08, top=0.93, left=0.07, right=0.83)
 colors = {
     "sfm": "blue",
@@ -184,16 +184,13 @@ legend_elements = [
     Line2D([0], [0], color=colors[train_envs[1]], lw=4, label=train_envs[1].upper())
 ]
 figure.legend(handles=legend_elements, loc="center right", title="Training\nenv.")
-idx = 0
-for key, values in all_metrics_after_rl.items():
-    if key in exclude_metrics:
-        continue
-    else:
-        i = idx // 3
-        j = idx % 3
+for m_idx, metric in enumerate(metrics_to_plot):
+        values = all_metrics_after_rl[metric]
+        i = m_idx // 3
+        j = m_idx % 3
         ax[i,j].set(
             xlabel='N° humans',
-            title=metrics[key]['label'],)
+            title=metrics[metric]['label'],)
         p0 = np.arange(len(test_n_humans))
         box_width = 0.3
         ax[i,j].grid(zorder=0)
@@ -217,12 +214,11 @@ for key, values in all_metrics_after_rl.items():
                 zorder=3,
             )
         ax[i,j].set_xticks(p0 + box_width * 0.5, labels=test_n_humans)
-    idx += 1
 figure.savefig(os.path.join(figure_folder,f"2.pdf"), format='pdf')
 
 # Plot barplot of TtG and Ang.Accel. after RL for base reward trained in different environments (HSFM and SFM) with different reward (R0 and R7)
 metrics_to_plot = ["times_to_goal", "average_angular_acceleration"]
-colors = ["deeppink", "green", "chocolate", "grey"]
+colors = ["blue", "green", "red", "grey"]
 figure, ax = plt.subplots(1, 2, figsize=(10,5))
 figure.subplots_adjust(hspace=0.7, wspace=0.2, bottom=0.13, top=0.91, left=0.05, right=0.77)
 for m_idx, metric in enumerate(metrics_to_plot):        
@@ -255,35 +251,32 @@ for m_idx, metric in enumerate(metrics_to_plot):
 figure.savefig(os.path.join(figure_folder,f"3.pdf"), format='pdf')
 
 # Plot boxplot of each metric for base and full rewards  in all train envs
-exclude_metrics = ["successes", "collisions", "timeouts", "episodic_spl", "returns", "min_distance"]
+metrics_to_plot = ["times_to_goal", "path_length", "space_compliance", "average_speed", "average_acceleration", "average_jerk", "average_angular_speed", "average_angular_acceleration", "average_angular_jerk"]
 colors = {
         "sfm": {
-            "R0": "deeppink",
+            "R0": "blue",
             "R7": "green",
         },
         "hsfm": {
-            "R0": "chocolate",
+            "R0": "red",
             "R7": "grey",
         },
     }
 for te_idx, train_env in enumerate(train_envs):
-    figure, ax = plt.subplots(math.ceil((len(metrics)-len(exclude_metrics))/3), 3, figsize=(10,10))
+    figure, ax = plt.subplots(3, 3, figsize=(10,10))
     figure.subplots_adjust(hspace=0.7, wspace=0.3, bottom=0.08, top=0.93, left=0.07, right=0.83)
     legend_elements = [
         Line2D([0], [0], color=colors[train_env]["R0"], lw=4, label="R0"),
         Line2D([0], [0], color=colors[train_env]["R7"], lw=4, label="R7")
     ]
     figure.legend(handles=legend_elements, loc="center right", title=f"Train env.\n{train_env.upper()}\n\nReward")
-    idx = 0
-    for key, values in all_metrics_after_rl.items():
-        if key in exclude_metrics:
-            continue
-        else:
-            i = idx // 3
-            j = idx % 3
+    for m_idx, metric in enumerate(metrics_to_plot):
+            values = all_metrics_after_rl[metric]
+            i = m_idx // 3
+            j = m_idx % 3
             ax[i,j].set(
                 xlabel='N° humans',
-                title=metrics[key]['label'],)
+                title=metrics[metric]['label'],)
             p0 = np.arange(len(test_n_humans))
             box_width = 0.3
             ax[i,j].grid(zorder=0)
@@ -307,14 +300,13 @@ for te_idx, train_env in enumerate(train_envs):
                     zorder=3,
                 )
             ax[i,j].set_xticks(p0 + box_width * 0.5, labels=test_n_humans)
-        idx += 1
     figure.savefig(os.path.join(figure_folder,f"{4 + te_idx}.pdf"), format='pdf')
 
 # Plot boxplot of each metric for all rewards in all train envs
 colors = [list(mcolors.TABLEAU_COLORS.values())[:len(rewards)] for _ in range(len(train_envs))]
-colors[0][0] = "deeppink"
+colors[0][0] = "blue"
 colors[0][7] = "green"
-colors[1][0] = "chocolate"
+colors[1][0] = "red"
 colors[1][7] = "grey"
 metrics_to_plot = ["times_to_goal", "path_length", "average_angular_acceleration", "space_compliance"]
 for te_idx, train_env in enumerate(train_envs):

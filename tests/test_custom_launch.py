@@ -62,7 +62,7 @@ metrics = test_k_trials(n_episodes, 0, env, policy, vnet_params, reward_params["
 #     all_states = np.array([state])
 #     while outcome["nothing"]:
 #         action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, 0.)
-#         state, obs, info, reward, outcome = env.step(state,info,action,test=True)
+#         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
 #         all_states = np.vstack((all_states, [state]))
 #     all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
 #     ## Plot episode trajectory

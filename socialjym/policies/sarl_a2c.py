@@ -14,17 +14,38 @@ from .sarl import MLP_1_PARAMS, MLP_2_PARAMS, ATTENTION_LAYER_PARAMS
 #### VERSION: TWO NETWORKS AND ACTOR OUTPUTS ACTION COMPONENTS MEANS ####
 
 # TODO: Create another version with only one network for both actor and critic
-# TODO: Add correct weight and bias initialization for actor
+# TODO: Add correct weight and bias initialization for actor - DONE
 # TODO: Try learning rate schedule
 # TODO: Vectorize step (add reset_if_done=False) to make fixed length batches of experiences for updates. Great scalability with gpu
 
 EPSILON = 1e-5
-MLP_4_PARAMS = {
-    "output_sizes": [150, 100, 100, 2], # Output: [mu_Vleft, mu_Vright]
-    "activation": nn.relu,
+MLP_1_PARAMS = {
+    "output_sizes": [150, 100],
+    "activation": nn.tanh,
+    "activate_final": True,
+    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
+    "b_init": hk.initializers.Constant(0.),
+}
+MLP_2_PARAMS = {
+    "output_sizes": [100, 50],
+    "activation": nn.tanh,
     "activate_final": False,
-    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
+    "b_init": hk.initializers.Constant(0.),
+}
+MLP_4_PARAMS = {
+    "output_sizes": [150, 100, 100], # Output: [mu_Vleft, mu_Vright]
+    "activation": nn.tanh,
+    "activate_final": False,
+    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
+    "b_init": hk.initializers.Constant(0.),
+}
+ATTENTION_LAYER_PARAMS = {
+    "output_sizes": [100, 100, 1],
+    "activation": nn.tanh,
+    "activate_final": False,
+    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
+    "b_init": hk.initializers.Constant(0.),
 }
 
 class Actor(hk.Module):
@@ -41,6 +62,7 @@ class Actor(hk.Module):
         self.mlp1 = hk.nets.MLP(**mlp1_params, name="mlp1")
         self.mlp2 = hk.nets.MLP(**mlp2_params, name="mlp2")
         self.mlp4 = hk.nets.MLP(**mlp4_params, name="mlp4")
+        self.output_layer = hk.Linear(2, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
         self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
         self.robot_state_size = robot_state_size
         self.v_max = v_max
@@ -77,10 +99,11 @@ class Actor(hk.Module):
         ## Compute weighted features (hidden features weighted by attention weights)
         weighted_features = jnp.sum(jnp.multiply(attention_weights, features), axis=0)
         # debug.print("Weighted Feature size: {x}", x=weighted_features.shape)
-        ## Compute state value
+        ## Compute MLP4 output
         mlp4_input = jnp.concatenate([self_state, weighted_features], axis=0)
+        mlp4_output = self.mlp4(mlp4_input)
         ## Compute normal distribution parameters
-        mu1, mu2 = self.mlp4(mlp4_input)
+        mu1, mu2 = self.output_layer(mlp4_output)
         # debug.print("Joint State/MLP4 input size: {x}", x=mlp4_input.shape)
         ## Bound output (avoids problems of exploding gradients)
         mu1 = self.v_max * jnp.tanh(mu1)
@@ -328,15 +351,15 @@ class SARLA2C(CADRL):
         keys,
         obses,
         infos,
-        vnet_params,
-        sample):
+        actor_params,
+        sigma):
         return vmap(SARLA2C.act, in_axes=(None, 0, 0, 0, None, None))(
             self,
             keys, 
             obses, 
             infos, 
-            vnet_params, 
-            sample)
+            actor_params, 
+            sigma)
     
     @partial(jit, static_argnames=("self","actor_optimizer","critic_optimizer"))
     def update(

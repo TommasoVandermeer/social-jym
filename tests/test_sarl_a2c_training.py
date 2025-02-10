@@ -17,7 +17,7 @@ from socialjym.policies.sarl_a2c import SARLA2C
 ### Hyperparameters
 n_humans_for_tests = [5, 10, 15]
 n_trials = 1000
-training_updates = 10_000
+training_updates = 30_000
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': 'unicycle', # 'unicycle' or 'holonomic'
@@ -29,8 +29,8 @@ training_hyperparams = {
     'il_num_epochs': 50, # Number of epochs to train the model after ending IL
     'il_batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
     'rl_training_updates': training_updates,
-    'rl_actor_learning_rate': 0.00001, # 0.00002
-    'rl_critic_learning_rate': 0.0001, # 0.0002
+    'rl_actor_learning_rate': 0.000015, # 0.00002
+    'rl_critic_learning_rate': 0.00015, # 0.0002
     'rl_batch_size': 2_000, # Number of experiences to sample from the replay buffer for each model update
     'rl_sigma_start': 0.2,
     'rl_sigma_end': 0.02, # 0.02
@@ -112,12 +112,12 @@ il_rollout_params = {
     'custom_episodes': il_custom_episodes_path
 }
 
-# IMITATION LEARNING ROLLOUT
-il_out = deep_a2c_il_rollout(**il_rollout_params)
+# # IMITATION LEARNING ROLLOUT
+# il_out = deep_a2c_il_rollout(**il_rollout_params)
 
-# Save IL rollout output
-with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
-    pickle.dump(il_out, f)
+# # Save IL rollout output
+# with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
+#     pickle.dump(il_out, f)
 
 # Load IL rollout output
 with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:
@@ -174,7 +174,7 @@ plt.close(figure)
 #     all_states = np.array([state])
 #     while outcome["nothing"]:
 #         action, policy_key, _, sampled_action, distrs = policy.act(policy_key, obs, info, il_actor_params, sigma=0.)
-#         state, obs, info, reward, outcome = env.step(state,info,action,test=True) 
+#         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
 #         all_states = np.vstack((all_states, [state]))
 #     animate_trajectory(
 #         all_states, 
@@ -212,7 +212,17 @@ for test, n_humans in enumerate(n_humans_for_tests):
         reward_function.time_limit)
     
 # Initialize RL optimizer
-actor_optimizer = optax.sgd(learning_rate=training_hyperparams['rl_actor_learning_rate'], momentum=0.9)
+actor_optimizer = optax.adam(
+    learning_rate=optax.schedules.linear_schedule(
+        init_value=training_hyperparams['rl_actor_learning_rate'], 
+        end_value=0.0, 
+        transition_steps=training_hyperparams['rl_training_updates'],
+        transition_begin=0
+    ), 
+    eps=1e-7, 
+    b1=0.9
+)
+# critic_optimizer = optax.sgd(learning_rate=training_hyperparams['rl_critic_learning_rate'], momentum=0.9)
 critic_optimizer = optax.sgd(learning_rate=training_hyperparams['rl_critic_learning_rate'], momentum=0.9)
 
 # Initialize custom episodes path
@@ -270,7 +280,7 @@ episode_count = rl_out['episode_count']
 
 # Plot returns during RL
 figure, ax = plt.subplots(1,1,figsize=(10,5))
-window = 500
+window = 1000
 ax.set(
     xlabel='Training Episode', 
     ylabel=f'Return moving average over {window} episodes window', 

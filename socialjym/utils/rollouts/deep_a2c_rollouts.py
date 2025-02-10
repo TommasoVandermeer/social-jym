@@ -43,7 +43,7 @@ def deep_a2c_rl_rollout(
                         state, obs, info, outcome, policy_key, buffer_state, current_buffer_size, inputs, rewards, sampled_actions, dones, steps, sigma = val
                         # Step
                         action, policy_key, input, sampled_action, _ = policy.act(policy_key, obs, info, actor_params, sigma=sigma)
-                        state, obs, info, reward, outcome = env.step(state, info, action)
+                        state, obs, info, reward, outcome, _ = env.step(state, info, action)
                         # Save data
                         inputs = inputs.at[steps].set(input)
                         rewards = rewards.at[steps].set(reward)

@@ -45,7 +45,7 @@ initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((env_
 # Warm up the environment and policy - Dummy step and act to jit compile the functions 
 # (this way, computation time will only reflect execution and not compilation)
 state, _, _, info, _ = env.reset(random.key(0))
-_, obs, _, _, _ = env.step(state,info,jnp.zeros((2,)))
+_, obs, _, _, _, _ = env.step(state,info,jnp.zeros((2,)))
 _ = env.imitation_learning_step(state,info)
 _ = env.get_lidar_measurements(obs[-1,:2], jnp.atan2(*jnp.flip(obs[-1,2:4])), obs[:-1,:2], info["humans_parameters"][:,0])
 _ = policy.act(random.key(0), obs, info, initial_vnet_params, 0.1)
@@ -65,7 +65,7 @@ for i in range(n_episodes):
     while outcome["nothing"]:
 
         # action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
-        # state, obs, info, reward, outcome = env.step(state,info,action,test=True)
+        # state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
 
         state, obs, info, reward, outcome = env.imitation_learning_step(state,info)
 

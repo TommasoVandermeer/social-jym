@@ -79,7 +79,7 @@ steps = 28
 samples = 100
 for i in range(steps):
     action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, 0.)
-    state, obs, info, reward, outcome = env.step(state,info,action,test=True) 
+    state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
 noisy_obs = vmap(policy._batch_add_noise_to_human_obs, in_axes=(None,0))(obs, random.split(policy_key, samples))
 ## Plot positions with and without noise
 # Plot positions without noise
@@ -131,7 +131,7 @@ for i in range(n_episodes):
     all_states = np.array([state])
     while outcome["nothing"]:
         action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, 0.)
-        state, obs, info, reward, outcome = env.step(state,info,action,test=True) 
+        state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
         all_states = np.vstack((all_states, [state]))
     ## Plot episode trajectory
     figure, ax = plt.subplots(figsize=(10,10))

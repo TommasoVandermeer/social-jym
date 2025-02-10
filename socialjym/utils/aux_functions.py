@@ -226,7 +226,7 @@ def test_k_trials(
                 action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sigma=0.)
             else:
                 action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
-            state, obs, info, reward, outcome = env.step(state,info,action,test=True)
+            state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
             # Save data
             all_actions = all_actions.at[steps].set(action)
             all_states = all_states.at[steps].set(state)

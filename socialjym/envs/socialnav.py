@@ -1,7 +1,6 @@
 import numpy as np
 import jax.numpy as jnp
 from jax import random, jit, lax, debug, vmap
-from jax.experimental import checkify
 from functools import partial
 from types import FunctionType
 
@@ -115,7 +114,7 @@ class SocialNav(BaseEnv):
                                                 self._generate_delayed_circular_crossing_episode,
                                                 self._generate_circular_crossing_with_static_obstacles_episode], subkey)
         return full_state, key, info
-    
+
     @partial(jit, static_argnames=("self"))
     def _generate_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
         full_state = jnp.zeros((self.n_humans+1, 6))
@@ -606,7 +605,15 @@ class SocialNav(BaseEnv):
         return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome
     
     @partial(jit, static_argnames=("self"))
-    def step(self, state:jnp.ndarray, info:dict, action:jnp.ndarray, test:bool=False)-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
+    def step(
+        self, 
+        state:jnp.ndarray, 
+        info:dict, 
+        action:jnp.ndarray, 
+        test:bool=False,
+        reset_if_done:bool=False,
+        reset_key:random.PRNGKey=random.PRNGKey(0),
+    )-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
         this function computes the next state, the observation, the reward, and whether the episode is done.
@@ -615,6 +622,8 @@ class SocialNav(BaseEnv):
         - state: jnp.ndarray containing the state of the environment.
         - info: dictionary containing additional information about the environment.
         - action: action to be taken by the robot.
+        - test: boolean indicating whether the function is being used for testing purposes.
+        - reset_if_done: boolean indicating whether the environment should be reset if the episode is done.
 
         output:
         - new_state: jnp.ndarray containing the updated state of the environment.
@@ -622,6 +631,7 @@ class SocialNav(BaseEnv):
         - info: dictionary containing additional information about the environment.
         - reward: reward obtained in the transition.
         - outcome: dictionary indicating whether the episode is in a terminal state or not.
+        - reset_key: random.PRNGKey used to reset the environment. Only used if reset_if_done is True.
         """
         info["time"] += self.robot_dt
         ### Compute reward and outcome
@@ -665,11 +675,34 @@ class SocialNav(BaseEnv):
             outcome["nothing"] = jnp.logical_not(jnp.any(jnp.array([outcome["success"], outcome["failure"], outcome["timeout"]])))
             return outcome
         outcome = lax.cond(test, lambda x: _test_outcome(x), lambda x: x[2], (new_state, info, outcome))
-        return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome
+        ### If done and reset_if done, automatically reset the environment
+        new_state, reset_key, new_info = lax.cond(
+            (reset_if_done) & (~(outcome["nothing"])),
+            lambda x: self._reset(x[1]),
+            lambda x: x,
+            (new_state, reset_key, new_info)
+        )
+        return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome, reset_key
 
     @partial(jit, static_argnames=("self"))
-    def batch_step(self, states:jnp.ndarray, infos:dict, actions:jnp.ndarray, test:bool=False):
-        return vmap(SocialNav.step, in_axes=(None, 0, 0, 0, None))(self, states, infos, actions, test)
+    def batch_step(
+        self, 
+        states:jnp.ndarray, 
+        infos:dict, 
+        actions:jnp.ndarray, 
+        reset_keys:jnp.ndarray, # This is moved upwards because a default value cannot be given.
+        test:bool=False,
+        reset_if_done:bool=False,
+    ):
+        return vmap(SocialNav.step, in_axes=(None, 0, 0, 0, None, None, 0))(
+            self, 
+            states, 
+            infos, 
+            actions, 
+            test, 
+            reset_if_done,
+            reset_keys,
+        )
 
     @partial(jit, static_argnames=("self"))
     def reset(self, key:random.PRNGKey) -> tuple:
