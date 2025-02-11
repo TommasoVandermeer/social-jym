@@ -152,7 +152,7 @@ class SARLA2C(CADRL):
         sigma:jnp.ndarray,
         action:jnp.ndarray
     ) -> jnp.ndarray:
-        return jnp.log(pdf(action[0], mu1, sigma)) + jnp.log(pdf(action[1], mu2, sigma))
+        return jnp.log(pdf(action[0], mu1, sigma) + EPSILON) + jnp.log(pdf(action[1], mu2, sigma) + EPSILON)
 
     @partial(jit, static_argnames=("self"))
     def _compute_loss_and_gradients(
@@ -217,7 +217,7 @@ class SARLA2C(CADRL):
                     sigma,
                     sample_action)
                 # Compute the entropy loss
-                entropy_loss =  - (jnp.log(2*jnp.pi*sigma) + 1) / 2
+                entropy_loss =  - 0.5 * (jnp.log(2*jnp.pi*sigma) + 1)
                 # Compute the loss
                 return jnp.squeeze(- log_pdf * advantage), entropy_loss
 
@@ -261,6 +261,9 @@ class SARLA2C(CADRL):
             critic_targets
         )
         critic_loss, advantages = loss_and_advantages
+        # Normalize advantages
+        advantages = (advantages - jnp.mean(advantages)) / (jnp.std(advantages) + EPSILON)
+        # debug.print("Advantages: {x}", x=advantages)
         # Compute actor loss and gradients
         actor_and_entropy_loss, actor_grads = value_and_grad(_batch_actor_loss_function, has_aux=True)(
             current_actor_params, 

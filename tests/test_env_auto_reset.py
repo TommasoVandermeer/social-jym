@@ -17,7 +17,7 @@ reward_params = {
     'goal_reward': 1.,
     'collision_penalty': -0.25,
     'discomfort_distance': 0.2,
-    'time_limit': 5.,
+    'time_limit': 50.,
     'progress_to_goal_reward': True,
     'time_penalty_reward': False,
     'high_rotation_penalty_reward': False,

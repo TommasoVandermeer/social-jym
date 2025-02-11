@@ -107,12 +107,18 @@ class SocialNav(BaseEnv):
             key, subkey = random.split(key)
         else:
             scenario = self.scenario
-        full_state, info = lax.switch(scenario, [self._generate_circular_crossing_episode, 
-                                                self._generate_parallel_traffic_episode,
-                                                self._generate_perpendicular_traffic_episode,
-                                                self._generate_robot_crowding_episode,
-                                                self._generate_delayed_circular_crossing_episode,
-                                                self._generate_circular_crossing_with_static_obstacles_episode], subkey)
+        full_state, info = lax.switch(
+            scenario, 
+            [
+                self._generate_circular_crossing_episode, 
+                self._generate_parallel_traffic_episode,
+                self._generate_perpendicular_traffic_episode,
+                self._generate_robot_crowding_episode,
+                self._generate_delayed_circular_crossing_episode,
+                self._generate_circular_crossing_with_static_obstacles_episode
+            ], 
+            subkey
+        )
         return full_state, key, info
 
     @partial(jit, static_argnames=("self"))

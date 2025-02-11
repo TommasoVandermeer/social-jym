@@ -1,7 +1,7 @@
 import haiku as hk
 import optax
 from typing import Callable
-from jax import jit, lax, random, vmap, debug, tree_map
+from jax import jit, lax, random, vmap, debug
 import jax.numpy as jnp
 from jax_tqdm import loop_tqdm
 import pickle
@@ -14,6 +14,7 @@ from socialjym.utils.replay_buffers.base_a2c_buffer import BaseA2CBuffer
 def deep_a2c_rl_rollout(
         initial_actor_params: dict,
         initial_critic_params: dict,
+        n_parallel_envs:int,
         train_updates: int, # Number of episodes to train on, exploration episodes excluded
         random_seed: int,
         actor_optimizer: optax.GradientTransformation,
@@ -29,151 +30,139 @@ def deep_a2c_rl_rollout(
         sigma_decay: int,
         beta_entropy: float,
         debugging: bool = False,
+        debugging_interval: int = 100,
 ) -> dict:
         
         assert policy.name == "SARL-A2C", "This function is only compatible with A2C policies."
 
         # Define the main rollout episode loop
+        @loop_tqdm(train_updates)
         @jit
-        def _update_loop_body(val:tuple):
+        def _update_for_loop_body(upd_idx:int, val:tuple):
+                # Retrieve data from the tuple
+                episode_count, policy_keys, reset_keys, states, obses, infos, inputs, outcomes, actor_params, critic_params, act_opt_state, cri_opt_state, buffer_state, current_buffer_size, actor_losses, critic_losses, entropy_losses, returns, successes, failures, timeouts = val
+                # Compute sigma for the episode
+                sigma = sigma_decay_fn(sigma_start, sigma_end, upd_idx, sigma_decay)
                 ## Generate experience
                 @jit
-                def _while_body(val:tuple):
+                def _step_fori_body(_:int, val:tuple):
                         # Retrieve data from the tuple
-                        state, obs, info, outcome, policy_key, buffer_state, current_buffer_size, inputs, rewards, sampled_actions, dones, steps, sigma = val
+                        actor_params, critic_params, states, obses, infos, inputs, init_outcomes, policy_keys, reset_keys, buffer_state, current_buffer_size, sigma, episode_count, successes, failures, timeouts, returns = val
                         # Step
-                        action, policy_key, input, sampled_action, _ = policy.act(policy_key, obs, info, actor_params, sigma=sigma)
-                        state, obs, info, reward, outcome, _ = env.step(state, info, action)
-                        # Save data
-                        inputs = inputs.at[steps].set(input)
-                        rewards = rewards.at[steps].set(reward)
-                        sampled_actions = sampled_actions.at[steps].set(sampled_action)
-                        dones = dones.at[steps].set(jnp.logical_not(outcome["nothing"]))
-                        steps += 1
-                        return (state, obs, info, outcome, policy_key, buffer_state, current_buffer_size, inputs, rewards, sampled_actions, dones, steps, sigma)
-                # Retrieve data from the tuple
-                update_count, episode_count, actor_params, critic_params, act_opt_state, cri_opt_state, buffer_state, current_buffer_size, actor_losses, critic_losses, entropy_losses, returns, successes, failures, timeouts, = val
-                # Initialize the random keys
-                policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + episode_count)
-                # Reset the environment
-                state, reset_key, obs, info, init_outcome = env.reset(reset_key)
-                # Compute sigma for the episode
-                sigma = sigma_decay_fn(sigma_start, sigma_end, update_count, sigma_decay)
-                # Episode loop
-                inputs = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1, env.n_humans, policy.vnet_input_size))
-                rewards = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1,))
-                sampled_actions = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1, 2))
-                dones = jnp.empty((int(env.reward_function.time_limit/env.robot_dt)+1,))
-                val_init = (state, obs, info, init_outcome, policy_key, buffer_state, current_buffer_size, inputs, rewards, sampled_actions, dones, 0, sigma)
-                _, _, _, outcome, policy_key, buffer_state, current_buffer_size, inputs, rewards, sampled_actions, dones, episode_steps, _ = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, val_init)           
-                # Compute episode return
-                @jit
-                def _compute_state_value_for_body(j:int, t:int, value:float):
-                        value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
-                        return value 
-                cumulative_episode_reward = lax.fori_loop(0, episode_steps, lambda k, val: _compute_state_value_for_body(k, 0, val), 0.)
-                # Save episode data
-                returns = returns.at[episode_count].set(cumulative_episode_reward)
-                successes = successes.at[episode_count].set(outcome["success"])
-                failures = failures.at[episode_count].set(outcome["failure"])
-                timeouts = timeouts.at[episode_count].set(outcome["timeout"])
-                # Update buffer state
-                buffer_state, current_buffer_size = lax.cond(
-                        (outcome["success"]) | (outcome["failure"]) | (outcome["timeout"]), # Add all experiences
-                        lambda x: lax.fori_loop(
-                                0,
-                                episode_steps,
-                                lambda k, buff: (
-                                        replay_buffer.add(
-                                                buff[0], 
-                                                (
-                                                        inputs[k], 
-                                                        rewards[k] + (1 - dones[k]) * pow(policy.gamma, policy.dt * policy.v_max) * jnp.squeeze(policy.critic.apply(critic_params, None, inputs[k+1])), 
-                                                        sampled_actions[k]
-                                                ), 
-                                                buff[1]
-                                        ), 
-                                        buff[1]+1),
-                                (x[0], x[1])
-                        ),
-                        lambda x: x,
-                        (buffer_state, current_buffer_size)
-                )
-                actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_capacity]))
-                ### Update model parameters
-                @jit
-                def _model_update_cond_body(cond_val:tuple):
-                        update_count, episode_count, actor_params, critic_params, actor_optimizer_state, critic_optimizer_state, buffer_state, current_buffer_size, actor_losses, critic_losses, entropy_losses, returns, successes, failures, timeouts, sigma = cond_val
-                        # Sample a batch of experiences from the replay buffer
-                        experiences_batch = replay_buffer.iterate(
-                                buffer_state,
-                                actual_buffer_size,
-                                0) 
-                        # Update the model parameters
-                        critic_params, actor_params, critic_optimizer_state, actor_optimizer_state, critic_loss, actor_loss, entropy_loss = policy.update(
+                        actions, policy_keys, new_inputs, sampled_actions, _ = policy.batch_act(policy_keys, obses, infos, actor_params, sigma=sigma)
+                        states, obses, infos, rewards, outcomes, reset_keys = env.batch_step(states, infos, actions, reset_keys, test=False, reset_if_done=True)
+                        # Compute dones and auxiliary data
+                        dones = ~(outcomes["nothing"])
+                        successes += jnp.sum(outcomes["success"])
+                        failures += jnp.sum(outcomes["failure"])
+                        timeouts += jnp.sum(outcomes["timeout"])
+                        returns = returns.at[:].set(returns + rewards * jnp.power(jnp.broadcast_to(policy.gamma,(n_parallel_envs,)), policy.v_max * (infos["time"] - policy.dt)))
+                        # Compute critic targets
+                        @jit
+                        def _compute_critic_target(reward:float, done:int, next_input:jnp.ndarray, critic_params:dict):
+                                return reward + (1 - done) * pow(policy.gamma, policy.dt * policy.v_max) * jnp.squeeze(policy.critic.apply(critic_params, None, next_input))
+                        critic_targets = vmap(_compute_critic_target, in_axes=(0,0,0,None))(
+                                rewards, 
+                                dones, 
+                                new_inputs, 
                                 critic_params,
-                                actor_params,
-                                actor_optimizer,
-                                actor_optimizer_state,
-                                critic_optimizer,
-                                critic_optimizer_state,
-                                experiences_batch,
-                                sigma,
-                                beta_entropy,
-                                imitation_learning = False
+                        )   
+                        # Save experience
+                        buffer_state = replay_buffer.batch_add(
+                                buffer_state,
+                                inputs,
+                                critic_targets,
+                                sampled_actions,
+                                jnp.arange(n_parallel_envs) + current_buffer_size,
                         )
-                        # Empty the buffer
-                        buffer_state = replay_buffer.empty(buffer_state)
-                        current_buffer_size = 0
-                        # Save data
-                        actor_losses = actor_losses.at[update_count].set(actor_loss)
-                        critic_losses = critic_losses.at[update_count].set(critic_loss)
-                        entropy_losses = entropy_losses.at[update_count].set(entropy_loss)
-                        # DEBUG: print the mean loss for this episode and the return
-                        lax.cond(
-                                (debugging) & (update_count % 100 == 0) & (episode_count > 500),   
-                                lambda _: debug.print(
-                                        "### Update {x} - Episodes {w}\nActor loss: {y} - Critic loss: {z} - Entropy: {e} - Avg. Return: {r}\nSuccess rate: {s} - Failure rate: {f} - Timeout rate: {t}", 
-                                        x=(update_count), 
-                                        y=actor_losses[update_count], 
-                                        z=critic_losses[update_count], 
-                                        w=episode_count,
-                                        r=jnp.nanmean(jnp.where((jnp.arange(len(returns)) > episode_count-500) & (jnp.arange(len(returns)) < episode_count), returns, jnp.nan)),
-                                        s=jnp.nanmean(jnp.where((jnp.arange(len(successes)) > episode_count-500) & (jnp.arange(len(successes)) < episode_count), successes, jnp.nan)),
-                                        f=jnp.nanmean(jnp.where((jnp.arange(len(failures)) > episode_count-500) & (jnp.arange(len(failures)) < episode_count), failures, jnp.nan)),
-                                        t=jnp.nanmean(jnp.where((jnp.arange(len(timeouts)) > episode_count-500) & (jnp.arange(len(timeouts)) < episode_count), timeouts, jnp.nan)),
-                                        e=entropy_losses[update_count],
-                                        ),
-                                lambda x: x, 
-                                None
-                        )
-                        # Increment update count
-                        update_count += 1
-                        return (update_count, episode_count, actor_params, critic_params, actor_optimizer_state, critic_optimizer_state, buffer_state, current_buffer_size, actor_losses, critic_losses, entropy_losses, returns, successes, failures, timeouts, sigma)
-                val = lax.cond(
-                        actual_buffer_size > replay_buffer.batch_size,
-                        _model_update_cond_body, 
+                        current_buffer_size += n_parallel_envs
+                        # Update episode count
+                        episode_count += jnp.sum(dones)
+                        # Save data in the buffer
+                        return (actor_params, critic_params, states, obses, infos, new_inputs, init_outcomes, policy_keys, reset_keys, buffer_state, current_buffer_size, sigma, episode_count, successes, failures, timeouts, returns)
+                val_init = (actor_params, critic_params, states, obses, infos, initial_inputs, init_outcomes, policy_keys, reset_keys, buffer_state, current_buffer_size, sigma, episode_count, 0, 0, 0, jnp.zeros(n_parallel_envs,))
+                actor_params, critic_params, states, obses, infos, inputs, outcomes, policy_keys, reset_keys, buffer_state, current_buffer_size, sigma, episode_count, succ_count, fail_count, timeo_count, cum_rewards = lax.fori_loop(
+                        0,
+                        int(buffer_capacity/n_parallel_envs), 
+                        _step_fori_body, 
+                        val_init
+                )           
+                # Save auxiliary data
+                successes = successes.at[upd_idx].set(succ_count)
+                failures = failures.at[upd_idx].set(fail_count)
+                timeouts = timeouts.at[upd_idx].set(timeo_count)
+                returns = returns.at[upd_idx].set(jnp.mean(cum_rewards))
+                ### Update model parameters
+                critic_params, actor_params, cri_opt_state, act_opt_state, critic_loss, actor_loss, entropy_loss = policy.update(
+                        critic_params,
+                        actor_params,
+                        actor_optimizer,
+                        act_opt_state,
+                        critic_optimizer,
+                        cri_opt_state,
+                        buffer_state,
+                        sigma,
+                        beta_entropy,
+                        imitation_learning = False
+                )
+                # Empty the buffer
+                buffer_state = replay_buffer.empty(buffer_state)
+                current_buffer_size = 0
+                # Save data
+                actor_losses = actor_losses.at[upd_idx].set(actor_loss)
+                critic_losses = critic_losses.at[upd_idx].set(critic_loss)
+                entropy_losses = entropy_losses.at[upd_idx].set(entropy_loss)
+                # DEBUG: print the mean loss for this episode and the return
+                lax.cond(
+                        (debugging) & (upd_idx % debugging_interval == 0) & (upd_idx != 0),   
+                        lambda _: debug.print(
+                                "### Update {x} - Episodes {w}\nActor loss: {y} - Critic loss: {z} - Entropy: {e} - Avg. Return: {r}\nSuccesses: {s} - Failures: {f} - Timeouts: {t}", 
+                                x=(upd_idx), 
+                                y=actor_losses[upd_idx], 
+                                z=critic_losses[upd_idx], 
+                                w=episode_count,
+                                r=jnp.nanmean(jnp.where((jnp.arange(len(returns)) > upd_idx-debugging_interval) & (jnp.arange(len(returns)) <= upd_idx), returns, jnp.nan)),
+                                s=jnp.nansum(jnp.where((jnp.arange(len(successes)) > upd_idx-debugging_interval) & (jnp.arange(len(successes)) <= upd_idx), successes, jnp.nan)),
+                                f=jnp.nansum(jnp.where((jnp.arange(len(failures)) > upd_idx-debugging_interval) & (jnp.arange(len(failures)) <= upd_idx), failures, jnp.nan)),
+                                t=jnp.nansum(jnp.where((jnp.arange(len(timeouts)) > upd_idx-debugging_interval) & (jnp.arange(len(timeouts)) <= upd_idx), timeouts, jnp.nan)),
+                                e=entropy_losses[upd_idx],
+                                ),
                         lambda x: x, 
-                        (update_count, episode_count, actor_params, critic_params, act_opt_state, cri_opt_state, buffer_state, current_buffer_size, actor_losses, critic_losses, entropy_losses, returns, successes, failures, timeouts, sigma))
-                # Increment episode count
-                val = (val[0], episode_count+1, *val[2:-1])
-                return val
+                        None
+                )
+                return episode_count, policy_keys, reset_keys, states, obses, infos, inputs, outcomes, actor_params, critic_params, act_opt_state, cri_opt_state, buffer_state, current_buffer_size, actor_losses, critic_losses, entropy_losses, returns, successes, failures, timeouts 
 
         # Initialize the array where to save data
         actor_losses = jnp.empty([train_updates], dtype=jnp.float32)
         critic_losses = jnp.empty([train_updates], dtype=jnp.float32)
         entropy_losses = jnp.empty([train_updates], dtype=jnp.float32)
-        returns = jnp.empty([int(train_updates*replay_buffer.batch_size)], dtype=jnp.float32)
-        successes = jnp.empty([int(train_updates*replay_buffer.batch_size)], dtype=int)
-        failures = jnp.empty([int(train_updates*replay_buffer.batch_size)], dtype=int)
-        timeouts = jnp.empty([int(train_updates*replay_buffer.batch_size)], dtype=int)
-        # Initialize the model parameters
+        returns = jnp.empty([train_updates], dtype=jnp.float32)
+        successes = jnp.empty([train_updates], dtype=int)
+        failures = jnp.empty([train_updates], dtype=int)
+        timeouts = jnp.empty([train_updates], dtype=int)
+        # Initialize the optimizer state
         actor_optimizer_state = actor_optimizer.init(initial_actor_params)
         critic_optimizer_state = critic_optimizer.init(initial_critic_params)
+        # Initialize the random keys
+        policy_keys = vmap(random.PRNGKey)(jnp.arange(n_parallel_envs, dtype=int) + random_seed)
+        reset_keys = vmap(random.PRNGKey)(jnp.arange(n_parallel_envs, dtype=int) + random_seed)
+        # Initialize environments
+        states, reset_keys, obses, infos, init_outcomes = env.batch_reset(reset_keys)
+        initial_inputs = vmap(policy.batch_compute_vnet_input, in_axes=(0, 0, 0))(
+                obses[:, -1],
+                obses[:, :-1],
+                infos,
+        )
         # Create initial values for training loop
         val_init = (
                 0,
-                0,
+                policy_keys,
+                reset_keys,
+                states,
+                obses,
+                infos,
+                initial_inputs,
+                init_outcomes,
                 initial_actor_params, 
                 initial_critic_params, 
                 actor_optimizer_state, 
@@ -190,15 +179,22 @@ def deep_a2c_rl_rollout(
         )
         # Execute the training loop
         debug.print("Performing RL training for {x} updates...", x=train_updates)
-        vals = lax.while_loop(
-                lambda x: x[0] < train_updates, 
-                _update_loop_body, 
+        vals = lax.fori_loop(
+                0,
+                train_updates, 
+                _update_for_loop_body, 
                 val_init
         )
         output_dict = {}
         keys = [
-                "update_count",
                 "episode_count",
+                "policy_keys",
+                "reset_keys",
+                "states",
+                "obses",
+                "infos",
+                "inputs",
+                "outcomes",
                 "actor_params", 
                 "critic_params", 
                 "actor_optimizer_state", 
@@ -314,18 +310,21 @@ def deep_a2c_il_rollout(
                         lambda x: lax.fori_loop(
                                 0,
                                 episode_steps,
-                                lambda k, buff: (replay_buffer.add(
-                                        buff[0], (
+                                lambda k, buff: (
+                                        replay_buffer.add(
+                                                buff[0],
                                                 inputs[k], 
                                                 lax.fori_loop(
                                                         k,
                                                         episode_steps,
                                                         lambda j, val: _compute_state_value_for_body(j, k, val),
-                                                        0.
+                                                        0.,
                                                 ), 
-                                                actions[k],
-                                                ), 
-                                        buff[1]), buff[1]+1),
+                                                actions[k], 
+                                                buff[1],
+                                        ), 
+                                        buff[1]+1
+                                ),
                                 (x[0], x[1])),
                         lambda x: x,
                         (buffer_state, current_buffer_size))

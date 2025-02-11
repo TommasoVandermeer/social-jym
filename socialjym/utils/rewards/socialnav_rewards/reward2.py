@@ -10,18 +10,6 @@ from socialjym.envs.base_env import ROBOT_KINEMATICS, wrap_angle
 def batch_wrap_angle(angles:jnp.ndarray) -> jnp.ndarray:
     return vmap(wrap_angle, in_axes=0)(angles)
 
-@jit
-def _set_nan_if_false(x:float, y:bool) -> float:
-    return lax.cond(
-        y,
-        lambda x: x,
-        lambda _: jnp.nan,
-        x)
-
-@jit
-def _batch_set_nan_if_false(x:jnp.ndarray, y:jnp.ndarray) -> jnp.ndarray:
-    return vmap(_set_nan_if_false, in_axes=(0,0))(x,y)
-
 class Reward2(BaseReward):
     def __init__(
         self, 
@@ -122,58 +110,69 @@ class Reward2(BaseReward):
             robot_pos)
         # Compute next humans positions
         next_humans_pos = humans_pos + obs[0:-1,2:4] * dt
-        # Progress to goal
-        progress_to_goal = jnp.linalg.norm(robot_pos - robot_goal) - jnp.linalg.norm(next_robot_pos - robot_goal)
-        # Collision and discomfort detection with humans (within a duration of dt)
+        # Collision with humans (within a duration of dt)
         distances = batch_point_to_line_distance(jnp.zeros((len(obs)-1,2)), humans_pos - robot_pos, next_humans_pos - next_robot_pos) - (humans_radiuses + robot_radius)
         collision = jnp.any(distances < 0)
-        min_distance = jnp.max(jnp.array([jnp.min(distances),0]))
-        discomfort = jnp.all(jnp.array([jnp.logical_not(collision), min_distance < self.discomfort_distance]))
         # Check if the robot reached its goal
         reached_goal = jnp.linalg.norm(next_robot_pos - robot_goal) < robot_radius
         # Timeout
-        timeout = jnp.all(jnp.array([time >= self.time_limit, jnp.logical_not(collision), jnp.logical_not(reached_goal)]))
+        timeout = (time >= self.time_limit) & (~(collision)) & (~(reached_goal))
         ### COMPUTE REWARD ###
         reward = 0.
         # Reward for reaching the goal
-        reward = lax.cond(
-            jnp.all(jnp.array([self.target_reached_reward, reached_goal])), 
-            lambda r: r + self.goal_reward, 
-            lambda r: r, 
-            reward)
+        if self.target_reached_reward:
+            reward = lax.cond(
+                reached_goal, 
+                lambda r: r + self.goal_reward, 
+                lambda r: r, 
+                reward
+            )
         # Penalty for collision
-        reward = lax.cond(
-            jnp.all(jnp.array([self.collision_penalty_reward, collision])), 
-            lambda r: r + self.collision_penalty, 
-            lambda r: r, 
-            reward) 
+        if self.collision_penalty_reward:
+            reward = lax.cond(
+                collision, 
+                lambda r: r + self.collision_penalty, 
+                lambda r: r, 
+                reward
+            ) 
         # Penalty for getting too close to humans
-        reward = lax.cond(
-            jnp.all(jnp.array([self.discomfort_distance_penalty_reward, discomfort])), 
-            lambda r: r - 0.5 * dt * (self.discomfort_distance - min_distance), 
-            lambda r: r, 
-            reward)
+        if self.discomfort_distance_penalty_reward:
+            min_distance = jnp.max(jnp.array([jnp.min(distances),0]))
+            discomfort = (~(collision)) & (min_distance < self.discomfort_distance)
+            reward = lax.cond(
+                discomfort, 
+                lambda r: r - 0.5 * dt * (self.discomfort_distance - min_distance), 
+                lambda r: r, 
+                reward
+            )
         # Progress to goal reward
-        reward = lax.cond(
-            jnp.all(jnp.array([self.progress_to_goal_reward, jnp.logical_not(reached_goal)])), 
-            lambda r: r + self.progress_to_goal_weight * progress_to_goal, 
-            lambda r: r, 
-            reward)
+        if self.progress_to_goal_reward:
+            progress_to_goal = jnp.linalg.norm(robot_pos - robot_goal) - jnp.linalg.norm(next_robot_pos - robot_goal)
+            reward = lax.cond(
+                ~(reached_goal), 
+                lambda r: r + self.progress_to_goal_weight * progress_to_goal, 
+                lambda r: r, 
+                reward
+            )
         # Time penalty
-        reward = lax.cond(
-            jnp.all(jnp.array([self.time_penalty_reward, jnp.logical_not(reached_goal)])), 
-            lambda r: r - self.time_penalty, 
-            lambda r: r, 
-            reward)
+        if self.time_penalty_reward:
+            reward = lax.cond(
+                ~(reached_goal), 
+                lambda r: r - self.time_penalty, 
+                lambda r: r, 
+                reward
+            )
         # High rotation penalty
-        reward = lax.cond(
-            jnp.all(jnp.array([self.high_rotation_penalty_reward, jnp.abs(action[1]) > self.angular_speed_bound])), 
-            lambda r: r - self.angular_speed_penalty_weight * jnp.abs(action[1]), 
-            lambda r: r, 
-            reward)
+        if self.high_rotation_penalty_reward:
+            reward = lax.cond(
+                jnp.abs(action[1]) > self.angular_speed_bound, 
+                lambda r: r - self.angular_speed_penalty_weight * jnp.abs(action[1]), 
+                lambda r: r, 
+                reward
+            )
         ### COMPUTE OUTCOME ###
         outcome = {
-            "nothing": jnp.logical_not(jnp.any(jnp.array([collision,reached_goal,timeout]))),
+            "nothing": ~((collision) | (reached_goal) | (timeout)),
             "success": reached_goal,
             "failure": collision,
             "timeout": timeout
