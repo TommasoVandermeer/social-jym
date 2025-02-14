@@ -10,14 +10,14 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.aux_functions import test_k_trials, animate_trajectory, linear_decay
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
-from socialjym.utils.rollouts.deep_a2c_rollouts import deep_a2c_il_rollout, deep_a2c_rl_rollout
+from socialjym.utils.rollouts.deep_a2c_rollouts import deep_a2c_il_rollout, deep_a2c_rl_rollout, deep_a2c_rl_rollout_2
 from socialjym.utils.replay_buffers.base_a2c_buffer import BaseA2CBuffer
 from socialjym.policies.sarl_a2c import SARLA2C
 
 ### Hyperparameters
 n_humans_for_tests = [5, 10, 15]
 n_trials = 1000
-n_parallel_envs = 500 # 100
+n_parallel_envs = 100 # 500
 training_updates = 10_000
 rl_debugging_interval = 50
 training_hyperparams = {
@@ -33,14 +33,15 @@ training_hyperparams = {
     'il_batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_actor_learning_rate': 0.0000002, # 2e-7
-    'rl_critic_learning_rate': 0.001, # 1e-3
-    'rl_batch_size': 2_000, # Number of experiences to sample from the replay buffer for each model update
-    'rl_sigma_start': 0.2,
+    'rl_actor_learning_rate': 1e-6, # 1e-7
+    'rl_critic_learning_rate': 1e-3, # 1e-3
+    'rl_batch_size': 3_000, # Number of experiences to sample from the replay buffer for each model update
+    'rl_sigma_start': 0.1, # 0.2
     'rl_sigma_end': 0.02, # 0.02
     'rl_sigma_decay': int(0.4 * training_updates), # Training updates to reach the minimum sigma
     'rl_sigma_decay_fn': linear_decay,
     'rl_beta_entropy': 0.000, # 0.0002. If the net outputs just the mean, this should be 0. If it outputs the mean and the variance, this should be > 0
+    'lambda_gae': 0.95, # 0.95
     'humans_policy': 'hsfm',
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5], np.int32), # Subset of the hybrid scenarios to use for training
@@ -183,7 +184,7 @@ actor_optimizer = optax.chain(
     optax.adam(
         learning_rate=optax.schedules.linear_schedule(
             init_value=training_hyperparams['rl_actor_learning_rate'], 
-            end_value=0.0, 
+            end_value=training_hyperparams['rl_actor_learning_rate']/10, 
             transition_steps=training_hyperparams['rl_training_updates'],
             transition_begin=0
         ), 
@@ -191,6 +192,18 @@ actor_optimizer = optax.chain(
         b1=0.9,
     )
 )
+# actor_optimizer = optax.chain(
+#     optax.clip_by_global_norm(0.5),
+#     optax.rmsprop(
+#         learning_rate=optax.schedules.linear_schedule(
+#             init_value=training_hyperparams['rl_actor_learning_rate'], 
+#             end_value=training_hyperparams['rl_actor_learning_rate']/10, 
+#             transition_steps=training_hyperparams['rl_training_updates'],
+#             transition_begin=0
+#         ), 
+#         eps=1e-7, 
+#     )
+# )
 critic_optimizer = optax.chain(
     optax.clip_by_global_norm(0.5),
     optax.sgd(
@@ -233,12 +246,13 @@ rl_rollout_params = {
     'sigma_decay': training_hyperparams['rl_sigma_decay'],
     'sigma_decay_fn': training_hyperparams['rl_sigma_decay_fn'],
     'beta_entropy': training_hyperparams['rl_beta_entropy'],
+    'lambda_gae': training_hyperparams['lambda_gae'],
     'debugging': True,
     'debugging_interval': rl_debugging_interval,
 }
 
 # REINFORCEMENT LEARNING ROLLOUT
-rl_out = deep_a2c_rl_rollout(**rl_rollout_params)
+rl_out = deep_a2c_rl_rollout_2(**rl_rollout_params)
 print(f"Total episodes simulated: {rl_out['episode_count']}")
 
 # Save RL rollout output
@@ -251,8 +265,8 @@ with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'rb') as f:
 
 # Save the training returns
 rl_actor_params = rl_out['actor_params']
-returns_during_rl = rl_out['returns']  
-episode_count = rl_out['episode_count']
+returns_during_rl = rl_out['aux_data']['returns']  
+episode_count = jnp.sum(rl_out['aux_data']['episodes'])
 
 # Plot returns during RL
 figure, ax = plt.subplots(1,1,figsize=(10,5))

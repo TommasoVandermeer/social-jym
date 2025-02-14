@@ -232,13 +232,13 @@ class SARLA2C(CADRL):
                 # Compute the prediction (here we should input a key but for now we work only with mean actions)
                 mu1, mu2 = self.actor.apply(current_actor_params, None, input)
                 # Get mean action
-                _, action = self._sample_action(
+                constrained_action, _ = self._sample_action(
                     mu1, 
                     mu2, 
                     sigma = 0.,
                 )
                 # Compute the loss
-                return 0.5 * jnp.sum(jnp.square(action - sample_action)), 0.
+                return 0.5 * jnp.sum(jnp.square(constrained_action - sample_action)), 0.
             
             actor_losses, entropy_losses = lax.cond(
                 imitation_learning,
@@ -263,7 +263,7 @@ class SARLA2C(CADRL):
         critic_loss, advantages = loss_and_advantages
         # Normalize advantages
         advantages = (advantages - jnp.mean(advantages)) / (jnp.std(advantages) + EPSILON)
-        # debug.print("Advantages: {x}", x=advantages)
+        # debug.print("Normalized advantages: {x}", x=advantages)
         # Compute actor loss and gradients
         actor_and_entropy_loss, actor_grads = value_and_grad(_batch_actor_loss_function, has_aux=True)(
             current_actor_params, 

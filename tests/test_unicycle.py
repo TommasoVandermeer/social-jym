@@ -7,6 +7,7 @@ import os
 import optax
 import matplotlib.colors as mcolors
 from matplotlib.lines import Line2D
+from matplotlib.patches import Polygon
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
@@ -80,12 +81,30 @@ else: raise ValueError(f"{training_hyperparams['policy_name']} is not a valid po
 
 ### Plot action space
 # Plot (v,w) action space
-plt.scatter(policy.action_space[:,0], policy.action_space[:,1])
-plt.gca().set_aspect('equal', adjustable='box')
-plt.title(f"Action space (V,w) - Wheelbase: {policy.wheels_distance/2}m - Vmax: {policy.v_max}m/s")
-plt.xlabel("V (m/s)")
-plt.ylabel("w (r/s)")
+from matplotlib import rc
+font = {'weight' : 'regular',
+        'size'   : 17}
+rc('font', **font)
+figure, ax = plt.subplots(figsize=(10,10))
+figure.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.15)
+ax.scatter(policy.action_space[:,0], policy.action_space[:,1], zorder=3, label="Sampled actions", color='blue', s=60)
+actions_space_bound = Polygon(
+    jnp.array([[policy.v_max,0.],[0.,policy.v_max*2/policy.wheels_distance],[0.,-policy.v_max*2/policy.wheels_distance]]), 
+    closed=True, 
+    fill=None, 
+    edgecolor='black',
+    linewidth=2,
+    zorder=1,
+    label="Action space bounds"
+)
+ax.add_patch(actions_space_bound)
+# ax.gca().set_aspect('equal', adjustable='box')
+# ax.set_title(f"Action space (V,w) - Wheelbase: {policy.wheels_distance/2}m - Vmax: {policy.v_max}m/s")
+ax.set_xlabel("$v_r$ $(m/s)$")
+ax.set_ylabel("$\omega_r$ $(r/s)$")
+ax.legend()
 plt.show()
+figure.savefig(os.path.join(os.path.dirname(__file__),"unicycle_action_space.pdf"), format='pdf')
 # Plot (px,py,theta) for each action starting from (0,0,0) with analytical integration
 def exact_integration_of_action_space(x:jnp.ndarray, action:jnp.ndarray) -> jnp.ndarray:
     @jit
