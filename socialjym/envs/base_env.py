@@ -61,6 +61,7 @@ class BaseEnv(ABC):
         lidar_num_rays:int,
         kinematics:str,
         max_cc_delay:float,
+        ccso_n_static_humans:int,
     ) -> None:
         ## Args validation
         assert scenario in SCENARIOS, f"Invalid scenario. Choose one of {SCENARIOS}"
@@ -91,7 +92,7 @@ class BaseEnv(ABC):
         self.lidar_num_rays = lidar_num_rays
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
         self.max_cc_delay = max_cc_delay
-        
+        self.ccso_n_static_humans = ccso_n_static_humans
 
     # --- Private methods ---
 

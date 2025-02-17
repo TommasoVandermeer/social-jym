@@ -15,7 +15,7 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_t
 ### Hyperparameters
 random_seed = 13_000 # Usually we train with 3_000 IL episodes and 10_000 RL episodes
 n_episodes = 50
-kinematics = 'unicycle'
+kinematics = "holonomic" #'unicycle'
 reward_params = {
     'goal_reward': 1.,
     'collision_penalty': -0.25,
@@ -44,11 +44,11 @@ reward_function = Reward1(**reward_params)
 #     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 5,
+    'n_humans': 15,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'hybrid_scenario',
+    'scenario': 'circular_crossing_with_static_obstacles',
     'humans_policy': 'sfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
@@ -61,10 +61,10 @@ env = SocialNav(**env_params)
 ### Initialize robot policy
 
 ## Load Social-Navigation-PyEnvs policy vnet params
-# vnet_params = load_crowdnav_policy(
-#     "sarl", 
-#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hybrid_scenario/rl_model.pth"))
-# policy = SARL(env.reward_function, dt=env_params['robot_dt'])
+vnet_params = load_crowdnav_policy(
+    "sarl", 
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_ccso/rl_model.pth"))
+policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 # vnet_params = load_crowdnav_policy(
 #     "cadrl", 
 #     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_1_sfm_hybrid_scenario/rl_model.pth"))
@@ -75,9 +75,9 @@ env = SocialNav(**env_params)
 #     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/cadrl_k1_nh1_hp1_s4_r1_20_11_2024.pkl"))
 # policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
-vnet_params = load_socialjym_policy(
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_k1_nh5_hp2_s4_r1_20_11_2024.pkl"))
-policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
+# vnet_params = load_socialjym_policy(
+#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/socialjym_policies/sarl_k1_nh5_hp2_s4_r1_20_11_2024.pkl"))
+# policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 
 ### Test policy
 # metrics = test_k_trials(1000, random_seed, env, policy, vnet_params, reward_params["time_limit"])

@@ -32,6 +32,7 @@ class SocialNav(BaseEnv):
             lidar_num_rays=60,
             kinematics='holonomic',
             max_cc_delay = 5.,
+            ccso_n_static_humans:int = 3,
         ) -> None:
         ## BaseEnv initialization
         super().__init__(
@@ -50,12 +51,15 @@ class SocialNav(BaseEnv):
             lidar_max_dist=lidar_max_dist, 
             lidar_num_rays=lidar_num_rays,
             kinematics=kinematics,
-            max_cc_delay=max_cc_delay
+            max_cc_delay=max_cc_delay,
+            ccso_n_static_humans=ccso_n_static_humans,
             )
         ## Args validation
         assert humans_dt <= robot_dt, "The humans' time step must be less or equal than the robot's time step."
         assert is_multiple(robot_dt, humans_dt), "The robot's time step must be a multiple of the humans' time step."
         assert reward_function.kinematics == self.kinematics, "The reward function's kinematics must be the same as the environment's kinematics."
+        if scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or (scenario == SCENARIOS.index('hybrid_scenario') and SCENARIOS.index('circular_crossing_with_static_obstacles') in hybrid_scenario_subset):
+            assert n_humans > ccso_n_static_humans, "The number of static humans must be less than the total number of humans."
         ## Env initialization
         self.robot_dt = robot_dt
         self.reward_function = reward_function
@@ -445,7 +449,7 @@ class SocialNav(BaseEnv):
                 key:random.PRNGKey
             ) -> jnp.ndarray:
             parameters = lax.cond(
-                idx < (self.n_humans / 2) - 0.5,
+                idx < (self.ccso_n_static_humans),
                 lambda _: parameters.at[0:3].set(jnp.array([
                     jnp.squeeze(radius + random.uniform(key, shape=(1,), minval=-0.2, maxval=0.2)),
                     parameters[1], 
@@ -475,20 +479,20 @@ class SocialNav(BaseEnv):
                 disturbed_points, key, valid, inner_circle_radius = while_val
                 key, subkey = random.split(key)
                 new_angle = lax.cond(
-                    i < (self.n_humans / 2) - 0.5,
-                    lambda _: (jnp.pi / int(self.n_humans / 2)) * (-0.5 + 2 * i + random.uniform(subkey, shape=(1,), minval=-0.25, maxval=0.25)),
-                    lambda _: (jnp.pi / int(self.n_humans / 2)) * (0.5 + 2 * i + random.uniform(subkey, shape=(1,), minval=-0.25, maxval=0.25)),
+                    i < (self.ccso_n_static_humans),
+                    lambda _: (jnp.pi / int(self.ccso_n_static_humans)) * (-0.5 + 2 * i + random.uniform(subkey, shape=(1,), minval=-0.25, maxval=0.25)),
+                    lambda _: (jnp.pi / int(self.ccso_n_static_humans)) * (0.5 + 2 * i + random.uniform(subkey, shape=(1,), minval=-0.25, maxval=0.25)),
                     None
                 )
                 key, subkey = random.split(key)
                 disturbance = lax.cond(
-                    i < (self.n_humans / 2) - 0.5,
+                    i < (self.ccso_n_static_humans),
                     lambda _: random.uniform(subkey, shape=(2,), minval=-0.1, maxval=0.1),
                     lambda _: random.uniform(subkey, shape=(2,), minval=-0.35, maxval=0.35),
                     None
                 )
                 new_point = lax.cond(
-                    i < (self.n_humans / 2) - 0.5,
+                    i < (self.ccso_n_static_humans),
                     lambda _: inner_circle_radius * jnp.squeeze(jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)])) + disturbance,
                     lambda _: self.circle_radius * jnp.squeeze(jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)])) + disturbance,
                     None
@@ -533,7 +537,7 @@ class SocialNav(BaseEnv):
         @jit
         def _set_humans_goal(idx:int, goal_angle:float, point:jnp.ndarray) -> jnp.ndarray:
             goal = lax.cond(
-                idx < (self.n_humans / 2) - 0.5,
+                idx < (self.ccso_n_static_humans),
                 lambda _: point,
                 lambda _: self.circle_radius * jnp.array([jnp.cos(goal_angle), jnp.sin(goal_angle)]).T,
                 None

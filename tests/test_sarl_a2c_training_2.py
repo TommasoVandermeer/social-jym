@@ -17,9 +17,9 @@ from socialjym.policies.sarl_a2c import SARLA2C
 ### Hyperparameters
 n_humans_for_tests = [5, 10, 15]
 n_trials = 1000
-n_parallel_envs = 100 # 500
+n_parallel_envs = 500 # 500
 training_updates = 10_000
-rl_debugging_interval = 50
+rl_debugging_interval = 5
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': 'unicycle', # 'unicycle' or 'holonomic'
@@ -33,7 +33,7 @@ training_hyperparams = {
     'il_batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_actor_learning_rate': 1e-6, # 1e-7
+    'rl_actor_learning_rate': 1e-9, # 2e-7
     'rl_critic_learning_rate': 1e-3, # 1e-3
     'rl_batch_size': 3_000, # Number of experiences to sample from the replay buffer for each model update
     'rl_sigma_start': 0.1, # 0.2
@@ -47,6 +47,7 @@ training_hyperparams = {
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5], np.int32), # Subset of the hybrid scenarios to use for training
     'reward_function': 'socialnav_reward2',
     'custom_episodes': False, # If True, the episodes are loaded from a predefined set
+    'gradient_norm_scale': 0.5, # Scale the gradient norm by this value
 }
 
 # Initialize reward function
@@ -180,7 +181,7 @@ il_critic_params = il_out['critic_params']
     
 # Initialize RL optimizer
 actor_optimizer = optax.chain(
-    optax.clip_by_global_norm(0.5),
+    optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
     optax.adam(
         learning_rate=optax.schedules.linear_schedule(
             init_value=training_hyperparams['rl_actor_learning_rate'], 
@@ -193,7 +194,7 @@ actor_optimizer = optax.chain(
     )
 )
 # actor_optimizer = optax.chain(
-#     optax.clip_by_global_norm(0.5),
+#     optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),),
 #     optax.rmsprop(
 #         learning_rate=optax.schedules.linear_schedule(
 #             init_value=training_hyperparams['rl_actor_learning_rate'], 
@@ -205,7 +206,7 @@ actor_optimizer = optax.chain(
 #     )
 # )
 critic_optimizer = optax.chain(
-    optax.clip_by_global_norm(0.5),
+    optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
     optax.sgd(
         learning_rate=training_hyperparams['rl_critic_learning_rate'], 
         momentum=0.9
