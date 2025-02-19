@@ -10,7 +10,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.aux_functions import test_k_trials, animate_trajectory, linear_decay
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
-from socialjym.utils.rollouts.deep_a2c_rollouts import deep_a2c_il_rollout, deep_a2c_rl_rollout
+from socialjym.utils.rollouts.a2c_rollouts import a2c_il_rollout, a2c_rl_rollout
 from socialjym.utils.replay_buffers.base_a2c_buffer import BaseA2CBuffer
 from socialjym.policies.sarl_a2c import SARLA2C
 
@@ -113,7 +113,7 @@ il_rollout_params = {
 }
 
 # IMITATION LEARNING ROLLOUT
-il_out = deep_a2c_il_rollout(**il_rollout_params)
+il_out = a2c_il_rollout(**il_rollout_params)
 
 # Save IL rollout output
 with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
@@ -262,7 +262,7 @@ rl_rollout_params = {
 }
 
 # REINFORCEMENT LEARNING ROLLOUT
-rl_out = deep_a2c_rl_rollout(**rl_rollout_params)
+rl_out = a2c_rl_rollout(**rl_rollout_params)
 print(f"Total episodes simulated: {rl_out['episode_count']}")
 
 # Save RL rollout output

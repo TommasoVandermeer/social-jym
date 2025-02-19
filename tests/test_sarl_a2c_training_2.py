@@ -10,21 +10,21 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.aux_functions import test_k_trials, animate_trajectory, linear_decay
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
-from socialjym.utils.rollouts.deep_a2c_rollouts import deep_a2c_il_rollout, deep_a2c_rl_rollout, deep_a2c_rl_rollout_2
+from socialjym.utils.rollouts.a2c_rollouts import a2c_il_rollout, a2c_rl_rollout
 from socialjym.utils.replay_buffers.base_a2c_buffer import BaseA2CBuffer
 from socialjym.policies.sarl_a2c import SARLA2C
 
 ### Hyperparameters
 n_humans_for_tests = [5, 10, 15]
 n_trials = 1000
-n_parallel_envs = 500 # 500
+n_parallel_envs = 50 # 200
 training_updates = 10_000
-rl_debugging_interval = 5
+rl_debugging_interval = 50
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': 'unicycle', # 'unicycle' or 'holonomic'
-    'policy_name': 'sarl-a2c', # 'cadrl' or 'sarl'
-    'n_humans': 5,  # CADRL uses 1, SARL uses 5
+    'policy_name': 'sarl-a2c',
+    'n_humans': 5, 
     'il_buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
     'il_training_episodes': 2_000,
     'il_actor_learning_rate': 0.001,
@@ -33,10 +33,10 @@ training_hyperparams = {
     'il_batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_actor_learning_rate': 1e-9, # 2e-7
+    'rl_actor_learning_rate': 4e-6, # 4e-6 (SR peak: 0.406 - Update 700)
     'rl_critic_learning_rate': 1e-3, # 1e-3
     'rl_batch_size': 3_000, # Number of experiences to sample from the replay buffer for each model update
-    'rl_sigma_start': 0.1, # 0.2
+    'rl_sigma_start': 0.2, # 0.2
     'rl_sigma_end': 0.02, # 0.02
     'rl_sigma_decay': int(0.4 * training_updates), # Training updates to reach the minimum sigma
     'rl_sigma_decay_fn': linear_decay,
@@ -118,7 +118,7 @@ il_rollout_params = {
 }
 
 # # IMITATION LEARNING ROLLOUT
-# il_out = deep_a2c_il_rollout(**il_rollout_params)
+# il_out = a2c_il_rollout(**il_rollout_params)
 
 # # Execute tests to evaluate return after IL
 # for test, n_humans in enumerate(n_humans_for_tests):
@@ -185,7 +185,7 @@ actor_optimizer = optax.chain(
     optax.adam(
         learning_rate=optax.schedules.linear_schedule(
             init_value=training_hyperparams['rl_actor_learning_rate'], 
-            end_value=training_hyperparams['rl_actor_learning_rate']/10, 
+            end_value=0., 
             transition_steps=training_hyperparams['rl_training_updates'],
             transition_begin=0
         ), 
@@ -193,20 +193,8 @@ actor_optimizer = optax.chain(
         b1=0.9,
     )
 )
-# actor_optimizer = optax.chain(
-#     optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),),
-#     optax.rmsprop(
-#         learning_rate=optax.schedules.linear_schedule(
-#             init_value=training_hyperparams['rl_actor_learning_rate'], 
-#             end_value=training_hyperparams['rl_actor_learning_rate']/10, 
-#             transition_steps=training_hyperparams['rl_training_updates'],
-#             transition_begin=0
-#         ), 
-#         eps=1e-7, 
-#     )
-# )
 critic_optimizer = optax.chain(
-    optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
+    # optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
     optax.sgd(
         learning_rate=training_hyperparams['rl_critic_learning_rate'], 
         momentum=0.9
@@ -253,7 +241,7 @@ rl_rollout_params = {
 }
 
 # REINFORCEMENT LEARNING ROLLOUT
-rl_out = deep_a2c_rl_rollout_2(**rl_rollout_params)
+rl_out = a2c_rl_rollout(**rl_rollout_params)
 print(f"Total episodes simulated: {rl_out['episode_count']}")
 
 # Save RL rollout output

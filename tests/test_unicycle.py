@@ -13,7 +13,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
-from socialjym.utils.aux_functions import linear_decay, plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy, save_policy_params
+from socialjym.utils.aux_functions import linear_decay, test_k_trials, save_policy_params
 from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
 from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_il_rollout, deep_vnet_rl_rollout
 

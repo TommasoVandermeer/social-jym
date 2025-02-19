@@ -11,208 +11,7 @@ from socialjym.policies.base_policy import BasePolicy
 from socialjym.utils.replay_buffers.base_a2c_buffer import BaseA2CBuffer
 
 
-def deep_a2c_rl_rollout(
-        initial_actor_params: dict,
-        initial_critic_params: dict,
-        n_parallel_envs:int,
-        train_updates: int, # Number of episodes to train on, exploration episodes excluded
-        random_seed: int,
-        actor_optimizer: optax.GradientTransformation,
-        critic_optimizer: optax.GradientTransformation,
-        buffer_state: dict,
-        buffer_capacity: int,
-        policy: BasePolicy,
-        env: BaseEnv,
-        replay_buffer: BaseA2CBuffer,
-        sigma_decay_fn: Callable,
-        sigma_start: float,
-        sigma_end: float,
-        sigma_decay: int,
-        beta_entropy: float,
-        debugging: bool = False,
-        debugging_interval: int = 100,
-) -> dict:
-        
-        assert policy.name == "SARL-A2C", "This function is only compatible with A2C policies."
-
-        # Define the main rollout episode loop
-        @loop_tqdm(train_updates)
-        @jit
-        def _update_for_loop_body(upd_idx:int, val:tuple):
-                # Retrieve data from the tuple
-                episode_count, policy_keys, reset_keys, states, obses, infos, inputs, outcomes, actor_params, critic_params, act_opt_state, cri_opt_state, buffer_state, current_buffer_size, actor_losses, critic_losses, entropy_losses, returns, successes, failures, timeouts = val
-                # Compute sigma for the episode
-                sigma = sigma_decay_fn(sigma_start, sigma_end, upd_idx, sigma_decay)
-                ## Generate experience
-                @jit
-                def _step_fori_body(_:int, val:tuple):
-                        # Retrieve data from the tuple
-                        actor_params, critic_params, states, obses, infos, inputs, init_outcomes, policy_keys, reset_keys, buffer_state, current_buffer_size, sigma, episode_count, successes, failures, timeouts, returns = val
-                        # Step
-                        actions, policy_keys, new_inputs, sampled_actions, _ = policy.batch_act(policy_keys, obses, infos, actor_params, sigma=sigma)
-                        states, obses, infos, rewards, outcomes, reset_keys = env.batch_step(states, infos, actions, reset_keys, test=False, reset_if_done=True)
-                        # Compute dones and auxiliary data
-                        dones = ~(outcomes["nothing"])
-                        successes += jnp.sum(outcomes["success"])
-                        failures += jnp.sum(outcomes["failure"])
-                        timeouts += jnp.sum(outcomes["timeout"])
-                        returns = returns.at[:].set(returns + rewards * jnp.power(jnp.broadcast_to(policy.gamma,(n_parallel_envs,)), policy.v_max * (infos["time"] - policy.dt)))
-                        # Compute critic targets
-                        @jit
-                        def _compute_critic_target(reward:float, done:int, next_input:jnp.ndarray, critic_params:dict):
-                                return reward + (1 - done) * pow(policy.gamma, policy.dt * policy.v_max) * jnp.squeeze(policy.critic.apply(critic_params, None, next_input))
-                        critic_targets = vmap(_compute_critic_target, in_axes=(0,0,0,None))(
-                                rewards, 
-                                dones, 
-                                new_inputs, 
-                                critic_params,
-                        )   
-                        # Save experience
-                        buffer_state = replay_buffer.batch_add(
-                                buffer_state,
-                                inputs,
-                                critic_targets,
-                                sampled_actions,
-                                jnp.arange(n_parallel_envs) + current_buffer_size,
-                        )
-                        current_buffer_size += n_parallel_envs
-                        # Update episode count
-                        episode_count += jnp.sum(dones)
-                        # Save data in the buffer
-                        return (actor_params, critic_params, states, obses, infos, new_inputs, init_outcomes, policy_keys, reset_keys, buffer_state, current_buffer_size, sigma, episode_count, successes, failures, timeouts, returns)
-                val_init = (actor_params, critic_params, states, obses, infos, initial_inputs, init_outcomes, policy_keys, reset_keys, buffer_state, current_buffer_size, sigma, episode_count, 0, 0, 0, jnp.zeros(n_parallel_envs,))
-                actor_params, critic_params, states, obses, infos, inputs, outcomes, policy_keys, reset_keys, buffer_state, current_buffer_size, sigma, episode_count, succ_count, fail_count, timeo_count, cum_rewards = lax.fori_loop(
-                        0,
-                        int(buffer_capacity/n_parallel_envs), 
-                        _step_fori_body, 
-                        val_init
-                )           
-                # Save auxiliary data
-                successes = successes.at[upd_idx].set(succ_count)
-                failures = failures.at[upd_idx].set(fail_count)
-                timeouts = timeouts.at[upd_idx].set(timeo_count)
-                returns = returns.at[upd_idx].set(jnp.mean(cum_rewards))
-                ### Update model parameters
-                critic_params, actor_params, cri_opt_state, act_opt_state, critic_loss, actor_loss, entropy_loss = policy.update(
-                        critic_params,
-                        actor_params,
-                        actor_optimizer,
-                        act_opt_state,
-                        critic_optimizer,
-                        cri_opt_state,
-                        buffer_state,
-                        sigma,
-                        beta_entropy,
-                        imitation_learning = False
-                )
-                # Empty the buffer
-                buffer_state = replay_buffer.empty(buffer_state)
-                current_buffer_size = 0
-                # Save data
-                actor_losses = actor_losses.at[upd_idx].set(actor_loss)
-                critic_losses = critic_losses.at[upd_idx].set(critic_loss)
-                entropy_losses = entropy_losses.at[upd_idx].set(entropy_loss)
-                # DEBUG: print the mean loss for this episode and the return
-                lax.cond(
-                        (debugging) & (upd_idx % debugging_interval == 0) & (upd_idx != 0),   
-                        lambda _: debug.print(
-                                "### Update {x} - Episodes {w}\nActor loss: {y} - Critic loss: {z} - Entropy: {e} - Avg. Return: {r}\nSuccesses: {s} - Failures: {f} - Timeouts: {t}", 
-                                x=(upd_idx), 
-                                y=actor_losses[upd_idx], 
-                                z=critic_losses[upd_idx], 
-                                w=episode_count,
-                                r=jnp.nanmean(jnp.where((jnp.arange(len(returns)) > upd_idx-debugging_interval) & (jnp.arange(len(returns)) <= upd_idx), returns, jnp.nan)),
-                                s=jnp.nansum(jnp.where((jnp.arange(len(successes)) > upd_idx-debugging_interval) & (jnp.arange(len(successes)) <= upd_idx), successes, jnp.nan)),
-                                f=jnp.nansum(jnp.where((jnp.arange(len(failures)) > upd_idx-debugging_interval) & (jnp.arange(len(failures)) <= upd_idx), failures, jnp.nan)),
-                                t=jnp.nansum(jnp.where((jnp.arange(len(timeouts)) > upd_idx-debugging_interval) & (jnp.arange(len(timeouts)) <= upd_idx), timeouts, jnp.nan)),
-                                e=entropy_losses[upd_idx],
-                                ),
-                        lambda x: x, 
-                        None
-                )
-                return episode_count, policy_keys, reset_keys, states, obses, infos, inputs, outcomes, actor_params, critic_params, act_opt_state, cri_opt_state, buffer_state, current_buffer_size, actor_losses, critic_losses, entropy_losses, returns, successes, failures, timeouts 
-
-        # Initialize the array where to save data
-        actor_losses = jnp.empty([train_updates], dtype=jnp.float32)
-        critic_losses = jnp.empty([train_updates], dtype=jnp.float32)
-        entropy_losses = jnp.empty([train_updates], dtype=jnp.float32)
-        returns = jnp.empty([train_updates], dtype=jnp.float32)
-        successes = jnp.empty([train_updates], dtype=int)
-        failures = jnp.empty([train_updates], dtype=int)
-        timeouts = jnp.empty([train_updates], dtype=int)
-        # Initialize the optimizer state
-        actor_optimizer_state = actor_optimizer.init(initial_actor_params)
-        critic_optimizer_state = critic_optimizer.init(initial_critic_params)
-        # Initialize the random keys
-        policy_keys = vmap(random.PRNGKey)(jnp.arange(n_parallel_envs, dtype=int) + random_seed)
-        reset_keys = vmap(random.PRNGKey)(jnp.arange(n_parallel_envs, dtype=int) + random_seed)
-        # Initialize environments
-        states, reset_keys, obses, infos, init_outcomes = env.batch_reset(reset_keys)
-        initial_inputs = vmap(policy.batch_compute_vnet_input, in_axes=(0, 0, 0))(
-                obses[:, -1],
-                obses[:, :-1],
-                infos,
-        )
-        # Create initial values for training loop
-        val_init = (
-                0,
-                policy_keys,
-                reset_keys,
-                states,
-                obses,
-                infos,
-                initial_inputs,
-                init_outcomes,
-                initial_actor_params, 
-                initial_critic_params, 
-                actor_optimizer_state, 
-                critic_optimizer_state, 
-                buffer_state, 
-                0,
-                actor_losses, 
-                critic_losses, 
-                entropy_losses,
-                returns,
-                successes,
-                failures,
-                timeouts,
-        )
-        # Execute the training loop
-        debug.print("Performing RL training for {x} updates...", x=train_updates)
-        vals = lax.fori_loop(
-                0,
-                train_updates, 
-                _update_for_loop_body, 
-                val_init
-        )
-        output_dict = {}
-        keys = [
-                "episode_count",
-                "policy_keys",
-                "reset_keys",
-                "states",
-                "obses",
-                "infos",
-                "inputs",
-                "outcomes",
-                "actor_params", 
-                "critic_params", 
-                "actor_optimizer_state", 
-                "critic_optimizer_state", 
-                "buffer_state", 
-                "current_buffer_size",
-                "actor_losses", 
-                "critic_losses", 
-                "entropy_losses",
-                "returns",
-                "successes",
-                "failures",
-                "timeouts",
-        ]
-        for idx, value in enumerate(vals): output_dict[keys[idx]] = value
-        return output_dict
-
-def deep_a2c_rl_rollout_2(
+def a2c_rl_rollout(
         initial_actor_params: dict,
         initial_critic_params: dict,
         n_parallel_envs:int,
@@ -270,13 +69,12 @@ def deep_a2c_rl_rollout_2(
                         batch_rewards = batch_rewards.at[:,step].set(rewards)
                         batch_dones = batch_dones.at[:,step].set(~(init_outcomes["nothing"])) # Pay attention to this: we are using the initial outcomes to compute the dones
                         # Compute dones and auxiliary data
-                        dones = ~(outcomes["nothing"])
                         successes += jnp.sum(outcomes["success"])
                         failures += jnp.sum(outcomes["failure"])
                         timeouts += jnp.sum(outcomes["timeout"])
                         returns = returns.at[:].set(returns + rewards * jnp.power(jnp.broadcast_to(policy.gamma,(n_parallel_envs,)), policy.v_max * (infos["time"] - policy.dt)))  
-                        episode_count += jnp.sum(dones)
-                        return (actor_params, critic_params, states, obses, infos, new_inputs, init_outcomes, policy_keys, reset_keys, sigma, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, successes, failures, timeouts, returns)
+                        episode_count += jnp.sum(~(outcomes["nothing"]))
+                        return (actor_params, critic_params, states, obses, infos, new_inputs, outcomes, policy_keys, reset_keys, sigma, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, successes, failures, timeouts, returns)
                 batch_inputs = jnp.zeros((n_parallel_envs, n_steps, env.n_humans, policy.vnet_input_size))
                 batch_values = jnp.zeros((n_parallel_envs, n_steps))
                 batch_actions = jnp.zeros((n_parallel_envs, n_steps, 2))
@@ -322,6 +120,9 @@ def deep_a2c_rl_rollout_2(
                         (batch_values, batch_rewards, batch_dones, jnp.zeros((n_parallel_envs, n_steps+1))),
                 )
                 critic_targets = advatages[:,:-1] + batch_values[:,:-1] # These are the returns for each state
+                ## Debugging
+                # debug.print("Returns: {x}", x=critic_targets[0])
+                # debug.print("Dones: {x}", x=batch_dones[0,:-1])
                 # Add all experiences to the buffer
                 buffer_state = replay_buffer.batch_add(
                         buffer_state,
@@ -355,16 +156,16 @@ def deep_a2c_rl_rollout_2(
                 lax.cond(
                         (debugging) & (upd_idx % debugging_interval == 0) & (upd_idx != 0),   
                         lambda _: debug.print(
-                                "### Update {x} - Episodes {w}\nActor loss: {y} - Critic loss: {z} - Entropy: {e} - Avg. Return: {r}\nSucc.Rate: {s} - Fail.Rate: {f} - Tim.Rate: {t}", 
+                                "### Update {x} - Episodes {w}\nActor loss: {y} - Critic loss: {z} - Entropy: {e} - Return: {r}\nSucc.Rate: {s} - Fail.Rate: {f} - Tim.Rate: {t}", 
                                 x=(upd_idx), 
-                                y=aux_data["actor_losses"][upd_idx], 
-                                z=aux_data["critic_losses"][upd_idx], 
+                                y=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["actor_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["actor_losses"])) <= upd_idx), jnp.abs(aux_data["actor_losses"]), jnp.nan)),
+                                z=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["critic_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["critic_losses"])) <= upd_idx), aux_data["critic_losses"], jnp.nan)), 
                                 w=jnp.sum(aux_data["episodes"]),
                                 r=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["returns"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["returns"])) <= upd_idx), aux_data["returns"], jnp.nan)),
                                 s=jnp.nansum(jnp.where((jnp.arange(len(aux_data["successes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["successes"])) <= upd_idx), aux_data["successes"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 f=jnp.nansum(jnp.where((jnp.arange(len(aux_data["failures"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["failures"])) <= upd_idx), aux_data["failures"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 t=jnp.nansum(jnp.where((jnp.arange(len(aux_data["timeouts"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["timeouts"])) <= upd_idx), aux_data["timeouts"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
-                                e=aux_data["entropy_losses"][upd_idx],
+                                e=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["entropy_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["entropy_losses"])) <= upd_idx), aux_data["entropy_losses"], jnp.nan)),
                                 ),
                         lambda x: x, 
                         None
@@ -440,7 +241,7 @@ def deep_a2c_rl_rollout_2(
         for idx, value in enumerate(vals): output_dict[keys[idx]] = value
         return output_dict
 
-def deep_a2c_il_rollout(
+def a2c_il_rollout(
         initial_actor_params: dict,
         initial_critic_params: dict,
         train_episodes: int,

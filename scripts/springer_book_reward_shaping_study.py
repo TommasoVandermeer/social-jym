@@ -14,7 +14,7 @@ import math
 from socialjym.envs.socialnav import SocialNav
 from socialjym.policies.sarl import SARL
 from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
-from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_rl_rollout, deep_vnet_il_rollout
+from socialjym.utils.rollouts.vnet_rollouts import vnet_rl_rollout, vnet_il_rollout
 from socialjym.utils.aux_functions import linear_decay, test_k_trials, save_policy_params, decimal_to_binary
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 
@@ -176,7 +176,7 @@ for ts_idx, train_scenario in enumerate(train_scenarios):
                 'custom_episodes': il_custom_episodes_path
             }
             # IMITATION LEARNING ROLLOUT
-            il_out = deep_vnet_il_rollout(**il_rollout_params)
+            il_out = vnet_il_rollout(**il_rollout_params)
             # Save the IL model parameters, buffer state, and keys
             il_model_params = il_out['model_params']
             buffer_state = il_out['buffer_state']
@@ -253,7 +253,7 @@ for ts_idx, train_scenario in enumerate(train_scenarios):
                 'custom_episodes': rl_custom_episodes_path,
             }
             # REINFORCEMENT LEARNING ROLLOUT
-            rl_out = deep_vnet_rl_rollout(**rl_rollout_params)
+            rl_out = vnet_rl_rollout(**rl_rollout_params)
             # Save the training returns and losses
             rl_model_params = rl_out['model_params']
             training_data['loss_during_rl'] = training_data['loss_during_rl'].at[ts_idx,te_idx,reward_type_decimal].set(rl_out['losses'])

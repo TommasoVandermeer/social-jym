@@ -12,11 +12,11 @@ from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import load_crowdnav_policy, test_k_trials
 
 ### Hyperparameters
-test_environments = ["sfm", "hsfm"]
+test_environments = ["hsfm"] #["sfm", "hsfm"]
 test_scenarios = ["circular_crossing_with_static_obstacles"]
 random_seed = 0 
 n_static_humans = 3
-test_n_humans = [3, 5, 10]
+test_n_humans = [5, 10, 15]
 test_n_humans = [i+n_static_humans for i in test_n_humans]
 n_test_trials = 100
 kinematics = 'holonomic'

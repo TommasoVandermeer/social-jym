@@ -11,7 +11,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
 from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
-from socialjym.utils.rollouts.deep_vnet_rollouts import deep_vnet_rl_rollout, deep_vnet_il_rollout
+from socialjym.utils.rollouts.vnet_rollouts import vnet_rl_rollout, vnet_il_rollout
 from socialjym.utils.aux_functions import linear_decay, plot_state, plot_trajectory, test_k_trials, save_policy_params
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 
@@ -111,7 +111,7 @@ for epsilon in range(n_espilons):
     }
 
     # IMITATION LEARNING ROLLOUT
-    il_out = deep_vnet_il_rollout(**il_rollout_params)
+    il_out = vnet_il_rollout(**il_rollout_params)
 
     # Save the IL model parameters, buffer state, and keys
     il_model_params = il_out['model_params']
@@ -160,7 +160,7 @@ for epsilon in range(n_espilons):
     }
 
     # REINFORCEMENT LEARNING ROLLOUT
-    rl_out = deep_vnet_rl_rollout(**rl_rollout_params)
+    rl_out = vnet_rl_rollout(**rl_rollout_params)
 
     # Save the training returns
     rl_model_params = rl_out['model_params']
