@@ -35,11 +35,7 @@ class BaseVNetReplayBuffer(ABC):
             return tree_map(lambda x: x[indexes], buffer)
         
         # If the indexes exceed the buffer size, the buffer will be iterated from the beginning
-        indexes = lax.fori_loop(
-            0, 
-            self.batch_size, 
-            lambda i, idx: idx.at[i].set(((iteration * self.batch_size + i) % current_buffer_size).astype(int)), 
-            jnp.zeros((self.batch_size,), dtype=jnp.int32))
+        indexes = (jnp.arange(self.batch_size) + iteration * self.batch_size) % current_buffer_size
 
         experiences = iterate_batch(indexes, buffer_state)
         return experiences

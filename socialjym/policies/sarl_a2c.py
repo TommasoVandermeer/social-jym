@@ -11,12 +11,6 @@ from .cadrl import CADRL
 from .sarl import value_network as critic_network
 from .sarl import MLP_1_PARAMS, MLP_2_PARAMS, ATTENTION_LAYER_PARAMS
 
-#### VERSION: TWO NETWORKS AND ACTOR OUTPUTS ACTION COMPONENTS MEANS ####
-
-# TODO: Create another version with only one network for both actor and critic
-# TODO: Add correct weight and bias initialization for actor - DONE
-# TODO: Try learning rate schedule
-# TODO: Vectorize step (add reset_if_done=False) to make fixed length batches of experiences for updates. Great scalability with gpu
 
 EPSILON = 1e-5
 MLP_1_PARAMS = {
@@ -34,7 +28,7 @@ MLP_2_PARAMS = {
     "b_init": hk.initializers.Constant(0.),
 }
 MLP_4_PARAMS = {
-    "output_sizes": [150, 100, 100], # Output: [mu_Vleft, mu_Vright]
+    "output_sizes": [150, 100, 100],
     "activation": nn.tanh,
     "activate_final": False,
     "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
@@ -153,7 +147,7 @@ class SARLA2C(CADRL):
         action:jnp.ndarray
     ) -> jnp.ndarray:
         return jnp.log(pdf(action[0], mu1, sigma) + EPSILON) + jnp.log(pdf(action[1], mu2, sigma) + EPSILON)
-
+        
     @partial(jit, static_argnames=("self"))
     def _compute_loss_and_gradients(
         self, 
@@ -411,14 +405,15 @@ class SARLA2C(CADRL):
     @partial(jit, static_argnames=("self"))
     def batch_sample_action(
         self,
-        keys:random.PRNGKey,
         mu1:jnp.ndarray,
         mu2:jnp.ndarray,
         sigma:jnp.ndarray,
+        keys:random.PRNGKey,
     ) -> jnp.ndarray:
-        return vmap(SARLA2C._sample_action, in_axes=(None, 0, None, None, None))(
-            keys, 
+        return vmap(SARLA2C._sample_action, in_axes=(None, None, None, None, 0))(
+            self, 
             mu1, 
             mu2, 
             sigma,
+            keys,
         )

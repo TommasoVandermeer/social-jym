@@ -190,6 +190,7 @@ def test_k_trials(
 
     # Check if the policy is A2C, if so the episode loop slightly changes
     a2c = (policy.name == "SARL-A2C")
+    ppo = (policy.name == "SARL-PPO")
 
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
     if custom_episodes is not None:
@@ -224,6 +225,8 @@ def test_k_trials(
             # Make a step in the environment
             if a2c:
                 action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sigma=0.)
+            elif ppo:
+                action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
             else:
                 action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
             state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
