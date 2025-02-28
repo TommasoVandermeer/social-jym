@@ -116,7 +116,7 @@ def plot_state(
     """
     colors = list(mcolors.TABLEAU_COLORS.values())
     num = int(time) if (time).is_integer() else (time)
-    if scenario == SCENARIOS.index('circular_crossing') or scenario == SCENARIOS.index('delayed_circular_crossing') or scenario == SCENARIOS.index('circular_crossing_with_static_obstacles'): 
+    if scenario == SCENARIOS.index('circular_crossing') or scenario == SCENARIOS.index('delayed_circular_crossing') or scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or scenario == SCENARIOS.index('crowd_navigation'): 
         ax.set(xlabel='X',ylabel='Y',xlim=[-circle_radius-1,circle_radius+1],ylim=[-circle_radius-1,circle_radius+1])
     elif scenario == SCENARIOS.index('parallel_traffic'): 
         ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_height-3,traffic_height+3])

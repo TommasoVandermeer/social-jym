@@ -28,9 +28,9 @@ reward_params = {
 }
 reward_function = Reward1(**reward_params)
 vnet_params_dirs = [
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_orca_hybrid_scenario/rl_model.pth"),
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_sfm_hybrid_scenario/rl_model.pth"),
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hybrid_scenario/rl_model.pth"),
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_orca_hs/rl_model.pth"),
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_sfm_hs/rl_model.pth"),
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hs/rl_model.pth"),
 ]
 policy_labels = ["SARL-HS-ORCA","SARL-HS-SFM","SARL-HS-HSFM"]
 empty_trials_outcomes_array = jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels)))

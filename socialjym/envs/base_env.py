@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from functools import partial
-from jax import jit, vmap, lax, debug
+from jax import jit, vmap, lax, random, debug
 import jax.numpy as jnp
 
 from jhsfm.hsfm import step as hsfm_humans_step
@@ -15,6 +15,7 @@ SCENARIOS = [
     "robot_crowding", 
     "delayed_circular_crossing",
     "circular_crossing_with_static_obstacles",
+    "crowd_navigation",
     "hybrid_scenario"] # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
 HUMAN_POLICIES = [
     "orca", # TODO: Implement JORCA (Jax based ORCA)
@@ -201,7 +202,7 @@ class BaseEnv(ABC):
             @jit
             def _update_human_goal(idx:int, position:jnp.ndarray, goal:jnp.ndarray, radius:float) -> jnp.ndarray:
                 goal = lax.cond(
-                    (jnp.linalg.norm(position - goal) <= radius) & (idx > (self.n_humans / 2) - 0.5),
+                    (jnp.linalg.norm(position - goal) <= radius) & (idx >= self.ccso_n_static_humans),
                     lambda x: -x,
                     lambda x: x,
                     goal)
@@ -213,15 +214,41 @@ class BaseEnv(ABC):
                 info["humans_goal"], 
                 info["humans_parameters"][:,0])
             return (info, state)
+        
+        @jit
+        def _update_crowd_navigation(val:tuple):
+            @jit
+            def _update_human_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float) -> jnp.ndarray:
+                @jit
+                def _set_new_goal(position, goal):
+                    key = random.PRNGKey(jnp.array(jnp.linalg.norm(goal)*1000, int))
+                    key1, key2 = random.split(key)
+                    position_angle = jnp.atan2(position[1], position[0])
+                    new_angle = wrap_angle(random.uniform(key1, shape=(), minval=position_angle-jnp.pi/4, maxval=position_angle+jnp.pi/4))
+                    new_distance = random.uniform(key2, shape=(1,), minval=0., maxval=self.circle_radius)
+                    new_goal = jnp.squeeze(new_distance * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+                    return new_goal
+                goal = lax.cond(
+                    jnp.linalg.norm(position - goal) <= radius,
+                    lambda x: _set_new_goal(*x),
+                    lambda x: x[1],
+                    (position, goal))
+                return goal
+            info, state = val
+            info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0))(state[:-1,0:2], info["humans_goal"], info["humans_parameters"][:,0])
+            return (info, state)
 
         new_info, new_state = lax.switch(
             info["current_scenario"], 
-            [_update_circular_crossing, 
-            _update_traffic_scenarios, 
-            _update_traffic_scenarios, 
-            lambda x: x,
-            _update_delayed_circular_crossing,
-            _update_circular_crossing_with_static_obstacles], 
+            [
+                _update_circular_crossing, 
+                _update_traffic_scenarios, 
+                _update_traffic_scenarios, 
+                lambda x: x,
+                _update_delayed_circular_crossing,
+                _update_circular_crossing_with_static_obstacles,
+                _update_crowd_navigation,
+            ], 
             (info, state))
         return new_info, new_state
 
