@@ -139,7 +139,7 @@ for e_idx, test_env in enumerate(test_environments):
                 ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
                     noise_sigma_percentage_levels, 
                     jnp.nanmean(values[policy,e_idx], axis=(0,2)) if key != "successes" else jnp.nanmean(values[policy,e_idx], axis=(0)) / n_test_trials,
-                    color=list(mcolors.TABLEAU_COLORS.values())[policy],
+                    color=list(mcolors.TABLEAU_COLORS.values())[policy+3],
                     linewidth=2,)
     figure.legend(policy_labels, loc="center right", title=f"Policy tested\non {test_env.upper()}")
     figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_after_rl_noisy_tests_on_{test_env}.eps"), format='eps')

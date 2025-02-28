@@ -149,4 +149,4 @@ for e_idx, test_env in enumerate(test_environments):
                     )
     handles, labels = ax[0,0].get_legend_handles_labels()
     figure.legend(labels, loc="center right", title=f"SARL policies trained\nand tested on {test_env.upper()}.\n(Train, test) scenarios", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
-    figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_after_rl_noisy_tests_on_{test_env}.eps"), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_static_obstacles_tests_on_{test_env}.eps"), format='eps')

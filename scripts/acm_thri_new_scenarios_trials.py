@@ -168,9 +168,9 @@ for key, values in all_metrics.items():
             ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
                 jnp.arange(len(test_n_humans)), 
                 jnp.nanmean(values[:,ts_idx,:,:], axis=(0,1,2,4)) if key != "successes" else jnp.nanmean(values[:,ts_idx,:,:], axis=(0,1,2)) / n_test_trials,
-                color=list(mcolors.TABLEAU_COLORS.values())[ts_idx+3],
+                color=list(mcolors.TABLEAU_COLORS.values())[ts_idx+6],
                 linewidth=2,
             )
 handles, labels = ax[0,0].get_legend_handles_labels()
-figure.legend(train_scenarios, loc="center right", title=f"SARL policies\ntested on {test_env.upper()}\nin new scenarios.\nTrain scenario:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
-figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_after_rl_noisy_tests_on_{test_env}.eps"), format='eps')
+figure.legend(train_scenarios, loc="center right", title=f"SARL policies tested\nin new scenarios.\nTrain scenario:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
+figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_tests_in_new_scenarios.eps"), format='eps')
