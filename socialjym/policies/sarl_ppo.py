@@ -147,11 +147,6 @@ class SARLPPO(SARLA2C):
         logsigma:jnp.ndarray,
         action:jnp.ndarray
     ) -> jnp.ndarray:
-        # @jit
-        # def neglogpdf(x, mu, logsigma):
-        #     var = jnp.exp(2 * logsigma)
-        #     return 0.5 * ((x - mu) ** 2 / var + 2 * logsigma + jnp.log(2 * jnp.pi))
-        # return neglogpdf(action[0], mu1, logsigma) + neglogpdf(action[1], mu2, logsigma)
         return .5 * jnp.sum(jnp.square((action - jnp.array([mu1, mu2])) / jnp.exp(logsigma))) + jnp.log(2 * jnp.pi) + logsigma
 
     @partial(jit, static_argnames=("self"))
@@ -238,15 +233,14 @@ class SARLPPO(SARLA2C):
                     lambda _: None,
                     None,
                 )
-                #  Compute actor loss
+                # Compute actor loss
                 actor_loss = jnp.maximum(- ratio * advantage, - jnp.clip(ratio, 1-clip_range, 1+clip_range) * advantage)
                 # Compute the loss
                 return actor_loss
             
             actor_losses = _rl_loss_function(current_actor_params, inputs, sample_actions, advantages, old_neglogpdfs)
             actor_loss = jnp.mean(actor_losses)
-            logsigma = current_actor_params['actor']['logsigma']
-            entropy_loss = - beta_entropy * (logsigma + .5 * jnp.log(2 * jnp.pi * jnp.e))
+            entropy_loss = - beta_entropy * (current_actor_params['actor']['logsigma'] + .5 * jnp.log(2 * jnp.pi * jnp.e)) * 2 # It is doubled because we have a sigma for each action (but it is the same, so double it)
             loss = actor_loss + entropy_loss
             return loss, {"actor_loss": actor_loss, "entropy_loss": entropy_loss}
 
@@ -445,7 +439,7 @@ class SARLPPO(SARLA2C):
                 experiences,
                 beta_entropy,
                 clip_range,
-                debugging=debugging,
+                debugging=False, #debugging,
         )
         ## CRITIC
         # Compute parameter updates
@@ -456,9 +450,8 @@ class SARLPPO(SARLA2C):
         # Compute parameter updates
         actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
         ## Rescale sigma update (do not clip by gradient norm)
-        # actor_grads_norm = jnp.linalg.norm(jnp.concatenate([leaf.ravel() for leaf in tree_leaves(actor_params)]))
-        # sigma_update = actor_updates['actor']['logsigma']
-        # actor_updates['actor']['logsigma'] = (actor_updates['actor']['logsigma'] / 0.5) * actor_grads_norm
+        actor_grads_norm = jnp.linalg.norm(jnp.concatenate([leaf.ravel() for leaf in tree_leaves(actor_params)]))
+        actor_updates['actor']['logsigma'] = (actor_updates['actor']['logsigma'] / 0.5) * actor_grads_norm
         # Apply updates
         updated_actor_params = optax.apply_updates(actor_params, actor_updates)
         ## Debug

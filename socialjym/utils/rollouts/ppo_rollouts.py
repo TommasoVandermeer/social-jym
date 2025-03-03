@@ -173,7 +173,7 @@ def ppo_rl_rollout(
                                         experiences,
                                         beta_entropy,
                                         clip_range,
-                                        debugging = False, # update_debug, 
+                                        debugging = update_debug, 
                                 )
                                 # Save aux data
                                 pre_aux_data["actor_losses"] = pre_aux_data["actor_losses"].at[epoch,batch].set(actor_loss)
