@@ -35,7 +35,7 @@ training_hyperparams = {
     'il_batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_actor_learning_rate': 3e-4, 
+    'rl_actor_learning_rate': 3e-5, 
     'rl_critic_learning_rate': 1e-3, # 1e-3
     'rl_buffer_capacity': 3_000, # Number of experiences to sample from the replay buffer for each model update
     'rl_clip_frac': 0.2, # 0.2
