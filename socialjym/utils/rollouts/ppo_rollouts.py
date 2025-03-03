@@ -66,7 +66,7 @@ def ppo_rl_rollout(
                         batch_actions = batch_actions.at[:,step].set(sampled_actions)
                         batch_rewards = batch_rewards.at[:,step].set(rewards)
                         batch_dones = batch_dones.at[:,step].set(~(init_outcomes["nothing"])) # Pay attention to this: we are using the initial outcomes to compute the dones
-                        batch_neglogpdfs = batch_neglogpdfs.at[:,step].set(-policy.batch_compute_log_pdf_value(distrs["mu1"], distrs["mu2"], distrs["logsigma"], sampled_actions))
+                        batch_neglogpdfs = batch_neglogpdfs.at[:,step].set(policy.batch_compute_neg_log_pdf_value(distrs["mu1"], distrs["mu2"], distrs["logsigma"], sampled_actions))
                         ## Compute dones and auxiliary data
                         successes += jnp.sum(outcomes["success"])
                         failures += jnp.sum(outcomes["failure"])
@@ -173,7 +173,7 @@ def ppo_rl_rollout(
                                         experiences,
                                         beta_entropy,
                                         clip_range,
-                                        debugging = update_debug,
+                                        debugging = False, # update_debug, 
                                 )
                                 # Save aux data
                                 pre_aux_data["actor_losses"] = pre_aux_data["actor_losses"].at[epoch,batch].set(actor_loss)

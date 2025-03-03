@@ -140,20 +140,19 @@ class SARLPPO(SARLA2C):
     # Private methods
 
     @partial(jit, static_argnames=("self"))
-    def _compute_log_pdf_value(
+    def _compute_neg_log_pdf_value(
         self, 
         mu1:jnp.ndarray, 
         mu2:jnp.ndarray,
         logsigma:jnp.ndarray,
         action:jnp.ndarray
     ) -> jnp.ndarray:
-        @jit
-        def logpdf(x, mu, logsigma):
-            # sigma = jnp.exp(logsigma)
-            # return - .5 * ((x-mu)/sigma)**2 - .5 * jnp.log(2*jnp.pi) - logsigma
-            var = jnp.exp(2 * logsigma)
-            return -0.5 * ((x - mu) ** 2 / var + 2 * logsigma + jnp.log(2 * jnp.pi))
-        return logpdf(action[0], mu1, logsigma) + logpdf(action[1], mu2, logsigma)
+        # @jit
+        # def neglogpdf(x, mu, logsigma):
+        #     var = jnp.exp(2 * logsigma)
+        #     return 0.5 * ((x - mu) ** 2 / var + 2 * logsigma + jnp.log(2 * jnp.pi))
+        # return neglogpdf(action[0], mu1, logsigma) + neglogpdf(action[1], mu2, logsigma)
+        return .5 * jnp.sum(jnp.square((action - jnp.array([mu1, mu2])) / jnp.exp(logsigma))) + jnp.log(2 * jnp.pi) + logsigma
 
     @partial(jit, static_argnames=("self"))
     def _compute_rl_loss_and_gradients(
@@ -220,21 +219,21 @@ class SARLPPO(SARLA2C):
                 # Compute the prediction
                 mu1, mu2, logsigma = self.actor.apply(current_actor_params, None, input)
                 # Compute the log probability of the action
-                log_pdf = self._compute_log_pdf_value(
+                neglogpdf = self._compute_neg_log_pdf_value(
                     mu1,
                     mu2,
                     logsigma,
                     sample_action
                 )
                 # Compute policy ratio
-                ratio = jnp.exp(old_neglogpdf + log_pdf)
+                ratio = jnp.exp(old_neglogpdf - neglogpdf)
                 lax.cond(
                     debugging,
                     lambda _: debug.print(
                         "Ratio: {x} - Old pdf: {y} - New pdf: {z}", 
                         x=ratio,
                         y=jnp.exp(-old_neglogpdf),
-                        z=jnp.exp(log_pdf),
+                        z=jnp.exp(-neglogpdf),
                     ),
                     lambda _: None,
                     None,
@@ -410,14 +409,14 @@ class SARLPPO(SARLA2C):
         )
     
     @partial(jit, static_argnames=("self"))
-    def batch_compute_log_pdf_value(
+    def batch_compute_neg_log_pdf_value(
         self, 
         mu1s:jnp.ndarray, 
         mu2s:jnp.ndarray,
         logsigmas:jnp.ndarray,
         actions:jnp.ndarray
     ) -> jnp.ndarray:
-        return vmap(SARLA2C._compute_log_pdf_value, in_axes=(None, 0, 0, 0, 0))(
+        return vmap(SARLPPO._compute_neg_log_pdf_value, in_axes=(None, 0, 0, 0, 0))(
             self,
             mu1s,
             mu2s,
