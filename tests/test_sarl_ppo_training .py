@@ -252,7 +252,6 @@ rl_rollout_params = {
 
 # REINFORCEMENT LEARNING ROLLOUT
 rl_out = ppo_rl_rollout(**rl_rollout_params)
-print(f"Total episodes simulated: {rl_out['episode_count']}")
 
 # Save RL rollout output
 with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
@@ -261,15 +260,22 @@ with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
 # Load RL rollout output
 with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'rb') as f:
     rl_out = pickle.load(f)
+    print(f"Total episodes simulated: {rl_out['aux_data']['episodes']}")
 
 # Save the training returns
 rl_actor_params = rl_out['actor_params']
 returns_during_rl = rl_out['aux_data']['returns']  
+actor_losses = rl_out['aux_data']['actor_losses']
+critic_losses = rl_out['aux_data']['critic_losses']
+entropy_losses = rl_out['aux_data']['entropy_losses']
+success_during_rl = rl_out['aux_data']['successes']
+failure_during_rl = rl_out['aux_data']['failures']
+timeout_during_rl = rl_out['aux_data']['timeouts']
 episode_count = jnp.sum(rl_out['aux_data']['episodes'])
+window = 500 if training_updates > 1000 else 50
 
 # Plot returns during RL
 figure, ax = plt.subplots(1,1,figsize=(10,5))
-window = 1000
 ax.set(
     xlabel='Training Episode', 
     ylabel=f'Return moving average over {window} episodes window', 
@@ -280,6 +286,72 @@ ax.plot(
     jnp.convolve(returns_during_rl, jnp.ones(window,), 'valid') / window,
 )
 figure.savefig(os.path.join(os.path.dirname(__file__),"returns_during_rl.eps"), format='eps')
+# Plot actor loss during RL
+figure, ax = plt.subplots(1,1,figsize=(10,5))
+ax.set(
+    xlabel='Training Episode', 
+    ylabel=f'Loss moving average over {window} episodes window', 
+    title='Actor Loss during RL'
+)
+ax.plot(
+    np.arange(len(actor_losses)-(window-1))+window, 
+    jnp.convolve(actor_losses, jnp.ones(window,), 'valid') / window,
+)
+figure.savefig(os.path.join(os.path.dirname(__file__),"actor_losses.eps"), format='eps')
+# Plot critic loss during RL
+figure, ax = plt.subplots(1,1,figsize=(10,5))
+ax.set(
+    xlabel='Training Episode', 
+    ylabel=f'Loss moving average over {window} episodes window', 
+    title='Critic Loss during RL'
+)
+ax.plot(
+    np.arange(len(critic_losses)-(window-1))+window, 
+    jnp.convolve(critic_losses, jnp.ones(window,), 'valid') / window,
+)
+figure.savefig(os.path.join(os.path.dirname(__file__),"critic_losses.eps"), format='eps')
+# Plot entropy loss during RL
+figure, ax = plt.subplots(1,1,figsize=(10,5))
+ax.set(
+    xlabel='Training Episode', 
+    ylabel=f'Loss moving average over {window} episodes window', 
+    title='Entropy Loss during RL'
+)
+ax.plot(
+    np.arange(len(entropy_losses)-(window-1))+window, 
+    jnp.convolve(entropy_losses, jnp.ones(window,), 'valid') / window,
+)
+figure.savefig(os.path.join(os.path.dirname(__file__),"entropy_losses.eps"), format='eps')
+# Plot success, failure, and timeout rates during RL
+success_rate_during_rl = success_during_rl / jnp.diff(jnp.concatenate([jnp.zeros(1), episode_count]))
+failure_rate_during_rl = failure_during_rl / jnp.diff(jnp.concatenate([jnp.zeros(1), episode_count]))
+timeout_rate_during_rl = timeout_during_rl / jnp.diff(jnp.concatenate([jnp.zeros(1), episode_count]))
+figure, ax = plt.subplots(1,1,figsize=(10,5))
+ax.set(
+    xlabel='Training Episode', 
+    ylabel='Rate', 
+    title='Success, Failure, and Timeout rates during RL'
+)
+ax.plot(
+    np.arange(len(success_rate_during_rl)), 
+    success_rate_during_rl,
+    label='Success rate',
+    color='g',
+)
+ax.plot(
+    np.arange(len(failure_rate_during_rl)), 
+    failure_rate_during_rl,
+    label='Failure rate',
+    color='r',
+)
+ax.plot(
+    np.arange(len(timeout_rate_during_rl)), 
+    timeout_rate_during_rl,
+    label='Timeout rate',
+    color='yellow',
+)
+ax.legend()
+figure.savefig(os.path.join(os.path.dirname(__file__),"outcome_rates_during_rl.eps"), format='eps')
 
 # Execute tests to evaluate return after RL
 for test, n_humans in enumerate(n_humans_for_tests):
