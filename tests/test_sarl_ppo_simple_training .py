@@ -26,7 +26,8 @@ training_hyperparams = {
     'random_seed': 0,
     'kinematics': 'unicycle', # 'unicycle' or 'holonomic'
     'policy_name': 'sarl-ppo',
-    'n_humans': 5, 
+    'n_humans': 2, 
+    'circle_radius': 2,
     'il_buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
     'il_training_episodes': 2_000,
     'il_actor_learning_rate': 0.001,
@@ -44,7 +45,7 @@ training_hyperparams = {
     'rl_beta_entropy': 2e-5, 
     'lambda_gae': 0.95, # 0.95
     'humans_policy': 'hsfm',
-    'scenario': 'hybrid_scenario',
+    'scenario': 'circular_crossing',
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5], np.int32), # Subset of the hybrid scenarios to use for training
     'reward_function': 'socialnav_reward2',
     'custom_episodes': False, # If True, the episodes are loaded from a predefined set
@@ -73,7 +74,7 @@ env_params = {
     'scenario': training_hyperparams['scenario'],
     'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
     'humans_policy': training_hyperparams['humans_policy'],
-    'circle_radius': 7,
+    'circle_radius': training_hyperparams['circle_radius'],
     'reward_function': reward_function,
     'kinematics': training_hyperparams['kinematics'],
 }
@@ -118,59 +119,59 @@ il_rollout_params = {
     'custom_episodes': il_custom_episodes_path
 }
 
-# # IMITATION LEARNING ROLLOUT
-# il_out = actor_critic_il_rollout(**il_rollout_params)
+# IMITATION LEARNING ROLLOUT
+il_out = actor_critic_il_rollout(**il_rollout_params)
 
-# # Execute tests to evaluate return after IL
-# for test, n_humans in enumerate(n_humans_for_tests):
-#     test_env_params = {
-#         'robot_radius': 0.3,
-#         'n_humans': n_humans,
-#         'robot_dt': 0.25,
-#         'humans_dt': 0.01,
-#         'robot_visible': True,
-#         'scenario': training_hyperparams['scenario'],
-#         'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
-#         'humans_policy': training_hyperparams['humans_policy'],
-#         'circle_radius': 7,
-#         'reward_function': reward_function,
-#         'kinematics': training_hyperparams['kinematics'],
-#     }
-#     test_env = SocialNav(**test_env_params)
-#     metrics_after_il = test_k_trials(
-#         n_trials, 
-#         training_hyperparams['il_training_episodes'], 
-#         test_env, 
-#         policy, 
-#         il_out['actor_params'], 
-#         reward_function.time_limit)
+# Execute tests to evaluate return after IL
+for test, n_humans in enumerate(n_humans_for_tests):
+    test_env_params = {
+        'robot_radius': 0.3,
+        'n_humans': n_humans,
+        'robot_dt': 0.25,
+        'humans_dt': 0.01,
+        'robot_visible': True,
+        'scenario': training_hyperparams['scenario'],
+        'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+        'humans_policy': training_hyperparams['humans_policy'],
+        'circle_radius': training_hyperparams['circle_radius'],
+        'reward_function': reward_function,
+        'kinematics': training_hyperparams['kinematics'],
+    }
+    test_env = SocialNav(**test_env_params)
+    metrics_after_il = test_k_trials(
+        n_trials, 
+        training_hyperparams['il_training_episodes'], 
+        test_env, 
+        policy, 
+        il_out['actor_params'], 
+        reward_function.time_limit)
 
-# # Plot losses during IL
-# figure, ax = plt.subplots(2,1,figsize=(10,10))
-# ax[0].set(
-#     xlabel='Epoch', 
-#     ylabel='Loss', 
-#     title='Actor Loss during IL training'
-# )
-# ax[0].plot(
-#     np.arange(len(il_out['actor_losses'])), 
-#     il_out['actor_losses'],
-# )
-# ax[1].set(
-#     xlabel='Epoch', 
-#     ylabel='Loss', 
-#     title='Critic Loss during IL training'
-# )
-# ax[1].plot(
-#     np.arange(len(il_out['critic_losses'])), 
-#     il_out['critic_losses'],
-# )
-# figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
-# plt.close(figure)
+# Plot losses during IL
+figure, ax = plt.subplots(2,1,figsize=(10,10))
+ax[0].set(
+    xlabel='Epoch', 
+    ylabel='Loss', 
+    title='Actor Loss during IL training'
+)
+ax[0].plot(
+    np.arange(len(il_out['actor_losses'])), 
+    il_out['actor_losses'],
+)
+ax[1].set(
+    xlabel='Epoch', 
+    ylabel='Loss', 
+    title='Critic Loss during IL training'
+)
+ax[1].plot(
+    np.arange(len(il_out['critic_losses'])), 
+    il_out['critic_losses'],
+)
+figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
+plt.close(figure)
 
-# # Save IL rollout output
-# with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
-#     pickle.dump(il_out, f)
+# Save IL rollout output
+with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
+    pickle.dump(il_out, f)
 
 # Load IL rollout output
 with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:
@@ -355,7 +356,7 @@ for test, n_humans in enumerate(n_humans_for_tests):
         'scenario': training_hyperparams['scenario'],
         'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
         'humans_policy': training_hyperparams['humans_policy'],
-        'circle_radius': 7,
+        'circle_radius': training_hyperparams['circle_radius'],
         'reward_function': reward_function,
         'kinematics': training_hyperparams['kinematics'],
     }

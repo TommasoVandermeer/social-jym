@@ -11,14 +11,14 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_t
 
 # Define a simple function with BatchNorm
 def forward_fn(x, update_stats):
-    bn = hk.ExponentialMovingAverage(decay=0.99, zero_debias=False)
+    bn = hk.BatchNorm(create_scale=True, create_offset=True, decay_rate=0.9)
     return bn(x, update_stats)
 # Transform the function into a Haiku module
 model = hk.transform_with_state(forward_fn)
 
 # Hyperparameters
 random_seed = 1
-n_steps = 10_000
+n_steps = 1_000
 kinematics = 'unicycle'
 reward_params = {
     'goal_reward': 1.,
@@ -48,28 +48,20 @@ initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((env_
 policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed) # We don't care if we generate two identical keys, they operate differently
 state, reset_key, obs, info, outcome = env.reset(reset_key)
 vnet_input = policy.batch_compute_vnet_input(obs[-1], obs[:-1], info)
-norm_params, norm_state = model.init(random.PRNGKey(0), vnet_input[0], update_stats=True)
+norm_params, norm_state = model.init(random.PRNGKey(0), vnet_input, update_stats=True)
 all_normalized_inputs = jnp.zeros((n_steps,)+vnet_input.shape)
 all_inputs = jnp.zeros((n_steps,)+vnet_input.shape)
-@jit
-def apply_model(norm_params, norm_state, vnet_input):
-    return vmap(model.apply, in_axes=(None,None,None,0,None))(
+for step in range(n_steps):
+    action, policy_key, vnet_input = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
+    state, obs, info, reward, outcome, reset_key = env.step(state,info,action,test=True,reset_if_done=True,reset_key=reset_key)
+    # Apply the model (normalize the input)
+    norm_vnet_input, norm_state = model.apply(
         norm_params,
         norm_state,
         None,
         vnet_input,
         True,
     )
-for step in range(n_steps):
-    action, policy_key, vnet_input = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
-    state, obs, info, reward, outcome, reset_key = env.step(state,info,action,test=True,reset_if_done=True,reset_key=reset_key)
-    # Apply the model (normalize the input)
-    norm_vnet_input, batch_norm_state = apply_model(
-        norm_params, 
-        norm_state, 
-        vnet_input, 
-    )
-    norm_state = tree_map(lambda x: x[-1], batch_norm_state)
     # Save data
     all_normalized_inputs = all_normalized_inputs.at[step].set(norm_vnet_input)
     all_inputs = all_inputs.at[step].set(vnet_input)

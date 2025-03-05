@@ -13,7 +13,7 @@ from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
 
 ### Hyperparameters
-random_seed = 13_000 # Usually we train with 3_000 IL episodes and 10_000 RL episodes
+random_seed = 0 # Usually we train with 3_000 IL episodes and 10_000 RL episodes
 n_episodes = 50
 kinematics = "holonomic" #'unicycle'
 reward_params = {
@@ -44,12 +44,12 @@ reward_function = Reward1(**reward_params)
 #     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 15,
+    'n_humans': 18,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
     'scenario': 'circular_crossing_with_static_obstacles',
-    'humans_policy': 'sfm',
+    'humans_policy': 'hsfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
 }
@@ -63,7 +63,7 @@ env = SocialNav(**env_params)
 ## Load Social-Navigation-PyEnvs policy vnet params
 vnet_params = load_crowdnav_policy(
     "sarl", 
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_ccso/rl_model.pth"))
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hs/rl_model.pth"))
 policy = SARL(env.reward_function, dt=env_params['robot_dt'])
 # vnet_params = load_crowdnav_policy(
 #     "cadrl", 

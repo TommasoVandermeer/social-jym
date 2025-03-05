@@ -24,11 +24,11 @@ reward_params = {
 reward_function = Reward1(**reward_params)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 6,
+    'n_humans': 15,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'circular_crossing_with_static_obstacles',
+    'scenario': 'crowd_navigation',
     'hybrid_scenario_subset': jnp.array([0,1], dtype=jnp.int32),
     'humans_policy': 'hsfm',
     'reward_function': reward_function,

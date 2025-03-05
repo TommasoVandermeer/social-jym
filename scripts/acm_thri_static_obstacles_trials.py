@@ -29,7 +29,7 @@ reward_params = {
 }
 reward_function = Reward1(**reward_params)
 vnet_params_dirs = [
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_orca_hs/rl_model.pth"),
+    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hs/rl_model.pth"),
     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_ccso/rl_model.pth"),
 ]
 policy_labels = ["SARL-HS-HSFM","SARL-CCSO-HSFM"]
@@ -54,49 +54,49 @@ all_metrics = {
     "path_length": empty_trials_metrics_array
 }
 
-### Test loop
-for i, vnet_params_dir in enumerate(vnet_params_dirs):
-    for j, test_env in enumerate(test_environments):
-        for k, test_scenario in enumerate(test_scenarios):
-            for h, n_humans in enumerate(test_n_humans):
-                print(f"\nTesting {vnet_params_dir.split('/')[-2]} on {test_env} in {test_scenario}")
-                ### Initialize and reset environment
-                env_params = {
-                    'robot_radius': 0.3,
-                    'n_humans': n_humans,
-                    'robot_dt': 0.25,
-                    'humans_dt': 0.01,
-                    'robot_visible': True,
-                    'scenario': test_scenario,
-                    'humans_policy': test_env,
-                    'reward_function': reward_function,
-                    'kinematics': kinematics,
-                    'ccso_n_static_humans': n_static_humans,
-                }
-                env = SocialNav(**env_params)
-                ### Initialize robot policy
-                policy = SARL(
-                    env.reward_function, 
-                    dt = env_params['robot_dt'], 
-                    kinematics = kinematics, 
-                    noise = False)
-                vnet_params = load_crowdnav_policy(
-                    "sarl",
-                    vnet_params_dir)
-                ### Execute test
-                metrics = test_k_trials(
-                    n_test_trials,
-                    random_seed,
-                    env,
-                    policy,
-                    vnet_params,
-                    reward_function.time_limit)
-                ### Save results
-                all_metrics = tree_map(lambda x, y: x.at[i,j,k,h].set(y), all_metrics, metrics)
+# ### Test loop
+# for i, vnet_params_dir in enumerate(vnet_params_dirs):
+#     for j, test_env in enumerate(test_environments):
+#         for k, test_scenario in enumerate(test_scenarios):
+#             for h, n_humans in enumerate(test_n_humans):
+#                 print(f"\nTesting {vnet_params_dir.split('/')[-2]} on {test_env} in {test_scenario}")
+#                 ### Initialize and reset environment
+#                 env_params = {
+#                     'robot_radius': 0.3,
+#                     'n_humans': n_humans,
+#                     'robot_dt': 0.25,
+#                     'humans_dt': 0.01,
+#                     'robot_visible': True,
+#                     'scenario': test_scenario,
+#                     'humans_policy': test_env,
+#                     'reward_function': reward_function,
+#                     'kinematics': kinematics,
+#                     'ccso_n_static_humans': n_static_humans,
+#                 }
+#                 env = SocialNav(**env_params)
+#                 ### Initialize robot policy
+#                 policy = SARL(
+#                     env.reward_function, 
+#                     dt = env_params['robot_dt'], 
+#                     kinematics = kinematics, 
+#                     noise = False)
+#                 vnet_params = load_crowdnav_policy(
+#                     "sarl",
+#                     vnet_params_dir)
+#                 ### Execute test
+#                 metrics = test_k_trials(
+#                     n_test_trials,
+#                     random_seed,
+#                     env,
+#                     policy,
+#                     vnet_params,
+#                     reward_function.time_limit)
+#                 ### Save results
+#                 all_metrics = tree_map(lambda x, y: x.at[i,j,k,h].set(y), all_metrics, metrics)
 
-### Save results
-with open(os.path.join(os.path.dirname(__file__),f"metrics_tests_with_static_humans.pkl"), 'wb') as f:
-    pickle.dump(all_metrics, f)
+# ### Save results
+# with open(os.path.join(os.path.dirname(__file__),f"metrics_tests_with_static_humans.pkl"), 'wb') as f:
+#     pickle.dump(all_metrics, f)
 
 ### Load results
 with open(os.path.join(os.path.dirname(__file__),f"metrics_tests_with_static_humans.pkl"), 'rb') as f:
@@ -109,11 +109,11 @@ font = {'weight' : 'regular',
         'size'   : 23}
 rc('font', **font)
 # Plot curves of each metric (aggregated by test scenario) after RL for each reward
-exclude_metrics = ["collisions", "timeouts", "average_speed", "returns", "average_angular_speed", "average_angular_acceleration", "average_angular_jerk"]
+exclude_metrics = ["collisions", "timeouts", "path_length", "returns", "average_angular_speed", "average_angular_acceleration", "average_angular_jerk"]
 metrics_data = {
     "successes": {"row_position": 0, "col_position": 0, "label": "Success rate", "ylim": [0.4,1.1], "yticks": [i/10 for i in range(4,11)]}, 
     "times_to_goal": {"row_position": 0, "col_position": 1, "label": "Time to goal ($s$)"},
-    "path_length": {"row_position": 1, "col_position": 0, "label": "Path length ($m$)"}, 
+    "average_speed": {"row_position": 1, "col_position": 0, "label": "Speed ($m/s$)"}, 
     "episodic_spl": {"row_position": 1, "col_position": 1, "label": "SPL", "ylim": [0,1], "yticks": [i/10 for i in range(11)]},
     "space_compliance": {"row_position": 2, "col_position": 0, "label": "Space compliance", "ylim": [0,1]},
     "average_acceleration": {"row_position": 2, "col_position": 1, "label": "Acceleration ($m/s^2$)"},
@@ -139,6 +139,8 @@ for e_idx, test_env in enumerate(test_environments):
             ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_xticks(jnp.arange(len(test_n_humans)), labels=[i-n_static_humans for i in test_n_humans])
             ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].grid()
             for policy in range(len(values)):
+                if policy_labels[policy] == "SARL-CCSO-HSFM":
+                    continue
                 for s_idx, test_scenario in enumerate(test_scenarios):
                     ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
                         jnp.arange(len(test_n_humans)), 

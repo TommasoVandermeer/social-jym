@@ -15,28 +15,28 @@ from .sarl import MLP_1_PARAMS, MLP_2_PARAMS, ATTENTION_LAYER_PARAMS
 EPSILON = 1e-5
 MLP_1_PARAMS = {
     "output_sizes": [150, 100],
-    "activation": nn.tanh,
+    "activation": nn.tanh, # nn.relu
     "activate_final": True,
     "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
     "b_init": hk.initializers.Constant(0.),
 }
 MLP_2_PARAMS = {
     "output_sizes": [100, 50],
-    "activation": nn.tanh,
+    "activation": nn.tanh, # nn.relu
     "activate_final": False,
     "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
     "b_init": hk.initializers.Constant(0.),
 }
 MLP_4_PARAMS = {
     "output_sizes": [150, 100, 100],
-    "activation": nn.tanh,
+    "activation": nn.tanh, # nn.relu
     "activate_final": False,
     "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
     "b_init": hk.initializers.Constant(0.),
 }
 ATTENTION_LAYER_PARAMS = {
     "output_sizes": [100, 100, 1],
-    "activation": nn.tanh,
+    "activation": nn.tanh, # nn.relu
     "activate_final": False,
     "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
     "b_init": hk.initializers.Constant(0.),
@@ -240,8 +240,8 @@ class SARLPPO(SARLA2C):
             
             actor_losses = _rl_loss_function(current_actor_params, inputs, sample_actions, advantages, old_neglogpdfs)
             actor_loss = jnp.mean(actor_losses)
-            entropy_loss = - beta_entropy * (current_actor_params['actor']['logsigma'] + .5 * jnp.log(2 * jnp.pi * jnp.e)) * 2 # It is doubled because we have a sigma for each action (but it is the same, so double it)
-            loss = actor_loss + entropy_loss
+            entropy_loss = beta_entropy * (current_actor_params['actor']['logsigma'] + .5 * jnp.log(2 * jnp.pi * jnp.e)) * 2 # It is doubled because we have a sigma for each action (but it is the same, so double it)
+            loss = actor_loss - entropy_loss
             return loss, {"actor_loss": actor_loss, "entropy_loss": entropy_loss}
 
         inputs = experiences["inputs"]
@@ -449,9 +449,6 @@ class SARLPPO(SARLA2C):
         ## ACTOR
         # Compute parameter updates
         actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
-        ## Rescale sigma update (do not clip by gradient norm)
-        actor_grads_norm = jnp.linalg.norm(jnp.concatenate([leaf.ravel() for leaf in tree_leaves(actor_params)]))
-        actor_updates['actor']['logsigma'] = (actor_updates['actor']['logsigma'] / 0.5) * actor_grads_norm
         # Apply updates
         updated_actor_params = optax.apply_updates(actor_params, actor_updates)
         ## Debug

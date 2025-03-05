@@ -72,50 +72,50 @@ all_metrics = {
     "path_length": empty_trials_metrics_array
 }
 
-### Test loop
-for i, vnet_params_dir in enumerate(vnet_params_dirs):
-    train_env_idx = train_envs.index(policy_labels[i].split("-")[2])
-    train_scenario_idx = train_scenarios.index(policy_labels[i].split("-")[1])
-    for j, test_env in enumerate(test_environments):
-        for k, test_scenario in enumerate(test_scenarios):
-            for h, n_humans in enumerate(test_n_humans):
-                print(f"\nTesting {vnet_params_dir.split('/')[-2]} on {test_env} in {test_scenario}")
-                ### Initialize and reset environment
-                env_params = {
-                    'robot_radius': 0.3,
-                    'n_humans': n_humans,
-                    'robot_dt': 0.25,
-                    'humans_dt': 0.01,
-                    'robot_visible': True,
-                    'scenario': test_scenario,
-                    'humans_policy': test_env,
-                    'reward_function': reward_function,
-                    'kinematics': kinematics,
-                }
-                env = SocialNav(**env_params)
-                ### Initialize robot policy
-                policy = SARL(
-                    env.reward_function, 
-                    dt = env_params['robot_dt'], 
-                    kinematics = kinematics, 
-                    noise = False)
-                vnet_params = load_crowdnav_policy(
-                    "sarl",
-                    vnet_params_dir)
-                ### Execute test
-                metrics = test_k_trials(
-                    n_test_trials,
-                    random_seed,
-                    env,
-                    policy,
-                    vnet_params,
-                    reward_function.time_limit)
-                ### Save results
-                all_metrics = tree_map(lambda x, y: x.at[train_env_idx,train_scenario_idx,j,k,h].set(y), all_metrics, metrics)
+# ### Test loop
+# for i, vnet_params_dir in enumerate(vnet_params_dirs):
+#     train_env_idx = train_envs.index(policy_labels[i].split("-")[2])
+#     train_scenario_idx = train_scenarios.index(policy_labels[i].split("-")[1])
+#     for j, test_env in enumerate(test_environments):
+#         for k, test_scenario in enumerate(test_scenarios):
+#             for h, n_humans in enumerate(test_n_humans):
+#                 print(f"\nTesting {vnet_params_dir.split('/')[-2]} on {test_env} in {test_scenario}")
+#                 ### Initialize and reset environment
+#                 env_params = {
+#                     'robot_radius': 0.3,
+#                     'n_humans': n_humans,
+#                     'robot_dt': 0.25,
+#                     'humans_dt': 0.01,
+#                     'robot_visible': True,
+#                     'scenario': test_scenario,
+#                     'humans_policy': test_env,
+#                     'reward_function': reward_function,
+#                     'kinematics': kinematics,
+#                 }
+#                 env = SocialNav(**env_params)
+#                 ### Initialize robot policy
+#                 policy = SARL(
+#                     env.reward_function, 
+#                     dt = env_params['robot_dt'], 
+#                     kinematics = kinematics, 
+#                     noise = False)
+#                 vnet_params = load_crowdnav_policy(
+#                     "sarl",
+#                     vnet_params_dir)
+#                 ### Execute test
+#                 metrics = test_k_trials(
+#                     n_test_trials,
+#                     random_seed,
+#                     env,
+#                     policy,
+#                     vnet_params,
+#                     reward_function.time_limit)
+#                 ### Save results
+#                 all_metrics = tree_map(lambda x, y: x.at[train_env_idx,train_scenario_idx,j,k,h].set(y), all_metrics, metrics)
 
-### Save results
-with open(os.path.join(os.path.dirname(__file__),f"metrics_tests_new_evaluation_scenarios.pkl"), 'wb') as f:
-    pickle.dump(all_metrics, f)
+# ### Save results
+# with open(os.path.join(os.path.dirname(__file__),f"metrics_tests_new_evaluation_scenarios.pkl"), 'wb') as f:
+#     pickle.dump(all_metrics, f)
 
 ### Load results
 with open(os.path.join(os.path.dirname(__file__),f"metrics_tests_new_evaluation_scenarios.pkl"), 'rb') as f:
@@ -174,3 +174,32 @@ for key, values in all_metrics.items():
 handles, labels = ax[0,0].get_legend_handles_labels()
 figure.legend(train_scenarios, loc="center right", title=f"SARL policies tested\nin new scenarios.\nTrain scenario:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
 figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_tests_in_new_scenarios.eps"), format='eps')
+
+# Plot success rate and time to goal for each training scenario, averaged over everything else
+figure, ax = plt.subplots(1, 2, figsize=(18,6))
+figure.subplots_adjust(right=0.78, top=0.985, bottom=0.13, left=0.07, hspace=0.3, wspace=0.3)
+col = 0
+for key, values in all_metrics.items():
+    if key not in ["successes", "times_to_goal"]:
+        continue
+    else:
+        ax[col].set(
+            xlabel='Number of humans',
+            ylabel=metrics_data[key]["label"])
+        if "ylim" in metrics_data[key]:
+            ax[col].set_ylim(metrics_data[key]["ylim"])
+        if "yticks" in metrics_data[key]:
+            ax[col].set_yticks(metrics_data[key]["yticks"])
+        ax[col].set_xticks(jnp.arange(len(test_n_humans)), labels=test_n_humans)
+        ax[col].grid()
+        for ts_idx, train_scenario in enumerate(train_scenarios):
+            ax[col].plot(
+                jnp.arange(len(test_n_humans)), 
+                jnp.nanmean(values[:,ts_idx,:,:], axis=(0,1,2,4)) if key != "successes" else jnp.nanmean(values[:,ts_idx,:,:], axis=(0,1,2)) / n_test_trials,
+                color=list(mcolors.TABLEAU_COLORS.values())[ts_idx+6],
+                linewidth=2,
+            )
+        col += 1
+handles, labels = ax[0].get_legend_handles_labels()
+figure.legend(train_scenarios, loc="center right", title=f"SARL policies tested\nin new scenarios.\nTrain scenario:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
+figure.savefig(os.path.join(os.path.dirname(__file__),f"sr_ttg_tests_in_new_scenarios.eps"), format='eps')

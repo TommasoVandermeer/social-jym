@@ -127,6 +127,8 @@ def ppo_rl_rollout(
                 )
                 critic_targets = advatages[:,:-1] + batch_values[:,:-1] # These are the returns for each state
                 ## Debugging
+                # debug.print("Advantages: {x}", x=advatages[0,:-1])
+                # debug.print("Critic estimates: {x}", x=batch_values[0,:-1])
                 # debug.print("Returns: {x}", x=critic_targets[0])
                 # debug.print("Dones: {x}", x=batch_dones[0,:-1])
                 # Add all experiences to the buffer
