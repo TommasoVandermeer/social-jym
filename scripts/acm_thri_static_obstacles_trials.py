@@ -121,7 +121,37 @@ metrics_data = {
     "min_distance": {"row_position": 3, "col_position": 1, "label": "Min. dist. to humans ($m$)"},
 }
 
-# Plot usual metrics for each (policy-test-scenario) couple against the number of humans
+# Plot usual metrics for each (policy-test scenario) couple against the number of humans
+for e_idx, test_env in enumerate(test_environments):
+    figure, ax = plt.subplots(math.ceil((len(all_metrics)-len(exclude_metrics))/2), 2, figsize=(18,18))
+    figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.07, hspace=0.3, wspace=0.3)
+    for key, values in all_metrics.items():
+        if key in exclude_metrics:
+            continue
+        else:
+            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set(
+                xlabel='Number of humans',
+                ylabel=metrics_data[key]["label"])
+            if "ylim" in metrics_data[key]:
+                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_ylim(metrics_data[key]["ylim"])
+            if "yticks" in metrics_data[key]:
+                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_yticks(metrics_data[key]["yticks"])
+            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_xticks(jnp.arange(len(test_n_humans)), labels=[i-n_static_humans for i in test_n_humans])
+            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].grid()
+            for policy in range(len(values)):
+                for s_idx, test_scenario in enumerate(test_scenarios):
+                    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
+                        jnp.arange(len(test_n_humans)), 
+                        jnp.nanmean(values[policy,e_idx,s_idx], axis=1) if key != "successes" else values[policy,e_idx,s_idx] / n_test_trials,
+                        color=list(mcolors.TABLEAU_COLORS.values())[policy+s_idx*len(values)],
+                        linewidth=2,
+                        label=f"({policy_labels[policy].split('-')[1]},{test_scenarios_labels[s_idx]})",
+                    )
+    handles, labels = ax[0,0].get_legend_handles_labels()
+    figure.legend(labels, loc="center right", title=f"SARL policies trained\nand tested on {test_env.upper()}.\n(Train, test) scenarios", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
+    figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_static_obstacles_tests_on_{test_env}.eps"), format='eps')
+
+# Plot usual metrics for each test scenario against the number of humans
 for e_idx, test_env in enumerate(test_environments):
     figure, ax = plt.subplots(math.ceil((len(all_metrics)-len(exclude_metrics))/2), 2, figsize=(18,18))
     figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.07, hspace=0.3, wspace=0.3)
@@ -147,8 +177,8 @@ for e_idx, test_env in enumerate(test_environments):
                         jnp.nanmean(values[policy,e_idx,s_idx], axis=1) if key != "successes" else values[policy,e_idx,s_idx] / n_test_trials,
                         color=list(mcolors.TABLEAU_COLORS.values())[policy+s_idx*len(values)],
                         linewidth=2,
-                        label=f"({policy_labels[policy].split('-')[1]},{test_scenarios_labels[s_idx]})",
+                        label=f"{test_scenarios_labels[s_idx]}",
                     )
     handles, labels = ax[0,0].get_legend_handles_labels()
-    figure.legend(labels, loc="center right", title=f"SARL policies trained\nand tested on {test_env.upper()}.\n(Train, test) scenarios", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
-    figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_static_obstacles_tests_on_{test_env}.eps"), format='eps')
+    figure.legend(labels, loc="center right", title=f"Robot policy:\nSARL-HS trained\nand tested on {test_env.upper()}.\nTest scenarios:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
+    figure.savefig(os.path.join(os.path.dirname(__file__),f"static_obstacles_tests_on_{test_env}.eps"), format='eps')
