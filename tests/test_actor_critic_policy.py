@@ -49,33 +49,33 @@ env = SocialNav(**env_params)
 
 ### Initialize robot policy
 policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
-with open(os.path.join(os.path.dirname(__file__), 'il_out.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
     rl_out = pickle.load(f)
     actor_params = rl_out['actor_params']
 
-### Test policy
-for n_humans in tests_n_humans:
-    test_env_params = {
-        'robot_radius': 0.3,
-        'n_humans': n_humans,
-        'robot_dt': 0.25,
-        'humans_dt': 0.01,
-        'robot_visible': True,
-        'scenario': env_params['scenario'],
-        'hybrid_scenario_subset': env_params['hybrid_scenario_subset'],
-        'humans_policy': env_params['humans_policy'],
-        'circle_radius': 7,
-        'reward_function': reward_function,
-        'kinematics': env_params['kinematics'],
-    }
-    test_env = SocialNav(**test_env_params)
-    metrics_after_rl = test_k_trials(
-        n_trials, 
-        random_seed, 
-        test_env, 
-        policy, 
-        actor_params, 
-        reward_function.time_limit)
+# ### Test policy
+# for n_humans in tests_n_humans:
+#     test_env_params = {
+#         'robot_radius': 0.3,
+#         'n_humans': n_humans,
+#         'robot_dt': 0.25,
+#         'humans_dt': 0.01,
+#         'robot_visible': True,
+#         'scenario': env_params['scenario'],
+#         'hybrid_scenario_subset': env_params['hybrid_scenario_subset'],
+#         'humans_policy': env_params['humans_policy'],
+#         'circle_radius': 7,
+#         'reward_function': reward_function,
+#         'kinematics': env_params['kinematics'],
+#     }
+#     test_env = SocialNav(**test_env_params)
+#     metrics_after_rl = test_k_trials(
+#         n_trials, 
+#         random_seed, 
+#         test_env, 
+#         policy, 
+#         actor_params, 
+#         reward_function.time_limit)
 
 ### Simulate some episodes
 for i in range(n_episodes):

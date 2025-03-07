@@ -1,14 +1,13 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug, nn, value_and_grad
 from jax.tree_util import tree_leaves
-from jax.scipy.stats.norm import pdf
 from functools import partial
 import haiku as hk
 from types import FunctionType
 import optax
 
 from socialjym.envs.base_env import ROBOT_KINEMATICS
-from .sarl_a2c import SARLA2C
+from .sarl import SARL
 from .sarl import value_network as critic_network
 from .sarl import MLP_1_PARAMS, MLP_2_PARAMS, ATTENTION_LAYER_PARAMS
 
@@ -50,7 +49,6 @@ class Actor(hk.Module):
             mlp4_params:dict=MLP_4_PARAMS,
             attention_layer_params:dict=ATTENTION_LAYER_PARAMS,
             robot_state_size:int=6,
-            v_max:float=1.,
         ) -> None:
         super().__init__()  
         self.mlp1 = hk.nets.MLP(**mlp1_params, name="mlp1")
@@ -59,7 +57,6 @@ class Actor(hk.Module):
         self.output_layer = hk.Linear(2, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
         self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
         self.robot_state_size = robot_state_size
-        self.v_max = v_max
 
     def __call__(
             self, 
@@ -96,16 +93,13 @@ class Actor(hk.Module):
         ## Compute MLP4 output
         mlp4_input = jnp.concatenate([self_state, weighted_features], axis=0)
         mlp4_output = self.mlp4(mlp4_input)
+        # debug.print("Joint State/MLP4 input size: {x}", x=mlp4_input.shape)
         ## Compute normal distribution parameters
         mu1, mu2 = self.output_layer(mlp4_output)
         logsigma = hk.get_parameter("logsigma", shape=[], init=hk.initializers.Constant(0.))
-        # debug.print("Joint State/MLP4 input size: {x}", x=mlp4_input.shape)
-        ## Bound output (avoids problems of exploding gradients)
-        mu1 = self.v_max * jnp.tanh(mu1)
-        mu2 = self.v_max * jnp.tanh(mu2)
         return mu1, mu2, logsigma
 
-class SARLPPO(SARLA2C):
+class SARLPPO(SARL):
     def __init__(
             self, 
             reward_function:FunctionType, 
@@ -133,11 +127,43 @@ class SARLPPO(SARLA2C):
         self.critic = critic_network
         @hk.transform
         def actor_network(x:jnp.ndarray) -> jnp.ndarray:
-            actor = Actor(v_max = self.v_max)
+            actor = Actor()
             return actor(x)
         self.actor = actor_network
 
     # Private methods
+
+    @partial(jit, static_argnames=("self"))
+    def _sample_action(
+        self,
+        mu1:float,
+        mu2:float,
+        sigma:float = 0.,
+        key:random.PRNGKey = random.PRNGKey(0),
+    ) -> jnp.ndarray:
+        key1, key2 = random.split(key)
+        if self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+            v = mu1 + sigma * random.normal(key1)
+            w = mu2 + sigma * random.normal(key2)
+            sampled_action = jnp.array([v, w])
+            ## Bound the final action with HARD CLIPPING
+            v = jnp.clip(v, 0, self.v_max)
+            w_max = (2 * (self.v_max - v)) / self.wheels_distance
+            w = jnp.clip(w, -w_max, w_max)
+            ## Build final action
+            constrained_action = jnp.array([v, w])
+        elif self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+            vx = mu1 + sigma * random.normal(key1)
+            vy = mu2 + sigma * random.normal(key2)
+            sampled_action = jnp.array([vx, vy])
+            norm = jnp.linalg.norm(jnp.array([vx, vy]))
+            ## Bound the norm of the velocity with SMOOTH CLIPPING (ensures gradients continuity)
+            scaling_factor = jnp.tanh(norm / self.v_max) / (norm + EPSILON)
+            vx = vx * scaling_factor
+            vy = vy * scaling_factor
+            ## Build final action
+            constrained_action = jnp.array([vx, vy])
+        return constrained_action, sampled_action
 
     @partial(jit, static_argnames=("self"))
     def _compute_neg_log_pdf_value(
@@ -416,6 +442,22 @@ class SARLPPO(SARLA2C):
             mu2s,
             logsigmas,
             actions,
+        )
+
+    @partial(jit, static_argnames=("self"))
+    def batch_sample_action(
+        self,
+        mu1:jnp.ndarray,
+        mu2:jnp.ndarray,
+        sigma:jnp.ndarray,
+        keys:random.PRNGKey,
+    ) -> jnp.ndarray:
+        return vmap(SARLPPO._sample_action, in_axes=(None, None, None, None, 0))(
+            self, 
+            mu1, 
+            mu2, 
+            sigma,
+            keys,
         )
 
     @partial(jit, static_argnames=("self","actor_optimizer","critic_optimizer"))
