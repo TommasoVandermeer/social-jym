@@ -61,10 +61,13 @@ class Actor(hk.Module):
     def __call__(
             self, 
             x: jnp.ndarray,
+            **kwargs:dict,
         ) -> jnp.ndarray:
         """
         Computes the value of the state given the input x of shape (# of humans, length of reparametrized state)
         """
+        ## Get kwargs
+        gaussian_key = kwargs.get("gaussian_key", random.PRNGKey(0))
         ## Save self state variables
         size = x.shape # (# of humans, length of reparametrized state)
         self_state = x[0,:self.robot_state_size] # The robot state is repeated in each row of axis 1, we take the first one
@@ -97,7 +100,11 @@ class Actor(hk.Module):
         ## Compute normal distribution parameters
         mu1, mu2 = self.output_layer(mlp4_output)
         logsigma = hk.get_parameter("logsigma", shape=[], init=hk.initializers.Constant(0.))
-        return mu1, mu2, logsigma
+        sigma = jnp.exp(logsigma)
+        ## Sample action
+        key1, key2 = random.split(gaussian_key)
+        sampled_action = jnp.array([mu1 + sigma * random.normal(key1), mu2 + sigma * random.normal(key2)])
+        return sampled_action, {"mu1": mu1, "mu2": mu2, "logsigma": logsigma}
 
 class SARLPPO(SARL):
     def __init__(
@@ -126,12 +133,36 @@ class SARLPPO(SARL):
         self.name = "SARL-PPO"
         self.critic = critic_network
         @hk.transform
-        def actor_network(x:jnp.ndarray) -> jnp.ndarray:
+        def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
             actor = Actor()
-            return actor(x)
+            return actor(x, **kwargs)
         self.actor = actor_network
 
     # Private methods
+
+    @partial(jit, static_argnames=("self"))
+    def _bound_action(
+        self,
+        sampled_action:jnp.ndarray,
+    ) -> jnp.ndarray:
+        if self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+            v, w = sampled_action
+            ## Bound the final action with HARD CLIPPING
+            v = jnp.clip(v, 0, self.v_max)
+            w_max = (2 * (self.v_max - v)) / self.wheels_distance
+            w = jnp.clip(w, -w_max, w_max)
+            ## Build final action
+            constrained_action = jnp.array([v, w])
+        elif self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+            vx, vy = sampled_action
+            norm = jnp.linalg.norm(jnp.array([vx, vy]))
+            ## Bound the norm of the velocity with SMOOTH CLIPPING
+            scaling_factor = jnp.tanh(norm / self.v_max) / (norm + EPSILON)
+            vx = vx * scaling_factor
+            vy = vy * scaling_factor
+            ## Build final action
+            constrained_action = jnp.array([vx, vy])
+        return constrained_action
 
     @partial(jit, static_argnames=("self"))
     def _sample_action(
@@ -142,27 +173,10 @@ class SARLPPO(SARL):
         key:random.PRNGKey = random.PRNGKey(0),
     ) -> jnp.ndarray:
         key1, key2 = random.split(key)
-        if self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-            v = mu1 + sigma * random.normal(key1)
-            w = mu2 + sigma * random.normal(key2)
-            sampled_action = jnp.array([v, w])
-            ## Bound the final action with HARD CLIPPING
-            v = jnp.clip(v, 0, self.v_max)
-            w_max = (2 * (self.v_max - v)) / self.wheels_distance
-            w = jnp.clip(w, -w_max, w_max)
-            ## Build final action
-            constrained_action = jnp.array([v, w])
-        elif self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-            vx = mu1 + sigma * random.normal(key1)
-            vy = mu2 + sigma * random.normal(key2)
-            sampled_action = jnp.array([vx, vy])
-            norm = jnp.linalg.norm(jnp.array([vx, vy]))
-            ## Bound the norm of the velocity with SMOOTH CLIPPING (ensures gradients continuity)
-            scaling_factor = jnp.tanh(norm / self.v_max) / (norm + EPSILON)
-            vx = vx * scaling_factor
-            vy = vy * scaling_factor
-            ## Build final action
-            constrained_action = jnp.array([vx, vy])
+        a1 = mu1 + sigma * random.normal(key1)
+        a2 = mu2 + sigma * random.normal(key2)
+        sampled_action = jnp.array([a1, a2])
+        constrained_action = self._bound_action(sampled_action)
         return constrained_action, sampled_action
 
     @partial(jit, static_argnames=("self"))
@@ -238,12 +252,12 @@ class SARLPPO(SARL):
                 old_neglogpdf:jnp.ndarray,
             ) -> jnp.ndarray:
                 # Compute the prediction
-                mu1, mu2, logsigma = self.actor.apply(current_actor_params, None, input)
+                _, distrs = self.actor.apply(current_actor_params, None, input)
                 # Compute the log probability of the action
                 neglogpdf = self._compute_neg_log_pdf_value(
-                    mu1,
-                    mu2,
-                    logsigma,
+                    distrs["mu1"],
+                    distrs["mu2"],
+                    distrs["logsigma"],
                     sample_action
                 )
                 # Compute policy ratio
@@ -351,13 +365,10 @@ class SARLPPO(SARL):
                 sample_action:jnp.ndarray,
             ) -> jnp.ndarray:
                 # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                mu1, mu2, logsigma = self.actor.apply(current_actor_params, None, input)
+                _, distrs = self.actor.apply(current_actor_params, None, input)
+                action = jnp.array([distrs["mu1"], distrs["mu2"]])
                 # Get mean action
-                constrained_action, _ = self._sample_action(
-                    mu1, 
-                    mu2, 
-                    sigma = jnp.exp(logsigma),
-                )
+                constrained_action = self._bound_action(action)
                 # Compute the loss
                 return 0.5 * jnp.sum(jnp.square(constrained_action - sample_action))
             
@@ -401,15 +412,10 @@ class SARLPPO(SARL):
         actor_input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
         # Compute action 
         key, subkey = random.split(key)
-        mu1, mu2, logsigma = self.actor.apply(actor_params, None, actor_input)
-        sigma = lax.cond(sample, lambda x: x, lambda _: 0., jnp.exp(logsigma))
-        constrained_action, sampled_action = self._sample_action(
-            mu1, 
-            mu2, 
-            sigma = sigma, 
-            key = subkey
-        )
-        return constrained_action, key, actor_input, sampled_action, {"mu1":mu1, "mu2":mu2, "logsigma":logsigma}
+        sampled_action, distrs = self.actor.apply(actor_params, None, actor_input, gaussian_key=subkey)
+        action = lax.cond(sample, lambda _: sampled_action, lambda _: jnp.array([distrs["mu1"],distrs["mu2"]]), None)
+        constrained_action = self._bound_action(action)
+        return constrained_action, key, actor_input, sampled_action, distrs
     
     @partial(jit, static_argnames=("self"))
     def batch_act(

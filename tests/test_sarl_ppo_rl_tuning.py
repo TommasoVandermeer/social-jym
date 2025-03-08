@@ -1,33 +1,57 @@
 import jax.numpy as jnp
-from jax import random, vmap
+from jax.tree_util import tree_map
+
 import numpy as np
 import os
 import optax
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import pickle
 from decimal import Decimal
 
 from socialjym.envs.socialnav import SocialNav
-from socialjym.utils.aux_functions import test_k_trials, animate_trajectory, linear_decay
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.utils.rollouts.ppo_rollouts import ppo_rl_rollout
-from socialjym.utils.replay_buffers.base_act_cri_buffer import BaseACBuffer
 from socialjym.utils.replay_buffers.ppo_replay_buffer import PPOBuffer
 from socialjym.policies.sarl_ppo import SARLPPO
 
 ### Hyperparameters sets
 hyperparamters_seed = 0
 n_trials = 20
-training_updates = 2_000 # For each set of hyperparameters
+training_updates = 1_000 # For each set of hyperparameters
 num_batches = 30
 hp_lims = {
     'actor_learning_rates': [3e-4, 5e-6],
     'critic_learning_rates': [3e-3, 3e-4],
     'n_parallel_envs_multiplier': [1, 10],
-    'buffer_capacities_multiplier': [30, 60],
+    'buffer_capacities_multiplier': [20, 60],
     'betas_entropy': [1e-3, 5e-7],
 }
+
+# Initialize output dict
+hpt_out = {
+    "actor_losses": jnp.zeros((n_trials, training_updates), dtype=jnp.float32),
+    "critic_losses": jnp.zeros((n_trials, training_updates), dtype=jnp.float32),
+    "entropy_losses": jnp.zeros((n_trials, training_updates), dtype=jnp.float32),
+    "returns": jnp.zeros((n_trials, training_updates), dtype=jnp.float32),
+    "successes": jnp.zeros((n_trials, training_updates), dtype=int),
+    "failures": jnp.zeros((n_trials, training_updates), dtype=int),
+    "timeouts": jnp.zeros((n_trials, training_updates), dtype=int),
+    "episodes": jnp.zeros((n_trials, training_updates), dtype=int),
+    "actor_lr": jnp.zeros((n_trials,), dtype=jnp.float32),
+    "critic_lr": jnp.zeros((n_trials,), dtype=jnp.float32),
+    "n_parallel_envs": jnp.zeros((n_trials,), dtype=int),
+    "buffer_capacity": jnp.zeros((n_trials,), dtype=int),
+    "beta_entropy": jnp.zeros((n_trials,), dtype=jnp.float32),
+}
+
+# Load IL rollout output
+with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:
+    il_out = pickle.load(f)
+# Save the IL model parameters, buffer state, and keys
+il_actor_params = il_out['actor_params']
+il_critic_params = il_out['critic_params']
 
 ### Trial loop
 np.random.seed(hyperparamters_seed)
@@ -92,12 +116,6 @@ for trial in range(n_trials):
     env = SocialNav(**env_params)
     # Initialize robot policy and vnet params
     policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'])
-    # Load IL rollout output
-    with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:
-        il_out = pickle.load(f)
-    # Save the IL model parameters, buffer state, and keys
-    il_actor_params = il_out['actor_params']
-    il_critic_params = il_out['critic_params']
     # Initialize RL optimizer
     actor_optimizer = optax.chain(
         optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
@@ -157,116 +175,160 @@ for trial in range(n_trials):
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = ppo_rl_rollout(**rl_rollout_params)
-    # Save RL rollout output
-    with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
-        pickle.dump(rl_out, f)
-    # Load RL rollout output
-    with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'rb') as f:
-        rl_out = pickle.load(f)
-        print(f"Total episodes simulated: {jnp.sum(rl_out['aux_data']['episodes'])}")
-    # Save the training returns
-    rl_actor_params = rl_out['actor_params']
-    returns_during_rl = rl_out['aux_data']['returns']  
-    actor_losses = rl_out['aux_data']['actor_losses']
-    critic_losses = rl_out['aux_data']['critic_losses']
-    entropy_losses = rl_out['aux_data']['entropy_losses']
-    success_during_rl = rl_out['aux_data']['successes']
-    failure_during_rl = rl_out['aux_data']['failures']
-    timeout_during_rl = rl_out['aux_data']['timeouts']
-    episodes_during_rl = rl_out['aux_data']['episodes']
-    episode_count = jnp.sum(episodes_during_rl)
-    window = 500 if training_updates > 1000 else 50
-    ## Plot RL training stats
-    from matplotlib import rc
-    font = {'weight' : 'regular',
-            'size'   : 18}
-    rc('font', **font)
-    figure, ax = plt.subplots(3,2,figsize=(15,15))
-    figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.90, right=0.95, left=0.1, wspace=0.35)
-    figure.suptitle(f"Trial {trial+1}/{n_trials} - ALR: {'%.2E' % Decimal(actor_lr)}, CLR: {'%.2E' % Decimal(critic_lr)}, PEnv: {n_parallel_envs}, BCap: {buffer_capacity}, BEnt: {'%.2E' % Decimal(beta_entropy)}", fontsize=15)
-    # Plot returns during RL
-    ax[0,0].grid()
-    ax[0,0].set(
-        xlabel='Training Update', 
-        ylabel=f'Return ({window} upd. window)', 
-        title='Return (not episodic)'
-    )
+    # Save the training data
+    rl_out['aux_data']['actor_lr'] = actor_lr
+    rl_out['aux_data']['critic_lr'] = critic_lr
+    rl_out['aux_data']['n_parallel_envs'] = n_parallel_envs
+    rl_out['aux_data']['buffer_capacity'] = buffer_capacity
+    rl_out['aux_data']['beta_entropy'] = beta_entropy
+    hpt_out = tree_map(lambda x, y: x.at[trial].set(y), hpt_out, rl_out['aux_data'])
+
+### SAVE Hyperparameters tuning output
+with open(os.path.join(os.path.dirname(__file__),"hpt_out.pkl"), 'wb') as f:
+    pickle.dump(hpt_out, f)
+
+### LOAD Hyperparameters tuning output
+with open(os.path.join(os.path.dirname(__file__),"hpt_out.pkl"), 'rb') as f:
+    hpt_out = pickle.load(f)
+
+### PLOTTING
+window = 50
+returns_during_rl = hpt_out['returns']  
+actor_losses = hpt_out['actor_losses']
+critic_losses = hpt_out['critic_losses']
+entropy_losses = hpt_out['entropy_losses']
+success_during_rl = hpt_out['successes']
+failure_during_rl = hpt_out['failures']
+timeout_during_rl = hpt_out['timeouts']
+episodes_during_rl = hpt_out['episodes']
+colors = list(mcolors.TABLEAU_COLORS.values())
+## Plot RL training stats
+from matplotlib import rc
+font = {'weight' : 'regular',
+        'size'   : 18}
+rc('font', **font)
+figure, ax = plt.subplots(4,2,figsize=(15,15))
+figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.90, right=0.9, left=0.1, wspace=0.35)
+figure.suptitle(f"Hyperparameters tuning - {n_trials} Trials - Moving average of results ({window} updates window)")
+# Plot returns during RL
+ax[0,0].grid()
+ax[0,0].set(
+    xlabel='Training Update', 
+    ylabel=f'Return', 
+    title='Return (not episodic)'
+)
+for i in range(n_trials):
     ax[0,0].plot(
-        jnp.arange(len(returns_during_rl)-(window-1))+window, 
-        jnp.convolve(returns_during_rl, jnp.ones(window,), 'valid') / window,
+        jnp.arange(len(returns_during_rl[i])-(window-1))+window, 
+        jnp.convolve(returns_during_rl[i], jnp.ones(window,), 'valid') / window,
+        color=colors[i],
+        label=f'T{i+1}',
     )
-    # Plot success, failure, and timeout rates during RL
-    success_rate_during_rl = success_during_rl / rl_out['aux_data']['episodes']
-    failure_rate_during_rl = failure_during_rl / rl_out['aux_data']['episodes']
-    timeout_rate_during_rl = timeout_during_rl / rl_out['aux_data']['episodes']
-    ax[0,1].grid()
-    ax[0,1].set(
-        xlabel='Training Update', 
-        ylabel=f'Rate ({window} upd. window)', 
-        title='Success, Failure, and Timeout rates',
-        ylim=(-0.1,1.1)
-    )
+# Plot success rate during RL
+success_rate_during_rl = success_during_rl / episodes_during_rl
+ax[0,1].grid()
+ax[0,1].set(
+    xlabel='Training Update', 
+    ylabel=f'Rate', 
+    title='Success rate',
+    ylim=(-0.1,1.1)
+)
+for i in range(n_trials):
     ax[0,1].plot(
-        np.arange(len(success_rate_during_rl)-(window-1))+window, 
-        jnp.convolve(success_rate_during_rl, jnp.ones(window,), 'valid') / window,
-        label='Success rate',
-        color='g',
+        jnp.arange(len(success_rate_during_rl[i])-(window-1))+window, 
+        jnp.convolve(success_rate_during_rl[i], jnp.ones(window,), 'valid') / window,
+        color=colors[i],
+        label=f'T{i+1}',
     )
-    ax[0,1].plot(
-        np.arange(len(failure_rate_during_rl)-(window-1))+window, 
-        jnp.convolve(failure_rate_during_rl, jnp.ones(window,), 'valid') / window,
-        label='Failure rate',
-        color='r',
-    )
-    ax[0,1].plot(
-        np.arange(len(timeout_rate_during_rl)-(window-1))+window, 
-        jnp.convolve(timeout_rate_during_rl, jnp.ones(window,), 'valid') / window,
-        label='Timeout rate',
-        color='yellow',
-    )
-    ax[0,1].legend()
-    # Plot actor loss during RL
-    ax[1,0].grid()
-    ax[1,0].set(
-        xlabel='Training Update', 
-        ylabel=f'Loss ({window} upd. window)', 
-        title='Actor Loss'
-    )
+# Plot failure rate during RL
+failure_rate_during_rl = failure_during_rl / episodes_during_rl
+ax[1,0].grid()
+ax[1,0].set(
+    xlabel='Training Update', 
+    ylabel=f'Rate', 
+    title='Failure rate',
+    ylim=(-0.1,1.1)
+)
+for i in range(n_trials):
     ax[1,0].plot(
-        np.arange(len(actor_losses)-(window-1))+window, 
-        jnp.convolve(actor_losses, jnp.ones(window,), 'valid') / window,
+        jnp.arange(len(failure_rate_during_rl[i])-(window-1))+window, 
+        jnp.convolve(failure_rate_during_rl[i], jnp.ones(window,), 'valid') / window,
+        color=colors[i],
+        label=f'T{i+1}',
     )
-    # Plot critic loss during RL
-    ax[1,1].grid()
-    ax[1,1].set(
-        xlabel='Training Update', 
-        ylabel=f'Loss ({window} upd. window)', 
-        title='Critic Loss'
-    )
+# Plot timeout rate during RL
+timeout_rate_during_rl = timeout_during_rl / episodes_during_rl
+ax[1,1].grid()
+ax[1,1].set(
+    xlabel='Training Update', 
+    ylabel=f'Rate', 
+    title='Timeout rate',
+    ylim=(-0.1,1.1)
+)
+for i in range(n_trials):
     ax[1,1].plot(
-        jnp.arange(len(critic_losses)-(window-1))+window, 
-        jnp.convolve(critic_losses, jnp.ones(window,), 'valid') / window,
+        np.arange(len(timeout_rate_during_rl[i])-(window-1))+window, 
+        jnp.convolve(timeout_rate_during_rl[i], jnp.ones(window,), 'valid') / window,
+        color=colors[i],
+        label=f'T{i+1}',
     )
-    # Plot entropy loss during RL
-    ax[2,0].grid()
-    ax[2,0].set(
-        xlabel='Training Update', 
-        ylabel=f'Loss ({window} upd. window)', 
-        title='Entropy Loss'
-    )
+# Plot actor loss during RL
+ax[2,0].grid()
+ax[2,0].set(
+    xlabel='Training Update', 
+    ylabel=f'Loss', 
+    title='Actor Loss'
+)
+for i in range(n_trials):
     ax[2,0].plot(
-        jnp.arange(len(entropy_losses)-(window-1))+window, 
-        jnp.convolve(entropy_losses, jnp.ones(window,), 'valid') / window,
+        np.arange(len(actor_losses[i])-(window-1))+window, 
+        jnp.convolve(actor_losses[i], jnp.ones(window,), 'valid') / window,
+        color=colors[i],
+        label=f'T{i+1}',
     )
-    # Plot episodes during RL
-    ax[2,1].grid()
-    ax[2,1].set(
-        xlabel='Training Update', 
-        ylabel=f'Episodes', 
-        title='Simulated episodes'
-    )
+# Plot critic loss during RL
+ax[2,1].grid()
+ax[2,1].set(
+    xlabel='Training Update', 
+    ylabel=f'Loss', 
+    title='Critic Loss'
+)
+for i in range(n_trials):
     ax[2,1].plot(
-        jnp.arange(len(episodes_during_rl)), 
-        jnp.cumsum(episodes_during_rl),
+        np.arange(len(critic_losses[i])-(window-1))+window, 
+        jnp.convolve(critic_losses[i], jnp.ones(window,), 'valid') / window,
+        color=colors[i],
+        label=f'T{i+1}',
     )
-    figure.savefig(os.path.join(os.path.dirname(__file__),f"{trial}_rl_training_plots.eps"), format='eps')
+# Plot entropy loss during RL
+ax[3,0].grid()
+ax[3,0].set(
+    xlabel='Training Update', 
+    ylabel=f'Loss', 
+    title='Entropy Loss'
+)
+for i in range(n_trials):
+    ax[3,0].plot(
+        np.arange(len(entropy_losses[i])-(window-1))+window, 
+        jnp.convolve(entropy_losses[i], jnp.ones(window,), 'valid') / window,
+        color=colors[i],
+        label=f'T{i+1}',
+    )
+# Plot episodes during RL
+ax[3,1].grid()
+ax[3,1].set(
+    xlabel='Training Update', 
+    ylabel=f'Episodes', 
+    title='Cumulative sim. episodes (no mv. avg.)'
+)
+for i in range(n_trials):
+    ax[3,1].plot(
+        jnp.arange(len(episodes_during_rl[i])),
+        jnp.cumsum(episodes_during_rl[i]),
+        color=colors[i],
+        label=f'T{i+1}',
+    )
+# Save figure
+handles, labels = ax[0,0].get_legend_handles_labels()
+figure.legend(handles, labels, loc='center right', title='Trial')
+figure.savefig(os.path.join(os.path.dirname(__file__),f"rl_hyperparam_tuning.eps"), format='eps')

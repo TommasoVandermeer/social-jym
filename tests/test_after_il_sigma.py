@@ -53,7 +53,7 @@ state, reset_key, obs, info, outcome = env.reset(random.PRNGKey(random_seed))
 mean_action, _, _, sampled_action, distrs = policy.act(random.PRNGKey(random_seed), obs, info, actor_params, False)
 # Print pdf value of mean action
 pdf_mean_action = jnp.exp(-policy._compute_neg_log_pdf_value(distrs["mu1"], distrs["mu2"], distrs["logsigma"], sampled_action))
-print(f"Probability of mean action: {pdf_mean_action}\nMeans: [{distrs['mu1']}, {distrs['mu2']}]\nAction: [{sampled_action[0]}, {sampled_action[1]}]")
+print(f"Probability of mean action: {pdf_mean_action}\nMeans: [{distrs['mu1']}, {distrs['mu2']}]\nSampled action: [{sampled_action[0]}, {sampled_action[1]}]")
 keys = random.split(random.PRNGKey(random_seed), n_samples)
 actions, sampled_actions = policy.batch_sample_action(
     distrs["mu1"],
