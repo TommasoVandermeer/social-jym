@@ -202,6 +202,7 @@ failure_during_rl = hpt_out['failures']
 timeout_during_rl = hpt_out['timeouts']
 episodes_during_rl = hpt_out['episodes']
 colors = list(mcolors.TABLEAU_COLORS.values())
+styles = ['solid','dashed','dotted']
 ## Plot RL training stats
 from matplotlib import rc
 font = {'weight' : 'regular',
@@ -221,8 +222,9 @@ for i in range(n_trials):
     ax[0,0].plot(
         jnp.arange(len(returns_during_rl[i])-(window-1))+window, 
         jnp.convolve(returns_during_rl[i], jnp.ones(window,), 'valid') / window,
-        color=colors[i],
-        label=f'T{i+1}',
+        color=colors[i%len(colors)],
+        linestyle=styles[i//len(colors)],
+        label=f'T{i}',
     )
 # Plot success rate during RL
 success_rate_during_rl = success_during_rl / episodes_during_rl
@@ -237,8 +239,9 @@ for i in range(n_trials):
     ax[0,1].plot(
         jnp.arange(len(success_rate_during_rl[i])-(window-1))+window, 
         jnp.convolve(success_rate_during_rl[i], jnp.ones(window,), 'valid') / window,
-        color=colors[i],
-        label=f'T{i+1}',
+        color=colors[i%len(colors)],
+        linestyle=styles[i//len(colors)],
+        label=f'T{i}',
     )
 # Plot failure rate during RL
 failure_rate_during_rl = failure_during_rl / episodes_during_rl
@@ -253,8 +256,9 @@ for i in range(n_trials):
     ax[1,0].plot(
         jnp.arange(len(failure_rate_during_rl[i])-(window-1))+window, 
         jnp.convolve(failure_rate_during_rl[i], jnp.ones(window,), 'valid') / window,
-        color=colors[i],
-        label=f'T{i+1}',
+        color=colors[i%len(colors)],
+        linestyle=styles[i//len(colors)],
+        label=f'T{i}',
     )
 # Plot timeout rate during RL
 timeout_rate_during_rl = timeout_during_rl / episodes_during_rl
@@ -269,8 +273,9 @@ for i in range(n_trials):
     ax[1,1].plot(
         np.arange(len(timeout_rate_during_rl[i])-(window-1))+window, 
         jnp.convolve(timeout_rate_during_rl[i], jnp.ones(window,), 'valid') / window,
-        color=colors[i],
-        label=f'T{i+1}',
+        color=colors[i%len(colors)],
+        linestyle=styles[i//len(colors)],
+        label=f'T{i}',
     )
 # Plot actor loss during RL
 ax[2,0].grid()
@@ -283,8 +288,9 @@ for i in range(n_trials):
     ax[2,0].plot(
         np.arange(len(actor_losses[i])-(window-1))+window, 
         jnp.convolve(actor_losses[i], jnp.ones(window,), 'valid') / window,
-        color=colors[i],
-        label=f'T{i+1}',
+        color=colors[i%len(colors)],
+        linestyle=styles[i//len(colors)],
+        label=f'T{i}',
     )
 # Plot critic loss during RL
 ax[2,1].grid()
@@ -297,8 +303,9 @@ for i in range(n_trials):
     ax[2,1].plot(
         np.arange(len(critic_losses[i])-(window-1))+window, 
         jnp.convolve(critic_losses[i], jnp.ones(window,), 'valid') / window,
-        color=colors[i],
-        label=f'T{i+1}',
+        color=colors[i%len(colors)],
+        linestyle=styles[i//len(colors)],
+        label=f'T{i}',
     )
 # Plot entropy loss during RL
 ax[3,0].grid()
@@ -311,8 +318,9 @@ for i in range(n_trials):
     ax[3,0].plot(
         np.arange(len(entropy_losses[i])-(window-1))+window, 
         jnp.convolve(entropy_losses[i], jnp.ones(window,), 'valid') / window,
-        color=colors[i],
-        label=f'T{i+1}',
+        color=colors[i%len(colors)],
+        linestyle=styles[i//len(colors)],
+        label=f'T{i}',
     )
 # Plot episodes during RL
 ax[3,1].grid()
@@ -325,10 +333,21 @@ for i in range(n_trials):
     ax[3,1].plot(
         jnp.arange(len(episodes_during_rl[i])),
         jnp.cumsum(episodes_during_rl[i]),
-        color=colors[i],
-        label=f'T{i+1}',
+        color=colors[i%len(colors)],
+        linestyle=styles[i//len(colors)],
+        label=f'T{i}',
     )
 # Save figure
 handles, labels = ax[0,0].get_legend_handles_labels()
 figure.legend(handles, labels, loc='center right', title='Trial')
 figure.savefig(os.path.join(os.path.dirname(__file__),f"rl_hyperparam_tuning.eps"), format='eps')
+
+### Print trial data
+trial = 19
+print(hpt_out["returns"][trial,-1])
+print(success_rate_during_rl[trial,-1])
+print("Actor learning rate: ", hpt_out["actor_lr"][trial])
+print("Critic learning rate: ", hpt_out["critic_lr"][trial])
+print("Parallel environments: ", hpt_out["n_parallel_envs"][trial])
+print("Buffer capacity :", hpt_out["buffer_capacity"][trial])
+print("Beta entropy : ", hpt_out["beta_entropy"][trial])

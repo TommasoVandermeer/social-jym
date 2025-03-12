@@ -156,8 +156,13 @@ class SARLPPO(SARL):
         elif self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
             vx, vy = sampled_action
             norm = jnp.linalg.norm(jnp.array([vx, vy]))
-            ## Bound the norm of the velocity with SMOOTH CLIPPING
-            scaling_factor = jnp.tanh(norm / self.v_max) / (norm + EPSILON)
+            ## Bound the norm of the velocity with HARD CLIPPING
+            scaling_factor = lax.cond(
+                norm != 0,
+                lambda _: jnp.minimum(norm, self.v_max) / norm,
+                lambda _: 1.,
+                None,
+            )
             vx = vx * scaling_factor
             vy = vy * scaling_factor
             ## Build final action
@@ -280,8 +285,8 @@ class SARLPPO(SARL):
             
             actor_losses = _rl_loss_function(current_actor_params, inputs, sample_actions, advantages, old_neglogpdfs)
             actor_loss = jnp.mean(actor_losses)
-            entropy_loss = beta_entropy * (current_actor_params['actor']['logsigma'] + .5 * jnp.log(2 * jnp.pi * jnp.e)) * 2 # It is doubled because we have a sigma for each action (but it is the same, so double it)
-            loss = actor_loss - entropy_loss
+            entropy_loss = current_actor_params['actor']['logsigma'] * 2 + jnp.log(2 * jnp.pi * jnp.e) # It is doubled because we have a sigma for each action (but it is the same, so double it)
+            loss = actor_loss - beta_entropy * entropy_loss
             return loss, {"actor_loss": actor_loss, "entropy_loss": entropy_loss}
 
         inputs = experiences["inputs"]
