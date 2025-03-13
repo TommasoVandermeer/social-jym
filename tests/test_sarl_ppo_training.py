@@ -118,59 +118,59 @@ il_rollout_params = {
     'custom_episodes': il_custom_episodes_path
 }
 
-# # IMITATION LEARNING ROLLOUT
-# il_out = actor_critic_il_rollout(**il_rollout_params)
+# IMITATION LEARNING ROLLOUT
+il_out = actor_critic_il_rollout(**il_rollout_params)
 
-# # Execute tests to evaluate return after IL
-# for test, n_humans in enumerate(n_humans_for_tests):
-#     test_env_params = {
-#         'robot_radius': 0.3,
-#         'n_humans': n_humans,
-#         'robot_dt': 0.25,
-#         'humans_dt': 0.01,
-#         'robot_visible': True,
-#         'scenario': training_hyperparams['scenario'],
-#         'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
-#         'humans_policy': training_hyperparams['humans_policy'],
-#         'circle_radius': 7,
-#         'reward_function': reward_function,
-#         'kinematics': training_hyperparams['kinematics'],
-#     }
-#     test_env = SocialNav(**test_env_params)
-#     metrics_after_il = test_k_trials(
-#         n_trials, 
-#         training_hyperparams['il_training_episodes'], 
-#         test_env, 
-#         policy, 
-#         il_out['actor_params'], 
-#         reward_function.time_limit)
+# Execute tests to evaluate return after IL
+for test, n_humans in enumerate(n_humans_for_tests):
+    test_env_params = {
+        'robot_radius': 0.3,
+        'n_humans': n_humans,
+        'robot_dt': 0.25,
+        'humans_dt': 0.01,
+        'robot_visible': True,
+        'scenario': training_hyperparams['scenario'],
+        'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+        'humans_policy': training_hyperparams['humans_policy'],
+        'circle_radius': 7,
+        'reward_function': reward_function,
+        'kinematics': training_hyperparams['kinematics'],
+    }
+    test_env = SocialNav(**test_env_params)
+    metrics_after_il = test_k_trials(
+        n_trials, 
+        training_hyperparams['il_training_episodes'], 
+        test_env, 
+        policy, 
+        il_out['actor_params'], 
+        reward_function.time_limit)
 
-# # Plot losses during IL
-# figure, ax = plt.subplots(2,1,figsize=(10,10))
-# ax[0].set(
-#     xlabel='Epoch', 
-#     ylabel='Loss', 
-#     title='Actor Loss during IL training'
-# )
-# ax[0].plot(
-#     np.arange(len(il_out['actor_losses'])), 
-#     il_out['actor_losses'],
-# )
-# ax[1].set(
-#     xlabel='Epoch', 
-#     ylabel='Loss', 
-#     title='Critic Loss during IL training'
-# )
-# ax[1].plot(
-#     np.arange(len(il_out['critic_losses'])), 
-#     il_out['critic_losses'],
-# )
-# figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
-# plt.close(figure)
+# Plot losses during IL
+figure, ax = plt.subplots(2,1,figsize=(10,10))
+ax[0].set(
+    xlabel='Epoch', 
+    ylabel='Loss', 
+    title='Actor Loss during IL training'
+)
+ax[0].plot(
+    np.arange(len(il_out['actor_losses'])), 
+    il_out['actor_losses'],
+)
+ax[1].set(
+    xlabel='Epoch', 
+    ylabel='Loss', 
+    title='Critic Loss during IL training'
+)
+ax[1].plot(
+    np.arange(len(il_out['critic_losses'])), 
+    il_out['critic_losses'],
+)
+figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
+plt.close(figure)
 
-# # Save IL rollout output
-# with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
-#     pickle.dump(il_out, f)
+# Save IL rollout output
+with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
+    pickle.dump(il_out, f)
 
 # Load IL rollout output
 with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:

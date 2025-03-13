@@ -16,6 +16,7 @@ class DirichletBernoulli(BaseDistribution):
         - wheels_distance (float): distance between the wheels of the robot.
         - epsilon (float): small value to avoid math overflow.
         """
+        self.name = "dirichlet-bernoulli"
         self.vmax = vmax
         self.wheels_distance = wheels_distance
         self.epsilon = epsilon

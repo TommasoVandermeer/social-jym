@@ -11,16 +11,27 @@ vmax = 1.
 wheels_distance = 0.7
 means = jnp.array([0., 0.])
 sigmas = jnp.array([1., 1.])
+linear_angular = False
 
 # Initialize Gaussian distribution
 gaussian = Gaussian()
 
 @jit
 def _bound_action(action:jnp.ndarray, vmax:float, wheels_distance:float) -> jnp.ndarray:
-    v = jnp.clip(action[0], 0., vmax)
-    w_max = (2 * (vmax - v)) / wheels_distance
-    w = jnp.clip(action[1], -w_max, w_max)
-    return jnp.array([v, w])
+    if linear_angular:
+        v = jnp.clip(action[0], 0., vmax)
+        w_max = (2 * (vmax - v)) / wheels_distance # Real feasible actions
+        # w_max = vmax * 2 / wheels_distance # Box bounded actions
+        w = jnp.clip(action[1], -w_max, w_max)
+        return jnp.array([v, w])
+    else:
+        v_left = jnp.clip(action[0], -vmax, vmax)
+        v_right = jnp.clip(action[1], -vmax, vmax)
+        v = (v_left + v_right) / 2
+        v = jnp.abs(v)
+        w = (v_right - v_left) / wheels_distance
+        return jnp.array([v, w])
+    
 
 # Get samples
 key = random.PRNGKey(random_seed)

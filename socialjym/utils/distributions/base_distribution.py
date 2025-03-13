@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
-import jax.numpy as jnp
-from jax import random, jit, vmap, nn, debug, lax
-from functools import partial
+
+DISTRIBUTIONS = [
+    "gaussian",
+    "dirichlet-bernoulli",
+]
 
 class BaseDistribution(ABC):
     def __init__(self) -> None:

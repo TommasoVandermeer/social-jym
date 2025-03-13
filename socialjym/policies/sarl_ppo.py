@@ -7,6 +7,9 @@ from types import FunctionType
 import optax
 
 from socialjym.envs.base_env import ROBOT_KINEMATICS
+from socialjym.utils.distributions.base_distribution import DISTRIBUTIONS
+from socialjym.utils.distributions.gaussian import Gaussian
+from socialjym.utils.distributions.dirichlet_bernoulli import DirichletBernoulli
 from .sarl import SARL
 from .sarl import value_network as critic_network
 from .sarl import MLP_1_PARAMS, MLP_2_PARAMS, ATTENTION_LAYER_PARAMS
@@ -44,17 +47,24 @@ ATTENTION_LAYER_PARAMS = {
 class Actor(hk.Module):
     def __init__(
             self,
+            distribution:str,
             mlp1_params:dict=MLP_1_PARAMS,
             mlp2_params:dict=MLP_2_PARAMS,
             mlp4_params:dict=MLP_4_PARAMS,
             attention_layer_params:dict=ATTENTION_LAYER_PARAMS,
             robot_state_size:int=6,
         ) -> None:
-        super().__init__()  
+        super().__init__() 
+        self.distr_id = DISTRIBUTIONS.index(distribution) 
         self.mlp1 = hk.nets.MLP(**mlp1_params, name="mlp1")
         self.mlp2 = hk.nets.MLP(**mlp2_params, name="mlp2")
         self.mlp4 = hk.nets.MLP(**mlp4_params, name="mlp4")
-        self.output_layer = hk.Linear(2, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
+        if self.distr_id == DISTRIBUTIONS.index('gaussian'):
+            self.distr = Gaussian()
+            self.output_layer = hk.Linear(2, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
+        elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
+            self.distr = DirichletBernoulli()
+            self.output_layer = hk.Linear(5, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
         self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
         self.robot_state_size = robot_state_size
 
@@ -134,7 +144,7 @@ class SARLPPO(SARL):
         self.critic = critic_network
         @hk.transform
         def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
-            actor = Actor()
+            actor = Actor(distribution='gaussian')
             return actor(x, **kwargs)
         self.actor = actor_network
 

@@ -9,8 +9,8 @@ random_seed = 0
 n_samples = 5_000
 vmax = 1
 wheels_distance = 0.7
-alpha = jnp.array([1, 1, 1])
-concentration = 3
+alpha = jnp.array([1, 3, 1])
+concentration = jnp.sum(alpha)
 p = .5
 epsilon = 1e-6
 

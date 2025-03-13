@@ -263,7 +263,7 @@ def test_k_trials(
         all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
         all_rewards = jnp.empty((int(time_limit/env.robot_dt)+1,))
         while_val_init = (state, obs, info, init_outcome, policy_key, 0, all_actions, all_states, all_rewards)
-        _, _, _, outcome, policy_key, episode_steps, all_actions, all_states, all_rewards = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+        _, _, end_info, outcome, policy_key, episode_steps, all_actions, all_states, all_rewards = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
         ## Update metrics
         metrics["successes"] = lax.cond(outcome["success"], lambda x: x + 1, lambda x: x, metrics["successes"])
         metrics["collisions"] = lax.cond(outcome["failure"], lambda x: x + 1, lambda x: x, metrics["collisions"])
@@ -343,7 +343,11 @@ def test_k_trials(
             int(time_limit/env.robot_dt)+1,
             lambda m, x: lax.cond(
                 m < episode_steps,
-                lambda y: y.at[m].set(jnp.min(jnp.linalg.norm(all_states[m, :-1, :2] - all_states[m, -1, :2], axis=1) - info["humans_parameters"][:,0]) - env.robot_radius),
+                lambda y: lax.cond(
+                    end_info["current_scenario"] == SCENARIOS.index('circular_crossing_with_static_obstacles'), # Static humans in this scenario are not used to compute min_distance and space_compliance
+                    lambda z: z.at[m].set(jnp.min(jnp.linalg.norm(all_states[m, env.ccso_n_static_humans:-1, :2] - all_states[m, -1, :2], axis=1) - info["humans_parameters"][env.ccso_n_static_humans:,0]) - env.robot_radius),
+                    lambda z: z.at[m].set(jnp.min(jnp.linalg.norm(all_states[m, :-1, :2] - all_states[m, -1, :2], axis=1) - info["humans_parameters"][:,0]) - env.robot_radius),
+                    y),
                 lambda y: y.at[m].set(jnp.nan),
                 x),
             jnp.empty((int(time_limit/env.robot_dt)+1,)))

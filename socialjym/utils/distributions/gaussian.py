@@ -6,8 +6,8 @@ from socialjym.utils.distributions.base_distribution import BaseDistribution
 
 class Gaussian(BaseDistribution):
     def __init__(self) -> None:
-        "This is a diagonal Gaussian distribution."
-        pass
+        "This is a diagonal multivariate Gaussian distribution."
+        self.name="gaussian"
     
     @partial(jit, static_argnames=("self"))
     def entropy(self, logsigmas:jnp.ndarray):
