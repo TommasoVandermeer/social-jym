@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+from jax import random
+import jax.numpy as jnp
 
 DISTRIBUTIONS = [
     "gaussian",
@@ -10,13 +12,17 @@ class BaseDistribution(ABC):
         pass
 
     @abstractmethod
-    def neglogp(self):
+    def neglogp(self, distribution:dict, action:jnp.ndarray):
         pass
 
     @abstractmethod
-    def sample(self):
+    def sample(self, distribution:dict, key:random.PRNGKey):
         pass
 
     @abstractmethod
-    def entropy(self):
+    def entropy(self, distribution:dict):
+        pass
+
+    @abstractmethod
+    def mean(self, distribution:dict):
         pass

@@ -33,6 +33,7 @@ def ppo_rl_rollout(
 ) -> dict:
         
         assert policy.name == "SARL-PPO", "This function is only compatible with PPO policies."
+        distribution_id = policy.distr_id
 
         # Compute number of steps to simulate per update for each parallel env
         assert buffer_capacity % n_parallel_envs == 0, "The buffer capacity must be a multiple of the number of parallel environments. Otherwise you will trow away experiences."
@@ -52,7 +53,7 @@ def ppo_rl_rollout(
                         # Retrieve data from the tuple
                         actor_params, critic_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns = val
                         ## Step
-                        actions, policy_keys, inputs, sampled_actions, distrs = policy.batch_act(policy_keys, obses, infos, actor_params, sample=True)
+                        actions, policy_keys, inputs, sampled_actions, distr = policy.batch_act(policy_keys, obses, infos, actor_params, sample=True)
                         # Compute state values
                         values = vmap(policy.critic.apply, in_axes=(None,None,0))(
                                 critic_params, 
@@ -66,7 +67,7 @@ def ppo_rl_rollout(
                         batch_actions = batch_actions.at[:,step].set(sampled_actions)
                         batch_rewards = batch_rewards.at[:,step].set(rewards)
                         batch_dones = batch_dones.at[:,step].set(~(init_outcomes["nothing"])) # Pay attention to this: we are using the initial outcomes to compute the dones
-                        batch_neglogpdfs = batch_neglogpdfs.at[:,step].set(policy.batch_compute_neg_log_pdf_value(distrs["mu1"], distrs["mu2"], distrs["logsigma"], sampled_actions))
+                        batch_neglogpdfs = batch_neglogpdfs.at[:,step].set(policy.distr.batch_neglogp(distr, sampled_actions))
                         ## Compute dones and auxiliary data
                         successes += jnp.sum(outcomes["success"])
                         failures += jnp.sum(outcomes["failure"])
@@ -94,7 +95,14 @@ def ppo_rl_rollout(
                 aux_data["returns"] = aux_data["returns"].at[upd_idx].set(jnp.mean(cum_rewards))
                 aux_data["episodes"] = aux_data["episodes"].at[upd_idx].set(episode_count)
                 # Get current sigma for debugging
-                current_sigma = jnp.exp(actor_params['actor']['logsigma'])
+                entropy_param = lax.switch(
+                        distribution_id,
+                        [
+                                lambda _: jnp.exp(actor_params['actor']['logsigma']),
+                                lambda _: (nn.tanh(actor_params['actor']['logsigma']) + 1) * 15,
+                        ],
+                        None,
+                )
                 ### Add experiences to the buffer
                 # Compute the value of the last batched_states and dones
                 last_values = vmap(policy.critic.apply, in_axes=(None,None,0))(
@@ -211,7 +219,7 @@ def ppo_rl_rollout(
                 lax.cond(
                         (debugging) & (upd_idx % debugging_interval == 0) & (upd_idx != 0),   
                         lambda _: debug.print(
-                                "Episodes {w}\nActor loss: {y}\nCritic loss: {z}\nEntropy: {e}\nSigma: {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}", 
+                                "Episodes {w}\nActor loss: {y}\nCritic loss: {z}\nEntropy: {e}\nEnt. param (std/concentration): {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}", 
                                 y=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["actor_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["actor_losses"])) <= upd_idx), jnp.abs(aux_data["actor_losses"]), jnp.nan)),
                                 z=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["critic_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["critic_losses"])) <= upd_idx), aux_data["critic_losses"], jnp.nan)), 
                                 w=jnp.sum(aux_data["episodes"]),
@@ -220,7 +228,7 @@ def ppo_rl_rollout(
                                 f=jnp.nansum(jnp.where((jnp.arange(len(aux_data["failures"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["failures"])) <= upd_idx), aux_data["failures"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 t=jnp.nansum(jnp.where((jnp.arange(len(aux_data["timeouts"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["timeouts"])) <= upd_idx), aux_data["timeouts"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 e=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["entropy_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["entropy_losses"])) <= upd_idx), aux_data["entropy_losses"], jnp.nan)),
-                                std=current_sigma,
+                                std=entropy_param,
                                 ),
                         lambda x: x, 
                         None

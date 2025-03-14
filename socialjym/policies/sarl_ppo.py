@@ -12,7 +12,6 @@ from socialjym.utils.distributions.gaussian import Gaussian
 from socialjym.utils.distributions.dirichlet_bernoulli import DirichletBernoulli
 from .sarl import SARL
 from .sarl import value_network as critic_network
-from .sarl import MLP_1_PARAMS, MLP_2_PARAMS, ATTENTION_LAYER_PARAMS
 
 EPSILON = 1e-5
 MLP_1_PARAMS = {
@@ -29,7 +28,7 @@ MLP_2_PARAMS = {
     "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
     "b_init": hk.initializers.Constant(0.),
 }
-MLP_4_PARAMS = {
+MLP_3_PARAMS = {
     "output_sizes": [150, 100, 100],
     "activation": nn.tanh, # nn.relu
     "activate_final": False,
@@ -50,7 +49,7 @@ class Actor(hk.Module):
             distribution:str,
             mlp1_params:dict=MLP_1_PARAMS,
             mlp2_params:dict=MLP_2_PARAMS,
-            mlp4_params:dict=MLP_4_PARAMS,
+            mlp4_params:dict=MLP_3_PARAMS,
             attention_layer_params:dict=ATTENTION_LAYER_PARAMS,
             robot_state_size:int=6,
         ) -> None:
@@ -61,10 +60,11 @@ class Actor(hk.Module):
         self.mlp4 = hk.nets.MLP(**mlp4_params, name="mlp4")
         if self.distr_id == DISTRIBUTIONS.index('gaussian'):
             self.distr = Gaussian()
-            self.output_layer = hk.Linear(2, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
+            n_outputs = 2
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
             self.distr = DirichletBernoulli()
-            self.output_layer = hk.Linear(5, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
+            n_outputs = 4
+        self.output_layer = hk.Linear(n_outputs, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
         self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
         self.robot_state_size = robot_state_size
 
@@ -77,7 +77,7 @@ class Actor(hk.Module):
         Computes the value of the state given the input x of shape (# of humans, length of reparametrized state)
         """
         ## Get kwargs
-        gaussian_key = kwargs.get("gaussian_key", random.PRNGKey(0))
+        random_key = kwargs.get("random_key", random.PRNGKey(0))
         ## Save self state variables
         size = x.shape # (# of humans, length of reparametrized state)
         self_state = x[0,:self.robot_state_size] # The robot state is repeated in each row of axis 1, we take the first one
@@ -107,26 +107,37 @@ class Actor(hk.Module):
         mlp4_input = jnp.concatenate([self_state, weighted_features], axis=0)
         mlp4_output = self.mlp4(mlp4_input)
         # debug.print("Joint State/MLP4 input size: {x}", x=mlp4_input.shape)
-        ## Compute normal distribution parameters
-        mu1, mu2 = self.output_layer(mlp4_output)
-        logsigma = hk.get_parameter("logsigma", shape=[], init=hk.initializers.Constant(0.))
-        sigma = jnp.exp(logsigma)
+        if self.distr_id == DISTRIBUTIONS.index('gaussian'):
+            ## Compute normal distribution parameters
+            means = self.output_layer(mlp4_output)
+            logsigma = hk.get_parameter("logsigma", shape=[], init=hk.initializers.Constant(0.))
+            distribution = {"means": means, "logsigma": logsigma}
+        elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
+            alpha1, alpha2, alpha3, p = self.output_layer(mlp4_output)
+            ## Compute dirchlet-bernoulli distribution parameters
+            alphas = jnp.array([alpha1, alpha2, alpha3])
+            alphas = nn.softplus(alphas) # alphas only positive
+            concentration = hk.get_parameter("concentration", shape=[], init=hk.initializers.Constant(0.))
+            concentration = (nn.tanh(concentration) + 1) * 15 # Concentration ranges from 0 to 30 this way (after 30 concentration the neglogp computation is not stable)
+            alphas = self.distr.normalize_alphas(alphas, concentration)
+            p = (nn.tanh(p) + 1) / 2 # p ranges from 0 to 1 this way
+            distribution = {"alphas": alphas, "p": p}
         ## Sample action
-        key1, key2 = random.split(gaussian_key)
-        sampled_action = jnp.array([mu1 + sigma * random.normal(key1), mu2 + sigma * random.normal(key2)])
-        return sampled_action, {"mu1": mu1, "mu2": mu2, "logsigma": logsigma}
+        sampled_action = self.distr.sample(distribution, random_key)
+        return sampled_action, distribution
 
 class SARLPPO(SARL):
     def __init__(
             self, 
             reward_function:FunctionType, 
-            v_max=1., 
-            gamma=0.9, 
-            dt=0.25, 
-            wheels_distance=0.7, 
-            kinematics='unicycle',
-            noise = False, # If True, noise is added to humams positions and velocities
-            noise_sigma_percentage:float = 0., # Standard deviation of the noise as a percentage of the absolute value of the difference between the robot and the humans
+            distribution:str='gaussian',
+            v_max:float=1., 
+            gamma:float=0.9, 
+            dt:float=0.25, 
+            wheels_distance:float=0.7, 
+            kinematics:str='unicycle',
+            noise:bool=False, # If True, noise is added to humams positions and velocities
+            noise_sigma_percentage:float=0., # Standard deviation of the noise as a percentage of the absolute value of the difference between the robot and the humans
         ) -> None:
         # Configurable attributes
         super().__init__(
@@ -141,68 +152,20 @@ class SARLPPO(SARL):
         )
         # Default attributes
         self.name = "SARL-PPO"
+        self.distr_id = DISTRIBUTIONS.index(distribution)
+        if self.distr_id == DISTRIBUTIONS.index('gaussian'):
+            self.distr = Gaussian()
+            self.output_layer = hk.Linear(2, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
+        elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
+            self.distr = DirichletBernoulli()
         self.critic = critic_network
         @hk.transform
         def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
-            actor = Actor(distribution='gaussian')
+            actor = Actor(distribution=distribution)
             return actor(x, **kwargs)
         self.actor = actor_network
 
     # Private methods
-
-    @partial(jit, static_argnames=("self"))
-    def _bound_action(
-        self,
-        sampled_action:jnp.ndarray,
-    ) -> jnp.ndarray:
-        if self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-            v, w = sampled_action
-            ## Bound the final action with HARD CLIPPING
-            v = jnp.clip(v, 0, self.v_max)
-            w_max = (2 * (self.v_max - v)) / self.wheels_distance
-            w = jnp.clip(w, -w_max, w_max)
-            ## Build final action
-            constrained_action = jnp.array([v, w])
-        elif self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-            vx, vy = sampled_action
-            norm = jnp.linalg.norm(jnp.array([vx, vy]))
-            ## Bound the norm of the velocity with HARD CLIPPING
-            scaling_factor = lax.cond(
-                norm != 0,
-                lambda _: jnp.minimum(norm, self.v_max) / norm,
-                lambda _: 1.,
-                None,
-            )
-            vx = vx * scaling_factor
-            vy = vy * scaling_factor
-            ## Build final action
-            constrained_action = jnp.array([vx, vy])
-        return constrained_action
-
-    @partial(jit, static_argnames=("self"))
-    def _sample_action(
-        self,
-        mu1:float,
-        mu2:float,
-        sigma:float = 0.,
-        key:random.PRNGKey = random.PRNGKey(0),
-    ) -> jnp.ndarray:
-        key1, key2 = random.split(key)
-        a1 = mu1 + sigma * random.normal(key1)
-        a2 = mu2 + sigma * random.normal(key2)
-        sampled_action = jnp.array([a1, a2])
-        constrained_action = self._bound_action(sampled_action)
-        return constrained_action, sampled_action
-
-    @partial(jit, static_argnames=("self"))
-    def _compute_neg_log_pdf_value(
-        self, 
-        mu1:jnp.ndarray, 
-        mu2:jnp.ndarray,
-        logsigma:jnp.ndarray,
-        action:jnp.ndarray
-    ) -> jnp.ndarray:
-        return .5 * jnp.sum(jnp.square((action - jnp.array([mu1, mu2])) / jnp.exp(logsigma))) + jnp.log(2 * jnp.pi) + logsigma
 
     @partial(jit, static_argnames=("self"))
     def _compute_rl_loss_and_gradients(
@@ -267,14 +230,9 @@ class SARLPPO(SARL):
                 old_neglogpdf:jnp.ndarray,
             ) -> jnp.ndarray:
                 # Compute the prediction
-                _, distrs = self.actor.apply(current_actor_params, None, input)
+                _, distr = self.actor.apply(current_actor_params, None, input)
                 # Compute the log probability of the action
-                neglogpdf = self._compute_neg_log_pdf_value(
-                    distrs["mu1"],
-                    distrs["mu2"],
-                    distrs["logsigma"],
-                    sample_action
-                )
+                neglogpdf = self.distr.neglogp(distr, sample_action)
                 # Compute policy ratio
                 ratio = jnp.exp(old_neglogpdf - neglogpdf)
                 lax.cond(
@@ -380,12 +338,13 @@ class SARLPPO(SARL):
                 sample_action:jnp.ndarray,
             ) -> jnp.ndarray:
                 # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                _, distrs = self.actor.apply(current_actor_params, None, input)
-                action = jnp.array([distrs["mu1"], distrs["mu2"]])
+                _, distr = self.actor.apply(current_actor_params, None, input)
                 # Get mean action
-                constrained_action = self._bound_action(action)
+                action = self.distr.mean(distr)
+                if self.distr_id == DISTRIBUTIONS.index('gaussian'):
+                    action = self.distr.bound_action(action)
                 # Compute the loss
-                return 0.5 * jnp.sum(jnp.square(constrained_action - sample_action))
+                return 0.5 * jnp.sum(jnp.square(action - sample_action))
             
             actor_losses = _il_loss_function(current_actor_params, inputs, sample_actions)
             return jnp.mean(actor_losses)
@@ -427,10 +386,11 @@ class SARLPPO(SARL):
         actor_input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
         # Compute action 
         key, subkey = random.split(key)
-        sampled_action, distrs = self.actor.apply(actor_params, None, actor_input, gaussian_key=subkey)
-        action = lax.cond(sample, lambda _: sampled_action, lambda _: jnp.array([distrs["mu1"],distrs["mu2"]]), None)
-        constrained_action = self._bound_action(action)
-        return constrained_action, key, actor_input, sampled_action, distrs
+        sampled_action, distr = self.actor.apply(actor_params, None, actor_input, random_key=subkey)
+        action = lax.cond(sample, lambda _: sampled_action, lambda _: self.distr.mean(distr), None)
+        if self.distr_id == DISTRIBUTIONS.index('gaussian'):
+            action = self.distr.bound_action(action)
+        return action, key, actor_input, sampled_action, distr
     
     @partial(jit, static_argnames=("self"))
     def batch_act(
@@ -447,38 +407,6 @@ class SARLPPO(SARL):
             infos, 
             actor_params, 
             sample,
-        )
-    
-    @partial(jit, static_argnames=("self"))
-    def batch_compute_neg_log_pdf_value(
-        self, 
-        mu1s:jnp.ndarray, 
-        mu2s:jnp.ndarray,
-        logsigmas:jnp.ndarray,
-        actions:jnp.ndarray
-    ) -> jnp.ndarray:
-        return vmap(SARLPPO._compute_neg_log_pdf_value, in_axes=(None, 0, 0, 0, 0))(
-            self,
-            mu1s,
-            mu2s,
-            logsigmas,
-            actions,
-        )
-
-    @partial(jit, static_argnames=("self"))
-    def batch_sample_action(
-        self,
-        mu1:jnp.ndarray,
-        mu2:jnp.ndarray,
-        sigma:jnp.ndarray,
-        keys:random.PRNGKey,
-    ) -> jnp.ndarray:
-        return vmap(SARLPPO._sample_action, in_axes=(None, None, None, None, 0))(
-            self, 
-            mu1, 
-            mu2, 
-            sigma,
-            keys,
         )
 
     @partial(jit, static_argnames=("self","actor_optimizer","critic_optimizer"))
