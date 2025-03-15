@@ -47,6 +47,8 @@ class Actor(hk.Module):
     def __init__(
             self,
             distribution:str,
+            v_max:float,
+            wheels_distance:float,
             mlp1_params:dict=MLP_1_PARAMS,
             mlp2_params:dict=MLP_2_PARAMS,
             mlp4_params:dict=MLP_3_PARAMS,
@@ -62,7 +64,7 @@ class Actor(hk.Module):
             self.distr = Gaussian()
             n_outputs = 2
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
-            self.distr = DirichletBernoulli()
+            self.distr = DirichletBernoulli(v_max, wheels_distance, EPSILON)
             n_outputs = 4
         self.output_layer = hk.Linear(n_outputs, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
         self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
@@ -111,7 +113,8 @@ class Actor(hk.Module):
             ## Compute normal distribution parameters
             means = self.output_layer(mlp4_output)
             logsigma = hk.get_parameter("logsigma", shape=[], init=hk.initializers.Constant(0.))
-            distribution = {"means": means, "logsigma": logsigma}
+            logsigmas = jnp.array([logsigma, logsigma])
+            distribution = {"means": means, "logsigmas": logsigmas}
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
             alpha1, alpha2, alpha3, p = self.output_layer(mlp4_output)
             ## Compute dirchlet-bernoulli distribution parameters
@@ -155,13 +158,12 @@ class SARLPPO(SARL):
         self.distr_id = DISTRIBUTIONS.index(distribution)
         if self.distr_id == DISTRIBUTIONS.index('gaussian'):
             self.distr = Gaussian()
-            self.output_layer = hk.Linear(2, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
-            self.distr = DirichletBernoulli()
+            self.distr = DirichletBernoulli(self.v_max, self.wheels_distance, EPSILON)
         self.critic = critic_network
         @hk.transform
         def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
-            actor = Actor(distribution=distribution)
+            actor = Actor(distribution=distribution, v_max=self.v_max, wheels_distance=self.wheels_distance)
             return actor(x, **kwargs)
         self.actor = actor_network
 
@@ -238,22 +240,27 @@ class SARLPPO(SARL):
                 lax.cond(
                     debugging,
                     lambda _: debug.print(
-                        "Ratio: {x} - Old pdf: {y} - New pdf: {z}", 
+                        "Ratio: {x} - Old neglogp: {y} - New neglogp: {z} - distr: {w} - action: {a} - advantage: {b}", 
                         x=ratio,
-                        y=jnp.exp(-old_neglogpdf),
-                        z=jnp.exp(-neglogpdf),
+                        y=old_neglogpdf,
+                        z=neglogpdf,
+                        w=distr,
+                        a=sample_action,
+                        b=advantage,
                     ),
                     lambda _: None,
                     None,
                 )
                 # Compute actor loss
                 actor_loss = jnp.maximum(- ratio * advantage, - jnp.clip(ratio, 1-clip_range, 1+clip_range) * advantage)
+                # Compute the entropy loss
+                entropy_loss = self.distr.entropy(distr)
                 # Compute the loss
-                return actor_loss
+                return actor_loss, entropy_loss
             
-            actor_losses = _rl_loss_function(current_actor_params, inputs, sample_actions, advantages, old_neglogpdfs)
+            actor_losses, entropy_losses = _rl_loss_function(current_actor_params, inputs, sample_actions, advantages, old_neglogpdfs)
             actor_loss = jnp.mean(actor_losses)
-            entropy_loss = current_actor_params['actor']['logsigma'] * 2 + jnp.log(2 * jnp.pi * jnp.e) # It is doubled because we have a sigma for each action (but it is the same, so double it)
+            entropy_loss = jnp.mean(entropy_losses)
             loss = actor_loss - beta_entropy * entropy_loss
             return loss, {"actor_loss": actor_loss, "entropy_loss": entropy_loss}
 
@@ -342,7 +349,7 @@ class SARLPPO(SARL):
                 # Get mean action
                 action = self.distr.mean(distr)
                 if self.distr_id == DISTRIBUTIONS.index('gaussian'):
-                    action = self.distr.bound_action(action)
+                    action = self.distr.bound_action(action, self.kinematics, self.v_max, self.wheels_distance)
                 # Compute the loss
                 return 0.5 * jnp.sum(jnp.square(action - sample_action))
             
@@ -389,7 +396,7 @@ class SARLPPO(SARL):
         sampled_action, distr = self.actor.apply(actor_params, None, actor_input, random_key=subkey)
         action = lax.cond(sample, lambda _: sampled_action, lambda _: self.distr.mean(distr), None)
         if self.distr_id == DISTRIBUTIONS.index('gaussian'):
-            action = self.distr.bound_action(action)
+            action = self.distr.bound_action(action, self.kinematics, self.v_max, self.wheels_distance)
         return action, key, actor_input, sampled_action, distr
     
     @partial(jit, static_argnames=("self"))
@@ -430,8 +437,15 @@ class SARLPPO(SARL):
                 experiences,
                 beta_entropy,
                 clip_range,
-                debugging=False, #debugging,
+                debugging=debugging, #debugging,
         )
+        ## DEBUG
+        # lax.cond(
+        #     debugging,
+        #     lambda _: debug.print("Actor logsigma grads: {x}", x=actor_grads['actor']['logsigma']),
+        #     lambda _: None,
+        #     None,
+        # )
         ## CRITIC
         # Compute parameter updates
         critic_updates, critic_opt_state = critic_optimizer.update(critic_grads, critic_opt_state)
@@ -442,17 +456,6 @@ class SARLPPO(SARL):
         actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
         # Apply updates
         updated_actor_params = optax.apply_updates(actor_params, actor_updates)
-        ## Debug
-        lax.cond(
-            debugging,
-            lambda _: debug.print(
-                "Sigma gradient: {x}\nSigma update: {y}", 
-                x = actor_grads['actor']['logsigma'],
-                y = actor_updates['actor']['logsigma'],
-            ),
-            lambda _: None,
-            None,
-        )
         return (
             updated_critic_params, 
             updated_actor_params, 

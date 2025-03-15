@@ -7,6 +7,7 @@ from jax_tqdm import loop_tqdm
 import pickle
 
 from socialjym.envs.base_env import BaseEnv
+from socialjym.utils.distributions.base_distribution import DISTRIBUTIONS
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.utils.replay_buffers.ppo_replay_buffer import PPOBuffer
 
@@ -53,7 +54,7 @@ def ppo_rl_rollout(
                         # Retrieve data from the tuple
                         actor_params, critic_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns = val
                         ## Step
-                        actions, policy_keys, inputs, sampled_actions, distr = policy.batch_act(policy_keys, obses, infos, actor_params, sample=True)
+                        actions, policy_keys, inputs, sampled_actions, distrs = policy.batch_act(policy_keys, obses, infos, actor_params, sample=True)
                         # Compute state values
                         values = vmap(policy.critic.apply, in_axes=(None,None,0))(
                                 critic_params, 
@@ -67,7 +68,7 @@ def ppo_rl_rollout(
                         batch_actions = batch_actions.at[:,step].set(sampled_actions)
                         batch_rewards = batch_rewards.at[:,step].set(rewards)
                         batch_dones = batch_dones.at[:,step].set(~(init_outcomes["nothing"])) # Pay attention to this: we are using the initial outcomes to compute the dones
-                        batch_neglogpdfs = batch_neglogpdfs.at[:,step].set(policy.distr.batch_neglogp(distr, sampled_actions))
+                        batch_neglogpdfs = batch_neglogpdfs.at[:,step].set(policy.distr.batch_neglogp(distrs, sampled_actions))
                         ## Compute dones and auxiliary data
                         successes += jnp.sum(outcomes["success"])
                         failures += jnp.sum(outcomes["failure"])
@@ -95,14 +96,10 @@ def ppo_rl_rollout(
                 aux_data["returns"] = aux_data["returns"].at[upd_idx].set(jnp.mean(cum_rewards))
                 aux_data["episodes"] = aux_data["episodes"].at[upd_idx].set(episode_count)
                 # Get current sigma for debugging
-                entropy_param = lax.switch(
-                        distribution_id,
-                        [
-                                lambda _: jnp.exp(actor_params['actor']['logsigma']),
-                                lambda _: (nn.tanh(actor_params['actor']['logsigma']) + 1) * 15,
-                        ],
-                        None,
-                )
+                if distribution_id == DISTRIBUTIONS.index("gaussian"):
+                        entropy_param = jnp.exp(actor_params['actor']['logsigma']),
+                elif distribution_id == DISTRIBUTIONS.index("dirichlet-bernoulli"):
+                        entropy_param = (nn.tanh(actor_params['actor']['concentration']) + 1) * 15,
                 ### Add experiences to the buffer
                 # Compute the value of the last batched_states and dones
                 last_values = vmap(policy.critic.apply, in_axes=(None,None,0))(
@@ -139,6 +136,8 @@ def ppo_rl_rollout(
                 # debug.print("Critic estimates: {x}", x=batch_values[0,:-1])
                 # debug.print("Returns: {x}", x=critic_targets[0])
                 # debug.print("Dones: {x}", x=batch_dones[0,:-1])
+                # debug.print("Batch actions: {x}", x=batch_actions[0])
+                # debug.print("Batch neglogp: {x}", x=batch_neglogpdfs[0])
                 # Add all experiences to the buffer
                 buffer_state = replay_buffer.batch_add(
                         buffer_state,
@@ -183,7 +182,7 @@ def ppo_rl_rollout(
                                         experiences,
                                         beta_entropy,
                                         clip_range,
-                                        debugging = False, 
+                                        debugging = False, #(debugging) & (upd_idx % debugging_interval == 0) & (epoch + batch == 0), 
                                 )
                                 # Save aux data
                                 pre_aux_data["actor_losses"] = pre_aux_data["actor_losses"].at[epoch,batch].set(actor_loss)

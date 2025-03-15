@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax
 from functools import partial
-from jax.scipy.special import gamma, digamma
+from jax.scipy.special import gamma, digamma, gammaln
 
 from socialjym.utils.distributions.base_distribution import BaseDistribution
 
@@ -65,8 +65,9 @@ class DirichletBernoulli(BaseDistribution):
         p = distribution["p"]
         descaled_v = action[0] / self.vmax
         descaled_w = jnp.abs(action[1] * self.wheels_distance / (self.vmax * 2)) # We consider only positive values of y (the binomial changes the sign)
-        realization = jnp.array([descaled_v, descaled_w, 1-descaled_v-descaled_w])
+        realization = jnp.array([descaled_v, descaled_w, 1-(descaled_v+descaled_w)])
         log_pdf_value_dirichlet = jnp.log(gamma(jnp.sum(alphas))+self.epsilon) - jnp.sum(jnp.log(gamma(alphas)+self.epsilon)) + jnp.sum((alphas - 1) * jnp.log(realization + self.epsilon))
+        # log_pdf_value_dirichlet = gammaln(jnp.sum(alphas)) - jnp.sum(gammaln(alphas)) + jnp.sum((alphas - 1) * jnp.log(realization + self.epsilon))
         case = jnp.argmax(jnp.array([action[1] > 0, action[1] < 0, action[1] == 0], dtype=jnp.int32))
         log_pdf_value_binomial = lax.switch(
             case, 
@@ -78,7 +79,7 @@ class DirichletBernoulli(BaseDistribution):
             None,
         )
         neg_log_pdf_value = lax.cond(
-            (jnp.abs(action[1]) > (2*self.vmax/self.wheels_distance -2*action[0]/self.wheels_distance)) | (action[0] > self.vmax) | (action[0] < 0),
+            (action[0] > self.vmax) | (action[0] < 0),# | (jnp.abs(action[1]) > (2*self.vmax/self.wheels_distance -2*action[0]/self.wheels_distance)),
             lambda _: jnp.inf,
             lambda _: -log_pdf_value_dirichlet - log_pdf_value_binomial,
             None,
@@ -91,7 +92,11 @@ class DirichletBernoulli(BaseDistribution):
 
     @partial(jit, static_argnames=("self"))
     def batch_neglogp(self, distribution:dict, actions:jnp.ndarray):
-        return vmap(DirichletBernoulli.neglogp, in_axes=(None, None, 0))(self, distribution, actions)
+        """
+        Compute the negative log pdf value of a batch of actions and distirbutions.
+        Vectorized over distributions and actions!!!
+        """
+        return vmap(DirichletBernoulli.neglogp, in_axes=(None, 0, 0))(self, distribution, actions)
 
     @partial(jit, static_argnames=("self"))
     def logp(self, distribution:dict, action:jnp.ndarray):

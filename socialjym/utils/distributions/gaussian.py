@@ -16,14 +16,13 @@ class Gaussian(BaseDistribution):
     @partial(jit, static_argnames=("self"))
     def entropy(self, distribution:dict) -> float:
         logsigmas = distribution["logsigmas"]
-        return jnp.log(2*jnp.pi*jnp.exp(1)) + jnp.sum(logsigmas)
+        return .5 * jnp.log(2*jnp.pi*jnp.exp(1)) * len(logsigmas)  + jnp.sum(logsigmas)
 
     @partial(jit, static_argnames=("self"))
     def sample(self, distribution:dict, key:random.PRNGKey):
         means = distribution["means"]
         sigmas = jnp.exp(distribution["logsigmas"])
-        key1, key2 = random.split(key)
-        return means + sigmas * jnp.array([random.normal(key1), random.normal(key2)])
+        return means + sigmas * random.normal(key, shape=(len(means),))
 
     @partial(jit, static_argnames=("self"))
     def batch_sample(self, distribution:dict, keys:jnp.ndarray):
@@ -41,7 +40,11 @@ class Gaussian(BaseDistribution):
 
     @partial(jit, static_argnames=("self"))
     def batch_neglogp(self, distribution:dict, actions:jnp.ndarray):
-        return vmap(Gaussian.neglogp, in_axes=(None, None, 0))(self, distribution, actions)
+        """
+        Compute the negative log pdf value of a batch of actions and distirbutions.
+        Vectorized over distributions and actions!!!
+        """
+        return vmap(Gaussian.neglogp, in_axes=(None, 0, 0))(self, distribution, actions)
 
     @partial(jit, static_argnames=("self"))
     def logp(self, distribution:dict, action:jnp.ndarray):
@@ -79,15 +82,16 @@ class Gaussian(BaseDistribution):
         returns:
         - constrained_action (jnp.ndarray): action bounded by the robot kinematics.
         """
-        if kinematics == ROBOT_KINEMATICS.index('unicycle'):
+        @jit
+        def _unicycle_action(sampled_action, v_max, wheels_distance):
             v, w = sampled_action
             ## Bound the final action with HARD CLIPPING
             v = jnp.clip(v, 0, v_max)
             w_max = (2 * (v_max - v)) / wheels_distance
             w = jnp.clip(w, -w_max, w_max)
-            ## Build final action
-            constrained_action = jnp.array([v, w])
-        elif kinematics == ROBOT_KINEMATICS.index('holonomic'):
+            return jnp.array([v, w])
+        @jit
+        def _holonomic_action(sampled_action, v_max):
             vx, vy = sampled_action
             norm = jnp.linalg.norm(jnp.array([vx, vy]))
             ## Bound the norm of the velocity with HARD CLIPPING
@@ -99,6 +103,14 @@ class Gaussian(BaseDistribution):
             )
             vx = vx * scaling_factor
             vy = vy * scaling_factor
-            ## Build final action
-            constrained_action = jnp.array([vx, vy])
+            return jnp.array([vx, vy])
+
+        constrained_action = lax.switch(
+            kinematics,
+            [ # Make sure these are coherent with ROBOT_KINEMATICS order (defined in socialjym.envs.base_env)
+                lambda _: _holonomic_action(sampled_action, v_max),
+                lambda _: _unicycle_action(sampled_action, v_max, wheels_distance),
+            ],
+            None,
+        )
         return constrained_action

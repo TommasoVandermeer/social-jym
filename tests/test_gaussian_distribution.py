@@ -33,6 +33,14 @@ def _bound_action(action:jnp.ndarray, vmax:float, wheels_distance:float) -> jnp.
         w = (v_right - v_left) / wheels_distance
         return jnp.array([v, w])
     
+@jit
+def compute_neg_log_pdf_value(
+    mu1:jnp.ndarray, 
+    mu2:jnp.ndarray,
+    logsigma:jnp.ndarray,
+    action:jnp.ndarray
+) -> jnp.ndarray:
+    return .5 * jnp.sum(jnp.square((action - jnp.array([mu1, mu2])) / jnp.exp(logsigma))) + jnp.log(2 * jnp.pi) + logsigma
 
 # Get samples
 key = random.PRNGKey(random_seed)
@@ -47,17 +55,24 @@ entropy = gaussian.entropy(distr)
 print("Entropy: {:.2f}".format(entropy))
 
 # Compute PDF values
-print("Mean action: [{:.2f}, {:.2f}]".format(means[0], means[1]), " - PDF value: ", "{:.2f}".format(gaussian.p(distr, means)), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, means)))
-print("PDF value of action [0, 0]: ", "{:.2f}".format(gaussian.p(distr, jnp.array([0, 0]))), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, jnp.array([0, 0]))))
-print("PDF value of action [{:.2f}, 0]: ".format(vmax), "{:.2f}".format(gaussian.p(distr, jnp.array([vmax, 0]))), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, jnp.array([vmax, 0]))))
-print("PDF value of action [{:.2f}, 0]: ".format(-vmax), "{:.2f}".format(gaussian.p(distr, jnp.array([-vmax, 0]))), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, jnp.array([-vmax, 0]))))
-print("PDF value of action [{:.2f}, 0]: ".format(2*vmax), "{:.2f}".format(gaussian.p(distr, jnp.array([2*vmax, 0]))), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, jnp.array([2*vmax, 0]))))
-print("PDF value of action [0, 1]: ", "{:.2f}".format(gaussian.p(distr, jnp.array([0, 1]))), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, jnp.array([0, 1]))))
-print("PDF value of action [0, -1]: ", "{:.2f}".format(gaussian.p(distr, jnp.array([0, -1]))), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, jnp.array([0, -1]))))
-print("PDF value of action [{:.2f}, 1]: ".format(vmax/3), "{:.2f}".format(gaussian.p(distr, jnp.array([vmax/3, 1]))), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, jnp.array([vmax/3, 1]))))
-print("PDF value of action [{:.2f}, -1]: ".format(vmax/3), "{:.2f}".format(gaussian.p(distr, jnp.array([vmax/3, -1]))), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, jnp.array([vmax/3, -1]))))
-print("PDF value of action [0, {:.2f}]: ".format(2*vmax/wheels_distance), "{:.2f}".format(gaussian.p(distr, jnp.array([0, 2*vmax/wheels_distance]))), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, jnp.array([0, 2*vmax/wheels_distance]))))
-print("PDF value of action [0, {:.2f}]: ".format(-2*vmax/wheels_distance), "{:.2f}".format(gaussian.p(distr, jnp.array([0, -2*vmax/wheels_distance]))), " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, jnp.array([0, -2*vmax/wheels_distance]))))
+actions_to_test = jnp.array([
+    [means[0], means[1]],
+    [0, 0],
+    [vmax, 0],
+    [-vmax, 0],
+    [2*vmax, 0],
+    [0, 1],
+    [0, -1],
+    [vmax/3, 1],
+    [vmax/3, -1],
+    [0, 2*vmax/wheels_distance],
+    [0, -2*vmax/wheels_distance],
+])
+for action in actions_to_test:
+    print("PDF value of action : [{:.2f}, {:.2f}]".format(action[0], action[1]), \
+          " - PDF value: ", "{:.2f}".format(gaussian.p(distr, action)), \
+          " - Neg log PDF value: ", "{:.2f}".format(gaussian.neglogp(distr, action)), \
+          " - Neg log PDF value 2: ", "{:.2f}".format(compute_neg_log_pdf_value(means[0], means[1], jnp.log(sigmas[0]), action)))
 
 # Plot samples and mean action
 figure, ax = plt.subplots(1, 1, figsize=(8, 8))

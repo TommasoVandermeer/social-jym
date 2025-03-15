@@ -6,13 +6,13 @@ from matplotlib.patches import Polygon
 from socialjym.utils.distributions.dirichlet_bernoulli import DirichletBernoulli
 
 random_seed = 0
-n_samples = 5_000
+n_samples = 1_000
 vmax = 1
 wheels_distance = 0.7
-alpha = jnp.array([1, 3, 1])
+alpha = jnp.array([1.0524137e+01, 4.4721308e+00, 3.7317413e-03]) #jnp.array([1., 3., 1.])
 concentration = jnp.sum(alpha)
-p = .5
-epsilon = 1e-6
+p = 0.9818748 #.5
+epsilon = 1e-3
 
 # Generate distribution
 distribution = DirichletBernoulli(vmax, wheels_distance, epsilon)
@@ -39,6 +39,8 @@ print("Entropy: {:.2f}".format(entropy))
 mean_v, mean_w = distribution.mean(distr)
 print("Mean action: [{:.2f}, {:.2f}]".format(mean_v, mean_w), " - PDF value: ", "{:.2f}".format(distribution.p(distr, jnp.array([mean_v, mean_w]))))
 # Compute probability of several actions
+print(f"PDF value of action {[0.70365906, 0.8466885]}: ", f"{distribution.p(distr, jnp.array([0, 0]))}")
+print(0.70365906 / vmax, jnp.abs(0.8466885 * wheels_distance / (vmax * 2)), 1-(0.70365906 / vmax+jnp.abs(0.8466885 * wheels_distance / (vmax * 2))))
 print("PDF value of action [0, 0]: ", "{:.2f}".format(distribution.p(distr, jnp.array([0, 0]))))
 print("PDF value of action [{:.2f}, 0]: ".format(vmax), "{:.2f}".format(distribution.p(distr, jnp.array([vmax, 0]))))
 print("PDF value of action [{:.2f}, 0]: ".format(-vmax), "{:.2f}".format(distribution.p(distr, jnp.array([-vmax, 0]))))
@@ -70,11 +72,10 @@ ax.legend()
 plt.show()
 
 # Compute PDF value of samples
-more_samples = jnp.append(samples, jnp.column_stack((jnp.arange(0,1,0.01),jnp.zeros(100))), axis=0)
-pdf_values = distribution.batch_p(distr, more_samples)
+pdf_values = distribution.batch_p(distr, samples)
 fig = plt.figure()
 ax = fig.add_subplot(projection='3d')
-ax.scatter(more_samples[:,0], more_samples[:,1], pdf_values, label='PDF values')
+ax.scatter(samples[:,0], samples[:,1], pdf_values, label='PDF values')
 ax.scatter(0, 0, 0, c='g', label='Origin')
 ax.set(xlim=[-0.1,vmax+0.1], ylim=[-vmax*2/wheels_distance-0.2,+vmax*2/wheels_distance+0.2])
 ax.legend()
