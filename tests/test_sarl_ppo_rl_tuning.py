@@ -68,6 +68,7 @@ for trial in range(n_trials):
         'random_seed': 0,
         'kinematics': 'unicycle',
         'policy_name': 'sarl-ppo',
+        'distribution': 'gaussian',
         'n_humans': 5, 
         'rl_training_updates': training_updates,
         'rl_parallel_envs': n_parallel_envs,
@@ -115,7 +116,7 @@ for trial in range(n_trials):
     # Initialize environment
     env = SocialNav(**env_params)
     # Initialize robot policy and vnet params
-    policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'])
+    policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'], distribution=training_hyperparams['distribution'])
     # Initialize RL optimizer
     actor_optimizer = optax.chain(
         optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),

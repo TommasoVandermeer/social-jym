@@ -53,48 +53,48 @@ all_metrics = {
     "path_length": empty_trials_metrics_array
 }
 
-### Test loop
-for i, vnet_params_dir in enumerate(vnet_params_dirs):
-    for j, test_env in enumerate(test_environments):
-        for k, test_scenario in enumerate(test_scenarios):
-            for h, n_humans in enumerate(test_n_humans):
-                print(f"\nTesting {vnet_params_dir.split('/')[-2]} on {test_env} in {test_scenario}")
-                env_params = {
-                    'robot_radius': 0.3,
-                    'n_humans': n_humans + n_static_humans if test_scenario == "circular_crossing_with_static_obstacles" else n_humans,
-                    'robot_dt': 0.25,
-                    'humans_dt': 0.01,
-                    'robot_visible': True,
-                    'scenario': test_scenario,
-                    'humans_policy': test_env,
-                    'reward_function': reward_function,
-                    'kinematics': kinematics,
-                    'ccso_n_static_humans': n_static_humans,
-                }
-                env = SocialNav(**env_params)
-                ### Initialize robot policy
-                policy = SARL(
-                    env.reward_function, 
-                    dt = env_params['robot_dt'], 
-                    kinematics = kinematics, 
-                    noise = False)
-                vnet_params = load_crowdnav_policy(
-                    "sarl",
-                    vnet_params_dir)
-                ### Execute test
-                metrics = test_k_trials(
-                    n_test_trials,
-                    random_seed,
-                    env,
-                    policy,
-                    vnet_params,
-                    reward_function.time_limit)
-                ### Save results
-                all_metrics = tree_map(lambda x, y: x.at[i,j,k,h].set(y), all_metrics, metrics)
+# ### Test loop
+# for i, vnet_params_dir in enumerate(vnet_params_dirs):
+#     for j, test_env in enumerate(test_environments):
+#         for k, test_scenario in enumerate(test_scenarios):
+#             for h, n_humans in enumerate(test_n_humans):
+#                 print(f"\nTesting {vnet_params_dir.split('/')[-2]} on {test_env} in {test_scenario}")
+#                 env_params = {
+#                     'robot_radius': 0.3,
+#                     'n_humans': n_humans + n_static_humans if test_scenario == "circular_crossing_with_static_obstacles" else n_humans,
+#                     'robot_dt': 0.25,
+#                     'humans_dt': 0.01,
+#                     'robot_visible': True,
+#                     'scenario': test_scenario,
+#                     'humans_policy': test_env,
+#                     'reward_function': reward_function,
+#                     'kinematics': kinematics,
+#                     'ccso_n_static_humans': n_static_humans,
+#                 }
+#                 env = SocialNav(**env_params)
+#                 ### Initialize robot policy
+#                 policy = SARL(
+#                     env.reward_function, 
+#                     dt = env_params['robot_dt'], 
+#                     kinematics = kinematics, 
+#                     noise = False)
+#                 vnet_params = load_crowdnav_policy(
+#                     "sarl",
+#                     vnet_params_dir)
+#                 ### Execute test
+#                 metrics = test_k_trials(
+#                     n_test_trials,
+#                     random_seed,
+#                     env,
+#                     policy,
+#                     vnet_params,
+#                     reward_function.time_limit)
+#                 ### Save results
+#                 all_metrics = tree_map(lambda x, y: x.at[i,j,k,h].set(y), all_metrics, metrics)
 
-### Save results
-with open(os.path.join(os.path.dirname(__file__),f"metrics_tests_with_static_humans.pkl"), 'wb') as f:
-    pickle.dump(all_metrics, f)
+# ### Save results
+# with open(os.path.join(os.path.dirname(__file__),f"metrics_tests_with_static_humans.pkl"), 'wb') as f:
+#     pickle.dump(all_metrics, f)
 
 ### Load results
 with open(os.path.join(os.path.dirname(__file__),f"metrics_tests_with_static_humans.pkl"), 'rb') as f:
@@ -122,7 +122,7 @@ metrics_data = {
 # Plot usual metrics for each (policy-test scenario) couple against the number of humans
 for e_idx, test_env in enumerate(test_environments):
     figure, ax = plt.subplots(math.ceil((len(all_metrics)-len(exclude_metrics))/2), 2, figsize=(18,18))
-    figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.07, hspace=0.3, wspace=0.3)
+    figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.09, hspace=0.3, wspace=0.3)
     for key, values in all_metrics.items():
         if key in exclude_metrics:
             continue
@@ -152,7 +152,7 @@ for e_idx, test_env in enumerate(test_environments):
 # Plot usual metrics for each test scenario against the number of humans
 for e_idx, test_env in enumerate(test_environments):
     figure, ax = plt.subplots(math.ceil((len(all_metrics)-len(exclude_metrics))/2), 2, figsize=(18,18))
-    figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.07, hspace=0.3, wspace=0.3)
+    figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.09, hspace=0.3, wspace=0.3)
     for key, values in all_metrics.items():
         if key in exclude_metrics:
             continue

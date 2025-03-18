@@ -9,9 +9,9 @@ random_seed = 0
 n_samples = 1_000
 vmax = 1
 wheels_distance = 0.7
-alpha = jnp.array([1.0524137e+01, 4.4721308e+00, 3.7317413e-03]) #jnp.array([1., 3., 1.])
+alpha = jnp.array([1., 1., 1.])
 concentration = jnp.sum(alpha)
-p = 0.9818748 #.5
+p = .5
 epsilon = 1e-3
 
 # Generate distribution
@@ -34,23 +34,55 @@ samples = distribution.batch_sample(distr, keys)
 # Compute entropy of distribution
 entropy = distribution.entropy(distr)
 print("Entropy: {:.2f}".format(entropy))
+print("Std: ", distribution.std(distr))
 
 # Compute mean action and its probability
 mean_v, mean_w = distribution.mean(distr)
 print("Mean action: [{:.2f}, {:.2f}]".format(mean_v, mean_w), " - PDF value: ", "{:.2f}".format(distribution.p(distr, jnp.array([mean_v, mean_w]))))
 # Compute probability of several actions
-print(f"PDF value of action {[0.70365906, 0.8466885]}: ", f"{distribution.p(distr, jnp.array([0, 0]))}")
-print(0.70365906 / vmax, jnp.abs(0.8466885 * wheels_distance / (vmax * 2)), 1-(0.70365906 / vmax+jnp.abs(0.8466885 * wheels_distance / (vmax * 2))))
-print("PDF value of action [0, 0]: ", "{:.2f}".format(distribution.p(distr, jnp.array([0, 0]))))
-print("PDF value of action [{:.2f}, 0]: ".format(vmax), "{:.2f}".format(distribution.p(distr, jnp.array([vmax, 0]))))
-print("PDF value of action [{:.2f}, 0]: ".format(-vmax), "{:.2f}".format(distribution.p(distr, jnp.array([-vmax, 0]))))
-print("PDF value of action [{:.2f}, 0]: ".format(2*vmax), "{:.2f}".format(distribution.p(distr, jnp.array([2*vmax, 0]))))
-print("PDF value of action [0, 1]: ", "{:.2f}".format(distribution.p(distr, jnp.array([0, 1]))))
-print("PDF value of action [0, -1]: ", "{:.2f}".format(distribution.p(distr, jnp.array([0, -1]))))
-print("PDF value of action [{:.2f}, 1]: ".format(vmax/3), "{:.2f}".format(distribution.p(distr, jnp.array([vmax/3, 1]))))
-print("PDF value of action [{:.2f}, -1]: ".format(vmax/3), "{:.2f}".format(distribution.p(distr, jnp.array([vmax/3, -1]))))
-print("PDF value of action [0, {:.2f}]: ".format(2*vmax/wheels_distance), "{:.2f}".format(distribution.p(distr, jnp.array([0, 2*vmax/wheels_distance]))))
-print("PDF value of action [0, {:.2f}]: ".format(-2*vmax/wheels_distance), "{:.2f}".format(distribution.p(distr, jnp.array([0, -2*vmax/wheels_distance]))))
+actions_on_the_border = jnp.array([
+    [0, 0],
+    [vmax, 0],
+    [0, 1],
+    [0, -1],
+    [0, 2*vmax/wheels_distance],
+    [0, -2*vmax/wheels_distance],
+    [0.70365906, 0.8466885],
+])
+print("\nActions on the border of the feasible region:")
+for action in actions_on_the_border:
+    print("PDF value of action : [{:.2f}, {:.2f}]".format(action[0], action[1]), \
+          " - PDF value: ", "{:.2f}".format(distribution.p(distr, action)), \
+          " - Log PDF: ", distribution.logp(distr, action))
+actions_outside = jnp.array([
+    [2*vmax, 0],
+    [-vmax, 0],
+    [-2*vmax, 0],
+    [vmax+0.01, 0.01],
+    [vmax+0.01, -0.01],
+])
+print("\nActions outside the feasible region:")
+for action in actions_outside:
+    print("PDF value of action : [{:.2f}, {:.2f}]".format(action[0], action[1]), \
+          " - PDF value: ", "{:.2f}".format(distribution.p(distr, action)), \
+          " - Log PDF: ", distribution.logp(distr, action))
+actions_inside = jnp.array([
+    [vmax/3, 1],
+    [vmax/3, -1],
+    [vmax/5, 1],
+    [vmax/5, -1],
+    [vmax/7, 1],
+    [vmax/7, -1],
+    [0.2, 2.],
+    [0.2, -2],
+    [0.5, 0.5],
+    [0.5, -0.5],
+])
+print("\nActions inside the feasible region:")
+for action in actions_inside:
+    print("PDF value of action : [{:.2f}, {:.2f}]".format(action[0], action[1]), \
+          " - PDF value: ", "{:.2f}".format(distribution.p(distr, action)), \
+          " - Log PDF: ", distribution.logp(distr, action))
 
 # Plot samples and mean action
 figure, ax = plt.subplots(1, 1, figsize=(8, 8))
@@ -73,6 +105,7 @@ plt.show()
 
 # Compute PDF value of samples
 pdf_values = distribution.batch_p(distr, samples)
+print("\nNaNs in PDF values: ", jnp.isnan(pdf_values).sum())
 fig = plt.figure()
 ax = fig.add_subplot(projection='3d')
 ax.scatter(samples[:,0], samples[:,1], pdf_values, label='PDF values')

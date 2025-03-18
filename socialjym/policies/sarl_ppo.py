@@ -60,6 +60,8 @@ class Actor(hk.Module):
         self.mlp1 = hk.nets.MLP(**mlp1_params, name="mlp1")
         self.mlp2 = hk.nets.MLP(**mlp2_params, name="mlp2")
         self.mlp4 = hk.nets.MLP(**mlp4_params, name="mlp4")
+        self.vmax = v_max
+        self.wheels_distance = wheels_distance
         if self.distr_id == DISTRIBUTIONS.index('gaussian'):
             self.distr = Gaussian()
             n_outputs = 2
@@ -260,8 +262,8 @@ class SARLPPO(SARL):
             
             actor_losses, entropy_losses = _rl_loss_function(current_actor_params, inputs, sample_actions, advantages, old_neglogpdfs)
             actor_loss = jnp.mean(actor_losses)
-            entropy_loss = jnp.mean(entropy_losses)
-            loss = actor_loss - beta_entropy * entropy_loss
+            entropy_loss = - beta_entropy * jnp.mean(entropy_losses)
+            loss = actor_loss + entropy_loss
             return loss, {"actor_loss": actor_loss, "entropy_loss": entropy_loss}
 
         inputs = experiences["inputs"]

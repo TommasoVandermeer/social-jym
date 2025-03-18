@@ -33,6 +33,10 @@ class Gaussian(BaseDistribution):
         return distribution["means"]
 
     @partial(jit, static_argnames=("self"))
+    def var(self, distribution:dict) -> jnp.ndarray:
+        return jnp.exp(2 * distribution["logsigmas"])
+
+    @partial(jit, static_argnames=("self"))
     def neglogp(self, distribution:dict, action:jnp.ndarray):
         means = distribution["means"]
         logsigmas = distribution["logsigmas"]
@@ -84,12 +88,34 @@ class Gaussian(BaseDistribution):
         """
         @jit
         def _unicycle_action(sampled_action, v_max, wheels_distance):
-            v, w = sampled_action
             ## Bound the final action with HARD CLIPPING
-            v = jnp.clip(v, 0, v_max)
-            w_max = (2 * (v_max - v)) / wheels_distance
-            w = jnp.clip(w, -w_max, w_max)
-            return jnp.array([v, w])
+            # v, w = sampled_action
+            # v = jnp.clip(v, 0, v_max)
+            # w_max = (2 * (v_max - v)) / wheels_distance
+            # w = jnp.clip(w, -w_max, w_max)
+            # return jnp.array([v, w])
+            ## Bound the final action with DISTANCE TO ORIGIN CLIPPING
+            x, y = sampled_action
+            cases = jnp.array([
+                x <= 0,
+                (y == 0) & (x > 0),
+                (abs(y) <= 2*(v_max - x)/wheels_distance) & (x > 0),
+                (y >= 0) & (y > 2*(v_max - x)/wheels_distance) & (x > 0),
+                (y < 0) & (y < 2*(x - v_max)/wheels_distance) & (x > 0)
+            ], dtype=jnp.int32)
+            bounded_action = lax.switch(
+                jnp.argmax(cases),
+                [
+                    lambda _: jnp.array([0., jnp.clip(y, -2*v_max/wheels_distance, 2*v_max/wheels_distance)]),
+                    lambda _: jnp.array([jnp.min(jnp.array([v_max,x])), 0.]),
+                    lambda _: jnp.array([x, y]),
+                    lambda _: jnp.array([2*v_max*x/(y*wheels_distance+2*x), 2*v_max*y/(y*wheels_distance+2*x)]),
+                    lambda _: jnp.array([-2*v_max*x/(y*wheels_distance-2*x), -2*v_max*y/(y*wheels_distance-2*x)]),
+                ],
+                None,
+            )
+            return bounded_action
+        
         @jit
         def _holonomic_action(sampled_action, v_max):
             vx, vy = sampled_action

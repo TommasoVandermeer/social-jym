@@ -16,6 +16,7 @@ from socialjym.utils.aux_functions import animate_trajectory, load_crowdnav_poli
 random_seed = 0 
 n_episodes = 50
 kinematics = "unicycle"
+distribution = "gaussian"
 tests_n_humans = [5, 10, 15, 20, 25]
 n_trials = 100
 ds = 0.2 # Discomfort distance
@@ -48,8 +49,8 @@ env_params = {
 env = SocialNav(**env_params)
 
 ### Initialize robot policy
-policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
-with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
+policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics, distribution=distribution)
+with open(os.path.join(os.path.dirname(__file__), 'il_out.pkl'), 'rb') as f:
     rl_out = pickle.load(f)
     actor_params = rl_out['actor_params']
 

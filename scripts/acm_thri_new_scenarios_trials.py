@@ -136,11 +136,11 @@ scenarios_data = {
     "parallel_traffic": {"label": "PT"},
     "hybrid_scenario": {"label": "HS"},
 }
-exclude_metrics = ["collisions", "timeouts", "average_speed", "returns", "average_angular_speed", "average_angular_acceleration", "average_angular_jerk"]
+exclude_metrics = ["collisions", "timeouts", "path_length", "returns", "average_angular_speed", "average_angular_acceleration", "average_angular_jerk"]
 metrics_data = {
     "successes": {"row_position": 0, "col_position": 0, "label": "Success rate", "ylim": [0.4,1.1], "yticks": [i/10 for i in range(4,11)]}, 
     "times_to_goal": {"row_position": 0, "col_position": 1, "label": "Time to goal ($s$)"},
-    "path_length": {"row_position": 1, "col_position": 0, "label": "Path length ($m$)"}, 
+    "average_speed": {"row_position": 1, "col_position": 0, "label": "Speed ($m/s$)"}, 
     "episodic_spl": {"row_position": 1, "col_position": 1, "label": "SPL", "ylim": [0,1], "yticks": [i/10 for i in range(11)]},
     "space_compliance": {"row_position": 2, "col_position": 0, "label": "Space compliance", "ylim": [0,1]},
     "average_acceleration": {"row_position": 2, "col_position": 1, "label": "Acceleration ($m/s^2$)"},
@@ -172,7 +172,7 @@ for key, values in all_metrics.items():
                 linewidth=2,
             )
 handles, labels = ax[0,0].get_legend_handles_labels()
-figure.legend(train_scenarios, loc="center right", title=f"SARL policies tested\nin new scenarios.\nTrain scenario:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
+figure.legend(train_scenarios, loc="center right", title=f"SARL policies tested\nin unseen scenarios.\nTrain scenario:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
 figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_tests_in_new_scenarios.eps"), format='eps')
 
 # Plot success rate and time to goal for each training scenario, averaged over everything else
@@ -201,5 +201,5 @@ for key, values in all_metrics.items():
             )
         col += 1
 handles, labels = ax[0].get_legend_handles_labels()
-figure.legend(train_scenarios, loc="center right", title=f"SARL policies tested\nin new scenarios.\nTrain scenario:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
+figure.legend(train_scenarios, loc="center right", title=f"SARL policies tested\nin unseen scenarios.\nTrain scenario:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
 figure.savefig(os.path.join(os.path.dirname(__file__),f"sr_ttg_tests_in_new_scenarios.eps"), format='eps')

@@ -10,12 +10,13 @@ n_samples = 1_000
 vmax = 1.
 wheels_distance = 0.7
 means = jnp.array([0., 0.])
-sigmas = jnp.array([1., 1.])
+sigmas = jnp.array([vmax/2, (2*vmax/wheels_distance)/2])
 linear_angular = True
 
 # Initialize Gaussian distribution
 gaussian = Gaussian()
 distr = {"means": means, "logsigmas": jnp.log(sigmas)}
+print("Std: ", gaussian.std(distr))
 
 @jit
 def _bound_action(action:jnp.ndarray, vmax:float, wheels_distance:float) -> jnp.ndarray:
@@ -48,7 +49,8 @@ keys = random.split(key, n_samples)
 samples = gaussian.batch_sample(distr, keys)
 
 # Compute bounded samples
-bounded_samples = vmap(_bound_action, in_axes=(0, None, None))(samples, vmax, wheels_distance)
+# bounded_samples = vmap(_bound_action, in_axes=(0, None, None))(samples, vmax, wheels_distance)
+bounded_samples = vmap(gaussian.bound_action, in_axes=(0, None, None, None))(samples, 1, vmax, wheels_distance)
 
 # Compute entropy of distribution
 entropy = gaussian.entropy(distr)

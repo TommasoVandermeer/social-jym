@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from jax import random
 import jax.numpy as jnp
+from functools import partial
+from jax import jit
 
 DISTRIBUTIONS = [
     "gaussian",
@@ -26,3 +28,11 @@ class BaseDistribution(ABC):
     @abstractmethod
     def mean(self, distribution:dict):
         pass
+
+    @abstractmethod
+    def var(self, distribution:dict):
+        pass
+
+    @partial(jit, static_argnames=("self"))
+    def std(self, distribution:dict) -> jnp.ndarray:
+        return jnp.sqrt(self.var(distribution))

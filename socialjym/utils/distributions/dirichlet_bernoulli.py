@@ -1,7 +1,9 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax
 from functools import partial
-from jax.scipy.special import gamma, digamma, gammaln
+from jax.scipy.special import gamma, digamma
+from jax.scipy.stats.dirichlet import logpdf
+from jax.scipy.stats.bernoulli import logpmf
 
 from socialjym.utils.distributions.base_distribution import BaseDistribution
 
@@ -60,14 +62,31 @@ class DirichletBernoulli(BaseDistribution):
         return jnp.array([mean_v, mean_w])
 
     @partial(jit, static_argnames=("self"))
+    def var(self, distribution:dict) -> jnp.ndarray:
+        alphas = distribution["alphas"]
+        p = distribution["p"]
+        concentration = jnp.sum(alphas)
+        diri_mean = alphas / concentration * jnp.array([self.vmax, self.vmax * 2 / self.wheels_distance, 1.])
+        diri_var = (alphas * (concentration - alphas) / (concentration**2 * (concentration + 1))) * jnp.array([self.vmax, self.vmax * 2 / self.wheels_distance, 1.])**2
+        binom_mean = 2 * p - 1
+        binom_var = 4 * p * (1 - p)
+        var_v = diri_var[0]
+        var_w = diri_var[1] * binom_mean**2 + binom_var * diri_mean[1]**2 + diri_var[1] * binom_var
+        return jnp.array([var_v, var_w])
+
+    @partial(jit, static_argnames=("self"))
     def neglogp(self, distribution:dict, action:jnp.ndarray):
         alphas = distribution["alphas"]
         p = distribution["p"]
         descaled_v = action[0] / self.vmax
         descaled_w = jnp.abs(action[1] * self.wheels_distance / (self.vmax * 2)) # We consider only positive values of y (the binomial changes the sign)
         realization = jnp.array([descaled_v, descaled_w, 1-(descaled_v+descaled_w)])
+        ## Compute negative log pdf value with predefined functions
+        # log_pdf_value_dirichlet = logpdf(realization, alphas)
+        # log_pdf_value_binomial = logpmf(action[1] > 0, p)
+        # neg_log_pdf_value = -log_pdf_value_dirichlet - log_pdf_value_binomial
+        ## Compute negative log pdf value with custom functions
         log_pdf_value_dirichlet = jnp.log(gamma(jnp.sum(alphas))+self.epsilon) - jnp.sum(jnp.log(gamma(alphas)+self.epsilon)) + jnp.sum((alphas - 1) * jnp.log(realization + self.epsilon))
-        # log_pdf_value_dirichlet = gammaln(jnp.sum(alphas)) - jnp.sum(gammaln(alphas)) + jnp.sum((alphas - 1) * jnp.log(realization + self.epsilon))
         case = jnp.argmax(jnp.array([action[1] > 0, action[1] < 0, action[1] == 0], dtype=jnp.int32))
         log_pdf_value_binomial = lax.switch(
             case, 
@@ -79,7 +98,7 @@ class DirichletBernoulli(BaseDistribution):
             None,
         )
         neg_log_pdf_value = lax.cond(
-            (action[0] > self.vmax) | (action[0] < 0),# | (jnp.abs(action[1]) > (2*self.vmax/self.wheels_distance -2*action[0]/self.wheels_distance)),
+            (action[0] > self.vmax) | (action[0] < 0),
             lambda _: jnp.inf,
             lambda _: -log_pdf_value_dirichlet - log_pdf_value_binomial,
             None,

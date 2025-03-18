@@ -95,11 +95,9 @@ def ppo_rl_rollout(
                 aux_data["timeouts"] = aux_data["timeouts"].at[upd_idx].set(timeo_count)
                 aux_data["returns"] = aux_data["returns"].at[upd_idx].set(jnp.mean(cum_rewards))
                 aux_data["episodes"] = aux_data["episodes"].at[upd_idx].set(episode_count)
-                # Get current sigma for debugging
-                if distribution_id == DISTRIBUTIONS.index("gaussian"):
-                        entropy_param = jnp.exp(actor_params['actor']['logsigma']),
-                elif distribution_id == DISTRIBUTIONS.index("dirichlet-bernoulli"):
-                        entropy_param = (nn.tanh(actor_params['actor']['concentration']) + 1) * 15,
+                # Get current std for debugging (WARNING: could be state dependent or not)
+                _, _, _, _, distrs = policy.batch_act(policy_keys, obses, infos, actor_params, sample=True)
+                current_std = jnp.mean(vmap(policy.distr.std, in_axes=(0))(distrs), axis=0)
                 ### Add experiences to the buffer
                 # Compute the value of the last batched_states and dones
                 last_values = vmap(policy.critic.apply, in_axes=(None,None,0))(
@@ -218,7 +216,7 @@ def ppo_rl_rollout(
                 lax.cond(
                         (debugging) & (upd_idx % debugging_interval == 0) & (upd_idx != 0),   
                         lambda _: debug.print(
-                                "Episodes {w}\nActor loss: {y}\nCritic loss: {z}\nEntropy: {e}\nEnt. param (std/concentration): {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}", 
+                                "Episodes {w}\nActor loss: {y}\nCritic loss: {z}\nEntropy: {e}\nStd: {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}", 
                                 y=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["actor_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["actor_losses"])) <= upd_idx), jnp.abs(aux_data["actor_losses"]), jnp.nan)),
                                 z=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["critic_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["critic_losses"])) <= upd_idx), aux_data["critic_losses"], jnp.nan)), 
                                 w=jnp.sum(aux_data["episodes"]),
@@ -227,7 +225,7 @@ def ppo_rl_rollout(
                                 f=jnp.nansum(jnp.where((jnp.arange(len(aux_data["failures"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["failures"])) <= upd_idx), aux_data["failures"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 t=jnp.nansum(jnp.where((jnp.arange(len(aux_data["timeouts"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["timeouts"])) <= upd_idx), aux_data["timeouts"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 e=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["entropy_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["entropy_losses"])) <= upd_idx), aux_data["entropy_losses"], jnp.nan)),
-                                std=entropy_param,
+                                std=current_std,
                                 ),
                         lambda x: x, 
                         None
