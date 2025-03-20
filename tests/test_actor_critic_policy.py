@@ -50,7 +50,7 @@ env = SocialNav(**env_params)
 
 ### Initialize robot policy
 policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics, distribution=distribution)
-with open(os.path.join(os.path.dirname(__file__), 'il_out.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
     rl_out = pickle.load(f)
     actor_params = rl_out['actor_params']
 

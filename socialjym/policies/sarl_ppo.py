@@ -114,6 +114,9 @@ class Actor(hk.Module):
         if self.distr_id == DISTRIBUTIONS.index('gaussian'):
             ## Compute normal distribution parameters
             means = self.output_layer(mlp4_output)
+            # lower_bounds = jnp.array([0,-(2*self.vmax)/self.wheels_distance])
+            # upper_bounds = jnp.array([self.vmax,(2*self.vmax)/self.wheels_distance])
+            # means = lower_bounds + (jnp.tanh(means) + 1) / 2 * (upper_bounds - lower_bounds)
             logsigma = hk.get_parameter("logsigma", shape=[], init=hk.initializers.Constant(0.))
             logsigmas = jnp.array([logsigma, logsigma])
             distribution = {"means": means, "logsigmas": logsigmas}
