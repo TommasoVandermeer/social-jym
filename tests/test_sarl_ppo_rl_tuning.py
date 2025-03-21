@@ -17,6 +17,7 @@ from socialjym.utils.replay_buffers.ppo_replay_buffer import PPOBuffer
 from socialjym.policies.sarl_ppo import SARLPPO
 
 ### Hyperparameters sets
+distribution = 'gaussian'
 hyperparamters_seed = 0
 n_trials = 20
 training_updates = 1_000 # For each set of hyperparameters
@@ -68,7 +69,7 @@ for trial in range(n_trials):
         'random_seed': 0,
         'kinematics': 'unicycle',
         'policy_name': 'sarl-ppo',
-        'distribution': 'gaussian',
+        'distribution': distribution,
         'n_humans': 5, 
         'rl_training_updates': training_updates,
         'rl_parallel_envs': n_parallel_envs,

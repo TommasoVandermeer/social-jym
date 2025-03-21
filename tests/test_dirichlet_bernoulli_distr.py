@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap
+from jax import random, jit, vmap, nn
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 
@@ -19,9 +19,9 @@ distribution = DirichletBernoulli(vmax, wheels_distance, epsilon)
 
 # Normalize alpha and p
 @jit
-def _normalize_alphas(alpha:jnp.ndarray, concentration:float) -> jnp.ndarray:
+def _reparametrize_alphas(alpha:jnp.ndarray, concentration:float) -> jnp.ndarray:
     return alpha / jnp.sum(alpha) * concentration   
-alpha = _normalize_alphas(alpha, concentration)
+alpha = _reparametrize_alphas(alpha, concentration)
 print("Normalized alpha: ", alpha)
 p = jnp.clip(p, 0., 1.)
 distr = {"alphas": alpha, "p": p}

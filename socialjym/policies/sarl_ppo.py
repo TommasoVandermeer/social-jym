@@ -124,10 +124,7 @@ class Actor(hk.Module):
             alpha1, alpha2, alpha3, p = self.output_layer(mlp4_output)
             ## Compute dirchlet-bernoulli distribution parameters
             alphas = jnp.array([alpha1, alpha2, alpha3])
-            alphas = nn.softplus(alphas) # alphas only positive
-            concentration = hk.get_parameter("concentration", shape=[], init=hk.initializers.Constant(0.))
-            concentration = (nn.tanh(concentration) + 1) * 15 # Concentration ranges from 0 to 30 this way (after 30 concentration the neglogp computation is not stable)
-            alphas = self.distr.normalize_alphas(alphas, concentration)
+            alphas = nn.softplus(alphas) + 1 # alphas between [1,inf)
             p = (nn.tanh(p) + 1) / 2 # p ranges from 0 to 1 this way
             distribution = {"alphas": alphas, "p": p}
         ## Sample action
@@ -444,13 +441,6 @@ class SARLPPO(SARL):
                 clip_range,
                 debugging=debugging, #debugging,
         )
-        ## DEBUG
-        # lax.cond(
-        #     debugging,
-        #     lambda _: debug.print("Actor logsigma grads: {x}", x=actor_grads['actor']['logsigma']),
-        #     lambda _: None,
-        #     None,
-        # )
         ## CRITIC
         # Compute parameter updates
         critic_updates, critic_opt_state = critic_optimizer.update(critic_grads, critic_opt_state)
