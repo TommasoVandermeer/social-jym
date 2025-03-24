@@ -11,7 +11,7 @@ vmax = 1
 wheels_distance = 0.7
 alpha = jnp.array([1., 1., 1.])
 concentration = jnp.sum(alpha)
-p = .5
+p = 1.
 epsilon = 1e-3
 
 # Generate distribution

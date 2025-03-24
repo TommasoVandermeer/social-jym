@@ -82,6 +82,7 @@ class DirichletBernoulli(BaseDistribution):
         descaled_v = action[0] / self.vmax
         descaled_w = jnp.abs(action[1] * self.wheels_distance / (self.vmax * 2)) # We consider only positive values of y (the binomial changes the sign)
         realization = jnp.array([descaled_v, descaled_w, 1-(descaled_v+descaled_w)])
+        realization = jnp.clip(realization, 0.+self.epsilon, 1.-self.epsilon) / jnp.sum(jnp.clip(realization, 0.+self.epsilon, 1.-self.epsilon))  # Avoid nan computations
         ## Compute negative log pdf value with predefined functions
         log_pdf_value_dirichlet = logpdf(realization, alphas)
         log_pdf_value_binomial = logpmf(action[1] > 0, jnp.clip(p, 0.+self.epsilon, 1.-self.epsilon))

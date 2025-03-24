@@ -346,8 +346,9 @@ figure.savefig(os.path.join(os.path.dirname(__file__),f"rl_hyperparam_tuning.eps
 
 ### Print trial data
 trial = 19
-print(hpt_out["returns"][trial,-1])
-print(success_rate_during_rl[trial,-1])
+print(f"Trial {trial}")
+print("Return: ", hpt_out["returns"][trial,-1])
+print("Success rate:", success_rate_during_rl[trial,-1])
 print("Actor learning rate: ", hpt_out["actor_lr"][trial])
 print("Critic learning rate: ", hpt_out["critic_lr"][trial])
 print("Parallel environments: ", hpt_out["n_parallel_envs"][trial])

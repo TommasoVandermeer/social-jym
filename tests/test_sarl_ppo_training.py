@@ -20,7 +20,7 @@ n_humans_for_tests = [5, 10, 15]
 n_trials = 1000
 n_parallel_envs = 50 
 training_updates = 10_000
-rl_debugging_interval = 1
+rl_debugging_interval = 10
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': 'unicycle', # 'unicycle' or 'holonomic'
