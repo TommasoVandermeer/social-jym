@@ -1,9 +1,8 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug
 from functools import partial
-from jax.scipy.special import gamma, digamma, gammaln
+from jax.scipy.special import digamma, gammaln
 from jax.scipy.stats.dirichlet import logpdf
-from jax.scipy.stats.bernoulli import logpmf
 
 from socialjym.utils.distributions.base_distribution import BaseDistribution
 
@@ -65,7 +64,7 @@ class Dirichlet(BaseDistribution):
     @partial(jit, static_argnames=("self"))
     def neglogp(self, distribution:dict, action:jnp.ndarray):
         alphas = distribution["alphas"]
-        sample = jnp.linalg.solve(jnp.vstack((self.v.T,jnp.ones((3,)))), jnp.append(action, 1.))
+        sample = jnp.linalg.solve(jnp.vstack((self.v.T,jnp.ones((len(self.v),)))), jnp.append(action, 1.))
         # Avoid inf computation
         sample = jnp.clip(sample, 0.+self.epsilon, 1.-self.epsilon) / jnp.sum(jnp.clip(sample, 0.+self.epsilon, 1.-self.epsilon))
         return - logpdf(sample, alphas)
