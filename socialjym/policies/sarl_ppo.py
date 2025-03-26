@@ -10,6 +10,7 @@ from socialjym.envs.base_env import ROBOT_KINEMATICS
 from socialjym.utils.distributions.base_distribution import DISTRIBUTIONS
 from socialjym.utils.distributions.gaussian import Gaussian
 from socialjym.utils.distributions.dirichlet_bernoulli import DirichletBernoulli
+from socialjym.utils.distributions.dirichlet import Dirichlet
 from .sarl import SARL
 from .sarl import value_network as critic_network
 
@@ -68,6 +69,9 @@ class Actor(hk.Module):
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
             self.distr = DirichletBernoulli(v_max, wheels_distance, EPSILON)
             n_outputs = 4
+        elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
+            self.distr = Dirichlet(v_max, wheels_distance, EPSILON)
+            n_outputs = 3
         self.output_layer = hk.Linear(n_outputs, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
         self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
         self.robot_state_size = robot_state_size
@@ -114,11 +118,10 @@ class Actor(hk.Module):
         if self.distr_id == DISTRIBUTIONS.index('gaussian'):
             ## Compute normal distribution parameters
             means = self.output_layer(mlp4_output)
-            # lower_bounds = jnp.array([0,-(2*self.vmax)/self.wheels_distance])
-            # upper_bounds = jnp.array([self.vmax,(2*self.vmax)/self.wheels_distance])
-            # means = lower_bounds + (jnp.tanh(means) + 1) / 2 * (upper_bounds - lower_bounds)
-            logsigma = hk.get_parameter("logsigma", shape=[], init=hk.initializers.Constant(0.))
-            logsigmas = jnp.array([logsigma, logsigma])
+            lower_bounds = jnp.array([0,-(2*self.vmax)/self.wheels_distance])
+            upper_bounds = jnp.array([self.vmax,(2*self.vmax)/self.wheels_distance])
+            means = lower_bounds + (jnp.tanh(means) + 1) / 2 * (upper_bounds - lower_bounds)
+            logsigmas = hk.get_parameter("logsigmas", shape=[2], init=hk.initializers.Constant(0.))
             distribution = {"means": means, "logsigmas": logsigmas}
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
             alpha1, alpha2, alpha3, p = self.output_layer(mlp4_output)
@@ -127,6 +130,11 @@ class Actor(hk.Module):
             alphas = nn.softplus(alphas) + 1 # alphas between [1,inf)
             p = (nn.tanh(p) + 1) / 2 # p ranges from 0 to 1 this way
             distribution = {"alphas": alphas, "p": p}
+        elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
+            alphas = self.output_layer(mlp4_output)
+            ## Compute dirchlet distribution parameters
+            alphas = nn.softplus(alphas) + 1
+            distribution = {"alphas": alphas}
         ## Sample action
         sampled_action = self.distr.sample(distribution, random_key)
         return sampled_action, distribution
@@ -162,6 +170,8 @@ class SARLPPO(SARL):
             self.distr = Gaussian()
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
             self.distr = DirichletBernoulli(self.v_max, self.wheels_distance, EPSILON)
+        elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
+            self.distr = Dirichlet(self.v_max, self.wheels_distance, EPSILON)
         self.critic = critic_network
         @hk.transform
         def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
@@ -350,8 +360,8 @@ class SARLPPO(SARL):
                 _, distr = self.actor.apply(current_actor_params, None, input)
                 # Get mean action
                 action = self.distr.mean(distr)
-                if self.distr_id == DISTRIBUTIONS.index('gaussian'):
-                    action = self.distr.bound_action(action, self.kinematics, self.v_max, self.wheels_distance)
+                # if self.distr_id == DISTRIBUTIONS.index('gaussian'):
+                #     action = self.distr.bound_action(action, self.kinematics, self.v_max, self.wheels_distance)
                 # Compute the loss
                 return 0.5 * jnp.sum(jnp.square(action - sample_action))
             
@@ -397,8 +407,8 @@ class SARLPPO(SARL):
         key, subkey = random.split(key)
         sampled_action, distr = self.actor.apply(actor_params, None, actor_input, random_key=subkey)
         action = lax.cond(sample, lambda _: sampled_action, lambda _: self.distr.mean(distr), None)
-        if self.distr_id == DISTRIBUTIONS.index('gaussian'):
-            action = self.distr.bound_action(action, self.kinematics, self.v_max, self.wheels_distance)
+        # if self.distr_id == DISTRIBUTIONS.index('gaussian'):
+        #     action = self.distr.bound_action(action, self.kinematics, self.v_max, self.wheels_distance)
         return action, key, actor_input, sampled_action, distr
     
     @partial(jit, static_argnames=("self"))

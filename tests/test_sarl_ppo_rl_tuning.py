@@ -40,6 +40,7 @@ hpt_out = {
     "failures": jnp.zeros((n_trials, training_updates), dtype=int),
     "timeouts": jnp.zeros((n_trials, training_updates), dtype=int),
     "episodes": jnp.zeros((n_trials, training_updates), dtype=int),
+    "stds": jnp.zeros((n_trials, training_updates, 2), dtype=jnp.float32),
     "actor_lr": jnp.zeros((n_trials,), dtype=jnp.float32),
     "critic_lr": jnp.zeros((n_trials,), dtype=jnp.float32),
     "n_parallel_envs": jnp.zeros((n_trials,), dtype=int),
@@ -203,6 +204,7 @@ success_during_rl = hpt_out['successes']
 failure_during_rl = hpt_out['failures']
 timeout_during_rl = hpt_out['timeouts']
 episodes_during_rl = hpt_out['episodes']
+stds_during_rl = hpt_out['stds']
 colors = list(mcolors.TABLEAU_COLORS.values())
 styles = ['solid','dashed','dotted']
 ## Plot RL training stats
@@ -210,7 +212,7 @@ from matplotlib import rc
 font = {'weight' : 'regular',
         'size'   : 18}
 rc('font', **font)
-figure, ax = plt.subplots(4,2,figsize=(15,15))
+figure, ax = plt.subplots(5,2,figsize=(15,15))
 figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.90, right=0.9, left=0.1, wspace=0.35)
 figure.suptitle(f"Hyperparameters tuning - {n_trials} Trials - Moving average of results ({window} updates window)")
 # Plot returns during RL
@@ -310,6 +312,7 @@ for i in range(n_trials):
         label=f'T{i}',
     )
 # Plot entropy loss during RL
+entropy_window = window // 10
 ax[3,0].grid()
 ax[3,0].set(
     xlabel='Training Update', 
@@ -318,8 +321,8 @@ ax[3,0].set(
 )
 for i in range(n_trials):
     ax[3,0].plot(
-        np.arange(len(entropy_losses[i])-(window-1))+window, 
-        jnp.convolve(entropy_losses[i], jnp.ones(window,), 'valid') / window,
+        np.arange(len(entropy_losses[i])-(entropy_window-1))+entropy_window, 
+        jnp.convolve(entropy_losses[i], jnp.ones(entropy_window,), 'valid') / entropy_window,
         color=colors[i%len(colors)],
         linestyle=styles[i//len(colors)],
         label=f'T{i}',
@@ -338,6 +341,32 @@ for i in range(n_trials):
         color=colors[i%len(colors)],
         linestyle=styles[i//len(colors)],
         label=f'T{i}',
+    )
+# Plot stds[0] during RL
+ax[4,0].grid()
+ax[4,0].set(
+    xlabel='Training Update',
+    ylabel='Standard deviation',
+    title='First action std',
+    ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
+)
+for i in range(n_trials):
+    ax[4,0].plot(
+        jnp.arange(len(stds_during_rl[i])),
+        stds_during_rl[i,:,0],
+    )
+# Plot stds[1] during RL
+ax[4,1].grid()
+ax[4,1].set(
+    xlabel='Training Update',
+    ylabel='Standard deviation',
+    title='Second action std',
+    ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
+)
+for i in range(n_trials):
+    ax[4,1].plot(
+        jnp.arange(len(stds_during_rl[i])),
+        stds_during_rl[i,:,1],
     )
 # Save figure
 handles, labels = ax[0,0].get_legend_handles_labels()

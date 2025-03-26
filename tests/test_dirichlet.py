@@ -3,28 +3,26 @@ from jax import random, jit, vmap, nn
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 
-from socialjym.utils.distributions.dirichlet_bernoulli import DirichletBernoulli
+from socialjym.utils.distributions.dirichlet import Dirichlet
 
 random_seed = 0
 n_samples = 1_000
 vmax = 1
 wheels_distance = 0.7
-alpha = jnp.array([1., 10., 1.])
+alpha = jnp.array([1., 1., 1.])
 concentration = jnp.sum(alpha)
-p = .8
 epsilon = 1e-3
 
 # Generate distribution
-distribution = DirichletBernoulli(vmax, wheels_distance, epsilon)
+distribution = Dirichlet(vmax, wheels_distance, epsilon)
 
-# Normalize alpha and p
+# Normalize alpha
 @jit
 def _reparametrize_alphas(alpha:jnp.ndarray, concentration:float) -> jnp.ndarray:
     return alpha / jnp.sum(alpha) * concentration   
 alpha = _reparametrize_alphas(alpha, concentration)
 print("Normalized alpha: ", alpha)
-p = jnp.clip(p, 0., 1.)
-distr = {"alphas": alpha, "p": p}
+distr = {"alphas": alpha}
 
 # Get samples
 key = random.PRNGKey(random_seed)
@@ -86,7 +84,7 @@ for action in actions_inside:
 
 # Plot samples and mean action
 figure, ax = plt.subplots(1, 1, figsize=(8, 8))
-figure.suptitle(f'{n_samples} samples from action space - Alpha = {alpha} - P = {p}')
+figure.suptitle(f'{n_samples} samples from action space - Alpha = {alpha}')
 ax.scatter(samples[:,0], samples[:,1], label='Samples')
 ax.scatter(mean_v, mean_w, c='r', label='Mean action')
 ax.set(xlim=[-0.1,vmax+0.1], ylim=[-vmax*2/wheels_distance-0.2,+vmax*2/wheels_distance+0.2])

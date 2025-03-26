@@ -1,5 +1,4 @@
 import jax.numpy as jnp
-import numpy as np
 import os
 import optax
 import matplotlib.pyplot as plt
@@ -19,13 +18,13 @@ from socialjym.policies.sarl_ppo import SARLPPO
 n_humans_for_tests = [5, 10, 15]
 n_trials = 1000
 n_parallel_envs = 50 
-training_updates = 10_000
+training_updates = 100
 rl_debugging_interval = 10
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': 'unicycle', # 'unicycle' or 'holonomic'
     'policy_name': 'sarl-ppo',
-    'distribution': 'dirichlet-bernoulli', # 'gaussian' or 'dirichlet-bernoulli'
+    'distribution': 'gaussian', # 'gaussian', 'dirichlet-bernoulli' or 'dirichlet'
     'n_humans': 5, 
     'il_buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
     'il_training_episodes': 2_000,
@@ -45,7 +44,7 @@ training_hyperparams = {
     'lambda_gae': 0.95, # 0.95
     'humans_policy': 'hsfm',
     'scenario': 'hybrid_scenario',
-    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5], np.int32), # Subset of the hybrid scenarios to use for training
+    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5], jnp.int32), # Subset of the hybrid scenarios to use for training
     'reward_function': 'socialnav_reward2',
     'custom_episodes': False, # If True, the episodes are loaded from a predefined set
     'gradient_norm_scale': 0.5, # Scale the gradient norm by this value
@@ -153,7 +152,7 @@ il_rollout_params = {
 #     title='Actor Loss during IL training'
 # )
 # ax[0].plot(
-#     np.arange(len(il_out['actor_losses'])), 
+#     jnp.arange(len(il_out['actor_losses'])), 
 #     il_out['actor_losses'],
 # )
 # ax[1].set(
@@ -162,7 +161,7 @@ il_rollout_params = {
 #     title='Critic Loss during IL training'
 # )
 # ax[1].plot(
-#     np.arange(len(il_out['critic_losses'])), 
+#     jnp.arange(len(il_out['critic_losses'])), 
 #     il_out['critic_losses'],
 # )
 # figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
@@ -241,12 +240,12 @@ rl_rollout_params = {
     'debugging_interval': rl_debugging_interval,
 }
 
-# REINFORCEMENT LEARNING ROLLOUT
-rl_out = ppo_rl_rollout(**rl_rollout_params)
+# # REINFORCEMENT LEARNING ROLLOUT
+# rl_out = ppo_rl_rollout(**rl_rollout_params)
 
-# Save RL rollout output
-with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
-    pickle.dump(rl_out, f)
+# # Save RL rollout output
+# with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
+#     pickle.dump(rl_out, f)
 
 # Load RL rollout output
 with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'rb') as f:
@@ -263,6 +262,7 @@ success_during_rl = rl_out['aux_data']['successes']
 failure_during_rl = rl_out['aux_data']['failures']
 timeout_during_rl = rl_out['aux_data']['timeouts']
 episodes_during_rl = rl_out['aux_data']['episodes']
+stds_during_rl = rl_out['aux_data']['stds']
 episode_count = jnp.sum(episodes_during_rl)
 window = 500 if training_updates > 1000 else 50
 
@@ -271,7 +271,7 @@ from matplotlib import rc
 font = {'weight' : 'regular',
         'size'   : 18}
 rc('font', **font)
-figure, ax = plt.subplots(3,2,figsize=(15,15))
+figure, ax = plt.subplots(4,2,figsize=(15,15))
 figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95, right=0.95, left=0.1, wspace=0.35)
 # Plot returns during RL
 ax[0,0].grid()
@@ -296,19 +296,19 @@ ax[0,1].set(
     ylim=(-0.1,1.1)
 )
 ax[0,1].plot(
-    np.arange(len(success_rate_during_rl)-(window-1))+window, 
+    jnp.arange(len(success_rate_during_rl)-(window-1))+window, 
     jnp.convolve(success_rate_during_rl, jnp.ones(window,), 'valid') / window,
     label='Success rate',
     color='g',
 )
 ax[0,1].plot(
-    np.arange(len(failure_rate_during_rl)-(window-1))+window, 
+    jnp.arange(len(failure_rate_during_rl)-(window-1))+window, 
     jnp.convolve(failure_rate_during_rl, jnp.ones(window,), 'valid') / window,
     label='Failure rate',
     color='r',
 )
 ax[0,1].plot(
-    np.arange(len(timeout_rate_during_rl)-(window-1))+window, 
+    jnp.arange(len(timeout_rate_during_rl)-(window-1))+window, 
     jnp.convolve(timeout_rate_during_rl, jnp.ones(window,), 'valid') / window,
     label='Timeout rate',
     color='yellow',
@@ -322,7 +322,7 @@ ax[1,0].set(
     title='Actor Loss'
 )
 ax[1,0].plot(
-    np.arange(len(actor_losses)-(window-1))+window, 
+    jnp.arange(len(actor_losses)-(window-1))+window, 
     jnp.convolve(actor_losses, jnp.ones(window,), 'valid') / window,
 )
 # Plot critic loss during RL
@@ -337,15 +337,16 @@ ax[1,1].plot(
     jnp.convolve(critic_losses, jnp.ones(window,), 'valid') / window,
 )
 # Plot entropy loss during RL
+entropy_window = window // 10
 ax[2,0].grid()
 ax[2,0].set(
     xlabel='Training Update', 
-    ylabel=f'Loss ({window} upd. window)', 
+    ylabel=f'Loss ({entropy_window} upd. window)', 
     title='Entropy Loss'
 )
 ax[2,0].plot(
-    jnp.arange(len(entropy_losses)-(window-1))+window, 
-    jnp.convolve(entropy_losses, jnp.ones(window,), 'valid') / window,
+    jnp.arange(len(entropy_losses)-(entropy_window-1))+entropy_window, 
+    jnp.convolve(entropy_losses, jnp.ones(entropy_window,), 'valid') / entropy_window,
 )
 # Plot episodes during RL
 ax[2,1].grid()
@@ -357,6 +358,30 @@ ax[2,1].set(
 ax[2,1].plot(
     jnp.arange(len(episodes_during_rl)), 
     jnp.cumsum(episodes_during_rl),
+)
+# Plot stds[0] during RL
+ax[3,0].grid()
+ax[3,0].set(
+    xlabel='Training Update',
+    ylabel='Standard deviation',
+    title='First action std',
+    ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
+)
+ax[3,0].plot(
+    jnp.arange(len(stds_during_rl)),
+    stds_during_rl[:,0],
+)
+# Plot stds[1] during RL
+ax[3,1].grid()
+ax[3,1].set(
+    xlabel='Training Update',
+    ylabel='Standard deviation',
+    title='Second action std',
+    ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
+)
+ax[3,1].plot(
+    jnp.arange(len(stds_during_rl)),
+    stds_during_rl[:,1],
 )
 figure.savefig(os.path.join(os.path.dirname(__file__),"rl_training_plots.eps"), format='eps')
 

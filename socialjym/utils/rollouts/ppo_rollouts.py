@@ -34,8 +34,6 @@ def ppo_rl_rollout(
 ) -> dict:
         
         assert policy.name == "SARL-PPO", "This function is only compatible with PPO policies."
-        distribution_id = policy.distr_id
-
         # Compute number of steps to simulate per update for each parallel env
         assert buffer_capacity % n_parallel_envs == 0, "The buffer capacity must be a multiple of the number of parallel environments. Otherwise you will trow away experiences."
         assert buffer_capacity == replay_buffer.buffer_size, "The buffer capacity must be equal to the buffer size of the replay buffer."
@@ -52,7 +50,7 @@ def ppo_rl_rollout(
                 @jit
                 def _step_fori_body(step:int, val:tuple):
                         # Retrieve data from the tuple
-                        actor_params, critic_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns = val
+                        actor_params, critic_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds = val
                         ## Step
                         actions, policy_keys, inputs, sampled_actions, distrs = policy.batch_act(policy_keys, obses, infos, actor_params, sample=True)
                         # Compute state values
@@ -75,15 +73,17 @@ def ppo_rl_rollout(
                         timeouts += jnp.sum(outcomes["timeout"])
                         returns = returns.at[:].set(returns + rewards * jnp.power(jnp.broadcast_to(policy.gamma,(n_parallel_envs,)), policy.v_max * (infos["time"] - policy.dt)))  
                         episode_count += jnp.sum(~(outcomes["nothing"]))
-                        return (actor_params, critic_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns)
+                        batch_stds = batch_stds.at[:,step,:].set(policy.distr.batch_std(distrs))
+                        return (actor_params, critic_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds)
                 batch_inputs = jnp.zeros((n_parallel_envs, n_steps, env.n_humans, policy.vnet_input_size))
                 batch_values = jnp.zeros((n_parallel_envs, n_steps))
                 batch_actions = jnp.zeros((n_parallel_envs, n_steps, 2))
                 batch_rewards = jnp.zeros((n_parallel_envs, n_steps))
                 batch_dones = jnp.zeros((n_parallel_envs, n_steps))
                 batch_neglogpdfs = jnp.zeros((n_parallel_envs, n_steps))
-                val_init = (actor_params, critic_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, 0, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, 0, 0, 0, jnp.zeros(n_parallel_envs,))
-                actor_params, critic_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, succ_count, fail_count, timeo_count, cum_rewards = lax.fori_loop(
+                batch_stds = jnp.zeros((n_parallel_envs, n_steps, 2)) # (WARNING: could be state dependent or not)
+                val_init = (actor_params, critic_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, 0, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, 0, 0, 0, jnp.zeros(n_parallel_envs,), batch_stds)
+                actor_params, critic_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, succ_count, fail_count, timeo_count, cum_rewards, batch_stds = lax.fori_loop(
                         0,
                         n_steps, 
                         _step_fori_body, 
@@ -95,9 +95,7 @@ def ppo_rl_rollout(
                 aux_data["timeouts"] = aux_data["timeouts"].at[upd_idx].set(timeo_count)
                 aux_data["returns"] = aux_data["returns"].at[upd_idx].set(jnp.mean(cum_rewards))
                 aux_data["episodes"] = aux_data["episodes"].at[upd_idx].set(episode_count)
-                # Get current std for debugging (WARNING: could be state dependent or not)
-                _, _, _, _, distrs = policy.batch_act(policy_keys, obses, infos, actor_params, sample=True)
-                current_std = jnp.mean(vmap(policy.distr.std, in_axes=(0))(distrs), axis=0)
+                aux_data["stds"] = aux_data["stds"].at[upd_idx].set(jnp.mean(batch_stds, axis=(0,1)))
                 ### Add experiences to the buffer
                 # Compute the value of the last batched_states and dones
                 last_values = vmap(policy.critic.apply, in_axes=(None,None,0))(
@@ -225,8 +223,8 @@ def ppo_rl_rollout(
                                 f=jnp.nansum(jnp.where((jnp.arange(len(aux_data["failures"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["failures"])) <= upd_idx), aux_data["failures"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 t=jnp.nansum(jnp.where((jnp.arange(len(aux_data["timeouts"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["timeouts"])) <= upd_idx), aux_data["timeouts"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 e=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["entropy_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["entropy_losses"])) <= upd_idx), aux_data["entropy_losses"], jnp.nan)),
-                                std=current_std,
-                                ),
+                                std=jnp.nanmean(jnp.where(((jnp.column_stack([jnp.arange(aux_data["stds"].shape[0]),jnp.arange(aux_data["stds"].shape[0])])) > upd_idx-debugging_interval) & (jnp.column_stack([jnp.arange(aux_data["stds"].shape[0]),jnp.arange(aux_data["stds"].shape[0])]) <= upd_idx), aux_data["stds"], jnp.array([jnp.nan,jnp.nan])), axis=0),
+                        ),
                         lambda x: x, 
                         None
                 )
@@ -242,6 +240,7 @@ def ppo_rl_rollout(
                 "failures": jnp.zeros([train_updates], dtype=int),
                 "timeouts": jnp.zeros([train_updates], dtype=int),
                 "episodes": jnp.zeros([train_updates], dtype=int),
+                "stds": jnp.zeros([train_updates, 2], dtype=jnp.float32),
         }
         # Initialize the optimizer state
         actor_optimizer_state = actor_optimizer.init(initial_actor_params)

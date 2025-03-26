@@ -1,4 +1,3 @@
-import numpy as np
 import jax.numpy as jnp
 from jax import random, jit, lax, debug, vmap
 from functools import partial
@@ -182,7 +181,7 @@ class SocialNav(BaseEnv):
 
         # Assign the humans' and robot goals
         humans_goal = self.circle_radius * jnp.array([jnp.cos(goal_angles[:-1]), jnp.sin(goal_angles[:-1])]).T
-        robot_goal = np.array([0., self.circle_radius])
+        robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
@@ -342,7 +341,7 @@ class SocialNav(BaseEnv):
             self.n_humans, 
             lambda i, humans_goal: humans_goal.at[i].set(jnp.array([-self.traffic_length/2-3, disturbed_points[i,1]])),
             humans_goal)
-        robot_goal = np.array([0, -self.traffic_length/2])
+        robot_goal = jnp.array([0, -self.traffic_length/2])
 
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
@@ -549,7 +548,7 @@ class SocialNav(BaseEnv):
             goal_angles[:-1], 
             disturbed_points[:-1]
         )
-        robot_goal = np.array([0., self.circle_radius])
+        robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
@@ -634,7 +633,7 @@ class SocialNav(BaseEnv):
 
         # Assign the humans' and robot goals
         humans_goal = self.circle_radius * jnp.array([jnp.cos(goal_angles), jnp.sin(goal_angles)]).T
-        robot_goal = np.array([0., self.circle_radius])
+        robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
@@ -841,10 +840,10 @@ class SocialNav(BaseEnv):
         args:
         - key; PRNG key (NOT USED).
         - custom_episode: dictionary containing the custom episode data. Its keys are:
-            full_state (np.array): initial full state of the environment. WARNING: The velocity of humans is always in the global frame (for hsfm you should be using the velocity on the body frame)
-            humans_goal (np.array): goal positions of the humans.
-            robot_goal (np.array): goal position of the robot.
-            static_obstacles (np.array): positions of the static obstacles.
+            full_state (jnp.array): initial full state of the environment. WARNING: The velocity of humans is always in the global frame (for hsfm you should be using the velocity on the body frame)
+            humans_goal (jnp.array): goal positions of the humans.
+            robot_goal (jnp.array): goal position of the robot.
+            static_obstacles (jnp.array): positions of the static obstacles.
             scenario (int): scenario of the episode.
             humans_radius (float): radius of the humans.
             humans_speed (float): max speed of the humans.

@@ -7,6 +7,7 @@ from jax import jit
 DISTRIBUTIONS = [
     "gaussian",
     "dirichlet-bernoulli",
+    "dirichlet",
 ]
 
 class BaseDistribution(ABC):

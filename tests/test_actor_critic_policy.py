@@ -16,7 +16,7 @@ from socialjym.utils.aux_functions import animate_trajectory, load_crowdnav_poli
 random_seed = 0 
 n_episodes = 50
 kinematics = "unicycle"
-distribution = "dirichlet-bernoulli"
+distribution = "gaussian"
 tests_n_humans = [5, 10, 15, 20, 25]
 n_trials = 100
 ds = 0.2 # Discomfort distance

@@ -140,3 +140,10 @@ class Gaussian(BaseDistribution):
             None,
         )
         return constrained_action
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_std(self, distributions:dict) -> jnp.ndarray:
+        """
+        Compute the standard deviations of a batch of Gaussian distributions.
+        """
+        return jnp.exp(distributions["logsigmas"])
