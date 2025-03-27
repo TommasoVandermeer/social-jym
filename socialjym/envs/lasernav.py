@@ -71,7 +71,7 @@ class LaserNav(BaseEnv):
         output:
         - obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements]
         """
-        measurements, _ = self.get_lidar_measurements(
+        measurements = self.get_lidar_measurements(
             state[-1, :2], # Lidar position (robot position)
             state[-1,4], # Lidar yaw angle (robot orientation)
             state[1:-1, :2], # Human positions
@@ -83,7 +83,7 @@ class LaserNav(BaseEnv):
             state[-1,4], # Robot orientation
             self.robot_radius, # Robot radius
             *action, # Robot action (either (vx,vy) or (v,w))
-            *measurements, # LiDAR measurements
+            *measurements[:,0], # LiDAR measurements
         ])
         return obs
         

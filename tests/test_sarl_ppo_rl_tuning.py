@@ -354,6 +354,9 @@ for i in range(n_trials):
     ax[4,0].plot(
         jnp.arange(len(stds_during_rl[i])),
         stds_during_rl[i,:,0],
+        color=colors[i%len(colors)],
+        linestyle=styles[i//len(colors)],
+        label=f'T{i}',
     )
 # Plot stds[1] during RL
 ax[4,1].grid()
@@ -367,6 +370,9 @@ for i in range(n_trials):
     ax[4,1].plot(
         jnp.arange(len(stds_during_rl[i])),
         stds_during_rl[i,:,1],
+        color=colors[i%len(colors)],
+        linestyle=styles[i//len(colors)],
+        label=f'T{i}',
     )
 # Save figure
 handles, labels = ax[0,0].get_legend_handles_labels()

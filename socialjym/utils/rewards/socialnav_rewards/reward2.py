@@ -122,7 +122,7 @@ class Reward2(BaseReward):
         # Reward for reaching the goal
         if self.target_reached_reward:
             reward = lax.cond(
-                reached_goal, 
+                ~(collision) & (reached_goal), 
                 lambda r: r + self.goal_reward, 
                 lambda r: r, 
                 reward
@@ -173,7 +173,7 @@ class Reward2(BaseReward):
         ### COMPUTE OUTCOME ###
         outcome = {
             "nothing": ~((collision) | (reached_goal) | (timeout)),
-            "success": reached_goal,
+            "success": ~(collision) & (reached_goal),
             "failure": collision,
             "timeout": timeout
         }
