@@ -23,6 +23,7 @@ scenario = "hybrid_scenario"
 n_humans = [3,5,10,15]
 humans_policy = ["sfm","hsfm"]
 ## Robot parameters
+robot_radius = 0.3
 robot_dt = 0.25
 robot_visible = False
 kinematics = "unicycle"
@@ -83,6 +84,7 @@ for h, h_policy in enumerate(humans_policy):
             'robot_radius': 0.3,
             'n_humans': n_h,
             'robot_dt': robot_dt,
+            'robot_radius': robot_radius, 
             'humans_dt': 0.01,
             'robot_visible': robot_visible,
             'scenario': scenario,
@@ -166,18 +168,48 @@ for h, h_policy in enumerate(humans_policy):
             _simulate_steps_with_lidar,
             (setting_data, aux_data, state, obs, info, reset_key)
         )
-        if filter_uncompleted_episodes:
-            print(f"Filtering uncompleted episode...")
-            if not jnp.any(setting_data["dones"]):
-                print(f"\nWARNING: there are no completed episodes in the simulation. And you want to filter uncompleted episodes, resulting in empty data.")
-                exit()
-            last_done_idx = jnp.where(setting_data["dones"])[0][-1]
-            setting_data = tree_map(lambda x: x[:last_done_idx+1], setting_data)
-        # Print final stats
+        # Print pre-filtered final stats
         print(f"Done! {jnp.sum(setting_data['dones'])} episodes have been simulated for a total of {len(setting_data['dones'])} steps.")
         print(f"Success rate: {jnp.sum(setting_data['outcomes']['success'])/jnp.sum(setting_data['dones']):.2f} - successes: {jnp.sum(setting_data['outcomes']['success'])}")
         print(f"Failure rate: {jnp.sum(setting_data['outcomes']['failure'])/jnp.sum(setting_data['dones']):.2f} - failures: {jnp.sum(setting_data['outcomes']['failure'])}")
         print(f"Timeout rate: {jnp.sum(setting_data['outcomes']['timeout'])/jnp.sum(setting_data['dones']):.2f} - timeouts: {jnp.sum(setting_data['outcomes']['timeout'])}")
+        # Filter data
+        if filter_uncompleted_episodes:
+            print(f"\nFiltering uncompleted episode...")
+            if not jnp.any(setting_data["dones"]):
+                print(f"\nWARNING: there are no completed episodes in the simulation. And you want to filter uncompleted episodes, resulting in empty data.\nInterrupting...")
+                exit()
+            last_done_idx = jnp.where(setting_data["dones"])[0][-1]
+            setting_data = tree_map(lambda x: x[:last_done_idx+1], setting_data)
+        if filter_failures and jnp.any(setting_data["outcomes"]["failure"]):
+            print(f"\nFiltering failures...")
+            failure_idxs = jnp.where(setting_data["outcomes"]["failure"])[0]
+            mask = jnp.ones((len(setting_data["dones"]),), dtype=bool)
+            for failure_idx in failure_idxs:
+                dones_before_failure = jnp.where(setting_data["dones"][:failure_idx])[0]
+                last_done_before_failure_idx = dones_before_failure[-1] if dones_before_failure.shape[0] != 0 else -1 # The first episode might have failed, meaning there are no dones before the failure
+                mask = mask.at[last_done_before_failure_idx + 1:failure_idx + 1].set(False)
+            setting_data = tree_map(lambda x: x[mask], setting_data)
+            print(f"Done!\n{jnp.sum(setting_data['dones'])} episodes remaining for a total of {len(setting_data['dones'])} steps.")
+            print(f"successes: {jnp.sum(setting_data['outcomes']['success'])}")
+            print(f"failures: {jnp.sum(setting_data['outcomes']['failure'])}")
+            print(f"timeouts: {jnp.sum(setting_data['outcomes']['timeout'])}")
+        if filter_timeouts and filter_failures and (not jnp.any(setting_data["outcomes"]["success"])):
+            print(f"\nWARNING: there are no successful episodes in the simulation. And you want to filter timeouts and failures, resulting in empty data.\nInterrupting...")
+            exit()
+        if filter_timeouts and jnp.any(setting_data["outcomes"]["timeout"]):
+            print(f"\nFiltering timeouts...")
+            timeout_idxs = jnp.where(setting_data["outcomes"]["timeout"])[0]
+            mask = jnp.ones((len(setting_data["dones"]),), dtype=bool)
+            for timeout_idx in timeout_idxs:
+                dones_before_timeout = jnp.where(setting_data["dones"][:timeout_idx])[0]
+                last_done_before_timeout_idx = dones_before_timeout[-1] if dones_before_timeout.shape[0] != 0 else -1 # The first episode might have timed out, meaning there are no dones before the timeout
+                mask = mask.at[last_done_before_timeout_idx + 1:timeout_idx + 1].set(False)
+            setting_data = tree_map(lambda x: x[mask], setting_data)
+            print(f"Done!\n{jnp.sum(setting_data['dones'])} episodes remaining for a total of {len(setting_data['dones'])} steps.")
+            print(f"successes: {jnp.sum(setting_data['outcomes']['success'])}")
+            print(f"failures: {jnp.sum(setting_data['outcomes']['failure'])}")
+            print(f"timeouts: {jnp.sum(setting_data['outcomes']['timeout'])}")
         # Save setting data in output data
         output_data = tree_map(lambda x, y: x.at[global_idx:global_idx+len(setting_data["dones"])].set(y), output_data, setting_data)
         ## Create animation of first episode (just for debugging)
@@ -195,48 +227,12 @@ for h, h_policy in enumerate(humans_policy):
         # Increment global index
         global_idx += len(setting_data["dones"])
 ### Filter empty entries
-if filter_uncompleted_episodes:
-    output_data = tree_map(lambda x: x[:global_idx], output_data)
+output_data = tree_map(lambda x: x[:global_idx], output_data)
 print("\n################")
 print(f"All settings completed!\n{jnp.sum(output_data['dones'])} episodes have been simulated for a total of {len(output_data['dones'])} steps.")
 print(f"Success rate: {jnp.sum(output_data['outcomes']['success'])/jnp.sum(output_data['dones']):.2f} - successes: {jnp.sum(output_data['outcomes']['success'])}")
 print(f"Failure rate: {jnp.sum(output_data['outcomes']['failure'])/jnp.sum(output_data['dones']):.2f} - failures: {jnp.sum(output_data['outcomes']['failure'])}")
 print(f"Timeout rate: {jnp.sum(output_data['outcomes']['timeout'])/jnp.sum(output_data['dones']):.2f} - timeouts: {jnp.sum(output_data['outcomes']['timeout'])}")
-### Save and load unfiltered data
-with open(os.path.join(os.path.dirname(__file__),"data","unfiltered_data.pkl"), "wb") as f:
-    pickle.dump(output_data, f)
-with open(os.path.join(os.path.dirname(__file__),"data","unfiltered_data.pkl"), "rb") as f:
-    output_data = pickle.load(f)
-### Filter data
-if filter_timeouts and filter_failures and (not jnp.any(output_data["outcomes"]["success"])):
-    print(f"\nWARNING: there are no successful episodes in the simulation. And you want to filter timeouts and failures, resulting in empty data.")
-    exit()
-if filter_timeouts and jnp.any(output_data["outcomes"]["timeout"]):
-    print(f"\nFiltering timeouts...")
-    timeout_idxs = jnp.where(output_data["outcomes"]["timeout"])[0]
-    indexes_to_filter = []
-    for timeout_idx in timeout_idxs:
-        last_done_before_timeout_idx = jnp.where(output_data["dones"][:timeout_idx])[0][-1]
-        for idx in range(last_done_before_timeout_idx + 1, timeout_idx + 1):
-            indexes_to_filter.append(idx)
-    output_data = tree_map(lambda x: jnp.delete(x, jnp.array(indexes_to_filter), axis=0), output_data)
-    print(f"Done!\n{jnp.sum(output_data['dones'])} episodes remaining for a total of {len(output_data['dones'])} steps.")
-    print(f"successes: {jnp.sum(output_data['outcomes']['success'])}")
-    print(f"failures: {jnp.sum(output_data['outcomes']['failure'])}")
-    print(f"timeouts: {jnp.sum(output_data['outcomes']['timeout'])}")
-if filter_failures and jnp.any(output_data["outcomes"]["failure"]):
-    print(f"\nFiltering failures...")
-    failure_idxs = jnp.where(output_data["outcomes"]["failure"])[0]
-    indexes_to_filter = []
-    for failure_idx in failure_idxs:
-        last_done_before_timeout_idx = jnp.where(output_data["dones"][:failure_idx])[0][-1]
-        for idx in range(last_done_before_timeout_idx + 1, failure_idx + 1):
-            indexes_to_filter.append(idx)
-    output_data = tree_map(lambda x: jnp.delete(x, jnp.array(indexes_to_filter), axis=0), output_data)
-    print(f"Done!\n{jnp.sum(output_data['dones'])} episodes remaining for a total of {len(output_data['dones'])} steps.")
-    print(f"successes: {jnp.sum(output_data['outcomes']['success'])}")
-    print(f"failures: {jnp.sum(output_data['outcomes']['failure'])}")
-    print(f"timeouts: {jnp.sum(output_data['outcomes']['timeout'])}")
 ### Save and load filtered data
 with open(os.path.join(os.path.dirname(__file__),"data","filtered_data.pkl"), "wb") as f:
     pickle.dump(output_data, f)
@@ -259,7 +255,7 @@ def _compute_input(lidar_measurements, robot_position, robot_goal, robot_orienta
     elif policy.kinematics == ROBOT_KINEMATICS.index("unicycle"):
         vx, vy = action[0] * jnp.cos(robot_orientation), action[0] * jnp.sin(robot_orientation)
         theta = wrap_angle(robot_orientation - jnp.atan2(*jnp.flip(robot_goal - robot_position)))
-    return jnp.array([jnp.linalg.norm(robot_goal - robot_position), env.robot_radius, theta, vx, vy, *lidar_measurements])
+    return jnp.array([jnp.linalg.norm(robot_goal - robot_position), robot_radius, theta, vx, vy, *lidar_measurements])
 experience_data["inputs"] = experience_data["inputs"].at[:].set(vmap(_compute_input, in_axes=(0,0,0,0,0))(
     output_data["lidar_measurements"],
     output_data["robot_positions"],
@@ -283,7 +279,8 @@ experience_data["returns"], _, _ = lax.fori_loop(
     _compute_returns,
     (experience_data["returns"], output_data["rewards"], beginnings),
 )
-print("Done!\nRewards at dones: (for debugging purposes) \n", experience_data["returns"][jnp.where(output_data["dones"])[0]]) # Printed for debugging purposes
+print("Done!")
+print("Rewards at dones: (for debugging purposes) \n", experience_data["returns"][jnp.where(output_data["dones"])[0]]) # Printed for debugging purposes
 ### Save processed data
 with open(os.path.join(os.path.dirname(__file__),"data","processed_data.pkl"), "wb") as f:
     pickle.dump(experience_data, f)
