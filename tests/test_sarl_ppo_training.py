@@ -18,7 +18,7 @@ from socialjym.policies.sarl_ppo import SARLPPO
 n_humans_for_tests = [5, 10, 15]
 n_trials = 1000
 n_parallel_envs = 50 
-training_updates = 100
+training_updates = 10_000
 rl_debugging_interval = 10
 training_hyperparams = {
     'random_seed': 0,
@@ -117,7 +117,7 @@ il_rollout_params = {
     'custom_episodes': il_custom_episodes_path
 }
 
-# # IMITATION LEARNING ROLLOUT
+# ## IMITATION LEARNING ROLLOUT
 # il_out = actor_critic_il_rollout(**il_rollout_params)
 
 # # Execute tests to evaluate return after IL
@@ -240,12 +240,12 @@ rl_rollout_params = {
     'debugging_interval': rl_debugging_interval,
 }
 
-# # REINFORCEMENT LEARNING ROLLOUT
-# rl_out = ppo_rl_rollout(**rl_rollout_params)
+# REINFORCEMENT LEARNING ROLLOUT
+rl_out = ppo_rl_rollout(**rl_rollout_params)
 
-# # Save RL rollout output
-# with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
-#     pickle.dump(rl_out, f)
+# Save RL rollout output
+with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
+    pickle.dump(rl_out, f)
 
 # Load RL rollout output
 with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'rb') as f:
@@ -278,7 +278,7 @@ ax[0,0].grid()
 ax[0,0].set(
     xlabel='Training Update', 
     ylabel=f'Return ({window} upd. window)', 
-    title='Return (not episodic)'
+    title='Return'
 )
 ax[0,0].plot(
     jnp.arange(len(returns_during_rl)-(window-1))+window, 

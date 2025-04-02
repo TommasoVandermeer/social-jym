@@ -13,6 +13,8 @@ def batch_wrap_angle(angles:jnp.ndarray) -> jnp.ndarray:
 class Reward2(BaseReward):
     def __init__(
         self, 
+        gamma:float=0.9, # Discount factor
+        v_max:float=1., # Maximum speed of the robot
         target_reached_reward: bool=True,
         collision_penalty_reward: bool=True,
         discomfort_penalty_reward: bool=True,
@@ -28,6 +30,7 @@ class Reward2(BaseReward):
         angular_speed_bound: float=2.,
         angular_speed_penalty_weight: float=0.1,
     ) -> None:
+        super().__init__(gamma)
         # Check input parameters
         assert goal_reward > 0, "goal_reward must be positive"
         assert collision_penalty < 0, "collision_penalty must be negative"
@@ -54,6 +57,7 @@ class Reward2(BaseReward):
         self.decimal_reward = binary_to_decimal(self.binary_reward)
         self.type = f"socialnav_reward2_{self.decimal_reward}"
         # Initialize reward parameters
+        self.v_max = v_max
         self.goal_reward = goal_reward
         self.collision_penalty = collision_penalty
         self.discomfort_distance = discomfort_distance

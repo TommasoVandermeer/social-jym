@@ -37,6 +37,8 @@ class CADRL(BasePolicy):
             # velocity_noise_sigma_percentage:float = 0., # Standard deviation of the noise as a percentage of the (vx,vy) coordinates of humans' velocity in the robot frame
         ) -> None:
         # Inputs validation
+        assert gamma == reward_function.gamma, "gamma must be equal to the reward function gamma"
+        assert v_max == reward_function.v_max, "v_max must be equal to the reward function v_max"
         assert v_max > 0, "v_max must be positive"
         assert dt > 0, "dt must be positive"
         assert wheels_distance > 0, "wheels_distance must be positive"

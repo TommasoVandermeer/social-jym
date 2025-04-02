@@ -88,6 +88,7 @@ for i in range(n_episodes):
         action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, False)
         print(distr)
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
+        # print(f"Return in steps [0,{info['step']}):", info["return"])
         all_states = np.vstack((all_states, [state]))
 
     ## Animate trajectory

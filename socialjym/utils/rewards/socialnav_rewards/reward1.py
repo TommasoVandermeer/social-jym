@@ -9,19 +9,24 @@ from socialjym.envs.base_env import ROBOT_KINEMATICS
 class Reward1(BaseReward):
     def __init__(
         self, 
+        gamma:float=0.9, # Discount factor
+        v_max:float=1., # Maximum speed of the robot
         goal_reward: float=1., 
         collision_penalty: float=-0.25, 
         discomfort_distance: float=0.2, 
         time_limit: float=50.,
         kinematics: str='holonomic'
     ) -> None:
+        super().__init__(gamma)
         # Check input parameters
+        assert v_max > 0, "v_max must be positive"
         assert goal_reward > 0, "goal_reward must be positive"
         assert collision_penalty < 0, "collision_penalty must be negative"
         assert discomfort_distance > 0, "discomfort_distance must be positive"
         assert time_limit > 0, "time_limit must be positive"
         # Initialize reward parameters
         self.type = "socialnav_reward1"
+        self.v_max = v_max
         self.goal_reward = goal_reward
         self.collision_penalty = collision_penalty
         self.discomfort_distance = discomfort_distance
@@ -82,16 +87,16 @@ class Reward1(BaseReward):
         # Check if the robot reached its goal
         reached_goal = jnp.linalg.norm(next_robot_pos - robot_goal) < robot_radius
         # Timeout
-        timeout = jnp.all(jnp.array([time >= self.time_limit, jnp.logical_not(collision), jnp.logical_not(reached_goal)]))
+        timeout =  (time >= self.time_limit) & (~(collision)) & (~(reached_goal))
         # Compute reward
         reward = 0.
-        reward = lax.cond(reached_goal, lambda r: r + self.goal_reward, lambda r: r, reward) # Reward for reaching the goal
+        reward = lax.cond(~(collision) & (reached_goal), lambda r: r + self.goal_reward, lambda r: r, reward) # Reward for reaching the goal
         reward = lax.cond(collision, lambda r: r + self.collision_penalty, lambda r: r, reward) # Penalty for collision
         reward = lax.cond(discomfort, lambda r: r - 0.5 * dt * (self.discomfort_distance - min_distance), lambda r: r, reward) # Penalty for getting too close to humans
         # Compute outcome 
         outcome = {
             "nothing": jnp.logical_not(jnp.any(jnp.array([collision,reached_goal,timeout]))),
-            "success": reached_goal,
+            "success": (~(collision)) & (reached_goal),
             "failure": collision,
             "timeout": timeout
         }

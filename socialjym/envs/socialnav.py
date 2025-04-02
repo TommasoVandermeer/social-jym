@@ -69,6 +69,42 @@ class SocialNav(BaseEnv):
         return str(self.__dict__)
 
     @partial(jit, static_argnames=("self"))
+    def _init_info(
+        self,
+        humans_goal:jnp.ndarray,
+        robot_goal:jnp.ndarray,
+        humans_parameters:jnp.ndarray,
+        static_obstacles:jnp.ndarray,
+        current_scenario:int,
+        humans_delay:jnp.ndarray,
+    ) -> dict:
+        """
+        Initializes the info dictionary with the given parameters.
+
+        args:
+        - humans_goal: array of humans' goals.
+        - robot_goal: array of robot's goal.
+        - humans_parameters: array of humans' parameters.
+        - static_obstacles: array of static obstacles.
+        - current_scenario: current scenario index.
+        - humans_delay: array of humans' delays.
+
+        output:
+        - info: dictionary containing the initialized values.
+        """
+        return {
+            "humans_goal": humans_goal, 
+            "robot_goal": robot_goal, 
+            "humans_parameters": humans_parameters, 
+            "static_obstacles": static_obstacles, 
+            "time": 0.,
+            "current_scenario": current_scenario,
+            "humans_delay": humans_delay,
+            "step": 0,
+            "return": 0.,
+        }
+
+    @partial(jit, static_argnames=("self"))
     def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment, and the robot's action,
@@ -186,15 +222,14 @@ class SocialNav(BaseEnv):
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
         # Info
-        info = {
-            "humans_goal": humans_goal, 
-            "robot_goal": robot_goal, 
-            "humans_parameters": humans_parameters, 
-            "static_obstacles": static_obstacles, 
-            "time": 0.,
-            "current_scenario": SCENARIOS.index('circular_crossing'),
-            "humans_delay": jnp.zeros((self.n_humans,)),
-        }
+        info = self._init_info(
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('circular_crossing'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
         return full_state, info
     
     @partial(jit, static_argnames=("self"))
@@ -272,15 +307,14 @@ class SocialNav(BaseEnv):
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
         # Info
-        info = {
-            "humans_goal": humans_goal, 
-            "robot_goal": robot_goal, 
-            "humans_parameters": humans_parameters, 
-            "static_obstacles": static_obstacles, 
-            "time": 0.,
-            "current_scenario": SCENARIOS.index('parallel_traffic'),
-            "humans_delay": jnp.zeros((self.n_humans,)),
-        }
+        info = self._init_info(
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('parallel_traffic'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
         return full_state, info
 
     @partial(jit, static_argnames=("self"))
@@ -346,15 +380,14 @@ class SocialNav(BaseEnv):
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
         # Info
-        info = {
-            "humans_goal": humans_goal, 
-            "robot_goal": robot_goal, 
-            "humans_parameters": humans_parameters, 
-            "static_obstacles": static_obstacles, 
-            "time": 0.,
-            "current_scenario": SCENARIOS.index('perpendicular_traffic'),
-            "humans_delay": jnp.zeros((self.n_humans,)),
-        }
+        info = self._init_info(
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('perpendicular_traffic'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
         return full_state, info
 
     @partial(jit, static_argnames=("self"))
@@ -421,15 +454,14 @@ class SocialNav(BaseEnv):
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
         # Info
-        info = {
-            "humans_goal": humans_goal, 
-            "robot_goal": robot_goal, 
-            "humans_parameters": humans_parameters, 
-            "static_obstacles": static_obstacles, 
-            "time": 0.,
-            "current_scenario": SCENARIOS.index('robot_crowding'),
-            "humans_delay": jnp.zeros((self.n_humans,)),
-        }
+        info = self._init_info(
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('robot_crowding'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
         return full_state, info
 
     @partial(jit, static_argnames=("self"))
@@ -553,15 +585,14 @@ class SocialNav(BaseEnv):
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
         # Info
-        info = {
-            "humans_goal": humans_goal, 
-            "robot_goal": robot_goal, 
-            "humans_parameters": humans_parameters, 
-            "static_obstacles": static_obstacles, 
-            "time": 0.,
-            "current_scenario": SCENARIOS.index('circular_crossing_with_static_obstacles'),
-            "humans_delay": jnp.zeros((self.n_humans,)),
-        }
+        info = self._init_info(
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('circular_crossing_with_static_obstacles'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
         return full_state, info
 
     @partial(jit, static_argnames=("self"))
@@ -638,15 +669,14 @@ class SocialNav(BaseEnv):
         # Obstacles
         static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
         # Info
-        info = {
-            "humans_goal": humans_goal, 
-            "robot_goal": robot_goal, 
-            "humans_parameters": humans_parameters, 
-            "static_obstacles": static_obstacles, 
-            "time": 0.,
-            "current_scenario": SCENARIOS.index('crowd_navigation'),
-            "humans_delay": jnp.zeros((self.n_humans,)),
-        }
+        info = self._init_info(
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('crowd_navigation'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
         return full_state, info
     
     # --- Public methods ---
@@ -669,7 +699,6 @@ class SocialNav(BaseEnv):
         - reward: reward obtained in the transition.
         - outcome: dictionary indicating whether the episode is in a terminal state or not.
         """
-        info["time"] += self.robot_dt
         old_info = info.copy()
         ### Update state
         if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
@@ -697,6 +726,10 @@ class SocialNav(BaseEnv):
             action = jnp.array([jnp.linalg.norm(dp / self.robot_dt), wrap_angle(new_state[-1,4] - state[-1,4]) / self.robot_dt])
         ### Compute reward and outcome - WARNING: The old state is passed, not the updated one (but with the correct action applied)
         reward, outcome = self.reward_function(self._get_obs(state, old_info, action), old_info, self.robot_dt)
+        ### Update step, time and return
+        new_info["time"] += self.robot_dt
+        new_info["step"] += 1
+        new_info["return"] += pow(self.reward_function.gamma, info["step"] * self.robot_dt * self.reward_function.v_max) * reward
         return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome
     
     @partial(jit, static_argnames=("self"))
@@ -728,7 +761,6 @@ class SocialNav(BaseEnv):
         - outcome: dictionary indicating whether the episode is in a terminal state or not.
         - reset_key: random.PRNGKey used to reset the environment. Only used if reset_if_done is True.
         """
-        info["time"] += self.robot_dt
         ### Compute reward and outcome
         reward, outcome = self.reward_function(self._get_obs(state, info, action), info, self.robot_dt)
         ### Update state and info
@@ -777,6 +809,10 @@ class SocialNav(BaseEnv):
             lambda x: x,
             (new_state, reset_key, new_info)
         )
+        ### Update time, step, return
+        new_info["time"] += self.robot_dt
+        new_info["step"] += 1
+        new_info["return"] += pow(self.reward_function.gamma, info["step"] * self.robot_dt * self.reward_function.v_max) * reward
         return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome, reset_key
 
     @partial(jit, static_argnames=("self"))
@@ -890,13 +926,13 @@ class SocialNav(BaseEnv):
         # Obstacles
         static_obstacles = jnp.array(custom_episode["static_obstacles"])
         # Info
-        info = {
-            "humans_goal": humans_goal, 
-            "robot_goal": robot_goal, 
-            "humans_parameters": humans_parameters, 
-            "static_obstacles": static_obstacles, 
-            "time": 0.,
-            "current_scenario": custom_episode["scenario"],
-            "humans_delay": jnp.zeros((self.n_humans,)),}
+        info = self._init_info(
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=custom_episode["scenario"],
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
         return full_state, key, self._get_obs(full_state, info, jnp.zeros((2,))), info, {"success": False, "failure": False, "timeout": False, "nothing": True}
         

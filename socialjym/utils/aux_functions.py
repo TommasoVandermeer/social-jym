@@ -216,12 +216,11 @@ def test_k_trials(
 
     @loop_tqdm(k)
     @jit
-    def _fori_body(i:int, for_val:tuple):
-         
+    def _fori_body(i:int, for_val:tuple):   
         @jit
         def _while_body(while_val:tuple):
             # Retrieve data from the tuple
-            state, obs, info, outcome, policy_key, steps, all_actions, all_states, all_rewards = while_val
+            state, obs, info, outcome, policy_key, steps, all_actions, all_states = while_val
             # Make a step in the environment
             if a2c:
                 action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sigma=0.)
@@ -229,14 +228,13 @@ def test_k_trials(
                 action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
             else:
                 action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
-            state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
+            state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
             # Save data
             all_actions = all_actions.at[steps].set(action)
             all_states = all_states.at[steps].set(state)
-            all_rewards = all_rewards.at[steps].set(reward)
             # Update step counter
             steps += 1
-            return state, obs, info, outcome, policy_key, steps, all_actions, all_states, all_rewards
+            return state, obs, info, outcome, policy_key, steps, all_actions, all_states
 
         ## Retrieve data from the tuple
         seed, metrics = for_val
@@ -261,18 +259,13 @@ def test_k_trials(
         ## Episode loop
         all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
         all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
-        all_rewards = jnp.empty((int(time_limit/env.robot_dt)+1,))
-        while_val_init = (state, obs, info, init_outcome, policy_key, 0, all_actions, all_states, all_rewards)
-        _, _, end_info, outcome, policy_key, episode_steps, all_actions, all_states, all_rewards = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+        while_val_init = (state, obs, info, init_outcome, policy_key, 0, all_actions, all_states)
+        _, _, end_info, outcome, policy_key, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
         ## Update metrics
         metrics["successes"] = lax.cond(outcome["success"], lambda x: x + 1, lambda x: x, metrics["successes"])
         metrics["collisions"] = lax.cond(outcome["failure"], lambda x: x + 1, lambda x: x, metrics["collisions"])
         metrics["timeouts"] = lax.cond(outcome["timeout"], lambda x: x + 1, lambda x: x, metrics["timeouts"])
-        @jit
-        def _compute_state_value_for_body(j:int, t:int, value:float):
-            value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * all_rewards[j]
-            return value 
-        metrics["returns"] = metrics["returns"].at[i].set(lax.fori_loop(0, episode_steps, lambda rr, val: _compute_state_value_for_body(rr, 0, val), 0.))
+        metrics["returns"] = metrics["returns"].at[i].set(end_info["return"])
         path_length = lax.fori_loop(0, episode_steps-1, lambda p, val: val + jnp.linalg.norm(all_states[p+1, -1, :2] - all_states[p, -1, :2]), 0.)
         metrics["episodic_spl"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.min(jnp.array([1.,jnp.linalg.norm(robot_goal-initial_robot_position)/path_length]))), lambda x: x.at[i].set(0.), metrics["episodic_spl"])
         # Metrics computed only if the episode is successful

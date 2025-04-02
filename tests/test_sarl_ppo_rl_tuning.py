@@ -220,7 +220,7 @@ ax[0,0].grid()
 ax[0,0].set(
     xlabel='Training Update', 
     ylabel=f'Return', 
-    title='Return (not episodic)'
+    title='Return'
 )
 for i in range(n_trials):
     ax[0,0].plot(

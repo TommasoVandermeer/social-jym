@@ -69,6 +69,7 @@ for i in range(n_episodes):
 
         state, obs, info, reward, outcome = env.imitation_learning_step(state,info)
 
+        print(f"Return in steps [0,{info['step']}):", info["return"], f" - time : {info['time']}")
         lidar_measurements = env.get_lidar_measurements(obs[-1,:2], obs[-1,5], obs[:-1,:2], info["humans_parameters"][:,0])
         all_lidar_measurements = np.vstack((all_lidar_measurements, [lidar_measurements]))
         all_states = np.vstack((all_states, [state]))

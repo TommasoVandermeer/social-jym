@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 
 class BaseReward(ABC):
-    def __init__(self) -> None:
-        pass
+    def __init__(self, gamma:float) -> None:
+        self.gamma = gamma
 
     # --- Private methods ---
 
