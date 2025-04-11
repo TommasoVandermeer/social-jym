@@ -266,6 +266,7 @@ def test_k_trials(
         metrics["collisions"] = lax.cond(outcome["failure"], lambda x: x + 1, lambda x: x, metrics["collisions"])
         metrics["timeouts"] = lax.cond(outcome["timeout"], lambda x: x + 1, lambda x: x, metrics["timeouts"])
         metrics["returns"] = metrics["returns"].at[i].set(end_info["return"])
+        metrics["scenario"] = metrics["scenario"].at[i].set(end_info["current_scenario"])
         path_length = lax.fori_loop(0, episode_steps-1, lambda p, val: val + jnp.linalg.norm(all_states[p+1, -1, :2] - all_states[p, -1, :2]), 0.)
         metrics["episodic_spl"] = lax.cond(outcome["success"], lambda x: x.at[i].set(jnp.min(jnp.array([1.,jnp.linalg.norm(robot_goal-initial_robot_position)/path_length]))), lambda x: x.at[i].set(0.), metrics["episodic_spl"])
         # Metrics computed only if the episode is successful
@@ -374,7 +375,9 @@ def test_k_trials(
         "min_distance": jnp.empty((k,)),
         "space_compliance": jnp.empty((k,)),
         "episodic_spl": jnp.empty((k,)),
-        "path_length": jnp.empty((k,))}
+        "path_length": jnp.empty((k,)),
+        "scenario": jnp.empty((k,), dtype=int),
+    }
     # Execute k tests
     print(f"\nExecuting {k} tests with {env.n_humans} humans...")
     _, metrics = lax.fori_loop(0, k, _fori_body, (random_seed, metrics))

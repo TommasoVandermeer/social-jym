@@ -68,6 +68,3 @@ class PPOBuffer(BaseVNetReplayBuffer):
         buffer_state["old_neglogpdfs"] = buffer_state["old_neglogpdfs"].at[:].set(0)
 
         return buffer_state
-    
-    def sample(self):
-        pass

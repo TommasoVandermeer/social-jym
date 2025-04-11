@@ -69,7 +69,8 @@ all_metrics = {
     "min_distance": empty_trials_metrics_array,
     "space_compliance": empty_trials_metrics_array,
     "episodic_spl": empty_trials_metrics_array,
-    "path_length": empty_trials_metrics_array
+    "path_length": empty_trials_metrics_array,
+    "scenario": jnp.zeros((len(train_envs),len(train_scenarios),len(test_environments),len(test_scenarios),len(test_n_humans),n_test_trials), dtype=jnp.int32),
 }
 
 # ### Test loop

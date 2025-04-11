@@ -35,7 +35,7 @@ class BaseVNetReplayBuffer(ABC):
             return tree_map(lambda x: x[indexes], buffer)
         
         # If the indexes exceed the buffer size, the buffer will be iterated from the beginning
-        indexes = (jnp.arange(self.batch_size) + iteration * self.batch_size) % current_buffer_size
+        indexes = ((jnp.arange(self.batch_size) + iteration * self.batch_size) % current_buffer_size).astype(jnp.int32)
 
         experiences = iterate_batch(indexes, buffer_state)
         return experiences
@@ -64,7 +64,3 @@ class BaseVNetReplayBuffer(ABC):
             shuffled_buffer_state = shuffle_batch(indexes, buffer_state)
             
             return shuffled_buffer_state, key
-
-    @abstractmethod
-    def sample(self):
-        pass

@@ -11,7 +11,7 @@ import pickle
 from socialjym.envs.socialnav import SocialNav
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
-from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
+from socialjym.utils.replay_buffers.base_vnet_replay_buffer import BaseVNetReplayBuffer
 from socialjym.utils.rollouts.vnet_rollouts import vnet_rl_rollout, vnet_il_rollout
 from socialjym.utils.aux_functions import linear_decay, plot_state, plot_trajectory, test_k_trials, save_policy_params
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
@@ -87,7 +87,7 @@ for seed in range(n_seeds):
         initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
     else: raise ValueError(f"{training_hyperparams['policy_name']} is not a valid policy name")
     # Initialize replay buffer
-    replay_buffer = UniformVNetReplayBuffer(training_hyperparams['buffer_size'], training_hyperparams['batch_size'])
+    replay_buffer = BaseVNetReplayBuffer(training_hyperparams['buffer_size'], training_hyperparams['batch_size'])
     # Initialize IL optimizer
     optimizer = optax.sgd(learning_rate=training_hyperparams['il_learning_rate'], momentum=0.9)
     # Initialize buffer state

@@ -13,7 +13,7 @@ import math
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.policies.sarl import SARL
-from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
+from socialjym.utils.replay_buffers.base_vnet_replay_buffer import BaseVNetReplayBuffer
 from socialjym.utils.rollouts.vnet_rollouts import vnet_rl_rollout, vnet_il_rollout
 from socialjym.utils.aux_functions import linear_decay, test_k_trials, save_policy_params, decimal_to_binary
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
@@ -76,7 +76,8 @@ all_metrics_after_il = {
     "min_distance": empty_trials_metrics_array,
     "space_compliance": empty_trials_metrics_array,
     "episodic_spl": empty_trials_metrics_array,
-    "path_length": empty_trials_metrics_array
+    "path_length": empty_trials_metrics_array,
+    "scenario": jnp.zeros((len(train_scenarios),len(train_envs),2**len(reward_terms),len(test_scenarios),len(test_envs),len(test_n_humans)), dtype=jnp.int32),
 }
 all_metrics_after_rl = all_metrics_after_il.copy()
 
@@ -146,7 +147,7 @@ for ts_idx, train_scenario in enumerate(train_scenarios):
             policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'])
             initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
             # Initialize replay buffer
-            replay_buffer = UniformVNetReplayBuffer(training_hyperparams['buffer_size'], training_hyperparams['batch_size'])
+            replay_buffer = BaseVNetReplayBuffer(training_hyperparams['buffer_size'], training_hyperparams['batch_size'])
             # Initialize IL optimizer
             optimizer = optax.sgd(learning_rate=training_hyperparams['il_learning_rate'], momentum=0.9)
             # Initialize buffer state

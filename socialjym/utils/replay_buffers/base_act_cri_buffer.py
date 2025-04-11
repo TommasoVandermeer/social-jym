@@ -58,6 +58,3 @@ class BaseACBuffer(BaseVNetReplayBuffer):
         buffer_state["sample_actions"] = buffer_state["sample_actions"].at[:,:].set(0)
 
         return buffer_state
-    
-    def sample(self):
-        pass

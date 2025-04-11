@@ -1,8 +1,11 @@
 import jax.numpy as jnp
+from jax.tree_util import tree_map
 import os
 import optax
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import pickle
+import math
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.aux_functions import test_k_trials
@@ -15,7 +18,8 @@ from socialjym.utils.replay_buffers.ppo_replay_buffer import PPOBuffer
 from socialjym.policies.sarl_ppo import SARLPPO
 
 ### Hyperparameters
-n_humans_for_tests = [5, 10, 15]
+n_humans_for_tests = [5, 10, 15, 20, 25]
+test_robot_visibility = [False, True]
 n_trials = 1000
 n_parallel_envs = 50 
 training_updates = 10_000
@@ -59,6 +63,9 @@ elif training_hyperparams['reward_function'] == 'socialnav_reward2':
     reward_function = Reward2(
         progress_to_goal_reward = True,
         progress_to_goal_weight = 0.03,
+        # high_rotation_penalty_reward=True,
+        # angular_speed_bound=1.,
+        # angular_speed_penalty_weight=0.035,
     )
 else:
     raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
@@ -117,65 +124,90 @@ il_rollout_params = {
     'custom_episodes': il_custom_episodes_path
 }
 
-# ## IMITATION LEARNING ROLLOUT
-# il_out = actor_critic_il_rollout(**il_rollout_params)
+# IMITATION LEARNING ROLLOUT
+il_out = actor_critic_il_rollout(**il_rollout_params)
 
-# # Execute tests to evaluate return after IL
-# for test, n_humans in enumerate(n_humans_for_tests):
-#     test_env_params = {
-#         'robot_radius': 0.3,
-#         'n_humans': n_humans,
-#         'robot_dt': 0.25,
-#         'humans_dt': 0.01,
-#         'robot_visible': True,
-#         'scenario': training_hyperparams['scenario'],
-#         'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
-#         'humans_policy': training_hyperparams['humans_policy'],
-#         'circle_radius': 7,
-#         'reward_function': reward_function,
-#         'kinematics': training_hyperparams['kinematics'],
-#     }
-#     test_env = SocialNav(**test_env_params)
-#     metrics_after_il = test_k_trials(
-#         n_trials, 
-#         training_hyperparams['il_training_episodes'], 
-#         test_env, 
-#         policy, 
-#         il_out['actor_params'], 
-#         reward_function.time_limit)
-
-# # Plot losses during IL
-# figure, ax = plt.subplots(2,1,figsize=(10,10))
-# ax[0].set(
-#     xlabel='Epoch', 
-#     ylabel='Loss', 
-#     title='Actor Loss during IL training'
-# )
-# ax[0].plot(
-#     jnp.arange(len(il_out['actor_losses'])), 
-#     il_out['actor_losses'],
-# )
-# ax[1].set(
-#     xlabel='Epoch', 
-#     ylabel='Loss', 
-#     title='Critic Loss during IL training'
-# )
-# ax[1].plot(
-#     jnp.arange(len(il_out['critic_losses'])), 
-#     il_out['critic_losses'],
-# )
-# figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
-# plt.close(figure)
-
-# # Save IL rollout output
-# with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
-#     pickle.dump(il_out, f)
+## Execute tests to evaluate return after IL
+# Initialize the dictionary to store the metrics
+outcomes_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests),))
+other_metrics_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials))
+metrics_after_il = {
+    "successes": outcomes_arrays, 
+    "collisions": outcomes_arrays, 
+    "timeouts": outcomes_arrays, 
+    "returns": other_metrics_arrays,
+    "times_to_goal": other_metrics_arrays,
+    "average_speed": other_metrics_arrays,
+    "average_acceleration": other_metrics_arrays,
+    "average_jerk": other_metrics_arrays,
+    "average_angular_speed": other_metrics_arrays,
+    "average_angular_acceleration": other_metrics_arrays,
+    "average_angular_jerk": other_metrics_arrays,
+    "min_distance": other_metrics_arrays,
+    "space_compliance": other_metrics_arrays,
+    "episodic_spl": other_metrics_arrays,
+    "path_length": other_metrics_arrays,
+    "scenario": jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials), dtype=jnp.int32),
+}
+for v, visibility in enumerate(test_robot_visibility):
+    print(f"\n##############\nROBOT {'VISIBLE' if visibility else 'NOT VISIBLE'}")
+    for test, n_humans in enumerate(n_humans_for_tests):
+        test_env_params = {
+            'robot_radius': 0.3,
+            'n_humans': n_humans,
+            'robot_dt': 0.25,
+            'humans_dt': 0.01,
+            'robot_visible': visibility,
+            'scenario': training_hyperparams['scenario'],
+            'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+            'humans_policy': training_hyperparams['humans_policy'],
+            'circle_radius': 7,
+            'reward_function': reward_function,
+            'kinematics': training_hyperparams['kinematics'],
+        }
+        test_env = SocialNav(**test_env_params)
+        trial_out = test_k_trials(
+            n_trials, 
+            training_hyperparams['il_training_episodes'], 
+            test_env, 
+            policy, 
+            il_out['actor_params'], 
+            reward_function.time_limit
+        )
+        # Store trail metrics
+        metrics_after_il = tree_map(lambda x, y: x.at[v,test].set(y), metrics_after_il, trial_out)
+# Save metrics
+with open(os.path.join(os.path.dirname(__file__),"metrics_after_il.pkl"), 'wb') as f:
+    pickle.dump(metrics_after_il, f)
+### Plot losses during IL
+figure, ax = plt.subplots(2,1,figsize=(10,10))
+ax[0].set(
+    xlabel='Epoch', 
+    ylabel='Loss', 
+    title='Actor Loss during IL training'
+)
+ax[0].plot(
+    jnp.arange(len(il_out['actor_losses'])), 
+    il_out['actor_losses'],
+)
+ax[1].set(
+    xlabel='Epoch', 
+    ylabel='Loss', 
+    title='Critic Loss during IL training'
+)
+ax[1].plot(
+    jnp.arange(len(il_out['critic_losses'])), 
+    il_out['critic_losses'],
+)
+figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
+plt.close(figure)
+## Save IL rollout output
+with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
+    pickle.dump(il_out, f)
 
 # Load IL rollout output
 with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:
     il_out = pickle.load(f)
-
-# Save the IL model parameters, buffer state, and keys
 il_actor_params = il_out['actor_params']
 il_critic_params = il_out['critic_params']
     
@@ -385,26 +417,159 @@ ax[3,1].plot(
 )
 figure.savefig(os.path.join(os.path.dirname(__file__),"rl_training_plots.eps"), format='eps')
 
-# Execute tests to evaluate return after RL
-for test, n_humans in enumerate(n_humans_for_tests):
-    test_env_params = {
-        'robot_radius': 0.3,
-        'n_humans': n_humans,
-        'robot_dt': 0.25,
-        'humans_dt': 0.01,
-        'robot_visible': True,
-        'scenario': training_hyperparams['scenario'],
-        'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
-        'humans_policy': training_hyperparams['humans_policy'],
-        'circle_radius': 7,
-        'reward_function': reward_function,
-        'kinematics': training_hyperparams['kinematics'],
-    }
-    test_env = SocialNav(**test_env_params)
-    metrics_after_rl = test_k_trials(
-        n_trials, 
-        training_hyperparams['il_training_episodes'] + episode_count, 
-        test_env, 
-        policy, 
-        rl_actor_params, 
-        reward_function.time_limit)
+## Execute tests to evaluate metrics after RL 
+# Initialize the dictionary to store the metrics
+outcomes_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests),))
+other_metrics_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials))
+metrics_after_rl = {
+    "successes": outcomes_arrays, 
+    "collisions": outcomes_arrays, 
+    "timeouts": outcomes_arrays, 
+    "returns": other_metrics_arrays,
+    "times_to_goal": other_metrics_arrays,
+    "average_speed": other_metrics_arrays,
+    "average_acceleration": other_metrics_arrays,
+    "average_jerk": other_metrics_arrays,
+    "average_angular_speed": other_metrics_arrays,
+    "average_angular_acceleration": other_metrics_arrays,
+    "average_angular_jerk": other_metrics_arrays,
+    "min_distance": other_metrics_arrays,
+    "space_compliance": other_metrics_arrays,
+    "episodic_spl": other_metrics_arrays,
+    "path_length": other_metrics_arrays,
+    "scenario": jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials), dtype=jnp.int32),
+}
+for v, visibility in enumerate(test_robot_visibility):
+    print(f"\n##############\nROBOT {'VISIBLE' if visibility else 'NOT VISIBLE'}")
+    for test, n_humans in enumerate(n_humans_for_tests):
+        test_env_params = {
+            'robot_radius': 0.3,
+            'n_humans': n_humans,
+            'robot_dt': 0.25,
+            'humans_dt': 0.01,
+            'robot_visible': visibility,
+            'scenario': training_hyperparams['scenario'],
+            'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+            'humans_policy': training_hyperparams['humans_policy'],
+            'circle_radius': 7,
+            'reward_function': reward_function,
+            'kinematics': training_hyperparams['kinematics'],
+        }
+        test_env = SocialNav(**test_env_params)
+        trial_out = test_k_trials(
+            n_trials, 
+            training_hyperparams['il_training_episodes'] + episode_count, 
+            test_env, 
+            policy, 
+            rl_actor_params, 
+            reward_function.time_limit
+        )
+        # Store trail metrics
+        metrics_after_rl = tree_map(lambda x, y: x.at[v,test].set(y), metrics_after_rl, trial_out)
+# Save metrics
+with open(os.path.join(os.path.dirname(__file__),"metrics_after_rl.pkl"), 'wb') as f:
+    pickle.dump(metrics_after_rl, f)
+
+### Plot metrics after RL and after IL
+# Load metrics files
+with open(os.path.join(os.path.dirname(__file__),"metrics_after_il.pkl"), 'rb') as f:
+    metrics_after_il = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__),"metrics_after_rl.pkl"), 'rb') as f:
+    metrics_after_rl = pickle.load(f)
+all_metrics = [metrics_after_il, metrics_after_rl]
+from matplotlib import rc
+font = {'weight' : 'regular',
+        'size'   : 18}
+rc('font', **font)
+# Plot all metrics for RL and IL with robot visible and not visible
+metrics_data = {
+    "successes": {"row_position": 0, "col_position": 0, "label": "Success rate", "ylim": [0.,1.1], "yticks": [i/10 for i in range(0,11)]}, 
+    "times_to_goal": {"row_position": 0, "col_position": 1, "label": "Time to goal ($s$)"},
+    "average_angular_speed": {"row_position": 0, "col_position": 2, "label": "Angular speed ($rad/s$)"},
+    "average_speed": {"row_position": 1, "col_position": 0, "label": "Speed ($m/s$)"}, 
+    "episodic_spl": {"row_position": 1, "col_position": 1, "label": "SPL", "ylim": [0,1], "yticks": [i/10 for i in range(11)]},
+    "average_angular_acceleration": {"row_position": 1, "col_position": 2, "label": "Angular acceleration ($rad/s^2$)"},
+    "space_compliance": {"row_position": 2, "col_position": 0, "label": "Space compliance", "ylim": [0,1]},
+    "average_acceleration": {"row_position": 2, "col_position": 1, "label": "Acceleration ($m/s^2$)"},
+    "average_angular_jerk": {"row_position": 2, "col_position": 2, "label": "Angular jerk ($rad/s^3$)"},
+    "average_jerk": {"row_position": 3, "col_position": 0, "label": "Jerk ($m/s^3$)"},
+    "min_distance": {"row_position": 3, "col_position": 1, "label": "Min. dist. to humans ($m$)"},
+    "returns": {"row_position": 3, "col_position": 2, "label": "Return"},
+}
+figure, ax = plt.subplots(math.ceil(len(metrics_data)/3), 3, figsize=(18,18))
+figure.subplots_adjust(right=0.82, top=0.985, bottom=0.05, left=0.09, hspace=0.3, wspace=0.3)
+for key in metrics_data:
+    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set(
+        xlabel='Number of humans',
+        ylabel=metrics_data[key]["label"])
+    if "ylim" in metrics_data[key]:
+        ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_ylim(metrics_data[key]["ylim"])
+    if "yticks" in metrics_data[key]:
+        ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_yticks(metrics_data[key]["yticks"])
+    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_xticks(jnp.arange(len(n_humans_for_tests)), labels=[i for i in n_humans_for_tests])
+    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].grid()
+    for v, visibility in enumerate(test_robot_visibility):
+        for p, metrics in enumerate(all_metrics):
+            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
+                jnp.arange(len(n_humans_for_tests)), 
+                jnp.nanmean(metrics[key][v], axis=1) if key != "successes" else metrics[key][v] / n_trials,
+                color=list(mcolors.TABLEAU_COLORS.values())[p],
+                linewidth=2,
+                linestyle='--' if v == 0 else '-',
+                label=f"{'IL' if p == 0 else 'RL'} {'visible' if visibility else 'not visible'}",
+            )
+handles, labels = ax[0,0].get_legend_handles_labels()
+figure.legend(labels, loc="center right", title=f"Policy:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
+figure.savefig(os.path.join(os.path.dirname(__file__),f"final_tests_plots.eps"), format='eps')
+# Plot success rate after RL and after IL with robot visible and not visible
+from socialjym.envs.base_env import SCENARIOS
+scenarios_data = {
+    "circular_crossing": {"label": "CC"},
+    "parallel_traffic": {"label": "PaT"},
+    "perpendicular_traffic": {"label": "PeT"},
+    "robot_crowding": {"label": "RC"},
+    "delayed_circular_crossing": {"label": "DCC"},
+    "circular_crossing_with_static_obstacles": {"label": "CCSO"},
+    "crowd_navigation": {"label": "CN"},
+}
+figure, ax = plt.subplots(2,2, figsize=(12,6))
+figure.subplots_adjust(right=0.83, top=0.93, bottom=0.125, left=0.1, hspace=0.5, wspace=0.3)
+for v, visibility in enumerate(test_robot_visibility):
+    for p, metrics in enumerate(all_metrics):
+        ax[v,p].set(
+            xlabel='Number of humans',
+            ylabel='Success rate',
+            title=f"{'IL' if p == 0 else 'RL'} {'visible' if visibility else 'not visible'}",
+        )
+        ax[v,p].set_xticks(jnp.arange(len(n_humans_for_tests)), labels=[i for i in n_humans_for_tests])
+        ax[v,p].set_ylim(metrics_data["successes"]["ylim"])
+        ax[v,p].set_yticks(metrics_data["successes"]["yticks"])
+        ax[v,p].set_yticklabels([i/10 for i in range(11)], fontsize=14)
+        ax[v,p].grid()
+        for s, scenario in enumerate(training_hyperparams['hybrid_scenario_subset']):
+            successes = jnp.sum(
+                jnp.where(
+                    (metrics["scenario"][v] == scenario) & ~(jnp.isnan(metrics["times_to_goal"][v])), 
+                    jnp.ones_like(metrics["scenario"][v]), 
+                    jnp.zeros_like(metrics["scenario"][v]),
+                ),
+                axis=1,
+            )
+            total_episodes_successes = jnp.sum(
+                jnp.where(
+                    metrics["scenario"][v] == scenario,
+                    jnp.ones_like(metrics["scenario"][v]),
+                    jnp.zeros_like(metrics["scenario"][v]),
+                ), 
+                axis=1,
+            )
+            ax[v,p].plot(
+                jnp.arange(len(n_humans_for_tests)), 
+                successes / total_episodes_successes,
+                color=list(mcolors.TABLEAU_COLORS.values())[s],
+                linewidth=2,
+                label=scenarios_data[SCENARIOS[scenario]]["label"],
+            )
+handles, labels = ax[0,0].get_legend_handles_labels()
+figure.legend(labels, loc="center right", title=f"Scenario:", bbox_to_anchor=(0.5, 0.25, 0.5, 0.5))
+figure.savefig(os.path.join(os.path.dirname(__file__),f"success_rate_tests.eps"), format='eps')
