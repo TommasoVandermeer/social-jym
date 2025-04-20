@@ -7,9 +7,9 @@ from socialjym.utils.distributions.dirichlet import Dirichlet
 
 random_seed = 0
 n_samples = 1_000
-vmax = 1
+vmax = 2
 wheels_distance = 0.7
-alpha = jnp.array([1., 1., 1.])
+alpha = jnp.array([1.0100837,   1.       , 951.1318])
 concentration = jnp.sum(alpha)
 epsilon = 1e-3
 

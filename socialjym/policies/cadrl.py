@@ -6,7 +6,7 @@ from types import FunctionType
 import optax
 
 from .base_policy import BasePolicy
-from socialjym.envs.base_env import ROBOT_KINEMATICS, wrap_angle
+from socialjym.envs.base_env import EPSILON, ROBOT_KINEMATICS, wrap_angle
 
 VN_PARAMS = {
     "output_sizes": [150, 100, 100, 1],
@@ -157,7 +157,7 @@ class CADRL(BasePolicy):
             obs = obs.at[0:2].set(obs[0:2] + obs[2:4] * self.dt)
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
             obs = lax.cond(
-                obs[3] != 0,
+                jnp.abs(obs[3]) > EPSILON,
                 lambda x: x.at[:].set(jnp.array([
                     x[0] + (x[2]/x[3]) * (jnp.sin(x[5] + x[3] * self.dt) - jnp.sin(x[5])),
                     x[1] + (x[2]/x[3]) * (jnp.cos(x[5]) - jnp.cos(x[5] + x[3] * self.dt)),

@@ -16,7 +16,8 @@ from socialjym.utils.aux_functions import animate_trajectory, load_crowdnav_poli
 random_seed = 0 
 n_episodes = 50
 kinematics = "unicycle"
-distribution = "gaussian"
+distribution = "dirichlet"
+v_max = 2
 tests_n_humans = [5, 10, 15, 20, 25]
 n_trials = 100
 ds = 0.2 # Discomfort distance
@@ -25,6 +26,7 @@ reward_function = Reward2(
         target_reached_reward = True,
         collision_penalty_reward = True,
         discomfort_penalty_reward = True,
+        v_max = v_max,
         progress_to_goal_reward = 1,
         time_penalty_reward = 0,
         high_rotation_penalty_reward = 0,
@@ -33,7 +35,7 @@ reward_function = Reward2(
     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 15,
+    'n_humans': 25,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
@@ -49,7 +51,7 @@ env_params = {
 env = SocialNav(**env_params)
 
 ### Initialize robot policy
-policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics, distribution=distribution)
+policy = SARLPPO(env.reward_function, v_max=v_max, dt=env_params['robot_dt'], kinematics=kinematics, distribution=distribution)
 with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
     rl_out = pickle.load(f)
     actor_params = rl_out['actor_params']
@@ -87,7 +89,9 @@ for i in range(n_episodes):
     while outcome["nothing"]:
         action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, False)
         print(distr)
+        # print("Action: ", action)
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
+        # print("Robot state: ", state[-1,:])
         # print(f"Return in steps [0,{info['step']}):", info["return"])
         all_states = np.vstack((all_states, [state]))
 

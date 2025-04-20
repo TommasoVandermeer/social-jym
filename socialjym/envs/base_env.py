@@ -24,6 +24,7 @@ HUMAN_POLICIES = [
 ROBOT_KINEMATICS = [
     "holonomic",
     "unicycle"]
+EPSILON = 1e-5 # Small value to avoid math overflow
 
 @jit
 def wrap_angle(theta:float) -> float:
@@ -302,7 +303,7 @@ class BaseEnv(ABC):
                 state[-1,1]+action[1]*self.humans_dt]))
         elif self.kinematics == ROBOT_KINEMATICS.index("unicycle"):
             new_state = lax.cond(
-                action[1] != 0,
+                jnp.abs(action[1]) > EPSILON,
                 lambda x: x.at[-1].set(jnp.array([
                     state[-1,0]+(action[0]/action[1])*(jnp.sin(state[-1,4]+action[1]*self.humans_dt)-jnp.sin(state[-1,4])),
                     state[-1,1]+(action[0]/action[1])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+action[1]*self.humans_dt)),

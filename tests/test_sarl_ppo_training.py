@@ -24,11 +24,12 @@ n_trials = 1000
 n_parallel_envs = 50 
 training_updates = 10_000
 rl_debugging_interval = 10
+robot_vmax = 2
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': 'unicycle', # 'unicycle' or 'holonomic'
     'policy_name': 'sarl-ppo',
-    'distribution': 'gaussian', # 'gaussian', 'dirichlet-bernoulli' or 'dirichlet'
+    'distribution': 'dirichlet', # 'gaussian', 'dirichlet-bernoulli' or 'dirichlet'
     'n_humans': 5, 
     'il_buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
     'il_training_episodes': 2_000,
@@ -44,7 +45,7 @@ training_hyperparams = {
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 10, # 10
     'rl_num_batches': 30, # 30
-    'rl_beta_entropy': 2e-5, 
+    'rl_beta_entropy': 5e-4, # 5e-4
     'lambda_gae': 0.95, # 0.95
     'humans_policy': 'hsfm',
     'scenario': 'hybrid_scenario',
@@ -63,6 +64,7 @@ elif training_hyperparams['reward_function'] == 'socialnav_reward2':
     reward_function = Reward2(
         progress_to_goal_reward = True,
         progress_to_goal_weight = 0.03,
+        v_max = robot_vmax,
         # high_rotation_penalty_reward=True,
         # angular_speed_bound=1.,
         # angular_speed_penalty_weight=0.035,
@@ -86,7 +88,7 @@ env_params = {
 # Initialize environment
 env = SocialNav(**env_params)
 # Initialize robot policy and vnet params
-policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'], distribution=training_hyperparams['distribution'])
+policy = SARLPPO(env.reward_function, v_max=robot_vmax, dt=env_params['robot_dt'], kinematics=env_params['kinematics'], distribution=training_hyperparams['distribution'])
 initial_actor_params = policy.actor.init(training_hyperparams['random_seed'], jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
 initial_critic_params = policy.critic.init(training_hyperparams['random_seed'], jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
 # Initialize replay buffer
@@ -125,7 +127,9 @@ il_rollout_params = {
 }
 
 # IMITATION LEARNING ROLLOUT
-il_out = actor_critic_il_rollout(**il_rollout_params)
+# il_out = actor_critic_il_rollout(**il_rollout_params)
+with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:
+    il_out = pickle.load(f)
 
 ## Execute tests to evaluate return after IL
 # Initialize the dictionary to store the metrics
@@ -272,12 +276,12 @@ rl_rollout_params = {
     'debugging_interval': rl_debugging_interval,
 }
 
-# REINFORCEMENT LEARNING ROLLOUT
-rl_out = ppo_rl_rollout(**rl_rollout_params)
+# # REINFORCEMENT LEARNING ROLLOUT
+# rl_out = ppo_rl_rollout(**rl_rollout_params)
 
-# Save RL rollout output
-with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
-    pickle.dump(rl_out, f)
+# # Save RL rollout output
+# with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
+#     pickle.dump(rl_out, f)
 
 # Load RL rollout output
 with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'rb') as f:
@@ -464,7 +468,7 @@ for v, visibility in enumerate(test_robot_visibility):
             rl_actor_params, 
             reward_function.time_limit
         )
-        # Store trail metrics
+        # Store trial metrics
         metrics_after_rl = tree_map(lambda x, y: x.at[v,test].set(y), metrics_after_rl, trial_out)
 # Save metrics
 with open(os.path.join(os.path.dirname(__file__),"metrics_after_rl.pkl"), 'wb') as f:
