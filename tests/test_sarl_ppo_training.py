@@ -127,9 +127,7 @@ il_rollout_params = {
 }
 
 # IMITATION LEARNING ROLLOUT
-# il_out = actor_critic_il_rollout(**il_rollout_params)
-with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:
-    il_out = pickle.load(f)
+il_out = actor_critic_il_rollout(**il_rollout_params)
 
 ## Execute tests to evaluate return after IL
 # Initialize the dictionary to store the metrics
@@ -276,12 +274,12 @@ rl_rollout_params = {
     'debugging_interval': rl_debugging_interval,
 }
 
-# # REINFORCEMENT LEARNING ROLLOUT
-# rl_out = ppo_rl_rollout(**rl_rollout_params)
+# REINFORCEMENT LEARNING ROLLOUT
+rl_out = ppo_rl_rollout(**rl_rollout_params)
 
-# # Save RL rollout output
-# with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
-#     pickle.dump(rl_out, f)
+# Save RL rollout output
+with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
+    pickle.dump(rl_out, f)
 
 # Load RL rollout output
 with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'rb') as f:
