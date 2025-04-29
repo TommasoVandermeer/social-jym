@@ -21,6 +21,7 @@ from socialjym.utils.rollouts.vnet_rollouts import vnet_il_rollout, vnet_rl_roll
 random_seed = 0
 n_epochs = 50
 kinematics = 'unicycle'
+unicycle_box = True
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': kinematics,
@@ -72,10 +73,10 @@ env = SocialNav(**env_params)
 ### Initialize robot policy
 # Initialize robot policy and vnet params
 if training_hyperparams['policy_name'] == "cadrl": 
-    policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
+    policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics, unicycle_box_action_space=unicycle_box)
     initial_vnet_params = policy.model.init(random.key(training_hyperparams['random_seed']), jnp.zeros((policy.vnet_input_size,)))
 elif training_hyperparams['policy_name'] == "sarl":
-    policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
+    policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics, unicycle_box_action_space=unicycle_box)
     initial_vnet_params = policy.model.init(random.key(training_hyperparams['random_seed']), jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
 else: raise ValueError(f"{training_hyperparams['policy_name']} is not a valid policy name")
 

@@ -139,10 +139,16 @@ class Actor(hk.Module):
         sampled_action = self.distr.sample(distribution, random_key)
         return sampled_action, distribution
 
+def batch_norm_layer(x, is_training, decay_rate=0.9, eps=1e-3):
+    bn = hk.BatchNorm(create_scale=False, create_offset=False, decay_rate=decay_rate, eps=eps)
+    return bn(x, is_training=is_training)
+
 class SARLPPO(SARL):
     def __init__(
             self, 
             reward_function:FunctionType, 
+            normalize_and_clip_obs:bool=False,
+            clip_obs_bound:float=10.,
             distribution:str='gaussian',
             v_max:float=1., 
             gamma:float=0.9, 
@@ -166,12 +172,16 @@ class SARLPPO(SARL):
         # Default attributes
         self.name = "SARL-PPO"
         self.distr_id = DISTRIBUTIONS.index(distribution)
+        self.normalize_and_clip_obs = normalize_and_clip_obs
         if self.distr_id == DISTRIBUTIONS.index('gaussian'):
             self.distr = Gaussian()
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
             self.distr = DirichletBernoulli(self.v_max, self.wheels_distance, EPSILON)
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
             self.distr = Dirichlet(self.v_max, self.wheels_distance, EPSILON)
+        if self.normalize_and_clip_obs:
+            self.norm_layer = hk.transform_with_state(batch_norm_layer)
+            self.clip_obs_bound = clip_obs_bound
         self.critic = critic_network
         @hk.transform
         def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
@@ -388,13 +398,28 @@ class SARLPPO(SARL):
     # Public methods
 
     @partial(jit, static_argnames=("self"))
+    def init_nns(
+        self, 
+        key:random.PRNGKey, 
+        obs:jnp.ndarray, 
+        info:dict,
+    ) -> tuple:
+        actor_params = self.actor.init(key, jnp.zeros((len(obs)-1, self.vnet_input_size)))
+        critic_params = self.critic.init(key, jnp.zeros((len(obs)-1, self.vnet_input_size)))
+        if self.normalize_and_clip_obs:
+            input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
+            _, norm_state = self.norm_layer.init(random.PRNGKey(0), input, is_training=True)
+            actor_params = {"norm_state": norm_state, "actor_params": actor_params}
+        return actor_params, critic_params
+
+    @partial(jit, static_argnames=("self"))
     def act(
         self, 
         key:random.PRNGKey, 
         obs:jnp.ndarray, 
         info:dict, 
         actor_params:dict, 
-        sample:bool = False,
+        sample:bool = False, # If sampling also the batch norm layer state is updated
     ) -> jnp.ndarray:
 
         # Add noise to human observations
@@ -402,14 +427,26 @@ class SARLPPO(SARL):
             key, subkey = random.split(key)
             obs = self._batch_add_noise_to_human_obs(obs, subkey)
         # Compute actor input
-        actor_input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
-        # Compute action 
+        input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
+        # Normalize and clip input
+        if self.normalize_and_clip_obs:
+            actor_params = actor_params["actor_params"]
+            norm_state = actor_params["norm_state"]
+            input, _ = self.norm_layer.apply(
+                {},
+                norm_state,
+                None,
+                input,
+                is_training=False,
+            )
+            input = jnp.clip(input, -self.clip_obs_bound, self.clip_obs_bound)
+        # Compute action
         key, subkey = random.split(key)
-        sampled_action, distr = self.actor.apply(actor_params, None, actor_input, random_key=subkey)
+        sampled_action, distr = self.actor.apply(actor_params, None, input, random_key=subkey)
         action = lax.cond(sample, lambda _: sampled_action, lambda _: self.distr.mean(distr), None)
         # if self.distr_id == DISTRIBUTIONS.index('gaussian'):
         #     action = self.distr.bound_action(action, self.kinematics, self.v_max, self.wheels_distance)
-        return action, key, actor_input, sampled_action, distr
+        return action, key, input, sampled_action, distr
     
     @partial(jit, static_argnames=("self"))
     def batch_act(

@@ -16,13 +16,14 @@ from socialjym.utils.rollouts.vnet_rollouts import vnet_rl_rollout, vnet_il_roll
 from socialjym.utils.aux_functions import linear_decay, plot_state, plot_trajectory, test_k_trials, save_policy_params
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 
-n_seeds = 10
+n_seeds = 1
 n_il_epochs = 50
 n_trials = 1000
-rl_training_episodes = 10_000
+rl_training_episodes = 30_000
 espilon_start = 0.5
 epsilon_end = 0.1
-kinematics = 'holonomic'
+kinematics = 'unicycle'
+unicycle_box_action_space = True
 n_humans_for_tests = [5, 10, 15, 20, 25]
 
 loss_during_il = np.empty((n_seeds,n_il_epochs))
@@ -37,8 +38,8 @@ for seed in range(n_seeds):
     training_hyperparams = {
         'random_seed': seed,
         'kinematics': kinematics,
-        'policy_name': 'cadrl', # 'cadrl' or 'sarl'
-        'n_humans': 1,  # CADRL uses 1, SARL uses 5
+        'policy_name': 'sarl', # 'cadrl' or 'sarl'
+        'n_humans': 5,  # CADRL uses 1, SARL uses 5
         'il_training_episodes': 2_000,
         'il_learning_rate': 0.01,
         'il_num_epochs': n_il_epochs, # Number of epochs to train the model after ending IL
@@ -80,10 +81,10 @@ for seed in range(n_seeds):
     env = SocialNav(**env_params)
     # Initialize robot policy and vnet params
     if training_hyperparams['policy_name'] == "cadrl": 
-        policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'])
+        policy = CADRL(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'], unicycle_box_action_space=unicycle_box_action_space)
         initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((policy.vnet_input_size,)))
     elif training_hyperparams['policy_name'] == "sarl":
-        policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'])
+        policy = SARL(env.reward_function, dt=env_params['robot_dt'], kinematics=env_params['kinematics'], unicycle_box_action_space=unicycle_box_action_space)
         initial_vnet_params = policy.model.init(training_hyperparams['random_seed'], jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
     else: raise ValueError(f"{training_hyperparams['policy_name']} is not a valid policy name")
     # Initialize replay buffer
@@ -189,6 +190,8 @@ for seed in range(n_seeds):
     # Save the training returns
     rl_model_params = rl_out['model_params']
     returns_during_rl[seed] = rl_out['returns']  
+    with open(os.path.join(os.path.dirname(__file__),f"rl_model_params_{seed}.pkl"), 'wb') as f:
+        pickle.dump(rl_model_params, f)
 
     # Execute tests to evaluate return after RL
     for test, n_humans in enumerate(n_humans_for_tests):

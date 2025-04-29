@@ -30,6 +30,7 @@ class CADRL(BasePolicy):
             dt:float = 0.25, 
             wheels_distance:float = 0.7, 
             kinematics:str = 'holonomic', 
+            unicycle_box_action_space:bool = False, # If True, along with unicycle kinematics the action space is limited to a box (not triangle)
             noise:bool = False, # If True, noise is added to humams positions and velocities
             noise_sigma_percentage:float = 0., # Standard deviation of the noise as a percentage of the absolute value of the difference between the robot and the humans
             # position_noise_sigma_percentage_radius:float = 0., # Standard deviation of the noise as a percentage of the ditance between the robot and the humans
@@ -53,6 +54,7 @@ class CADRL(BasePolicy):
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
         self.noise = noise
         self.noise_sigma_percentage = noise_sigma_percentage
+        self.unicycle_box_action_space = unicycle_box_action_space
         # self.position_noise_sigma_percentage_radius = position_noise_sigma_percentage_radius
         # self.position_noise_sigma_angle = position_noise_sigma_angle
         # self.velocity_noise_sigma_percentage = velocity_noise_sigma_percentage
@@ -80,26 +82,41 @@ class CADRL(BasePolicy):
                                             speeds[(i-1) % speed_samples] * jnp.sin(rotations[(i-1) // speed_samples])])),
                                         action_space)
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-            # The number of actions will be equal to (samples**2) (which corresponds to the number of positive linear velocities)
-            # The linear velocities are crossed with (samples * 2 -1) angular speeds to create the feasible action space)
-            samples = 9
-            angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 2*samples-1)
-            speeds = jnp.linspace(0, self.v_max, samples)
-            unconstrained_action_space = jnp.empty((len(angular_speeds)*len(speeds),2))
-            unconstrained_action_space = lax.fori_loop(
-                0,
-                len(angular_speeds),
-                lambda i, x: lax.fori_loop(
+            if self.unicycle_box_action_space:
+                # We will subdivide the linear velocities in 9 intervals and the angular velocities in 9 intervals, for a total of 81 actions
+                linear_speeds = jnp.linspace(0, self.v_max, 9)
+                angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 9)
+                action_space = jnp.empty((len(linear_speeds)*len(angular_speeds),2))
+                action_space = lax.fori_loop(
                     0,
-                    len(speeds),
-                    lambda j, y: lax.cond(
-                        jnp.all(jnp.array([i<len(angular_speeds)-j, i>=j])),
-                        lambda z: z.at[i*len(speeds)+j].set(jnp.array([speeds[j],angular_speeds[i]])),
-                        lambda z: z.at[i*len(speeds)+j].set(jnp.array([jnp.nan,jnp.nan])),
-                        y),
-                    x),
-                unconstrained_action_space)
-            action_space = unconstrained_action_space[~jnp.isnan(unconstrained_action_space).any(axis=1)]
+                    len(angular_speeds),
+                    lambda i, x: lax.fori_loop(
+                        0,
+                        len(linear_speeds),
+                        lambda j, y: y.at[i*len(linear_speeds)+j].set(jnp.array([linear_speeds[j],angular_speeds[i]])),
+                        x),
+                    action_space)
+            else:
+                # The number of actions will be equal to (samples**2) (which corresponds to the number of positive linear velocities)
+                # The linear velocities are crossed with (samples * 2 -1) angular speeds to create the feasible action space)
+                samples = 9
+                angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 2*samples-1)
+                speeds = jnp.linspace(0, self.v_max, samples)
+                unconstrained_action_space = jnp.empty((len(angular_speeds)*len(speeds),2))
+                unconstrained_action_space = lax.fori_loop(
+                    0,
+                    len(angular_speeds),
+                    lambda i, x: lax.fori_loop(
+                        0,
+                        len(speeds),
+                        lambda j, y: lax.cond(
+                            jnp.all(jnp.array([i<len(angular_speeds)-j, i>=j])),
+                            lambda z: z.at[i*len(speeds)+j].set(jnp.array([speeds[j],angular_speeds[i]])),
+                            lambda z: z.at[i*len(speeds)+j].set(jnp.array([jnp.nan,jnp.nan])),
+                            y),
+                        x),
+                    unconstrained_action_space)
+                action_space = unconstrained_action_space[~jnp.isnan(unconstrained_action_space).any(axis=1)]
         return action_space
 
     @partial(jit, static_argnames=("self"))

@@ -89,7 +89,7 @@ for i in range(n_episodes):
     while outcome["nothing"]:
         action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, False)
         print(distr)
-        # print("Action: ", action)
+        print("Action: ", action)
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
         # print("Robot state: ", state[-1,:])
         # print(f"Return in steps [0,{info['step']}):", info["return"])

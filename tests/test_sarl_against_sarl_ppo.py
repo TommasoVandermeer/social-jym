@@ -33,7 +33,7 @@ reward_function = Reward2(
 
 # Initialize and load policies
 sarl_ppo = SARLPPO(reward_function, v_max=robot_vmax, dt=0.25, kinematics='unicycle', distribution=sarl_ppo_distribution)
-sarl = SARL(reward_function, v_max=robot_vmax, dt=0.25, kinematics='unicycle')
+sarl = SARL(reward_function, v_max=robot_vmax, dt=0.25, kinematics='unicycle', unicycle_box_action_space=True)
 with open(os.path.join(os.path.dirname(__file__), 'sarl_params.pkl'), 'rb') as f:
     sarl_params = pickle.load(f)
 with open(os.path.join(os.path.dirname(__file__), 'sarl_ppo_params.pkl'), 'rb') as f:

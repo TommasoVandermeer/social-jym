@@ -11,14 +11,15 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_t
 
 # Define a simple function with BatchNorm
 def forward_fn(x, update_stats):
-    bn = hk.BatchNorm(create_scale=True, create_offset=True, decay_rate=0.9)
+    bn = hk.BatchNorm(create_scale=False, create_offset=False, decay_rate=0.9, eps=1e-3)
     return bn(x, update_stats)
 # Transform the function into a Haiku module
 model = hk.transform_with_state(forward_fn)
 
 # Hyperparameters
 random_seed = 1
-n_steps = 1_000
+n_steps = 2_000
+clip_obs_bound = 5.
 kinematics = 'unicycle'
 reward_params = {
     'goal_reward': 1.,
@@ -60,10 +61,11 @@ for step in range(n_steps):
         norm_state,
         None,
         vnet_input,
-        True,
+        True,  # update_stats=False
     )
+    clipped_norm_vnet_input = jnp.clip(norm_vnet_input, -clip_obs_bound, clip_obs_bound)
     # Save data
-    all_normalized_inputs = all_normalized_inputs.at[step].set(norm_vnet_input)
+    all_normalized_inputs = all_normalized_inputs.at[step].set(clipped_norm_vnet_input)
     all_inputs = all_inputs.at[step].set(vnet_input)
 
 # Print results
@@ -79,3 +81,8 @@ print("Original final Input:")
 print(all_inputs[-1])
 print("Normalized final Input:")
 print(all_normalized_inputs[-1])
+
+print("\nOriginal inputs stats: ")
+print(f"infs: {jnp.isinf(all_inputs).sum()} - nans: {jnp.isnan(all_inputs).sum()} - max: {jnp.max(all_inputs)} - min: {jnp.min(all_inputs)} - mean: {jnp.mean(all_inputs)} - std: {jnp.std(all_inputs)}")
+print("Normalized inputs stats: ")
+print(f"infs: {jnp.isinf(all_normalized_inputs).sum()} - nans: {jnp.isnan(all_normalized_inputs).sum()} - max: {jnp.max(all_normalized_inputs)} - min: {jnp.min(all_normalized_inputs)} - mean: {jnp.mean(all_normalized_inputs)} - std: {jnp.std(all_normalized_inputs)}")

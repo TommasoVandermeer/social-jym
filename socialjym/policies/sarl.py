@@ -130,6 +130,7 @@ class SARL(CADRL):
             dt=0.25, 
             wheels_distance=0.7, 
             kinematics='holonomic',
+            unicycle_box_action_space=False,
             noise = False, # If True, noise is added to humams positions and velocities
             noise_sigma_percentage:float = 0., # Standard deviation of the noise as a percentage of the absolute value of the difference between the robot and the humans
             # position_noise_sigma_percentage_radius = 0., # Standard deviation of the noise as a percentage of the ditance between the robot and the humans
@@ -144,6 +145,7 @@ class SARL(CADRL):
             gamma=gamma, 
             dt=dt,
             kinematics=kinematics,
+            unicycle_box_action_space=unicycle_box_action_space,
             noise=noise,
             noise_sigma_percentage=noise_sigma_percentage,
             # position_noise_sigma_percentage_radius = position_noise_sigma_percentage_radius,
