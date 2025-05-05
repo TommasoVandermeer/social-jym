@@ -52,6 +52,19 @@ def ppo_rl_rollout(
                         # Retrieve data from the tuple
                         actor_params, critic_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds = val
                         ## Step
+                        # Update state of Batch Norm layer
+                        if policy.normalize_and_clip_obs:
+                                norm_state = actor_params["norm_state"]
+                                ins = vmap(policy.batch_compute_vnet_input, in_axes=(0,0,0))(
+                                        obses[:,-1], 
+                                        obses[:,:-1], 
+                                        infos,
+                                ),
+                                _, updated_norm_state = policy.normalize_and_clip_inputs_updating_state(
+                                        jnp.reshape(*ins, (n_parallel_envs * env.n_humans, policy.vnet_input_size)),
+                                        norm_state,
+                                )
+                                actor_params["norm_state"] = updated_norm_state
                         actions, policy_keys, inputs, sampled_actions, distrs = policy.batch_act(policy_keys, obses, infos, actor_params, sample=True)
                         # Compute state values
                         values = vmap(policy.critic.apply, in_axes=(None,None,0))(
@@ -100,14 +113,21 @@ def ppo_rl_rollout(
                 aux_data["stds"] = aux_data["stds"].at[upd_idx].set(jnp.mean(batch_stds, axis=(0,1)))
                 ### Add experiences to the buffer
                 # Compute the value of the last batched_states and dones
+                inputs = vmap(policy.batch_compute_vnet_input, in_axes=(0,0,0))(
+                        obses[:,-1], 
+                        obses[:,:-1], 
+                        infos
+                )
+                if policy.normalize_and_clip_obs:
+                        inputs = jnp.reshape(
+                                policy.normalize_and_clip_inputs(jnp.reshape(inputs, (n_parallel_envs * env.n_humans, policy.vnet_input_size)), actor_params["norm_state"]), 
+                                (n_parallel_envs, env.n_humans, policy.vnet_input_size)
+                        )
+                # Compute the value of the last batch  
                 last_values = vmap(policy.critic.apply, in_axes=(None,None,0))(
                         critic_params,
                         None,
-                        vmap(policy.batch_compute_vnet_input, in_axes=(0,0,0))(
-                                obses[:,-1], 
-                                obses[:,:-1], 
-                                infos
-                        ),
+                        inputs,
                 )
                 last_dones = ~(outcomes["nothing"])
                 batch_values = jnp.append(batch_values, last_values, axis=1)
@@ -172,7 +192,7 @@ def ppo_rl_rollout(
                                 # Update the networks
                                 new_critic_params, new_actor_params, cri_opt_state, act_opt_state, critic_loss, actor_loss, entropy_loss = policy.update(
                                         critic_params,
-                                        actor_params,
+                                        actor_params["actor_params"] if policy.normalize_and_clip_obs else actor_params,
                                         actor_optimizer,
                                         act_opt_state,
                                         critic_optimizer,
@@ -182,6 +202,11 @@ def ppo_rl_rollout(
                                         clip_range,
                                         debugging = False, #(debugging) & (upd_idx % debugging_interval == 0) & (epoch + batch == 0), 
                                 )
+                                if policy.normalize_and_clip_obs:
+                                        new_actor_params = {
+                                                "actor_params": new_actor_params,
+                                                "norm_state": actor_params["norm_state"],
+                                        }
                                 # Save aux data
                                 pre_aux_data["actor_losses"] = pre_aux_data["actor_losses"].at[epoch,batch].set(actor_loss)
                                 pre_aux_data["critic_losses"] = pre_aux_data["critic_losses"].at[epoch,batch].set(critic_loss)
@@ -216,7 +241,7 @@ def ppo_rl_rollout(
                 lax.cond(
                         (debugging) & (upd_idx % debugging_interval == 0) & (upd_idx != 0),   
                         lambda _: debug.print(
-                                "Episodes {w}\nActor loss: {y}\nCritic loss: {z}\nEntropy: {e}\nStd: {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}", 
+                                "Episodes {w}\nActor loss: {y}\nCritic loss: {z}\nEntropy: {e}\nStd: {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}\nNorm state: {ns}", 
                                 y=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["actor_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["actor_losses"])) <= upd_idx), jnp.abs(aux_data["actor_losses"]), jnp.nan)),
                                 z=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["critic_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["critic_losses"])) <= upd_idx), aux_data["critic_losses"], jnp.nan)), 
                                 w=jnp.sum(aux_data["episodes"]),
@@ -226,7 +251,7 @@ def ppo_rl_rollout(
                                 t=jnp.nansum(jnp.where((jnp.arange(len(aux_data["timeouts"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["timeouts"])) <= upd_idx), aux_data["timeouts"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 e=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["entropy_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["entropy_losses"])) <= upd_idx), aux_data["entropy_losses"], jnp.nan)),
                                 std=jnp.nanmean(jnp.where(((jnp.column_stack([jnp.arange(aux_data["stds"].shape[0]),jnp.arange(aux_data["stds"].shape[0])])) > upd_idx-debugging_interval) & (jnp.column_stack([jnp.arange(aux_data["stds"].shape[0]),jnp.arange(aux_data["stds"].shape[0])]) <= upd_idx), aux_data["stds"], jnp.array([jnp.nan,jnp.nan])), axis=0),
-                        ),
+                                ns=actor_params["norm_state"]["batch_norm/~/mean_ema"]["average"] if policy.normalize_and_clip_obs else "None",                        ),
                         lambda x: x, 
                         None
                 )
@@ -245,7 +270,10 @@ def ppo_rl_rollout(
                 "stds": jnp.zeros([train_updates, 2], dtype=jnp.float32),
         }
         # Initialize the optimizer state
-        actor_optimizer_state = actor_optimizer.init(initial_actor_params)
+        if policy.normalize_and_clip_obs:
+                actor_optimizer_state = actor_optimizer.init(initial_actor_params["actor_params"])
+        else:
+                actor_optimizer_state = actor_optimizer.init(initial_actor_params)
         critic_optimizer_state = critic_optimizer.init(initial_critic_params)
         # Initialize the random keys
         policy_keys = vmap(random.PRNGKey)(jnp.arange(n_parallel_envs, dtype=int) + random_seed)

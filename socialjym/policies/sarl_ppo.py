@@ -148,7 +148,7 @@ class SARLPPO(SARL):
             self, 
             reward_function:FunctionType, 
             normalize_and_clip_obs:bool=False,
-            clip_obs_bound:float=10.,
+            clip_obs_bound:float=5.,
             distribution:str='gaussian',
             v_max:float=1., 
             gamma:float=0.9, 
@@ -413,36 +413,64 @@ class SARLPPO(SARL):
         return actor_params, critic_params
 
     @partial(jit, static_argnames=("self"))
+    def normalize_and_clip_inputs_updating_state(
+        self,
+        inputs:jnp.ndarray,
+        norm_state:dict,
+    ) -> tuple:
+        inputs, norm_state = self.norm_layer.apply(
+            {},
+            norm_state,
+            None,
+            inputs,
+            is_training=True,
+        )
+        inputs = jnp.clip(inputs, -self.clip_obs_bound, self.clip_obs_bound)
+        return inputs, norm_state
+
+    @partial(jit, static_argnames=("self"))
+    def normalize_and_clip_inputs(
+        self,
+        inputs:jnp.ndarray,
+        norm_state:dict,
+    ) -> jnp.ndarray:
+        inputs, _ = self.norm_layer.apply(
+            {},
+            norm_state,
+            None,
+            inputs,
+            is_training=False,
+        )
+        inputs = jnp.clip(inputs, -self.clip_obs_bound, self.clip_obs_bound)
+        return inputs
+
+    @partial(jit, static_argnames=("self"))
     def act(
         self, 
         key:random.PRNGKey, 
         obs:jnp.ndarray, 
         info:dict, 
         actor_params:dict, 
-        sample:bool = False, # If sampling also the batch norm layer state is updated
+        sample:bool = False,
     ) -> jnp.ndarray:
-
+        
         # Add noise to human observations
         if self.noise:
             key, subkey = random.split(key)
             obs = self._batch_add_noise_to_human_obs(obs, subkey)
         # Compute actor input
         input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
-        # Normalize and clip input
         if self.normalize_and_clip_obs:
+            input = self.normalize_and_clip_inputs(input, actor_params["norm_state"])
             actor_params = actor_params["actor_params"]
-            norm_state = actor_params["norm_state"]
-            input, _ = self.norm_layer.apply(
-                {},
-                norm_state,
-                None,
-                input,
-                is_training=False,
-            )
-            input = jnp.clip(input, -self.clip_obs_bound, self.clip_obs_bound)
         # Compute action
         key, subkey = random.split(key)
-        sampled_action, distr = self.actor.apply(actor_params, None, input, random_key=subkey)
+        sampled_action, distr = self.actor.apply(
+            actor_params, 
+            None, 
+            input, 
+            random_key=subkey
+        )
         action = lax.cond(sample, lambda _: sampled_action, lambda _: self.distr.mean(distr), None)
         # if self.distr_id == DISTRIBUTIONS.index('gaussian'):
         #     action = self.distr.bound_action(action, self.kinematics, self.v_max, self.wheels_distance)
@@ -455,7 +483,8 @@ class SARLPPO(SARL):
         obses,
         infos,
         actor_params,
-        sample):
+        sample,
+    ):
         return vmap(SARLPPO.act, in_axes=(None, 0, 0, 0, None, None))(
             self,
             keys, 

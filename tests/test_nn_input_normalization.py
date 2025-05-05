@@ -16,6 +16,40 @@ def forward_fn(x, update_stats):
 # Transform the function into a Haiku module
 model = hk.transform_with_state(forward_fn)
 
+@jit
+def _normalize_and_clip_observation_and_update_state(
+    state:dict, 
+    x:jnp.ndarray, 
+    bound:float,
+    ):
+    # Apply the model (normalize the input)
+    norm_x, state = model.apply(
+        {},
+        state,
+        None,
+        x,
+        True,
+    )
+    clipped_norm_x = jnp.clip(norm_x, -bound, bound)
+    return clipped_norm_x, state
+
+@jit
+def _normalize_and_clip_observation(
+    state:dict, 
+    x:jnp.ndarray, 
+    bound:float,
+    ):
+    # Apply the model (normalize the input)
+    norm_x, _ = model.apply(
+        {},
+        state,
+        None,
+        x,
+        False,
+    )
+    clipped_norm_x = jnp.clip(norm_x, -bound, bound)
+    return clipped_norm_x
+
 # Hyperparameters
 random_seed = 1
 n_steps = 2_000
@@ -56,14 +90,7 @@ for step in range(n_steps):
     action, policy_key, vnet_input = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
     state, obs, info, reward, outcome, reset_key = env.step(state,info,action,test=True,reset_if_done=True,reset_key=reset_key)
     # Apply the model (normalize the input)
-    norm_vnet_input, norm_state = model.apply(
-        norm_params,
-        norm_state,
-        None,
-        vnet_input,
-        True,  # update_stats=False
-    )
-    clipped_norm_vnet_input = jnp.clip(norm_vnet_input, -clip_obs_bound, clip_obs_bound)
+    clipped_norm_vnet_input, norm_state = _normalize_and_clip_observation_and_update_state(norm_state, vnet_input, bound=clip_obs_bound)
     # Save data
     all_normalized_inputs = all_normalized_inputs.at[step].set(clipped_norm_vnet_input)
     all_inputs = all_inputs.at[step].set(vnet_input)
@@ -86,3 +113,7 @@ print("\nOriginal inputs stats: ")
 print(f"infs: {jnp.isinf(all_inputs).sum()} - nans: {jnp.isnan(all_inputs).sum()} - max: {jnp.max(all_inputs)} - min: {jnp.min(all_inputs)} - mean: {jnp.mean(all_inputs)} - std: {jnp.std(all_inputs)}")
 print("Normalized inputs stats: ")
 print(f"infs: {jnp.isinf(all_normalized_inputs).sum()} - nans: {jnp.isnan(all_normalized_inputs).sum()} - max: {jnp.max(all_normalized_inputs)} - min: {jnp.min(all_normalized_inputs)} - mean: {jnp.mean(all_normalized_inputs)} - std: {jnp.std(all_normalized_inputs)}")
+
+last_norm_clip_state = _normalize_and_clip_observation(norm_state, vnet_input, bound=clip_obs_bound)
+print("Last state normalized (in testing) stats: ")
+print(f"infs: {jnp.isinf(last_norm_clip_state).sum()} - nans: {jnp.isnan(last_norm_clip_state).sum()} - max: {jnp.max(last_norm_clip_state)} - min: {jnp.min(last_norm_clip_state)} - mean: {jnp.mean(last_norm_clip_state)} - std: {jnp.std(last_norm_clip_state)}")

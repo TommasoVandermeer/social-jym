@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 from jax.tree_util import tree_map
+from jax import random
 import os
 import optax
 import matplotlib.pyplot as plt
@@ -24,12 +25,13 @@ n_trials = 1000
 n_parallel_envs = 50 
 training_updates = 10_000
 rl_debugging_interval = 10
-robot_vmax = 2
+robot_vmax = 1
+normalize_observations = True
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': 'unicycle', # 'unicycle' or 'holonomic'
     'policy_name': 'sarl-ppo',
-    'distribution': 'dirichlet', # 'gaussian', 'dirichlet-bernoulli' or 'dirichlet'
+    'distribution': 'gaussian', # 'gaussian', 'dirichlet-bernoulli' or 'dirichlet'
     'n_humans': 5, 
     'il_buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
     'il_training_episodes': 2_000,
@@ -39,8 +41,8 @@ training_hyperparams = {
     'il_batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_actor_learning_rate': 3e-5, 
-    'rl_critic_learning_rate': 3e-4, # 1e-3
+    'rl_actor_learning_rate': 3e-5, # 3e-5
+    'rl_critic_learning_rate': 3e-4, # 3e-4
     'rl_buffer_capacity': 3_000, # Number of experiences to sample from the replay buffer for each model update
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 10, # 10
@@ -49,7 +51,7 @@ training_hyperparams = {
     'lambda_gae': 0.95, # 0.95
     'humans_policy': 'hsfm',
     'scenario': 'hybrid_scenario',
-    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5], jnp.int32), # Subset of the hybrid scenarios to use for training
+    'hybrid_scenario_subset': jnp.array([0,1,2,3,4], jnp.int32), # Subset of the hybrid scenarios to use for training
     'reward_function': 'socialnav_reward2',
     'custom_episodes': False, # If True, the episodes are loaded from a predefined set
     'gradient_norm_scale': 0.5, # Scale the gradient norm by this value
@@ -62,9 +64,9 @@ if training_hyperparams['reward_function'] == 'socialnav_reward1':
     )
 elif training_hyperparams['reward_function'] == 'socialnav_reward2':
     reward_function = Reward2(
-        progress_to_goal_reward = True,
-        progress_to_goal_weight = 0.03,
         v_max = robot_vmax,
+        # progress_to_goal_reward = True,
+        # progress_to_goal_weight = 0.03,
         # high_rotation_penalty_reward=True,
         # angular_speed_bound=1.,
         # angular_speed_penalty_weight=0.035,
@@ -87,10 +89,21 @@ env_params = {
 }
 # Initialize environment
 env = SocialNav(**env_params)
+_, _, obs, info, _ = env.reset(random.PRNGKey(training_hyperparams['random_seed']))
 # Initialize robot policy and vnet params
-policy = SARLPPO(env.reward_function, v_max=robot_vmax, dt=env_params['robot_dt'], kinematics=env_params['kinematics'], distribution=training_hyperparams['distribution'])
-initial_actor_params = policy.actor.init(training_hyperparams['random_seed'], jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
-initial_critic_params = policy.critic.init(training_hyperparams['random_seed'], jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
+policy = SARLPPO(
+    env.reward_function, 
+    v_max=robot_vmax, 
+    dt=env_params['robot_dt'], 
+    kinematics=env_params['kinematics'], 
+    distribution=training_hyperparams['distribution'], 
+    normalize_and_clip_obs=normalize_observations
+)
+initial_actor_params, initial_critic_params = policy.init_nns(
+    training_hyperparams['random_seed'],
+    obs,
+    info,
+)
 # Initialize replay buffer
 replay_buffer = BaseACBuffer(training_hyperparams['il_buffer_size'], training_hyperparams['il_batch_size'])
 # Initialize IL optimizer
@@ -126,93 +139,93 @@ il_rollout_params = {
     'custom_episodes': il_custom_episodes_path
 }
 
-# IMITATION LEARNING ROLLOUT
-il_out = actor_critic_il_rollout(**il_rollout_params)
+# # IMITATION LEARNING ROLLOUT
+# il_out = actor_critic_il_rollout(**il_rollout_params)
 
-## Execute tests to evaluate return after IL
-# Initialize the dictionary to store the metrics
-outcomes_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests),))
-other_metrics_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials))
-metrics_after_il = {
-    "successes": outcomes_arrays, 
-    "collisions": outcomes_arrays, 
-    "timeouts": outcomes_arrays, 
-    "returns": other_metrics_arrays,
-    "times_to_goal": other_metrics_arrays,
-    "average_speed": other_metrics_arrays,
-    "average_acceleration": other_metrics_arrays,
-    "average_jerk": other_metrics_arrays,
-    "average_angular_speed": other_metrics_arrays,
-    "average_angular_acceleration": other_metrics_arrays,
-    "average_angular_jerk": other_metrics_arrays,
-    "min_distance": other_metrics_arrays,
-    "space_compliance": other_metrics_arrays,
-    "episodic_spl": other_metrics_arrays,
-    "path_length": other_metrics_arrays,
-    "scenario": jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials), dtype=jnp.int32),
-}
-for v, visibility in enumerate(test_robot_visibility):
-    print(f"\n##############\nROBOT {'VISIBLE' if visibility else 'NOT VISIBLE'}")
-    for test, n_humans in enumerate(n_humans_for_tests):
-        test_env_params = {
-            'robot_radius': 0.3,
-            'n_humans': n_humans,
-            'robot_dt': 0.25,
-            'humans_dt': 0.01,
-            'robot_visible': visibility,
-            'scenario': training_hyperparams['scenario'],
-            'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
-            'humans_policy': training_hyperparams['humans_policy'],
-            'circle_radius': 7,
-            'reward_function': reward_function,
-            'kinematics': training_hyperparams['kinematics'],
-        }
-        test_env = SocialNav(**test_env_params)
-        trial_out = test_k_trials(
-            n_trials, 
-            training_hyperparams['il_training_episodes'], 
-            test_env, 
-            policy, 
-            il_out['actor_params'], 
-            reward_function.time_limit
-        )
-        # Store trail metrics
-        metrics_after_il = tree_map(lambda x, y: x.at[v,test].set(y), metrics_after_il, trial_out)
-# Save metrics
-with open(os.path.join(os.path.dirname(__file__),"metrics_after_il.pkl"), 'wb') as f:
-    pickle.dump(metrics_after_il, f)
-### Plot losses during IL
-figure, ax = plt.subplots(2,1,figsize=(10,10))
-ax[0].set(
-    xlabel='Epoch', 
-    ylabel='Loss', 
-    title='Actor Loss during IL training'
-)
-ax[0].plot(
-    jnp.arange(len(il_out['actor_losses'])), 
-    il_out['actor_losses'],
-)
-ax[1].set(
-    xlabel='Epoch', 
-    ylabel='Loss', 
-    title='Critic Loss during IL training'
-)
-ax[1].plot(
-    jnp.arange(len(il_out['critic_losses'])), 
-    il_out['critic_losses'],
-)
-figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
-plt.close(figure)
-## Save IL rollout output
-with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
-    pickle.dump(il_out, f)
+# ## Execute tests to evaluate return after IL
+# # Initialize the dictionary to store the metrics
+# outcomes_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests),))
+# other_metrics_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials))
+# metrics_after_il = {
+#     "successes": outcomes_arrays, 
+#     "collisions": outcomes_arrays, 
+#     "timeouts": outcomes_arrays, 
+#     "returns": other_metrics_arrays,
+#     "times_to_goal": other_metrics_arrays,
+#     "average_speed": other_metrics_arrays,
+#     "average_acceleration": other_metrics_arrays,
+#     "average_jerk": other_metrics_arrays,
+#     "average_angular_speed": other_metrics_arrays,
+#     "average_angular_acceleration": other_metrics_arrays,
+#     "average_angular_jerk": other_metrics_arrays,
+#     "min_distance": other_metrics_arrays,
+#     "space_compliance": other_metrics_arrays,
+#     "episodic_spl": other_metrics_arrays,
+#     "path_length": other_metrics_arrays,
+#     "scenario": jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials), dtype=jnp.int32),
+# }
+# for v, visibility in enumerate(test_robot_visibility):
+#     print(f"\n##############\nROBOT {'VISIBLE' if visibility else 'NOT VISIBLE'}")
+#     for test, n_humans in enumerate(n_humans_for_tests):
+#         test_env_params = {
+#             'robot_radius': 0.3,
+#             'n_humans': n_humans,
+#             'robot_dt': 0.25,
+#             'humans_dt': 0.01,
+#             'robot_visible': visibility,
+#             'scenario': training_hyperparams['scenario'],
+#             'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+#             'humans_policy': training_hyperparams['humans_policy'],
+#             'circle_radius': 7,
+#             'reward_function': reward_function,
+#             'kinematics': training_hyperparams['kinematics'],
+#         }
+#         test_env = SocialNav(**test_env_params)
+#         trial_out = test_k_trials(
+#             n_trials, 
+#             training_hyperparams['il_training_episodes'], 
+#             test_env, 
+#             policy, 
+#             il_out['actor_params'], 
+#             reward_function.time_limit
+#         )
+#         # Store trail metrics
+#         metrics_after_il = tree_map(lambda x, y: x.at[v,test].set(y), metrics_after_il, trial_out)
+# # Save metrics
+# with open(os.path.join(os.path.dirname(__file__),"metrics_after_il.pkl"), 'wb') as f:
+#     pickle.dump(metrics_after_il, f)
+# ### Plot losses during IL
+# figure, ax = plt.subplots(2,1,figsize=(10,10))
+# ax[0].set(
+#     xlabel='Epoch', 
+#     ylabel='Loss', 
+#     title='Actor Loss during IL training'
+# )
+# ax[0].plot(
+#     jnp.arange(len(il_out['actor_losses'])), 
+#     il_out['actor_losses'],
+# )
+# ax[1].set(
+#     xlabel='Epoch', 
+#     ylabel='Loss', 
+#     title='Critic Loss during IL training'
+# )
+# ax[1].plot(
+#     jnp.arange(len(il_out['critic_losses'])), 
+#     il_out['critic_losses'],
+# )
+# figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
+# plt.close(figure)
+# ## Save IL rollout output
+# with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
+#     pickle.dump(il_out, f)
 
 # Load IL rollout output
 with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:
     il_out = pickle.load(f)
 il_actor_params = il_out['actor_params']
-il_critic_params = il_out['critic_params']
-    
+il_critic_params = il_out['critic_params']  
+
 # Initialize RL optimizer
 actor_optimizer = optax.chain(
     optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),

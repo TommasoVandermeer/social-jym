@@ -74,7 +74,7 @@ for p in range(len(policies)):
             'humans_dt': 0.01,
             'robot_visible': True,
             'scenario': 'hybrid_scenario',
-            'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5], jnp.int32),
+            'hybrid_scenario_subset': jnp.array([0,1], jnp.int32), #jnp.array([0,1,2,3,4,5], jnp.int32),
             'humans_policy': 'hsfm',
             'circle_radius': 7,
             'reward_function': reward_function,

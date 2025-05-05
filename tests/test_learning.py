@@ -54,7 +54,7 @@ for seed in range(n_seeds):
         'target_update_interval': 50, # Number of episodes to wait before updating the target network for RL (the one used to compute the target state values)
         'humans_policy': 'sfm',
         'scenario': 'hybrid_scenario',
-        'hybrid_scenario_subset': jnp.array([0,1], np.int32), # Subset of the hybrid scenarios to use for training
+        'hybrid_scenario_subset': jnp.array([0,1,2,3,4], np.int32), # Subset of the hybrid scenarios to use for training
         'reward_function': 'socialnav_reward1',
         'custom_episodes': False, # If True, the episodes are loaded from a predefined set
     }

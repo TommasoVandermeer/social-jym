@@ -139,19 +139,34 @@ def actor_critic_il_rollout(
         # Initialize the array where to save data
         returns = jnp.empty([train_episodes])
         # Initialize the optimizer
-        actor_optimizer_state = actor_optimizer.init(initial_actor_params)
+        if policy.normalize_and_clip_obs:
+                actor_optimizer_state = actor_optimizer.init(initial_actor_params["actor_params"])
+        else:
+                actor_optimizer_state = actor_optimizer.init(initial_actor_params)
         critic_optimizer_state = critic_optimizer.init(initial_critic_params)
         # Create initial values for training loop
         val_init = (buffer_state, current_buffer_size, returns)
         # Execute the training loop
         debug.print("Simulating IL episodes...")
         buffer_state, current_buffer_size, returns = lax.fori_loop(0, train_episodes, _fori_body, val_init)
+        actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_capacity]))
+
+        # Normalizing networks inputs (if necessary)
+        if policy.normalize_and_clip_obs:
+                norm_state = initial_actor_params["norm_state"]
+                normalized_inputs, updated_norm_state = policy.normalize_and_clip_inputs_updating_state(
+                        buffer_state["inputs"][:actual_buffer_size].reshape((actual_buffer_size * env.n_humans, policy.vnet_input_size)),
+                        norm_state,
+                )
+                normalized_inputs = normalized_inputs.reshape((actual_buffer_size, env.n_humans, policy.vnet_input_size))
+                buffer_state["inputs"] = buffer_state["inputs"].at[:actual_buffer_size].set(normalized_inputs)
+                initial_actor_params["norm_state"] = updated_norm_state
+                # print("Batch norm layer state: ", initial_actor_params["norm_state"])
 
         # Initialize the buffer key
         buffer_key = random.PRNGKey(0) # We do not care to control the buffer shuffle
 
         # Update model parameters
-        actual_buffer_size = jnp.min(jnp.array([current_buffer_size, buffer_capacity]))
         debug.print("Buffer size after IL: {x}", x=actual_buffer_size)
         optimization_steps = (actual_buffer_size / batch_size).astype(int)
         @loop_tqdm(num_epochs)
@@ -215,7 +230,7 @@ def actor_critic_il_rollout(
                 buffer_key, 
                 buffer_state, 
                 actual_buffer_size, 
-                initial_actor_params, 
+                initial_actor_params["actor_params"] if policy.normalize_and_clip_obs else initial_actor_params, 
                 initial_critic_params, 
                 actor_optimizer_state,
                 critic_optimizer_state,
@@ -230,7 +245,7 @@ def actor_critic_il_rollout(
                 val_init
         )
         output_dict = {
-                "actor_params": actor_params,
+                "actor_params": {"actor_params": actor_params, "norm_state": initial_actor_params["norm_state"]} if policy.normalize_and_clip_obs else actor_params,
                 "critic_params": critic_params,
                 "actor_optimizer_state": actor_opt_state,
                 "critic_optimizer_state": critic_opt_state,

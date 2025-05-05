@@ -87,7 +87,7 @@ for i in range(n_episodes):
     state, reset_key, obs, info, outcome = env.reset(reset_key)
     all_states = np.array([state])
     while outcome["nothing"]:
-        action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, False)
+        action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, sample=False)
         print(distr)
         print("Action: ", action)
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
