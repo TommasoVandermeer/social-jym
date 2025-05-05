@@ -139,86 +139,86 @@ il_rollout_params = {
     'custom_episodes': il_custom_episodes_path
 }
 
-# # IMITATION LEARNING ROLLOUT
-# il_out = actor_critic_il_rollout(**il_rollout_params)
+# IMITATION LEARNING ROLLOUT
+il_out = actor_critic_il_rollout(**il_rollout_params)
 
-# ## Execute tests to evaluate return after IL
-# # Initialize the dictionary to store the metrics
-# outcomes_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests),))
-# other_metrics_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials))
-# metrics_after_il = {
-#     "successes": outcomes_arrays, 
-#     "collisions": outcomes_arrays, 
-#     "timeouts": outcomes_arrays, 
-#     "returns": other_metrics_arrays,
-#     "times_to_goal": other_metrics_arrays,
-#     "average_speed": other_metrics_arrays,
-#     "average_acceleration": other_metrics_arrays,
-#     "average_jerk": other_metrics_arrays,
-#     "average_angular_speed": other_metrics_arrays,
-#     "average_angular_acceleration": other_metrics_arrays,
-#     "average_angular_jerk": other_metrics_arrays,
-#     "min_distance": other_metrics_arrays,
-#     "space_compliance": other_metrics_arrays,
-#     "episodic_spl": other_metrics_arrays,
-#     "path_length": other_metrics_arrays,
-#     "scenario": jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials), dtype=jnp.int32),
-# }
-# for v, visibility in enumerate(test_robot_visibility):
-#     print(f"\n##############\nROBOT {'VISIBLE' if visibility else 'NOT VISIBLE'}")
-#     for test, n_humans in enumerate(n_humans_for_tests):
-#         test_env_params = {
-#             'robot_radius': 0.3,
-#             'n_humans': n_humans,
-#             'robot_dt': 0.25,
-#             'humans_dt': 0.01,
-#             'robot_visible': visibility,
-#             'scenario': training_hyperparams['scenario'],
-#             'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
-#             'humans_policy': training_hyperparams['humans_policy'],
-#             'circle_radius': 7,
-#             'reward_function': reward_function,
-#             'kinematics': training_hyperparams['kinematics'],
-#         }
-#         test_env = SocialNav(**test_env_params)
-#         trial_out = test_k_trials(
-#             n_trials, 
-#             training_hyperparams['il_training_episodes'], 
-#             test_env, 
-#             policy, 
-#             il_out['actor_params'], 
-#             reward_function.time_limit
-#         )
-#         # Store trail metrics
-#         metrics_after_il = tree_map(lambda x, y: x.at[v,test].set(y), metrics_after_il, trial_out)
-# # Save metrics
-# with open(os.path.join(os.path.dirname(__file__),"metrics_after_il.pkl"), 'wb') as f:
-#     pickle.dump(metrics_after_il, f)
-# ### Plot losses during IL
-# figure, ax = plt.subplots(2,1,figsize=(10,10))
-# ax[0].set(
-#     xlabel='Epoch', 
-#     ylabel='Loss', 
-#     title='Actor Loss during IL training'
-# )
-# ax[0].plot(
-#     jnp.arange(len(il_out['actor_losses'])), 
-#     il_out['actor_losses'],
-# )
-# ax[1].set(
-#     xlabel='Epoch', 
-#     ylabel='Loss', 
-#     title='Critic Loss during IL training'
-# )
-# ax[1].plot(
-#     jnp.arange(len(il_out['critic_losses'])), 
-#     il_out['critic_losses'],
-# )
-# figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
-# plt.close(figure)
-# ## Save IL rollout output
-# with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
-#     pickle.dump(il_out, f)
+## Execute tests to evaluate return after IL
+# Initialize the dictionary to store the metrics
+outcomes_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests),))
+other_metrics_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials))
+metrics_after_il = {
+    "successes": outcomes_arrays, 
+    "collisions": outcomes_arrays, 
+    "timeouts": outcomes_arrays, 
+    "returns": other_metrics_arrays,
+    "times_to_goal": other_metrics_arrays,
+    "average_speed": other_metrics_arrays,
+    "average_acceleration": other_metrics_arrays,
+    "average_jerk": other_metrics_arrays,
+    "average_angular_speed": other_metrics_arrays,
+    "average_angular_acceleration": other_metrics_arrays,
+    "average_angular_jerk": other_metrics_arrays,
+    "min_distance": other_metrics_arrays,
+    "space_compliance": other_metrics_arrays,
+    "episodic_spl": other_metrics_arrays,
+    "path_length": other_metrics_arrays,
+    "scenario": jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials), dtype=jnp.int32),
+}
+for v, visibility in enumerate(test_robot_visibility):
+    print(f"\n##############\nROBOT {'VISIBLE' if visibility else 'NOT VISIBLE'}")
+    for test, n_humans in enumerate(n_humans_for_tests):
+        test_env_params = {
+            'robot_radius': 0.3,
+            'n_humans': n_humans,
+            'robot_dt': 0.25,
+            'humans_dt': 0.01,
+            'robot_visible': visibility,
+            'scenario': training_hyperparams['scenario'],
+            'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+            'humans_policy': training_hyperparams['humans_policy'],
+            'circle_radius': 7,
+            'reward_function': reward_function,
+            'kinematics': training_hyperparams['kinematics'],
+        }
+        test_env = SocialNav(**test_env_params)
+        trial_out = test_k_trials(
+            n_trials, 
+            training_hyperparams['il_training_episodes'], 
+            test_env, 
+            policy, 
+            il_out['actor_params'], 
+            reward_function.time_limit
+        )
+        # Store trail metrics
+        metrics_after_il = tree_map(lambda x, y: x.at[v,test].set(y), metrics_after_il, trial_out)
+# Save metrics
+with open(os.path.join(os.path.dirname(__file__),"metrics_after_il.pkl"), 'wb') as f:
+    pickle.dump(metrics_after_il, f)
+### Plot losses during IL
+figure, ax = plt.subplots(2,1,figsize=(10,10))
+ax[0].set(
+    xlabel='Epoch', 
+    ylabel='Loss', 
+    title='Actor Loss during IL training'
+)
+ax[0].plot(
+    jnp.arange(len(il_out['actor_losses'])), 
+    il_out['actor_losses'],
+)
+ax[1].set(
+    xlabel='Epoch', 
+    ylabel='Loss', 
+    title='Critic Loss during IL training'
+)
+ax[1].plot(
+    jnp.arange(len(il_out['critic_losses'])), 
+    il_out['critic_losses'],
+)
+figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps"), format='eps')
+plt.close(figure)
+## Save IL rollout output
+with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
+    pickle.dump(il_out, f)
 
 # Load IL rollout output
 with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:

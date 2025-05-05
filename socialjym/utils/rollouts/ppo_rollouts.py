@@ -60,7 +60,7 @@ def ppo_rl_rollout(
                                         obses[:,:-1], 
                                         infos,
                                 ),
-                                _, updated_norm_state = policy.normalize_and_clip_inputs_updating_state(
+                                updated_norm_state = policy.update_norm_state(
                                         jnp.reshape(*ins, (n_parallel_envs * env.n_humans, policy.vnet_input_size)),
                                         norm_state,
                                 )
@@ -241,7 +241,7 @@ def ppo_rl_rollout(
                 lax.cond(
                         (debugging) & (upd_idx % debugging_interval == 0) & (upd_idx != 0),   
                         lambda _: debug.print(
-                                "Episodes {w}\nActor loss: {y}\nCritic loss: {z}\nEntropy: {e}\nStd: {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}\nNorm state: {ns}", 
+                                "Episodes {w}\nActor loss: {y}\nCritic loss: {z}\nEntropy: {e}\nStd: {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}\nNorm state mean: {nsm}\nNorm state var: {nsv}", 
                                 y=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["actor_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["actor_losses"])) <= upd_idx), jnp.abs(aux_data["actor_losses"]), jnp.nan)),
                                 z=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["critic_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["critic_losses"])) <= upd_idx), aux_data["critic_losses"], jnp.nan)), 
                                 w=jnp.sum(aux_data["episodes"]),
@@ -251,7 +251,9 @@ def ppo_rl_rollout(
                                 t=jnp.nansum(jnp.where((jnp.arange(len(aux_data["timeouts"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["timeouts"])) <= upd_idx), aux_data["timeouts"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 e=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["entropy_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["entropy_losses"])) <= upd_idx), aux_data["entropy_losses"], jnp.nan)),
                                 std=jnp.nanmean(jnp.where(((jnp.column_stack([jnp.arange(aux_data["stds"].shape[0]),jnp.arange(aux_data["stds"].shape[0])])) > upd_idx-debugging_interval) & (jnp.column_stack([jnp.arange(aux_data["stds"].shape[0]),jnp.arange(aux_data["stds"].shape[0])]) <= upd_idx), aux_data["stds"], jnp.array([jnp.nan,jnp.nan])), axis=0),
-                                ns=actor_params["norm_state"]["batch_norm/~/mean_ema"]["average"] if policy.normalize_and_clip_obs else "None",                        ),
+                                nsm=actor_params["norm_state"]["mean"] if policy.normalize_and_clip_obs else "None",       
+                                nsv=actor_params["norm_state"]["var"] if policy.normalize_and_clip_obs else "None",                    
+                                ),
                         lambda x: x, 
                         None
                 )

@@ -15,6 +15,7 @@ from .sarl import SARL
 from .sarl import value_network as critic_network
 
 EPSILON = 1e-5
+NORM_EPSILON = 1e-3
 MLP_1_PARAMS = {
     "output_sizes": [150, 100],
     "activation": nn.tanh, # nn.relu
@@ -139,16 +140,12 @@ class Actor(hk.Module):
         sampled_action = self.distr.sample(distribution, random_key)
         return sampled_action, distribution
 
-def batch_norm_layer(x, is_training, decay_rate=0.9, eps=1e-3):
-    bn = hk.BatchNorm(create_scale=False, create_offset=False, decay_rate=decay_rate, eps=eps)
-    return bn(x, is_training=is_training)
-
 class SARLPPO(SARL):
     def __init__(
             self, 
             reward_function:FunctionType, 
             normalize_and_clip_obs:bool=False,
-            clip_obs_bound:float=5.,
+            clip_obs_bound:float=10.,
             distribution:str='gaussian',
             v_max:float=1., 
             gamma:float=0.9, 
@@ -180,7 +177,6 @@ class SARLPPO(SARL):
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
             self.distr = Dirichlet(self.v_max, self.wheels_distance, EPSILON)
         if self.normalize_and_clip_obs:
-            self.norm_layer = hk.transform_with_state(batch_norm_layer)
             self.clip_obs_bound = clip_obs_bound
         self.critic = critic_network
         @hk.transform
@@ -408,25 +404,38 @@ class SARLPPO(SARL):
         critic_params = self.critic.init(key, jnp.zeros((len(obs)-1, self.vnet_input_size)))
         if self.normalize_and_clip_obs:
             input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
-            _, norm_state = self.norm_layer.init(random.PRNGKey(0), input, is_training=True)
+            norm_state = {
+                "mean": jnp.zeros(input.shape[1:]),
+                "var": jnp.ones(input.shape[1:]),
+                "count": 0,
+            }
             actor_params = {"norm_state": norm_state, "actor_params": actor_params}
         return actor_params, critic_params
 
     @partial(jit, static_argnames=("self"))
-    def normalize_and_clip_inputs_updating_state(
+    def update_norm_state(
         self,
         inputs:jnp.ndarray,
         norm_state:dict,
     ) -> tuple:
-        inputs, norm_state = self.norm_layer.apply(
-            {},
-            norm_state,
-            None,
-            inputs,
-            is_training=True,
-        )
-        inputs = jnp.clip(inputs, -self.clip_obs_bound, self.clip_obs_bound)
-        return inputs, norm_state
+        ## Update normalization state
+        batch_mean = jnp.mean(inputs, axis=0)
+        batch_var = jnp.var(inputs, axis=0)
+        batch_count = inputs.shape[0]
+        delta = batch_mean - norm_state["mean"]
+        tot_count = norm_state["count"] + batch_count
+        new_mean = norm_state["mean"] + delta * batch_count / tot_count
+        m_a = norm_state["var"] * norm_state["count"]
+        m_b = batch_var * batch_count
+        m2 = m_a + m_b + jnp.square(delta) * norm_state["count"] * batch_count / tot_count
+        new_var = m2 / tot_count
+        norm_state = {
+            "mean": new_mean,
+            "var": new_var,
+            "count": tot_count,
+        }
+        ## Normalize and clip inputs
+        return norm_state
 
     @partial(jit, static_argnames=("self"))
     def normalize_and_clip_inputs(
@@ -434,14 +443,7 @@ class SARLPPO(SARL):
         inputs:jnp.ndarray,
         norm_state:dict,
     ) -> jnp.ndarray:
-        inputs, _ = self.norm_layer.apply(
-            {},
-            norm_state,
-            None,
-            inputs,
-            is_training=False,
-        )
-        inputs = jnp.clip(inputs, -self.clip_obs_bound, self.clip_obs_bound)
+        inputs = jnp.clip((inputs - norm_state["mean"]) / jnp.sqrt(norm_state["var"] + NORM_EPSILON), -self.clip_obs_bound, self.clip_obs_bound)
         return inputs
 
     @partial(jit, static_argnames=("self"))

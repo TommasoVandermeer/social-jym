@@ -11,7 +11,7 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_t
 
 # Define a simple function with BatchNorm
 def forward_fn(x, update_stats):
-    bn = hk.BatchNorm(create_scale=False, create_offset=False, decay_rate=0.9, eps=1e-3)
+    bn = hk.BatchNorm(create_scale=False, create_offset=False, decay_rate=0.5, eps=1e-3)
     return bn(x, update_stats)
 # Transform the function into a Haiku module
 model = hk.transform_with_state(forward_fn)

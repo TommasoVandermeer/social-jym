@@ -154,9 +154,14 @@ def actor_critic_il_rollout(
         # Normalizing networks inputs (if necessary)
         if policy.normalize_and_clip_obs:
                 norm_state = initial_actor_params["norm_state"]
-                normalized_inputs, updated_norm_state = policy.normalize_and_clip_inputs_updating_state(
-                        buffer_state["inputs"][:actual_buffer_size].reshape((actual_buffer_size * env.n_humans, policy.vnet_input_size)),
+                inputs = buffer_state["inputs"][:actual_buffer_size].reshape((actual_buffer_size * env.n_humans, policy.vnet_input_size))
+                updated_norm_state = policy.update_norm_state(
+                        inputs,
                         norm_state,
+                )
+                normalized_inputs = policy.normalize_and_clip_inputs(
+                        inputs,
+                        updated_norm_state,
                 )
                 normalized_inputs = normalized_inputs.reshape((actual_buffer_size, env.n_humans, policy.vnet_input_size))
                 buffer_state["inputs"] = buffer_state["inputs"].at[:actual_buffer_size].set(normalized_inputs)
