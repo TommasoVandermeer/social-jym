@@ -15,7 +15,7 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_t
 ### Hyperparameters
 random_seed = 0 # Usually we train with 3_000 IL episodes and 10_000 RL episodes
 n_episodes = 50
-kinematics = "holonomic" #'unicycle'
+kinematics = "unicycle" #'unicycle'
 reward_params = {
     'goal_reward': 1.,
     'collision_penalty': -0.25,
@@ -23,32 +23,32 @@ reward_params = {
     'time_limit': 50.,
     'kinematics': kinematics,
 }
-reward_function = Reward1(**reward_params)
-# ds = 0.2 # Discomfort distance
-# wp = 0.03 # Progress to goal weight
-# wt = 0.005 # Time penalty weight
-# wr = 0.07 # High rotation penalty weight
-# w_bound = 2. # Rotation bound
-# reward_function = Reward2(
-#         target_reached_reward = True,
-#         collision_penalty_reward = True,
-#         discomfort_penalty_reward = True,
-#         progress_to_goal_reward = 1,
-#         time_penalty_reward = 1,
-#         high_rotation_penalty_reward = 1,
-#         discomfort_distance=ds,
-#         progress_to_goal_weight=wp,
-#         time_penalty=wt,
-#         angular_speed_bound=w_bound,
-#         angular_speed_penalty_weight=wr
-#     )
+# reward_function = Reward1(**reward_params)
+ds = 0.2 # Discomfort distance
+wp = 0.03 # Progress to goal weight
+wt = 0.005 # Time penalty weight
+wr = 0.0075 # High rotation penalty weight
+w_bound = 1. # Rotation bound
+reward_function = Reward2(
+        target_reached_reward = True,
+        collision_penalty_reward = True,
+        discomfort_penalty_reward = True,
+        progress_to_goal_reward = 0,
+        time_penalty_reward = 0,
+        high_rotation_penalty_reward = 1,
+        discomfort_distance=ds,
+        progress_to_goal_weight=wp,
+        time_penalty=wt,
+        angular_speed_bound=w_bound,
+        angular_speed_penalty_weight=wr
+    )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 18,
+    'n_humans': 20,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'circular_crossing_with_static_obstacles',
+    'scenario': 'perpendicular_traffic',
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
@@ -61,10 +61,14 @@ env = SocialNav(**env_params)
 ### Initialize robot policy
 
 ## Load Social-Navigation-PyEnvs policy vnet params
-vnet_params = load_crowdnav_policy(
-    "sarl", 
-    os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hs/rl_model.pth"))
-policy = SARL(env.reward_function, dt=env_params['robot_dt'])
+# vnet_params = load_crowdnav_policy(
+#     "sarl", 
+#     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hs/rl_model.pth"),
+# )
+import pickle
+with open(os.path.join(os.path.dirname(__file__), 'sarl_params.pkl'), 'rb') as f:
+    vnet_params = pickle.load(f)
+policy = SARL(env.reward_function, dt=env_params['robot_dt'], unicycle_box_action_space=True, kinematics=kinematics)
 # vnet_params = load_crowdnav_policy(
 #     "cadrl", 
 #     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_1_sfm_hybrid_scenario/rl_model.pth"))

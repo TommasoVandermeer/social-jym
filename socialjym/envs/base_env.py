@@ -284,7 +284,7 @@ class BaseEnv(ABC):
                     state[-1]])
             else:
                 new_state = jnp.vstack(
-                    [self.humans_step(state[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
+                    [self.humans_step(state[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles[0:self.n_humans], self.humans_dt), 
                     state[-1]])
         elif self.humans_policy == HUMAN_POLICIES.index("sfm") or self.humans_policy == HUMAN_POLICIES.index("orca"):
             if self.robot_visible:
@@ -293,7 +293,7 @@ class BaseEnv(ABC):
                     state[-1,0:4]])
             else:
                 new_state = jnp.vstack(
-                    [self.humans_step(state[0:self.n_humans,0:4], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles, self.humans_dt), 
+                    [self.humans_step(state[0:self.n_humans,0:4], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles[0:self.n_humans], self.humans_dt), 
                     state[-1,0:4]])
             new_state = jnp.pad(new_state, ((0,0),(0,2)))
         # Robot update
@@ -346,7 +346,7 @@ class BaseEnv(ABC):
             new_state = self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)
         else:
             new_state = jnp.vstack([
-                self.humans_step(state[0:-1], goals[0:-1], parameters[0:-1], static_obstacles, self.humans_dt), 
+                self.humans_step(state[0:-1], goals[0:-1], parameters[0:-1], static_obstacles[0:-1], self.humans_dt), 
                 self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)[-1]])
         new_info, new_state = self._scenario_based_state_post_update(new_state, info)
         return (new_state, new_info)

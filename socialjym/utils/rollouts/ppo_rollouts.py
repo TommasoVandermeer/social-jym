@@ -251,8 +251,8 @@ def ppo_rl_rollout(
                                 t=jnp.nansum(jnp.where((jnp.arange(len(aux_data["timeouts"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["timeouts"])) <= upd_idx), aux_data["timeouts"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
                                 e=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["entropy_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["entropy_losses"])) <= upd_idx), aux_data["entropy_losses"], jnp.nan)),
                                 std=jnp.nanmean(jnp.where(((jnp.column_stack([jnp.arange(aux_data["stds"].shape[0]),jnp.arange(aux_data["stds"].shape[0])])) > upd_idx-debugging_interval) & (jnp.column_stack([jnp.arange(aux_data["stds"].shape[0]),jnp.arange(aux_data["stds"].shape[0])]) <= upd_idx), aux_data["stds"], jnp.array([jnp.nan,jnp.nan])), axis=0),
-                                nsm=actor_params["norm_state"]["mean"] if policy.normalize_and_clip_obs else "None",       
-                                nsv=actor_params["norm_state"]["var"] if policy.normalize_and_clip_obs else "None",                    
+                                nsm=actor_params["norm_state"]["mean"] if policy.normalize_and_clip_obs else jnp.nan,       
+                                nsv=actor_params["norm_state"]["var"] if policy.normalize_and_clip_obs else jnp.nan,                    
                                 ),
                         lambda x: x, 
                         None

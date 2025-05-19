@@ -28,7 +28,7 @@ reward_function = Reward2(
     # progress_to_goal_weight = 0.03,
     # high_rotation_penalty_reward=True,
     # angular_speed_bound=1.,
-    # angular_speed_penalty_weight=0.035,
+    # angular_speed_penalty_weight=0.0075,
 )
 
 # Initialize and load policies

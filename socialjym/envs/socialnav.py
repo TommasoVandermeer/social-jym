@@ -220,7 +220,7 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
-        static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
+        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -305,7 +305,7 @@ class SocialNav(BaseEnv):
         robot_goal = - disturbed_points[-1]
 
         # Obstacles
-        static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
+        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -378,7 +378,7 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0, -self.traffic_length/2])
 
         # Obstacles
-        static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
+        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -452,7 +452,7 @@ class SocialNav(BaseEnv):
         robot_goal = disturbed_points[-1]
 
         # Obstacles
-        static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
+        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -583,7 +583,7 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
-        static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
+        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -667,7 +667,7 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
-        static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
+        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,

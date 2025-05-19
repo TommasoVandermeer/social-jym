@@ -21,7 +21,7 @@ from socialjym.utils.rollouts.vnet_rollouts import vnet_il_rollout, vnet_rl_roll
 random_seed = 0
 n_epochs = 50
 kinematics = 'unicycle'
-unicycle_box = True
+unicycle_box = False
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': kinematics,
@@ -105,7 +105,7 @@ ax.set_xlabel("$v_r$ $(m/s)$")
 ax.set_ylabel("$\omega_r$ $(r/s)$")
 ax.legend()
 plt.show()
-figure.savefig(os.path.join(os.path.dirname(__file__),"unicycle_action_space.pdf"), format='pdf')
+# figure.savefig(os.path.join(os.path.dirname(__file__),"unicycle_action_space.pdf"), format='pdf')
 # Plot (px,py,theta) for each action starting from (0,0,0) with analytical integration
 def exact_integration_of_action_space(x:jnp.ndarray, action:jnp.ndarray) -> jnp.ndarray:
     @jit
@@ -125,8 +125,7 @@ def exact_integration_of_action_space(x:jnp.ndarray, action:jnp.ndarray) -> jnp.
         exact_integration_with_zero_omega,
         x)
     return x
-vmapped_exact_integration_of_action_space = vmap(exact_integration_of_action_space, in_axes=(0, 0))
-pxy_theta = vmapped_exact_integration_of_action_space(jnp.zeros((len(policy.action_space),3)), policy.action_space)
+pxy_theta = vmap(exact_integration_of_action_space, in_axes=(0, 0))(jnp.zeros((len(policy.action_space),3)), policy.action_space)
 orientations = jnp.ones((len(policy.action_space), 2)) * 0.05 * jnp.array([jnp.cos(pxy_theta[:,2]), jnp.sin(pxy_theta[:,2])]).T
 plt.scatter(pxy_theta[:,0], pxy_theta[:,1])
 for i, orientation in enumerate(orientations):

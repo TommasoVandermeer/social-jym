@@ -16,8 +16,8 @@ from socialjym.utils.aux_functions import animate_trajectory, load_crowdnav_poli
 random_seed = 0 
 n_episodes = 50
 kinematics = "unicycle"
-distribution = "dirichlet"
-v_max = 2
+distribution = "gaussian"
+v_max = 1
 tests_n_humans = [5, 10, 15, 20, 25]
 n_trials = 100
 ds = 0.2 # Discomfort distance
@@ -27,20 +27,22 @@ reward_function = Reward2(
         collision_penalty_reward = True,
         discomfort_penalty_reward = True,
         v_max = v_max,
-        progress_to_goal_reward = 1,
-        time_penalty_reward = 0,
-        high_rotation_penalty_reward = 0,
+        # progress_to_goal_reward = 1,
+        # time_penalty_reward = 0,
         discomfort_distance=ds,
         progress_to_goal_weight=wp,
+        high_rotation_penalty_reward=True,
+        angular_speed_bound=1.,
+        angular_speed_penalty_weight=0.0075,
     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 25,
+    'n_humans': 20,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'hybrid_scenario',
-    'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4, 5]),
+    'scenario': 'perpendicular_traffic',
+    'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4]),
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
     'kinematics': kinematics,

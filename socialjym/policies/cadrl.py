@@ -279,7 +279,6 @@ class CADRL(BasePolicy):
         experiences:dict[str:jnp.ndarray],
         # Experiences: {"vnet_inputs":jnp.ndarray, "targets":jnp.ndarray,}
     ) -> tuple:
-        
         @jit
         def _batch_loss_function(
             current_vnet_params:dict,

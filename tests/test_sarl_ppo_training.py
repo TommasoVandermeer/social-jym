@@ -69,7 +69,7 @@ elif training_hyperparams['reward_function'] == 'socialnav_reward2':
         # progress_to_goal_weight = 0.03,
         # high_rotation_penalty_reward=True,
         # angular_speed_bound=1.,
-        # angular_speed_penalty_weight=0.035,
+        # angular_speed_penalty_weight=0.0075,
     )
 else:
     raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
