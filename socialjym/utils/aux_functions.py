@@ -209,7 +209,7 @@ def test_k_trials(
         custom_states = jnp.empty((k, env.n_humans+1, 6))
         custom_robot_goals = jnp.empty((k, 2))
         custom_humans_goals = jnp.empty((k, env.n_humans, 2))
-        custom_static_obstacles = jnp.empty((k, 1, 1, 2, 2))
+        custom_static_obstacles = jnp.empty((k, env.n_humans+1, 1, 1, 2, 2))
         custom_scenario = jnp.empty((k,), dtype=int)
         custom_humans_radius = jnp.empty((k, env.n_humans))
         custom_humans_speed = jnp.empty((k, env.n_humans))

@@ -84,7 +84,7 @@ for trial in range(n_trials):
         'lambda_gae': 0.95, 
         'humans_policy': 'hsfm',
         'scenario': 'hybrid_scenario',
-        'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5], np.int32),
+        'hybrid_scenario_subset': jnp.array([0,1,2,3,4], np.int32),
         'reward_function': 'socialnav_reward2',
         'custom_episodes': False,
         'gradient_norm_scale': 0.5,
