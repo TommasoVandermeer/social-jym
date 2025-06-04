@@ -5,49 +5,16 @@ import haiku as hk
 from types import FunctionType
 import optax
 
-from socialjym.envs.base_env import ROBOT_KINEMATICS
+from socialjym.envs.base_env import wrap_angle
 from socialjym.utils.distributions.base_distribution import DISTRIBUTIONS
-from socialjym.utils.distributions.gaussian import Gaussian
-from socialjym.utils.distributions.dirichlet_bernoulli import DirichletBernoulli
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from .sarl import SARL
 from .sarl import value_network as critic_network
-
-EPSILON = 1e-5
-NORM_EPSILON = 1e-3
-MLP_1_PARAMS = {
-    "output_sizes": [150, 100],
-    "activation": nn.tanh, # nn.relu
-    "activate_final": True,
-    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
-    "b_init": hk.initializers.Constant(0.),
-}
-MLP_2_PARAMS = {
-    "output_sizes": [100, 50],
-    "activation": nn.tanh, # nn.relu
-    "activate_final": False,
-    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
-    "b_init": hk.initializers.Constant(0.),
-}
-MLP_3_PARAMS = {
-    "output_sizes": [150, 100, 100],
-    "activation": nn.tanh, # nn.relu
-    "activate_final": False,
-    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
-    "b_init": hk.initializers.Constant(0.),
-}
-ATTENTION_LAYER_PARAMS = {
-    "output_sizes": [100, 100, 1],
-    "activation": nn.tanh, # nn.relu
-    "activate_final": False,
-    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
-    "b_init": hk.initializers.Constant(0.),
-}
+from .sarl_ppo import EPSILON, NORM_EPSILON, MLP_1_PARAMS, MLP_2_PARAMS, MLP_3_PARAMS, ATTENTION_LAYER_PARAMS, Actor
 
 class Actor(hk.Module):
     def __init__(
             self,
-            distribution:str,
             v_max:float,
             wheels_distance:float,
             mlp1_params:dict=MLP_1_PARAMS,
@@ -57,22 +24,13 @@ class Actor(hk.Module):
             robot_state_size:int=6,
         ) -> None:
         super().__init__() 
-        self.distr_id = DISTRIBUTIONS.index(distribution) 
         self.mlp1 = hk.nets.MLP(**mlp1_params, name="mlp1")
         self.mlp2 = hk.nets.MLP(**mlp2_params, name="mlp2")
         self.mlp4 = hk.nets.MLP(**mlp4_params, name="mlp4")
         self.vmax = v_max
         self.wheels_distance = wheels_distance
-        if self.distr_id == DISTRIBUTIONS.index('gaussian'):
-            self.distr = Gaussian()
-            n_outputs = 2
-        elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
-            self.distr = DirichletBernoulli(v_max, wheels_distance, EPSILON)
-            n_outputs = 4
-        elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
-            self.distr = Dirichlet(EPSILON)
-            self.dirichlet_vertices = jnp.array([[0,2*self.vmax/self.wheels_distance],[0,-2*self.vmax/self.wheels_distance],[self.vmax,0]])
-            n_outputs = 3
+        self.distr = Dirichlet(v_max, wheels_distance, EPSILON)
+        n_outputs = 3
         self.output_layer = hk.Linear(n_outputs, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
         self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
         self.robot_state_size = robot_state_size
@@ -116,45 +74,31 @@ class Actor(hk.Module):
         mlp4_input = jnp.concatenate([self_state, weighted_features], axis=0)
         mlp4_output = self.mlp4(mlp4_input)
         # debug.print("Joint State/MLP4 input size: {x}", x=mlp4_input.shape)
-        if self.distr_id == DISTRIBUTIONS.index('gaussian'):
-            ## Compute normal distribution parameters
-            means = self.output_layer(mlp4_output)
-            lower_bounds = jnp.array([0,-(2*self.vmax)/self.wheels_distance])
-            upper_bounds = jnp.array([self.vmax,(2*self.vmax)/self.wheels_distance])
-            means = lower_bounds + (jnp.tanh(means) + 1) / 2 * (upper_bounds - lower_bounds)
-            logsigmas = hk.get_parameter("logsigmas", shape=[2], init=hk.initializers.Constant(0.))
-            distribution = {"means": means, "logsigmas": logsigmas}
-        elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
-            alpha1, alpha2, alpha3, p = self.output_layer(mlp4_output)
-            ## Compute dirchlet-bernoulli distribution parameters
-            alphas = jnp.array([alpha1, alpha2, alpha3])
-            alphas = nn.softplus(alphas) + 1 # alphas between [1,inf)
-            p = (nn.tanh(p) + 1) / 2 # p ranges from 0 to 1 this way
-            distribution = {"alphas": alphas, "p": p}
-        elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
-            alphas = self.output_layer(mlp4_output)
-            ## Compute dirchlet distribution parameters
-            alphas = nn.softplus(alphas) + 1
-            distribution = {"alphas": alphas, "vertices": self.dirichlet_vertices}
+        alphas = self.output_layer(mlp4_output)
+        ## Compute dirchlet distribution parameters
+        alphas = nn.softplus(alphas) + 1
+        distribution = {"alphas": alphas}
         ## Sample action
         sampled_action = self.distr.sample(distribution, random_key)
         return sampled_action, distribution
 
-class SARLPPO(SARL):
+class SOAPPO(SARL):
     def __init__(
             self, 
             reward_function:FunctionType, 
             normalize_and_clip_obs:bool=False,
             clip_obs_bound:float=10.,
-            distribution:str='gaussian',
             v_max:float=1., 
             gamma:float=0.9, 
             dt:float=0.25, 
             wheels_distance:float=0.7, 
-            kinematics:str='unicycle',
             noise:bool=False, # If True, noise is added to humams positions and velocities
             noise_sigma_percentage:float=0., # Standard deviation of the noise as a percentage of the absolute value of the difference between the robot and the humans
         ) -> None:
+        """
+        SOAPPO (Social and Obstacle Aware Proximal Policy Optimization) is an RL policy that takes in input a local map of the static obstacles in the environment, the robot state and the human states, and
+        outputs a constinuous action parameterized by a Dirichlet distribution whose support is guaranteed to avoid collisions with the static obstacles.
+        """
         # Configurable attributes
         super().__init__(
             reward_function=reward_function, 
@@ -162,27 +106,21 @@ class SARLPPO(SARL):
             wheels_distance=wheels_distance,
             gamma=gamma, 
             dt=dt,
-            kinematics=kinematics,
+            kinematics='unicycle',
             noise=noise,
             noise_sigma_percentage=noise_sigma_percentage,
         )
         # Default attributes
-        self.name = "SARL-PPO"
-        self.distr_id = DISTRIBUTIONS.index(distribution)
+        self.name = "SOAPPO"
+        self.distr_id = DISTRIBUTIONS.index('dirichlet')
         self.normalize_and_clip_obs = normalize_and_clip_obs
-        if self.distr_id == DISTRIBUTIONS.index('gaussian'):
-            self.distr = Gaussian()
-        elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
-            self.distr = DirichletBernoulli(self.v_max, self.wheels_distance, EPSILON)
-        elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
-            self.distr = Dirichlet(EPSILON)
-            self.dirichlet_vertices = jnp.array([[0,2*self.v_max/self.wheels_distance],[0,-2*self.v_max/self.wheels_distance],[self.v_max,0]])
+        self.distr = Dirichlet(self.v_max, self.wheels_distance, EPSILON)
         if self.normalize_and_clip_obs:
             self.clip_obs_bound = clip_obs_bound
-        self.critic = critic_network
+        self.critic = critic_network(robot_state_size=6+3) # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
         @hk.transform
         def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
-            actor = Actor(distribution=distribution, v_max=self.v_max, wheels_distance=self.wheels_distance)
+            actor = Actor(v_max=self.v_max, wheels_distance=self.wheels_distance, robot_state_size=6+3) # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
             return actor(x, **kwargs)
         self.actor = actor_network
 
@@ -392,7 +330,38 @@ class SARLPPO(SARL):
         )
         return critic_loss, critic_grads, actor_loss, actor_grads, 0.
 
+    @partial(jit, static_argnames=("self"))
+    def _compute_vnet_input(self, robot_obs:jnp.ndarray, human_obs:jnp.ndarray, action_space_params:jnp.ndarray, info:dict) -> jnp.ndarray:
+        # Robot observation: [x,y,u1,u2,radius,theta]. Holonomic robot: [u1=vx,u2=vy]. Unicycle robot: [u1=v,u2=w].
+        # Human observation: [x,y,vx,vy,radius]
+        # Re-parametrized observation: [dg,v_pref,theta,radius,vx,vy,alpha,beta,gamma,px1,py1,vx1,vy1,radius1,da,radius_sum]
+        rot = jnp.atan2(info["robot_goal"][1] - robot_obs[1],info["robot_goal"][0] - robot_obs[0])
+        vnet_input = jnp.zeros((self.vnet_input_size,))
+        # Robot state
+        vnet_input = vnet_input.at[0].set(jnp.linalg.norm(info["robot_goal"] - robot_obs[0:2]))
+        vnet_input = vnet_input.at[1].set(self.v_max)
+        vnet_input = vnet_input.at[3].set(robot_obs[4])  
+        vnet_input = vnet_input.at[2].set(wrap_angle(robot_obs[5] - rot))
+        vnet_input = vnet_input.at[4].set(robot_obs[2] * jnp.cos(robot_obs[5]) * jnp.cos(rot) + robot_obs[2]  * jnp.sin(robot_obs[5]) * jnp.sin(rot))
+        vnet_input = vnet_input.at[5].set(-robot_obs[2] * jnp.cos(robot_obs[5]) * jnp.sin(rot) + robot_obs[2]  * jnp.sin(robot_obs[5]) * jnp.cos(rot))
+        vnet_input = vnet_input.at[6].set(action_space_params[0])  # alpha
+        vnet_input = vnet_input.at[7].set(action_space_params[1])  # beta
+        vnet_input = vnet_input.at[8].set(action_space_params[2])  # gamma
+        # Humans state
+        vnet_input = vnet_input.at[9].set((human_obs[0] - robot_obs[0]) * jnp.cos(rot) + (human_obs[1] - robot_obs[1]) * jnp.sin(rot))
+        vnet_input = vnet_input.at[10].set(-(human_obs[0] - robot_obs[0]) * jnp.sin(rot) + (human_obs[1] - robot_obs[1]) * jnp.cos(rot))
+        vnet_input = vnet_input.at[11].set(human_obs[2] * jnp.cos(rot) + human_obs[3] * jnp.sin(rot))
+        vnet_input = vnet_input.at[12].set(-human_obs[2] * jnp.sin(rot) + human_obs[3] * jnp.cos(rot))
+        vnet_input = vnet_input.at[13].set(human_obs[4])
+        vnet_input = vnet_input.at[14].set(jnp.linalg.norm(human_obs[0:2] - robot_obs[0:2]))
+        vnet_input = vnet_input.at[15].set(robot_obs[4] + human_obs[4])
+        return vnet_input
+
     # Public methods
+
+    @partial(jit, static_argnames=("self"))
+    def batch_compute_vnet_input(self, robot_obs:jnp.ndarray, humans_obs:jnp.ndarray, action_space_params:jnp.ndarray, info:dict) -> jnp.ndarray:
+        return vmap(SOAPPO._compute_vnet_input,in_axes=(None,None,0,None,None))(self, robot_obs, humans_obs, action_space_params, info)
 
     @partial(jit, static_argnames=("self"))
     def init_nns(
@@ -475,8 +444,6 @@ class SARLPPO(SARL):
             random_key=subkey
         )
         action = lax.cond(sample, lambda _: sampled_action, lambda _: self.distr.mean(distr), None)
-        # if self.distr_id == DISTRIBUTIONS.index('gaussian'):
-        #     action = self.distr.bound_action(action, self.kinematics, self.v_max, self.wheels_distance)
         return action, key, input, sampled_action, distr
     
     @partial(jit, static_argnames=("self"))
@@ -488,7 +455,7 @@ class SARLPPO(SARL):
         actor_params,
         sample,
     ):
-        return vmap(SARLPPO.act, in_axes=(None, 0, 0, 0, None, None))(
+        return vmap(SOAPPO.act, in_axes=(None, 0, 0, 0, None, None))(
             self,
             keys, 
             obses, 

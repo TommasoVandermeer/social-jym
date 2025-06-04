@@ -7,22 +7,17 @@ from jax.scipy.stats.dirichlet import logpdf
 from socialjym.utils.distributions.base_distribution import BaseDistribution
 
 class Dirichlet(BaseDistribution):
-    def __init__(self, vmax:float, wheels_distance:float, epsilon:float=1e-6) -> None:
+    def __init__(self, epsilon:float=1e-6) -> None:
         """"
         This is a Dirichlet distribution combined with a to sample actions directly
         from the feasible (v,w) action space. When calling any method of this class, the distribution
         dict must contain the following keys: ["alphas"].
 
         args:
-        - vmax (float): max linear velocity of the robot.
-        - wheels_distance (float): distance between the wheels of the robot.
         - epsilon (float): small value to avoid math overflow.
         """
         self.name = "dirichlet"
-        self.vmax = vmax
-        self.wheels_distance = wheels_distance
         self.epsilon = epsilon
-        self.v = jnp.array([[0,2*self.vmax/self.wheels_distance],[0,-2*self.vmax/self.wheels_distance],[self.vmax,0]])
     
     @partial(jit, static_argnames=("self"))
     def entropy(self, distribution:dict) -> float:
@@ -35,10 +30,11 @@ class Dirichlet(BaseDistribution):
     @partial(jit, static_argnames=("self"))
     def sample(self, distribution:dict, key:random.PRNGKey):
         alphas = distribution["alphas"]
+        vertices = distribution["vertices"]
         # Sample from dirichlet distribution
         sample = random.dirichlet(key, alphas)
         # Map to the feasible region
-        return jnp.dot(sample, self.v)
+        return jnp.dot(sample, vertices)
 
     @partial(jit, static_argnames=("self"))
     def batch_sample(self, distribution:dict, keys:jnp.ndarray):
@@ -47,24 +43,27 @@ class Dirichlet(BaseDistribution):
     @partial(jit, static_argnames=("self"))
     def mean(self, distribution:dict) -> jnp.ndarray:
         alphas = distribution["alphas"]
+        vertices = distribution["vertices"]
         mean_xi = alphas / jnp.sum(alphas)
-        return jnp.dot(mean_xi, self.v)
+        return jnp.dot(mean_xi, vertices)
 
     @partial(jit, static_argnames=("self"))
     def var(self, distribution:dict) -> jnp.ndarray:
         alphas = distribution["alphas"]
+        vertices = distribution["vertices"]
         concentration = jnp.sum(alphas)
         covar_xi = jnp.array([
             [alphas[0] * (concentration - alphas[0]), -alphas[0] * alphas[1], -alphas[0] * alphas[2]],
             [-alphas[1] * alphas[0], alphas[1] * (concentration - alphas[1]), -alphas[1] * alphas[2]],
             [-alphas[2] * alphas[0], -alphas[2] * alphas[1], alphas[2] * (concentration - alphas[2])]
         ]) / (concentration**2 * (concentration + 1))
-        return jnp.diag(self.v.T @ covar_xi @ self.v)
+        return jnp.diag(vertices.T @ covar_xi @ vertices)
 
     @partial(jit, static_argnames=("self"))
     def neglogp(self, distribution:dict, action:jnp.ndarray):
         alphas = distribution["alphas"]
-        sample = jnp.linalg.solve(jnp.vstack((self.v.T,jnp.ones((len(self.v),)))), jnp.append(action, 1.))
+        vertices = distribution["vertices"]
+        sample = jnp.linalg.solve(jnp.vstack((vertices.T,jnp.ones((len(vertices),)))), jnp.append(action, 1.))
         # Avoid inf computation
         sample = jnp.clip(sample, 0.+self.epsilon, 1.-self.epsilon) / jnp.sum(jnp.clip(sample, 0.+self.epsilon, 1.-self.epsilon))
         return - logpdf(sample, alphas)

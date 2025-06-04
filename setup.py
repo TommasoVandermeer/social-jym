@@ -12,5 +12,6 @@ setup(
     'optax>=0.2.3',
     'notebook>=7.2.2',
     'pandas>=2.2.3',
+    'scipy>=1.14.0',
     ]
 )

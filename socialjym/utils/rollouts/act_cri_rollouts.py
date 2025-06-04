@@ -27,7 +27,7 @@ def actor_critic_il_rollout(
         batch_size: int,
         custom_episodes: str = None,
 ) -> dict:
-        policies = ["SARL-PPO", "SARL-A2C"]
+        policies = ["SARL-PPO", "SOAPPO"]
         assert policy.name in policies, "This function is only compatible with the Actor-Critic policies."
         
         # Policy index

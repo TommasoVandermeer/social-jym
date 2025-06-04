@@ -44,11 +44,11 @@ reward_function = Reward2(
     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 20,
+    'n_humans': 10,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'perpendicular_traffic',
+    'scenario': 'circular_crossing',
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
@@ -68,7 +68,7 @@ env = SocialNav(**env_params)
 import pickle
 with open(os.path.join(os.path.dirname(__file__), 'sarl_params.pkl'), 'rb') as f:
     vnet_params = pickle.load(f)
-policy = SARL(env.reward_function, dt=env_params['robot_dt'], unicycle_box_action_space=True, kinematics=kinematics)
+policy = SARL(env.reward_function, dt=env_params['robot_dt'], unicycle_box_action_space=False, kinematics=kinematics)
 # vnet_params = load_crowdnav_policy(
 #     "cadrl", 
 #     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/cadrl_1_sfm_hybrid_scenario/rl_model.pth"))

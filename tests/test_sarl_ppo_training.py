@@ -26,12 +26,12 @@ n_parallel_envs = 50
 training_updates = 10_000
 rl_debugging_interval = 10
 robot_vmax = 1
-normalize_observations = True
+normalize_observations = False
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': 'unicycle', # 'unicycle' or 'holonomic'
     'policy_name': 'sarl-ppo',
-    'distribution': 'gaussian', # 'gaussian', 'dirichlet-bernoulli' or 'dirichlet'
+    'distribution': 'dirichlet', # 'gaussian', 'dirichlet-bernoulli' or 'dirichlet'
     'n_humans': 5, 
     'il_buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
     'il_training_episodes': 2_000,

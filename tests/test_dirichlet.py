@@ -7,14 +7,14 @@ from socialjym.utils.distributions.dirichlet import Dirichlet
 
 random_seed = 0
 n_samples = 1_000
-vmax = 2
+vmax = 1
 wheels_distance = 0.7
-alpha = jnp.array([1.0100837,   1.       , 951.1318])
+alpha = jnp.array([1.,1.,1.])
 concentration = jnp.sum(alpha)
 epsilon = 1e-3
 
 # Generate distribution
-distribution = Dirichlet(vmax, wheels_distance, epsilon)
+distribution = Dirichlet(epsilon)
 
 # Normalize alpha
 @jit
@@ -22,7 +22,7 @@ def _reparametrize_alphas(alpha:jnp.ndarray, concentration:float) -> jnp.ndarray
     return alpha / jnp.sum(alpha) * concentration   
 alpha = _reparametrize_alphas(alpha, concentration)
 print("Normalized alpha: ", alpha)
-distr = {"alphas": alpha}
+distr = {"alphas": alpha, "vertices": jnp.array([[0,2*vmax/wheels_distance],[0,-2*vmax/wheels_distance],[vmax,0]])}
 
 # Get samples
 key = random.PRNGKey(random_seed)

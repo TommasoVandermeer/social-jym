@@ -117,8 +117,8 @@ class ValueNetwork(hk.Module):
         return state_value
 
 @hk.transform
-def value_network(x):
-    vnet = ValueNetwork()
+def value_network(x, robot_state_size=6):
+    vnet = ValueNetwork(robot_state_size=robot_state_size)
     return vnet(x)
 
 class SARL(CADRL):
