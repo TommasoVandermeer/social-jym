@@ -189,7 +189,7 @@ def actor_critic_il_rollout(
                                 k
                         )
                         # Update the model parameters
-                        if policy_index == policies.index("SARL-PPO"):
+                        if policy_index == policies.index("SARL-PPO") or policy_index == policies.index("SOAPPO"):
                                 critic_params, actor_params, cri_opt_state, act_opt_state, cri_loss, act_loss, _ = policy.update_il(
                                         critic_params,
                                         actor_params,
@@ -198,19 +198,6 @@ def actor_critic_il_rollout(
                                         critic_optimizer,
                                         cri_opt_state,
                                         experiences_batch,
-                                )
-                        elif policy_index == policies.index("SARL-A2C"):
-                                critic_params, actor_params, cri_opt_state, act_opt_state, cri_loss, act_loss, _ = policy.update(
-                                        critic_params,
-                                        actor_params,
-                                        actor_optimizer,
-                                        act_opt_state,
-                                        critic_optimizer,
-                                        cri_opt_state,
-                                        experiences_batch,
-                                        sigma = 0.,
-                                        beta_entropy = 0.,
-                                        imitation_learning = True
                                 )
                         act_losses = act_losses.at[j,k].set(act_loss)
                         cri_losses = cri_losses.at[j,k].set(cri_loss)

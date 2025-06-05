@@ -12,7 +12,7 @@ samples = 205
 dt = .25
 robot_radius = 0.3
 robot_pose = jnp.array([1., 1., jnp.pi/4.]) # Robot pose in the form [x, y, theta]
-iterations = 10
+iterations = 1
 epsilon = 1e-3
 # Obstacles
 obstacles = jnp.array([
@@ -21,11 +21,15 @@ obstacles = jnp.array([
     # [[[0.08,-0.305],[0.07,-0.35]],[[0.07,-0.35],[0.13,-0.4]],[[0.13,-0.4],[0.08,-0.305]]],
     [[[0.57,0.17],[0.35,0.35]],[[0.35,0.35],[0.4,0.4]],[[0.4,0.4],[0.57,0.17]]],
     [[[-0.25,0.2],[-0.25,0.35]],[[-0.25,0.35],[-0.29,0.35]],[[-0.29,0.35],[-0.25,0.2]]],
+    [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]],[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]],[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
 ])
-obstacles = obstacles.at[:, :, :, 0].set(obstacles[:, :, :, 0] + robot_pose[0])
-obstacles = obstacles.at[:, :, :, 1].set(obstacles[:, :, :, 1] + robot_pose[1])
+obstacles = obstacles.at[:, :, :, 0].set(obstacles[:, :, :, 0] + 1)
+obstacles = obstacles.at[:, :, :, 1].set(obstacles[:, :, :, 1] + 1)
 segments = jnp.reshape(obstacles, (obstacles.shape[0] * obstacles.shape[1], 2, 2))
-shapely_segments = [LineString(segment) for segment in segments]
+# Filter out segments containing NaN values before creating shapely LineStrings
+valid_mask = ~jnp.isnan(segments).any(axis=(1,2))
+filtered_segments = segments[valid_mask]
+shapely_segments = [LineString(segment) for segment in filtered_segments]
 print("N° of obstacles: ", obstacles.shape[0])
 print("N° of segments per obstacle: ", obstacles.shape[1], "\n")
 
@@ -33,52 +37,64 @@ print("N° of segments per obstacle: ", obstacles.shape[1], "\n")
 # Segment-rectangle intersection function
 @jit
 def segment_rectangle_intersection(x1, y1, x2, y2, xmin, xmax, ymin, ymax):
-    dx = x2 - x1
-    dy = y2 - y1
-    p = jnp.array([-dx, dx, -dy, dy])
-    q = jnp.array([x1 - xmin, xmax - x1, y1 - ymin, ymax - y1])
     @jit
-    def loop_body(i, tup):
-        t, p, q = tup
-        t0, t1 = t
-        t0, t1 = lax.switch(
-            (jnp.sign(p[i])+1).astype(jnp.int32),
-            [
-                lambda t: lax.cond(q[i]/p[i] > t[1], lambda _: (2.,1.), lambda x: (jnp.max(jnp.array([x[0],q[i]/p[i]])), x[1]), t),  # p[i] < 0
-                lambda t: lax.cond(q[i] < 0, lambda _: (2.,1.), lambda x: x, t),  # p[i] == 0
-                lambda t: lax.cond(q[i]/p[i] < t[0], lambda _: (2.,1.), lambda x: (x[0], jnp.min(jnp.array([x[1],q[i]/p[i]]))), t),  # p[i] > 0
-            ],
-            (t0, t1),
+    def _nan_segment(val):
+        return False, jnp.array([jnp.nan, jnp.nan]), jnp.array([jnp.nan, jnp.nan])
+    @jit
+    def _not_nan_segment(val):
+        x1, y1, x2, y2, xmin, xmax, ymin, ymax = val
+        dx = x2 - x1
+        dy = y2 - y1
+        p = jnp.array([-dx, dx, -dy, dy])
+        q = jnp.array([x1 - xmin, xmax - x1, y1 - ymin, ymax - y1])
+        @jit
+        def loop_body(i, tup):
+            t, p, q = tup
+            t0, t1 = t
+            t0, t1 = lax.switch(
+                (jnp.sign(p[i])+1).astype(jnp.int32),
+                [
+                    lambda t: lax.cond(q[i]/p[i] > t[1], lambda _: (2.,1.), lambda x: (jnp.max(jnp.array([x[0],q[i]/p[i]])), x[1]), t),  # p[i] < 0
+                    lambda t: lax.cond(q[i] < 0, lambda _: (2.,1.), lambda x: x, t),  # p[i] == 0
+                    lambda t: lax.cond(q[i]/p[i] < t[0], lambda _: (2.,1.), lambda x: (x[0], jnp.min(jnp.array([x[1],q[i]/p[i]]))), t),  # p[i] > 0
+                ],
+                (t0, t1),
+            )
+            # debug.print("t0: {x}, t1: {y}, switch_case: {z}", x=t0, y=t1, z=(jnp.sign(p[i])+1).astype(jnp.int32))
+            return ((t0, t1), p ,q)
+        t, p, q = lax.fori_loop(
+            0, 
+            4,
+            loop_body,
+            ((0., 1.), p, q),
         )
-        # debug.print("t0: {x}, t1: {y}, switch_case: {z}", x=t0, y=t1, z=(jnp.sign(p[i])+1).astype(jnp.int32))
-        return ((t0, t1), p ,q)
-    t, p, q = lax.fori_loop(
-        0, 
-        4,
-        loop_body,
-        ((0., 1.), p, q),
+        t0, t1 = t
+        inside_or_intersects = ~(t0 > t1)
+        intersection_point_0 = lax.switch(
+            jnp.argmax(jnp.array([~(inside_or_intersects), (inside_or_intersects) & (t0 == 0), (inside_or_intersects) & (t0 > 0)])),
+            [
+                lambda _: jnp.array([jnp.nan, jnp.nan]),
+                lambda _: jnp.array([x1, y1]),
+                lambda _: jnp.array([x1 + t0 * dx, y1 + t0 * dy]),
+            ],
+            None,
+        )
+        intersection_point_1 = lax.switch(
+            jnp.argmax(jnp.array([~(inside_or_intersects), (inside_or_intersects) & (t1 == 1), (inside_or_intersects) & (t1 < 1)])),
+            [
+                lambda _: jnp.array([jnp.nan, jnp.nan]),
+                lambda _: jnp.array([x2, y2]),
+                lambda _: jnp.array([x1 + t1 * dx, y1 + t1 * dy]),
+            ],
+            None,
+        )
+        return inside_or_intersects, intersection_point_0, intersection_point_1
+    return lax.cond(
+        jnp.any(jnp.isnan(jnp.array([x1, y1, x2, y2]))),
+        _nan_segment,
+        _not_nan_segment,
+        (x1, y1, x2, y2, xmin, xmax, ymin, ymax),
     )
-    t0, t1 = t
-    inside_or_intersects = ~(t0 > t1)
-    intersection_point_0 = lax.switch(
-        jnp.argmax(jnp.array([~(inside_or_intersects), (inside_or_intersects) & (t0 == 0), (inside_or_intersects) & (t0 > 0)])),
-        [
-            lambda _: jnp.array([jnp.nan, jnp.nan]),
-            lambda _: jnp.array([x1, y1]),
-            lambda _: jnp.array([x1 + t0 * dx, y1 + t0 * dy]),
-        ],
-        None,
-    )
-    intersection_point_1 = lax.switch(
-        jnp.argmax(jnp.array([~(inside_or_intersects), (inside_or_intersects) & (t1 == 1), (inside_or_intersects) & (t1 < 1)])),
-        [
-            lambda _: jnp.array([jnp.nan, jnp.nan]),
-            lambda _: jnp.array([x2, y2]),
-            lambda _: jnp.array([x1 + t1 * dx, y1 + t1 * dy]),
-        ],
-        None,
-    )
-    return inside_or_intersects, intersection_point_0, intersection_point_1
 @jit
 def batch_segment_rectangle_intersection(x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax):
     return vmap(segment_rectangle_intersection, in_axes=(0,0,0,0,None,None,None,None))(x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax)
@@ -280,7 +296,7 @@ print(f"SHAPELY - Single Segment-Rectangle Intersection - Average time taken for
 ### Measure computation time of JAX BASED ALGORITHM during multiple iterations
 _ = bound_action_space(segments, robot_pose, vmax, wheels_distance, dt, robot_radius)
 start_time = time.time()
-for i in range(iterations):
+for _ in range(iterations):
     new_alpha, new_beta, new_gamma = bound_action_space(segments, robot_pose, vmax, wheels_distance, dt, robot_radius)
     new_alpha.block_until_ready()
     new_beta.block_until_ready()

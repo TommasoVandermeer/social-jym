@@ -9,8 +9,8 @@ from socialjym.envs.base_env import wrap_angle
 from socialjym.utils.distributions.base_distribution import DISTRIBUTIONS
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from .sarl import SARL
-from .sarl import value_network as critic_network
-from .sarl_ppo import EPSILON, NORM_EPSILON, MLP_1_PARAMS, MLP_2_PARAMS, MLP_3_PARAMS, ATTENTION_LAYER_PARAMS, Actor
+from .sarl import ValueNetwork
+from .sarl_ppo import EPSILON, MLP_1_PARAMS, MLP_2_PARAMS, MLP_3_PARAMS, ATTENTION_LAYER_PARAMS
 
 class Actor(hk.Module):
     def __init__(
@@ -21,7 +21,7 @@ class Actor(hk.Module):
             mlp2_params:dict=MLP_2_PARAMS,
             mlp4_params:dict=MLP_3_PARAMS,
             attention_layer_params:dict=ATTENTION_LAYER_PARAMS,
-            robot_state_size:int=6,
+            robot_state_size:int=9,  # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
         ) -> None:
         super().__init__() 
         self.mlp1 = hk.nets.MLP(**mlp1_params, name="mlp1")
@@ -29,7 +29,7 @@ class Actor(hk.Module):
         self.mlp4 = hk.nets.MLP(**mlp4_params, name="mlp4")
         self.vmax = v_max
         self.wheels_distance = wheels_distance
-        self.distr = Dirichlet(v_max, wheels_distance, EPSILON)
+        self.distr = Dirichlet(EPSILON)
         n_outputs = 3
         self.output_layer = hk.Linear(n_outputs, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
         self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
@@ -45,6 +45,8 @@ class Actor(hk.Module):
         """
         ## Get kwargs
         random_key = kwargs.get("random_key", random.PRNGKey(0))
+        # WARNING: If later you want to normalize the input, the distribution dict must still contatain the unnormalized action space parameters
+        action_space_params = x[0, self.robot_state_size-3:self.robot_state_size]  # The action space parameters are the last three elements of the robot state (whuch is repeated in each row of the state)
         ## Save self state variables
         size = x.shape # (# of humans, length of reparametrized state)
         self_state = x[0,:self.robot_state_size] # The robot state is repeated in each row of axis 1, we take the first one
@@ -75,9 +77,14 @@ class Actor(hk.Module):
         mlp4_output = self.mlp4(mlp4_input)
         # debug.print("Joint State/MLP4 input size: {x}", x=mlp4_input.shape)
         alphas = self.output_layer(mlp4_output)
-        ## Compute dirchlet distribution parameters
         alphas = nn.softplus(alphas) + 1
-        distribution = {"alphas": alphas}
+        ## Compute dirchlet distribution parameters
+        vertices = jnp.array([
+            [0, action_space_params[1] * (2 * self.vmax / self.wheels_distance)],
+            [0, action_space_params[2] * (-2 * self.vmax / self.wheels_distance)],
+            [action_space_params[0] * self.vmax, 0]
+        ])
+        distribution = {"alphas": alphas, "vertices": vertices}
         ## Sample action
         sampled_action = self.distr.sample(distribution, random_key)
         return sampled_action, distribution
@@ -86,8 +93,6 @@ class SOAPPO(SARL):
     def __init__(
             self, 
             reward_function:FunctionType, 
-            normalize_and_clip_obs:bool=False,
-            clip_obs_bound:float=10.,
             v_max:float=1., 
             gamma:float=0.9, 
             dt:float=0.25, 
@@ -113,11 +118,14 @@ class SOAPPO(SARL):
         # Default attributes
         self.name = "SOAPPO"
         self.distr_id = DISTRIBUTIONS.index('dirichlet')
-        self.normalize_and_clip_obs = normalize_and_clip_obs
-        self.distr = Dirichlet(self.v_max, self.wheels_distance, EPSILON)
-        if self.normalize_and_clip_obs:
-            self.clip_obs_bound = clip_obs_bound
-        self.critic = critic_network(robot_state_size=6+3) # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
+        self.distr = Dirichlet(EPSILON)
+        self.normalize_and_clip_obs =  False
+        self.vnet_input_size = 16 # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma), 7 as the human state (px, py, vx, vy, radius, dg, da)
+        @hk.transform
+        def value_network(x, robot_state_size=9):  # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
+            vnet = ValueNetwork(robot_state_size=robot_state_size)
+            return vnet(x)
+        self.critic = value_network
         @hk.transform
         def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
             actor = Actor(v_max=self.v_max, wheels_distance=self.wheels_distance, robot_state_size=6+3) # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
@@ -332,9 +340,10 @@ class SOAPPO(SARL):
 
     @partial(jit, static_argnames=("self"))
     def _compute_vnet_input(self, robot_obs:jnp.ndarray, human_obs:jnp.ndarray, action_space_params:jnp.ndarray, info:dict) -> jnp.ndarray:
-        # Robot observation: [x,y,u1,u2,radius,theta]. Holonomic robot: [u1=vx,u2=vy]. Unicycle robot: [u1=v,u2=w].
-        # Human observation: [x,y,vx,vy,radius]
-        # Re-parametrized observation: [dg,v_pref,theta,radius,vx,vy,alpha,beta,gamma,px1,py1,vx1,vy1,radius1,da,radius_sum]
+        # Robot observation: [x,y,v,w,radius,theta] (6)
+        # Human observation: [x,y,vx,vy,radius] (5)
+        # Aaction space parameters: [alpha, beta, gamma] (3)
+        # Re-parametrized observation: [dg,v_pref,theta,radius,vx,vy,alpha,beta,gamma,px1,py1,vx1,vy1,radius1,da,radius_sum] (16)
         rot = jnp.atan2(info["robot_goal"][1] - robot_obs[1],info["robot_goal"][0] - robot_obs[0])
         vnet_input = jnp.zeros((self.vnet_input_size,))
         # Robot state
@@ -357,10 +366,83 @@ class SOAPPO(SARL):
         vnet_input = vnet_input.at[15].set(robot_obs[4] + human_obs[4])
         return vnet_input
 
+    @partial(jit, static_argnames=("self"))
+    def segment_rectangle_intersection(self, x1, y1, x2, y2, xmin, xmax, ymin, ymax):
+        @jit
+        def _nan_segment(val):
+            return False, jnp.array([jnp.nan, jnp.nan]), jnp.array([jnp.nan, jnp.nan])
+        @jit
+        def _not_nan_segment(val):
+            x1, y1, x2, y2, xmin, xmax, ymin, ymax = val
+            dx = x2 - x1
+            dy = y2 - y1
+            p = jnp.array([-dx, dx, -dy, dy])
+            q = jnp.array([x1 - xmin, xmax - x1, y1 - ymin, ymax - y1])
+            @jit
+            def loop_body(i, tup):
+                t, p, q = tup
+                t0, t1 = t
+                t0, t1 = lax.switch(
+                    (jnp.sign(p[i])+1).astype(jnp.int32),
+                    [
+                        lambda t: lax.cond(q[i]/p[i] > t[1], lambda _: (2.,1.), lambda x: (jnp.max(jnp.array([x[0],q[i]/p[i]])), x[1]), t),  # p[i] < 0
+                        lambda t: lax.cond(q[i] < 0, lambda _: (2.,1.), lambda x: x, t),  # p[i] == 0
+                        lambda t: lax.cond(q[i]/p[i] < t[0], lambda _: (2.,1.), lambda x: (x[0], jnp.min(jnp.array([x[1],q[i]/p[i]]))), t),  # p[i] > 0
+                    ],
+                    (t0, t1),
+                )
+                return ((t0, t1), p ,q)
+            t, p, q = lax.fori_loop(
+                0, 
+                4,
+                loop_body,
+                ((0., 1.), p, q),
+            )
+            t0, t1 = t
+            inside_or_intersects = ~(t0 > t1)
+            intersection_point_0 = lax.switch(
+                jnp.argmax(jnp.array([~(inside_or_intersects), (inside_or_intersects) & (t0 == 0), (inside_or_intersects) & (t0 > 0)])),
+                [
+                    lambda _: jnp.array([jnp.nan, jnp.nan]),
+                    lambda _: jnp.array([x1, y1]),
+                    lambda _: jnp.array([x1 + t0 * dx, y1 + t0 * dy]),
+                ],
+                None,
+            )
+            intersection_point_1 = lax.switch(
+                jnp.argmax(jnp.array([~(inside_or_intersects), (inside_or_intersects) & (t1 == 1), (inside_or_intersects) & (t1 < 1)])),
+                [
+                    lambda _: jnp.array([jnp.nan, jnp.nan]),
+                    lambda _: jnp.array([x2, y2]),
+                    lambda _: jnp.array([x1 + t1 * dx, y1 + t1 * dy]),
+                ],
+                None,
+            )
+            return inside_or_intersects, intersection_point_0, intersection_point_1
+        return lax.cond(
+            jnp.any(jnp.isnan(jnp.array([x1, y1, x2, y2]))),
+            _nan_segment,
+            _not_nan_segment,
+            (x1, y1, x2, y2, xmin, xmax, ymin, ymax),
+        )
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_segment_rectangle_intersection(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax):
+        return vmap(SOAPPO.segment_rectangle_intersection, in_axes=(None,0,0,0,0,None,None,None,None))(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax)
+
     # Public methods
 
     @partial(jit, static_argnames=("self"))
-    def batch_compute_vnet_input(self, robot_obs:jnp.ndarray, humans_obs:jnp.ndarray, action_space_params:jnp.ndarray, info:dict) -> jnp.ndarray:
+    def batch_compute_vnet_input(self, robot_obs:jnp.ndarray, humans_obs:jnp.ndarray, info:dict) -> jnp.ndarray:
+        # Compute action space parameters (alpha, beta, gamma) - Done one time for all humans
+        obstacles = info["static_obstacles"][-1] # Obstacles are repeated for each agent, we take the last one, corresponding to the robot agent
+        obstacle_segments = obstacles.reshape((obstacles.shape[0] * obstacles.shape[1], 2, 2)) # Concatenate all segments regardless of the obstacle they belong to
+        action_space_params = self.bound_action_space(
+            obstacle_segments, 
+            robot_obs[:2], # robot position
+            robot_obs[5], # robot orientation
+            robot_obs[4], # robot radius
+        )
         return vmap(SOAPPO._compute_vnet_input,in_axes=(None,None,0,None,None))(self, robot_obs, humans_obs, action_space_params, info)
 
     @partial(jit, static_argnames=("self"))
@@ -372,49 +454,93 @@ class SOAPPO(SARL):
     ) -> tuple:
         actor_params = self.actor.init(key, jnp.zeros((len(obs)-1, self.vnet_input_size)))
         critic_params = self.critic.init(key, jnp.zeros((len(obs)-1, self.vnet_input_size)))
-        if self.normalize_and_clip_obs:
-            input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
-            norm_state = {
-                "mean": jnp.zeros(input.shape[1:]),
-                "var": jnp.ones(input.shape[1:]),
-                "count": 0,
-            }
-            actor_params = {"norm_state": norm_state, "actor_params": actor_params}
         return actor_params, critic_params
 
     @partial(jit, static_argnames=("self"))
-    def update_norm_state(
-        self,
-        inputs:jnp.ndarray,
-        norm_state:dict,
-    ) -> tuple:
-        ## Update normalization state
-        batch_mean = jnp.mean(inputs, axis=0)
-        batch_var = jnp.var(inputs, axis=0)
-        batch_count = inputs.shape[0]
-        delta = batch_mean - norm_state["mean"]
-        tot_count = norm_state["count"] + batch_count
-        new_mean = norm_state["mean"] + delta * batch_count / tot_count
-        m_a = norm_state["var"] * norm_state["count"]
-        m_b = batch_var * batch_count
-        m2 = m_a + m_b + jnp.square(delta) * norm_state["count"] * batch_count / tot_count
-        new_var = m2 / tot_count
-        norm_state = {
-            "mean": new_mean,
-            "var": new_var,
-            "count": tot_count,
-        }
-        ## Normalize and clip inputs
-        return norm_state
-
-    @partial(jit, static_argnames=("self"))
-    def normalize_and_clip_inputs(
-        self,
-        inputs:jnp.ndarray,
-        norm_state:dict,
-    ) -> jnp.ndarray:
-        inputs = jnp.clip((inputs - norm_state["mean"]) / jnp.sqrt(norm_state["var"] + NORM_EPSILON), -self.clip_obs_bound, self.clip_obs_bound)
-        return inputs
+    def bound_action_space(self, obstacle_segments, robot_position, robot_orientation, robot_radius):
+        """
+        Compute the bounds of the action space based on the control parameters alpha, beta, gamma.
+        """
+        # Convert obstacle segments to absolute coordinates
+        # Translate segments to robot frame
+        obstacle_segments = obstacle_segments.at[:, :, 0].set(obstacle_segments[:, :, 0] - robot_position[0])
+        obstacle_segments = obstacle_segments.at[:, :, 1].set(obstacle_segments[:, :, 1] - robot_position[1])
+        # Rotate segments by -robot_orientation
+        c, s = jnp.cos(-robot_orientation), jnp.sin(-robot_orientation)
+        rot = jnp.array([[c, -s], [s, c]])
+        obstacle_segments = jnp.einsum('ij,klj->kli', rot, obstacle_segments)
+        # Lower ALPHA
+        _, intersection_points0, intersection_points1 = self.batch_segment_rectangle_intersection(
+            obstacle_segments[:,0,0],
+            obstacle_segments[:,0,1],
+            obstacle_segments[:,1,0],
+            obstacle_segments[:,1,1],
+            0., # xmin
+            self.v_max * self.dt + robot_radius, # xmax
+            -robot_radius, # ymin
+            robot_radius, # ymax
+        )
+        intersection_points = jnp.vstack((intersection_points0, intersection_points1))
+        min_x = jnp.nanmin(intersection_points[:,0])
+        new_alpha = lax.cond(
+            ~jnp.isnan(min_x),
+            lambda _: jnp.max(jnp.array([0, min_x - robot_radius])) / (self.v_max * self.dt),
+            lambda _: 1.,
+            None,
+        )
+        @jit
+        def _lower_beta_and_gamma(tup:tuple):
+            obstacle_segments, new_alpha, vmax, wheels_distance, dt, robot_radius = tup
+            # Lower BETA
+            _, intersection_points0, intersection_points1 = self.batch_segment_rectangle_intersection(
+                obstacle_segments[:,0,0],
+                obstacle_segments[:,0,1],
+                obstacle_segments[:,1,0],
+                obstacle_segments[:,1,1],
+                -robot_radius, # xmin
+                new_alpha * vmax * dt + robot_radius, # xmax
+                robot_radius, # ymin
+                robot_radius + (new_alpha*dt**2*vmax/(4*wheels_distance)), # ymax
+            )
+            intersection_points = jnp.vstack((intersection_points0, intersection_points1))
+            min_y = jnp.nanmin(intersection_points[:,1])
+            new_beta = lax.cond(
+                ~jnp.isnan(min_y),
+                lambda _: (min_y - robot_radius) * 4 * wheels_distance / (vmax * dt**2 * new_alpha),
+                lambda _: 1.,
+                None,
+            )
+            # Lower GAMMA
+            _, intersection_points0, intersection_points1 = self.batch_segment_rectangle_intersection(
+                obstacle_segments[:,0,0],
+                obstacle_segments[:,0,1],
+                obstacle_segments[:,1,0],
+                obstacle_segments[:,1,1],
+                -robot_radius, # xmin
+                new_alpha * vmax * dt + robot_radius, # xmax
+                -robot_radius - (new_alpha*dt**2*vmax/(4*wheels_distance)), # ymin
+                -robot_radius, # ymax
+            )
+            intersection_points = jnp.vstack((intersection_points0, intersection_points1))
+            max_y = jnp.nanmax(intersection_points[:,1])
+            new_gamma = lax.cond(
+                ~jnp.isnan(max_y),
+                lambda _: (-max_y - robot_radius) * 4 * wheels_distance / (vmax * dt**2 * new_alpha),
+                lambda _: 1.,
+                None,
+            )
+            return new_beta, new_gamma
+        new_beta, new_gamma = lax.cond(
+            new_alpha == 0.,
+            lambda _: (1., 1.),
+            _lower_beta_and_gamma,
+            (obstacle_segments, new_alpha, self.v_max, self.wheels_distance, self.dt, robot_radius)
+        )
+        # Apply lower blound to new_alpha, new_beta, new_gamma
+        new_alpha = jnp.max(jnp.array([EPSILON, new_alpha]))
+        new_beta = jnp.max(jnp.array([EPSILON, new_beta]))
+        new_gamma = jnp.max(jnp.array([EPSILON, new_gamma]))
+        return jnp.array([new_alpha, new_beta, new_gamma])
 
     @partial(jit, static_argnames=("self"))
     def act(
@@ -432,9 +558,6 @@ class SOAPPO(SARL):
             obs = self._batch_add_noise_to_human_obs(obs, subkey)
         # Compute actor input
         input = self.batch_compute_vnet_input(obs[-1], obs[:-1], info)
-        if self.normalize_and_clip_obs:
-            input = self.normalize_and_clip_inputs(input, actor_params["norm_state"])
-            actor_params = actor_params["actor_params"]
         # Compute action
         key, subkey = random.split(key)
         sampled_action, distr = self.actor.apply(

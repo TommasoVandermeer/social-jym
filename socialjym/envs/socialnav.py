@@ -19,6 +19,7 @@ class SocialNav(BaseEnv):
             scenario:str, 
             n_humans:int, 
             reward_function:FunctionType,
+            n_obstacles:int = 0,
             humans_policy='hsfm', 
             robot_visible=False, 
             circle_radius=7, 
@@ -38,6 +39,7 @@ class SocialNav(BaseEnv):
             robot_radius=robot_radius,
             humans_dt=humans_dt,
             n_humans=n_humans,
+            n_obstacles=n_obstacles,    
             scenario=scenario,
             humans_policy=humans_policy,
             robot_visible=robot_visible,
@@ -220,7 +222,11 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
-        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        if self.n_obstacles == 0:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        else:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -305,7 +311,11 @@ class SocialNav(BaseEnv):
         robot_goal = - disturbed_points[-1]
 
         # Obstacles
-        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        if self.n_obstacles == 0:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        else:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -378,7 +388,15 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0, -self.traffic_length/2])
 
         # Obstacles
-        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        if self.n_obstacles == 0:
+            static_obstacles = jnp.array([[
+                [[[-3, self.traffic_length/4],[3, self.traffic_length/4]]],
+            ]])
+            static_obstacles = static_obstacles.repeat(self.n_humans+1, axis=0)  # Repeat for each human and the robot
+            # static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        else:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles 
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -452,7 +470,11 @@ class SocialNav(BaseEnv):
         robot_goal = disturbed_points[-1]
 
         # Obstacles
-        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        if self.n_obstacles == 0:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        else:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -583,7 +605,11 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
-        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        if self.n_obstacles == 0:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        else:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -667,7 +693,11 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
-        static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        if self.n_obstacles == 0:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+        else:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
+            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -813,6 +843,7 @@ class SocialNav(BaseEnv):
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
         new_info["return"] += pow(self.reward_function.gamma, info["step"] * self.robot_dt * self.reward_function.v_max) * reward
+        # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
         return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome, reset_key
 
     @partial(jit, static_argnames=("self"))

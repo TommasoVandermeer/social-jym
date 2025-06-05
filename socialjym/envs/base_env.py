@@ -51,6 +51,7 @@ class BaseEnv(ABC):
         humans_dt:float, 
         scenario:str, 
         n_humans:int, 
+        n_obstacles:int,
         humans_policy:str, 
         robot_visible:bool, 
         circle_radius:float, 
@@ -74,6 +75,7 @@ class BaseEnv(ABC):
         self.humans_dt = humans_dt
         self.scenario = SCENARIOS.index(scenario)
         self.n_humans = n_humans
+        self.n_obstacles = n_obstacles
         self.humans_policy = HUMAN_POLICIES.index(humans_policy)
         if humans_policy == 'hsfm': 
             self.humans_step = hsfm_humans_step

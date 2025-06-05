@@ -188,9 +188,7 @@ def test_k_trials(
     - metrics: dict. A dictionary containing the metrics of the tests.
     """
 
-    # Check if the policy is A2C, if so the episode loop slightly changes
-    a2c = (policy.name == "SARL-A2C")
-    ppo = (policy.name == "SARL-PPO")
+    ppo = (policy.name == "SARL-PPO") or (policy.name == "SOAPPO")
 
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
     if custom_episodes is not None:
@@ -222,9 +220,7 @@ def test_k_trials(
             # Retrieve data from the tuple
             state, obs, info, outcome, policy_key, steps, all_actions, all_states = while_val
             # Make a step in the environment
-            if a2c:
-                action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sigma=0.)
-            elif ppo:
+            if ppo:
                 action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
             else:
                 action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
@@ -410,9 +406,18 @@ def animate_trajectory(
     robot_goal:np.ndarray,
     scenario:int,
     robot_dt:float=0.25,
-    lidar_measurements=None,
+    static_obstacles:jnp.ndarray=None,
+    lidar_measurements:jnp.ndarray=None,
     kinematics:str='holonomic',
+    action_space_params:jnp.ndarray=None,
+    vmax:float=None,
+    wheels_distance:float=None,
     ) -> None:
+
+    if action_space_params is not None:
+        assert kinematics == 'unicycle', "Action space parameters are only available for unicycle kinematics."
+        assert vmax is not None, "vmax must be provided if action space parameters are used."
+        assert wheels_distance is not None, "wheels_distance must be provided if action space parameters are used."
 
     # TODO: Add a progress bar,
     fig, ax = plt.subplots()
@@ -435,6 +440,26 @@ def animate_trajectory(
         plot_state(ax, frame*robot_dt, states[frame], humans_policy, scenario, humans_radiuses, robot_radius, plot_time=False, kinematics=kinematics)
         if lidar_measurements is not None:
             plot_lidar_measurements(ax, lidar_measurements[frame], states[frame][-1], robot_radius)
+        if static_obstacles is not None:
+            if static_obstacles.shape[1] > 1: # Polygon obstacles
+                for o in static_obstacles: plt.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+            else: # One segment obstacles
+                for o in static_obstacles: plt.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+        if action_space_params is not None and frame < len(action_space_params):
+            new_alpha, new_beta, new_gamma = action_space_params[frame]
+            ax.add_artist(plt.Rectangle(
+                (states[frame,-1,0] - robot_radius, states[frame,-1,1] - new_alpha*robot_dt**2*new_gamma*vmax/(4*wheels_distance) - robot_radius), 
+                new_alpha*vmax*robot_dt + 2 * robot_radius, 
+                2*robot_radius + (new_alpha*robot_dt**2*vmax/(4*wheels_distance) * (new_beta + new_gamma)), 
+                rotation_point=(float(states[frame,-1,0]), float(states[frame,-1,1])), 
+                angle=jnp.rad2deg(states[frame,-1,4]), 
+                color='green', 
+                fill=False, 
+                zorder=3, 
+                linewidth=2,
+                linestyle='--'
+            ))
+
 
     anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(states))
     
