@@ -34,6 +34,12 @@ class SocialNav(BaseEnv):
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
         ) -> None:
+        ## Args validation
+        if n_obstacles > 0:
+            print(f"\nWARNING: Obstacles have been added to the environment, but collision detection is not implemented yet (only with humans).\nThe robot must be able to avoid them by design.\n")
+        if n_obstacles > 5:
+            print("\nWARNING: The number of obstacles is set to 5, as the environment is not designed to handle more than that.\n")
+            n_obstacles = 5
         ## BaseEnv initialization
         super().__init__(
             robot_radius=robot_radius,
@@ -64,6 +70,52 @@ class SocialNav(BaseEnv):
         ## Env initialization
         self.robot_dt = robot_dt
         self.reward_function = reward_function
+        ## Static obstacles initialization
+        self.static_obstacles_per_scenario = {
+            'circular_crossing': jnp.array([
+                [[[0.75, -2*self.circle_radius/3],[2, -2*self.circle_radius/3+1.5*self.circle_radius/7]]],
+                [[[-0.75, -2*self.circle_radius/3+2*self.circle_radius/7],[-2, -2*self.circle_radius/3+3.5*self.circle_radius/7]]],
+                [[[0.75, -2*self.circle_radius/3+4*self.circle_radius/7],[2, -2*self.circle_radius/3+5.5*self.circle_radius/7]]],
+                [[[-0.75, -2*self.circle_radius/3+6*self.circle_radius/7],[-2, -2*self.circle_radius/3+7.5*self.circle_radius/7]]],
+                [[[0.75, -2*self.circle_radius/3+8*self.circle_radius/7],[2, -2*self.circle_radius/3+9.5*self.circle_radius/7]]],
+            ]), 
+            'parallel_traffic': jnp.array([
+                [[[-self.traffic_length/2-1, self.traffic_height/2 + 0.3],[self.traffic_length/2-0.5, self.traffic_height/2 + 0.3]]],
+                [[[-self.traffic_length/2-1, -(self.traffic_height/2 + 0.3)],[self.traffic_length/2-0.5, -(self.traffic_height/2 + 0.3)]]],
+                [[[-1.,0],[1.,0.]]],
+                [[[-self.traffic_length/4-0.5,self.traffic_height/4],[-self.traffic_length/4+0.5,self.traffic_height/4]]],
+                [[[self.traffic_length/4-0.5,self.traffic_height/4],[self.traffic_length/4+0.5,self.traffic_height/4]]],
+            ]), 
+            'perpendicular_traffic': jnp.array([
+                [[[-self.traffic_length/8, self.traffic_length/2 +1],[-self.traffic_length/8, self.traffic_height/2+0.5]]],
+                [[[self.traffic_length/8, self.traffic_length/2 +1],[self.traffic_length/8, self.traffic_height/2+0.5]]],
+                [[[-1.,0],[1.,0.]]],
+                [[[0., -self.traffic_height/2-0.5],[0., -self.traffic_height/2-2]]],
+                [[[-0.5,-self.traffic_length/2+0.5],[0.5,-self.traffic_length/2+0.5]]],
+            ]), 
+            'robot_crowding': jnp.array([
+                [[[-1.,0],[1.,0.]]],
+                [[[self.crowding_square_side/4, 1],[self.crowding_square_side/4-1, -1]]],
+                [[[-self.crowding_square_side/4, -1],[-self.crowding_square_side/4-1, 1]]],
+                [[[-self.crowding_square_side/2, 2],[-self.crowding_square_side/2-1, 0.5]]],
+                [[[-self.crowding_square_side/2, -2],[-self.crowding_square_side/2-1, -0.5]]],
+            ]), 
+            'delayed_circular_crossing': jnp.array([
+                [[[1.5*self.circle_radius/7 * jnp.cos(2*jnp.pi/5), 1.5*self.circle_radius/7 * jnp.sin(2*jnp.pi/5)],[3.5*self.circle_radius/7*jnp.cos(2*jnp.pi/5), 3.5*self.circle_radius/7*jnp.sin(2*jnp.pi/5)]]],
+                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*2), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*2)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*2), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*2)]]],
+                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*3), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*3)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*3), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*3)]]],
+                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*4), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*4)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*4), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*4)]]],
+                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*5), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*5)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*5), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*5)]]],
+            ]), 
+            'circular_crossing_with_static_obstacles': jnp.full((5, 1, 2, 2), jnp.nan), # The scenario is already challenging so we put dummy obstacles
+            'crowd_navigation': jnp.array([
+                [[[-self.circle_radius/2, -self.circle_radius/2],[-self.circle_radius/2+1, -self.circle_radius/2+1]]],
+                [[[0., -self.circle_radius/2-1],[0., -self.circle_radius/2+2]]],
+                [[[0., self.circle_radius/2-1],[0., self.circle_radius/2+2]]],
+                [[[self.circle_radius/2, self.circle_radius/2],[self.circle_radius/2-1, self.circle_radius/2-1]]],
+                [[[-0.5, self.circle_radius-1],[0.5, self.circle_radius-1]]],
+            ]),
+        }
 
     # --- Private methods ---
 
@@ -106,6 +158,30 @@ class SocialNav(BaseEnv):
             "return": 0.,
         }
 
+    @partial(jit, static_argnames=("self"))
+    def _init_obstacles(self, key:random.PRNGKey, scenario:int) -> jnp.ndarray:
+        if self.n_obstacles == 0:
+            return jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan)
+        else:
+            obstacles = lax.switch(
+                scenario,
+                [
+                    lambda _: self.static_obstacles_per_scenario['circular_crossing'],
+                    lambda _: self.static_obstacles_per_scenario['parallel_traffic'],
+                    lambda _: self.static_obstacles_per_scenario['perpendicular_traffic'],
+                    lambda _: self.static_obstacles_per_scenario['robot_crowding'],
+                    lambda _: self.static_obstacles_per_scenario['delayed_circular_crossing'],
+                    lambda _: self.static_obstacles_per_scenario['circular_crossing_with_static_obstacles'],
+                    lambda _: self.static_obstacles_per_scenario['crowd_navigation'],
+                ],
+                None,
+            )
+            perm = random.permutation(key, obstacles.shape[0])
+            shuffled_obstacles = obstacles[perm]
+            picked_obstacles = shuffled_obstacles[:self.n_obstacles]
+            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
+            return jnp.repeat(jnp.array([picked_obstacles]), self.n_humans+1, axis=0)
+        
     @partial(jit, static_argnames=("self"))
     def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray) -> jnp.ndarray:
         """
@@ -222,11 +298,7 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
-        if self.n_obstacles == 0:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-        else:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('circular_crossing'))
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -245,6 +317,7 @@ class SocialNav(BaseEnv):
         possible_delays = jnp.arange(0., self.max_cc_delay + self.robot_dt, self.robot_dt)
         info["humans_delay"] = info["humans_delay"].at[:].set(random.choice(subkey, possible_delays, shape=(self.n_humans,)))
         info["current_scenario"] = SCENARIOS.index('delayed_circular_crossing')
+        info["static_obstacles"] = self._init_obstacles(key, SCENARIOS.index('delayed_circular_crossing'))
         # The next waypoint of humans is set to be its initial position
         info["humans_goal"] = info["humans_goal"].at[:].set(-info["humans_goal"])
         return full_state, info
@@ -311,11 +384,7 @@ class SocialNav(BaseEnv):
         robot_goal = - disturbed_points[-1]
 
         # Obstacles
-        if self.n_obstacles == 0:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-        else:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('parallel_traffic'))
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -388,15 +457,7 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0, -self.traffic_length/2])
 
         # Obstacles
-        if self.n_obstacles == 0:
-            static_obstacles = jnp.array([[
-                [[[-3, self.traffic_length/4],[3, self.traffic_length/4]]],
-            ]])
-            static_obstacles = static_obstacles.repeat(self.n_humans+1, axis=0)  # Repeat for each human and the robot
-            # static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-        else:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles 
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('perpendicular_traffic'))
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -470,11 +531,7 @@ class SocialNav(BaseEnv):
         robot_goal = disturbed_points[-1]
 
         # Obstacles
-        if self.n_obstacles == 0:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-        else:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('robot_crowding'))
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -605,11 +662,7 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
-        if self.n_obstacles == 0:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-        else:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('circular_crossing_with_static_obstacles'))
         # Info
         info = self._init_info(
             humans_goal=humans_goal,
@@ -693,11 +746,7 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array([0., self.circle_radius])
 
         # Obstacles
-        if self.n_obstacles == 0:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-        else:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan) # dummy obstacles
-            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('crowd_navigation'))
         # Info
         info = self._init_info(
             humans_goal=humans_goal,

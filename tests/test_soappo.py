@@ -30,12 +30,13 @@ reward_function = Reward2(
     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 15,
+    'n_humans': 10,
+    'n_obstacles': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'perpendicular_traffic',
-    'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4]),
+    'scenario': 'hybrid_scenario',
+    'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4, 6]), # All scenarios but circular_crossing_with_static_obstacles
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
     'kinematics': 'unicycle',
@@ -102,7 +103,7 @@ for i in range(n_episodes):
         info['robot_goal'],
         info['current_scenario'],
         robot_dt=env_params['robot_dt'],
-        static_obstacles=info['static_obstacles'][0], # Obstacles are repeated for each agent, index 0 is enough
+        static_obstacles=info['static_obstacles'][-1], # Obstacles are repeated for each agent, index -1 is enough
         kinematics='unicycle',
         action_space_params=np.array(all_action_space_params),
         vmax=v_max,

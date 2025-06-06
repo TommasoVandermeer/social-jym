@@ -28,8 +28,8 @@ rl_debugging_interval = 10
 robot_vmax = 1
 training_hyperparams = {
     'random_seed': 0,
-    'policy_name': 'sarl-ppo',
     'n_humans': 5, 
+    'n_obstacles': 3,
     'il_buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
     'il_training_episodes': 2_000,
     'il_actor_learning_rate': 0.001,
@@ -44,7 +44,7 @@ training_hyperparams = {
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 10, # 10
     'rl_num_batches': 30, # 30
-    'rl_beta_entropy': 5e-4, # 5e-4
+    'rl_beta_entropy': 5e-6, # 5e-4
     'lambda_gae': 0.95, # 0.95
     'humans_policy': 'hsfm',
     'scenario': 'hybrid_scenario',
@@ -74,6 +74,7 @@ else:
 env_params = {
     'robot_radius': 0.3,
     'n_humans': training_hyperparams['n_humans'],
+    'n_obstacles': training_hyperparams['n_obstacles'],
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
@@ -164,6 +165,7 @@ for v, visibility in enumerate(test_robot_visibility):
         test_env_params = {
             'robot_radius': 0.3,
             'n_humans': n_humans,
+            'n_obstacles': training_hyperparams['n_obstacles'],
             'robot_dt': 0.25,
             'humans_dt': 0.01,
             'robot_visible': visibility,
@@ -454,6 +456,7 @@ for v, visibility in enumerate(test_robot_visibility):
         test_env_params = {
             'robot_radius': 0.3,
             'n_humans': n_humans,
+            'n_obstacles': training_hyperparams['n_obstacles'],
             'robot_dt': 0.25,
             'humans_dt': 0.01,
             'robot_visible': visibility,

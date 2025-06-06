@@ -52,7 +52,7 @@ def actor_critic_il_rollout(
                 custom_states = jnp.empty((train_episodes, env.n_humans+1, 6))
                 custom_robot_goals = jnp.empty((train_episodes, 2))
                 custom_humans_goals = jnp.empty((train_episodes, env.n_humans, 2))
-                custom_static_obstacles = jnp.empty((train_episodes, env.n_humans+1, 1, 1, 2, 2))
+                custom_static_obstacles = jnp.empty((train_episodes, env.n_humans+1, env.n_obstacles, 1, 2, 2))
                 custom_scenario = jnp.empty((train_episodes,), dtype=int)
                 custom_humans_radius = jnp.empty((train_episodes, env.n_humans))
                 custom_humans_speed = jnp.empty((train_episodes, env.n_humans))
