@@ -30,12 +30,12 @@ reward_function = Reward2(
     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 10,
+    'n_humans': 1,
     'n_obstacles': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'hybrid_scenario',
+    'scenario': 'parallel_traffic',
     'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4, 6]), # All scenarios but circular_crossing_with_static_obstacles
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
@@ -48,8 +48,10 @@ env = SocialNav(**env_params)
 
 ### Initialize robot policy
 policy = SOAPPO(env.reward_function, v_max=v_max, dt=env_params['robot_dt'])
-_, _, obs, info, _ = env.reset(random.PRNGKey(0))
-actor_params, critic_params = policy.init_nns(random.PRNGKey(0), obs, info)
+# _, _, obs, info, _ = env.reset(random.PRNGKey(0))
+# actor_params, critic_params = policy.init_nns(random.PRNGKey(0), obs, info)
+with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
+    actor_params = pickle.load(f)['actor_params']
 
 # ### Test policy
 # for n_humans in tests_n_humans:
