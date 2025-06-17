@@ -1,14 +1,17 @@
 import jax.numpy as jnp
-from jax import jit, lax
+from jax import jit, lax, random, vmap
 from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
 import heapq
+import os 
+import pickle
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.soappo import SOAPPO
+from socialjym.utils.aux_functions import animate_trajectory
 
-grid_cell_size = 0.5
+grid_cell_size = 0.3
 distance_threshold = 0
 obstacles = jnp.array([
     [[[0.0, 0.0], [0.0, 6.0]]],
@@ -26,6 +29,16 @@ obstacles = jnp.array([
 ])
 start_pos = jnp.array([3.75, 0.75])  # Starting position of the robot
 goal_pos = jnp.array([2.25, 5.25])  # Goal position of the robot
+humans_pose = jnp.array([
+    [5.5, 5.5, jnp.pi/2],
+    [0.5, 5.5, -jnp.pi/2],
+    [5.5, 3.0, jnp.pi],
+])
+humans_goal = jnp.array([
+    [5.5, 0.5],
+    [0.5, 0.5],
+    [0.5, 3.0],
+])
 
 ### Computations
 # Generate grid coordinates
@@ -286,4 +299,84 @@ plt.gca().set_aspect('equal', adjustable='box')
 plt.show()
 
 ### Simulate SOAPPO to navigate the computed path on the given map
-
+reward_function = Reward2(
+        target_reached_reward = True,
+        collision_penalty_reward = True,
+        discomfort_penalty_reward = True,
+        v_max = 1.,
+        progress_to_goal_reward = True,
+        progress_to_goal_weight = 0.03,
+        high_rotation_penalty_reward=True,
+        angular_speed_bound=1.,
+        angular_speed_penalty_weight=0.0075,
+    )
+env_params = {
+    'robot_radius': 0.3,
+    'n_humans': len(humans_pose),
+    'n_obstacles': len(new_static_obstacles),
+    'robot_dt': 0.25,
+    'humans_dt': 0.01,
+    'robot_visible': True,
+    'scenario': 'hybrid_scenario',
+    'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4, 6]), # All scenarios but circular_crossing_with_static_obstacles
+    'humans_policy': 'hsfm',
+    'reward_function': reward_function,
+    'kinematics': 'unicycle',
+}
+env = SocialNav(**env_params)
+policy = SOAPPO(env.reward_function, v_max=1., dt=env_params['robot_dt'])
+with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
+    actor_params = pickle.load(f)['actor_params']
+# Simulate a custom episode
+policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int))
+state, reset_key, obs, info, outcome = env.reset_custom_episode(
+    reset_key, 
+    {
+        "full_state": jnp.array([[h[0], h[1], 0., 0., h[2], 0.] for h in jnp.append(humans_pose, jnp.array([[path_to_goal[0,0], path_to_goal[0,1], 0.0]]), axis=0)]),
+        "humans_goal": humans_goal,
+        "robot_goal": path_to_goal[1],  # Start at the first waypoint
+        "humans_radius": jnp.ones(env_params['n_humans']) * env_params['robot_radius'],
+        "humans_speed": jnp.ones(env_params['n_humans']),
+        "static_obstacles": jnp.repeat(new_static_obstacles[None, :, :, :], env_params['n_humans']+1, axis=0),
+        "scenario": 3,
+    }
+)
+all_states = jnp.array([state])
+all_action_space_params = []
+# Humans and robot goals indexing
+waypoint_idx = 1  # Start at the first waypoint
+humans_chase_goal = jnp.ones(env_params['n_humans'], dtype=bool)  # All humans chase their goals initially
+while outcome["nothing"]:
+    action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, sample=True)
+    action_space_params = [distr["vertices"][2,0]/policy.v_max,distr["vertices"][0,1]/(2*policy.v_max/policy.wheels_distance), distr["vertices"][1,1]/(-2*policy.v_max/policy.wheels_distance)]
+    state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
+    # Update robot goal
+    if outcome["success"]:
+        print(f"Waypoint {waypoint_idx} reached! at time {info['time']:.2f}s")
+        if waypoint_idx < path_to_goal.shape[0] - 1:
+            waypoint_idx += 1
+            info['robot_goal'] = info["robot_goal"].at[:].set(path_to_goal[waypoint_idx])  # Update the goal to the next waypoint
+            outcome["nothing"] = True
+            outcome["success"] = False
+    # Update humans goals
+    for i in range(len(humans_pose)):
+        if jnp.linalg.norm(state[i,:2] - info['humans_goal'][i]) < info['humans_parameters'][i,0]:
+            humans_chase_goal = humans_chase_goal.at[i].set(not humans_chase_goal[i])  # Toggle chasing goal
+            info['humans_goal'] = info['humans_goal'].at[i].set(humans_goal[i] if humans_chase_goal[i] else humans_pose[i,:2])   
+    all_states = jnp.vstack((all_states, jnp.array([state])))
+    all_action_space_params.append(action_space_params)
+# Animate trajectory
+animate_trajectory(
+    all_states, 
+    info['humans_parameters'][:,0], 
+    env.robot_radius, 
+    env_params['humans_policy'],
+    info['robot_goal'],
+    None, # Custom scenario
+    robot_dt=env_params['robot_dt'],
+    static_obstacles=info['static_obstacles'][-1], # Obstacles are repeated for each agent, index -1 is enough
+    kinematics='unicycle',
+    action_space_params=jnp.array(all_action_space_params),
+    vmax=1.,
+    wheels_distance=policy.wheels_distance,
+)

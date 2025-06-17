@@ -30,12 +30,12 @@ reward_function = Reward2(
     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 1,
+    'n_humans': 5,
     'n_obstacles': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'parallel_traffic',
+    'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4, 6]), # All scenarios but circular_crossing_with_static_obstacles
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
@@ -85,7 +85,7 @@ for i in range(n_episodes):
     all_states = np.array([state])
     all_action_space_params = []
     while outcome["nothing"]:
-        action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, sample=True)
+        action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, sample=False)
         action_space_params = [distr["vertices"][2,0]/policy.v_max,distr["vertices"][0,1]/(2*policy.v_max/policy.wheels_distance), distr["vertices"][1,1]/(-2*policy.v_max/policy.wheels_distance)]
         print("Alphas: ", distr["alphas"])
         print("Action space parameters: [", action_space_params[0], ",", action_space_params[1], ",", action_space_params[2], "]")

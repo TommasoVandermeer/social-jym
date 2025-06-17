@@ -22,8 +22,8 @@ from socialjym.policies.soappo import SOAPPO
 n_humans_for_tests = [5, 10, 15, 20, 25]
 test_robot_visibility = [False, True]
 n_trials = 100
-n_parallel_envs = 50 
-training_updates = 10_000
+n_parallel_envs = 100 # 100 
+training_updates = 30_000 # 30_000
 rl_debugging_interval = 10
 robot_vmax = 1
 training_hyperparams = {
@@ -38,13 +38,13 @@ training_hyperparams = {
     'il_batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_actor_learning_rate': 3e-5, # 3e-5
-    'rl_critic_learning_rate': 3e-4, # 3e-4
+    'rl_actor_learning_rate': 1e-5, # 1e-5
+    'rl_critic_learning_rate': 1e-4, # 1e-4
     'rl_buffer_capacity': 3_000, # Number of experiences to sample from the replay buffer for each model update
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 10, # 10
     'rl_num_batches': 30, # 30
-    'rl_beta_entropy': 5e-6, # 5e-4
+    'rl_beta_entropy': 1e-4, # 5e-4
     'lambda_gae': 0.95, # 0.95
     'humans_policy': 'hsfm',
     'scenario': 'hybrid_scenario',

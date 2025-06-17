@@ -34,12 +34,6 @@ class SocialNav(BaseEnv):
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
         ) -> None:
-        ## Args validation
-        if n_obstacles > 0:
-            print(f"\nWARNING: Obstacles have been added to the environment, but collision detection is not implemented yet (only with humans).\nThe robot must be able to avoid them by design.\n")
-        if n_obstacles > 5:
-            print("\nWARNING: The number of obstacles is set to 5, as the environment is not designed to handle more than that.\n")
-            n_obstacles = 5
         ## BaseEnv initialization
         super().__init__(
             robot_radius=robot_radius,
@@ -62,6 +56,8 @@ class SocialNav(BaseEnv):
             ccso_n_static_humans=ccso_n_static_humans,
             )
         ## Args validation
+        if n_obstacles > 0:
+            print(f"\nWARNING: Obstacles have been added to the environment, but collision detection is not implemented yet (only with humans).\nThe robot must be able to avoid them by design.\n")
         assert humans_dt <= robot_dt, "The humans' time step must be less or equal than the robot's time step."
         assert is_multiple(robot_dt, humans_dt), "The robot's time step must be a multiple of the humans' time step."
         assert reward_function.kinematics == self.kinematics, "The reward function's kinematics must be the same as the environment's kinematics."
@@ -116,6 +112,14 @@ class SocialNav(BaseEnv):
                 [[[-0.5, self.circle_radius-1],[0.5, self.circle_radius-1]]],
             ]),
         }
+        if n_obstacles > 5:
+            print("WARNING: The number of obstacles is above 5, the environment is not designed to have more obstacles than that.\n")
+            for scenario in SCENARIOS[:-1]:
+                self.static_obstacles_per_scenario[scenario] = jnp.concatenate(
+                    [self.static_obstacles_per_scenario[scenario], 
+                    jnp.full((n_obstacles-5, 1, 2, 2), jnp.nan)],
+                    axis=0
+                )
 
     # --- Private methods ---
 

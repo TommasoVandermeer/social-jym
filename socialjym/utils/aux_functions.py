@@ -97,7 +97,10 @@ def plot_state(
         traffic_length=14, 
         crowding_square_side=14,
         plot_time=True,
-        kinematics:str='holonomic') -> None:
+        kinematics:str='holonomic',
+        xlims:list=None,
+        ylims:list=None,
+    ) -> None:
     """
     Plots a given single state of the environment.
 
@@ -124,6 +127,8 @@ def plot_state(
         ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_length/2,traffic_length/2])
     elif scenario == SCENARIOS.index('robot_crowding'): 
         ax.set(xlabel='X',ylabel='Y',xlim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5],ylim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5])
+    elif scenario is None:
+        ax.set(xlabel='X',ylabel='Y',xlim=xlims,ylim=ylims)
     # Humans
     for h in range(len(full_state)-1): 
         if humans_policy == 'hsfm': 
@@ -426,6 +431,12 @@ def animate_trajectory(
     ax.set(xlim=[-10,10],ylim=[-10,10])
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
+    if (static_obstacles is not None) and (scenario is None):
+        xlims = [jnp.nanmin(static_obstacles[:,:,:,0]), jnp.nanmax(static_obstacles[:,:,:,0])]
+        ylims = [jnp.nanmin(static_obstacles[:,:,:,1]), jnp.nanmax(static_obstacles[:,:,:,1])]
+    else:
+        xlims = None
+        ylims = None
 
     def animate(frame):
         ax.clear()
@@ -437,7 +448,7 @@ def animate_trajectory(
                 Line2D([0], [0], color='white', marker='*', markersize=10, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Goal')],
             bbox_to_anchor=(0.99, 0.5), loc='center left')
         ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
-        plot_state(ax, frame*robot_dt, states[frame], humans_policy, scenario, humans_radiuses, robot_radius, plot_time=False, kinematics=kinematics)
+        plot_state(ax, frame*robot_dt, states[frame], humans_policy, scenario, humans_radiuses, robot_radius, plot_time=False, kinematics=kinematics, xlims=xlims, ylims=ylims)
         if lidar_measurements is not None:
             plot_lidar_measurements(ax, lidar_measurements[frame], states[frame][-1], robot_radius)
         if static_obstacles is not None:
