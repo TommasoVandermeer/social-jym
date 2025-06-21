@@ -1,4 +1,6 @@
+import dwa
 import jax.numpy as jnp
+import numpy as np
 from jax import jit, lax, random, vmap
 from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
@@ -7,86 +9,38 @@ import os
 import pickle
 
 from socialjym.envs.socialnav import SocialNav
-from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
+from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
 from socialjym.policies.soappo import SOAPPO
 from socialjym.utils.aux_functions import animate_trajectory
 
 ### Parameters
-# grid_cell_size = 0.3
-# obstacles = jnp.array([
-#     [[[0.0, 0.0], [0.0, 6.0]]],
-#     [[[0.0, 6.0], [6.0, 6.0]]], 
-#     [[[6.0, 6.0], [6.0, 0.0]]],
-#     [[[6.0, 0.0], [0.0, 0.0]]],
-#     [[[1.5, 1.8], [4.5, 1.8]]],
-#     [[[1.5, 4.2], [4.5, 4.2]]],
-#     [[[1.5, 1.8], [1.5, 2.0]]],
-#     [[[1.5, 4.0], [1.5, 4.2]]],
-#     [[[4.5, 1.8], [4.5, 2.0]]],
-#     [[[4.5, 4.0], [4.5, 4.2]]],
-#     [[[3.0, 0.0], [3.0, 1.8]]],
-#     [[[3.0, 4.2], [3.0, 6.0]]],
-# ])
-# start_pos = jnp.array([3.75, 0.75])  # Starting position of the robot
-# goal_pos = jnp.array([2.25, 5.25])  # Goal position of the robot
-# humans_pose = jnp.array([
-#     [5.5, 5.5, jnp.pi/2],
-#     [0.5, 5.5, -jnp.pi/2],
-#     [5.5, 3.0, jnp.pi],
-# ])
-# humans_goal = jnp.array([
-#     [5.5, 0.5],
-#     [0.5, 0.5],
-#     [0.5, 3.0],
-# ])
-grid_cell_size = .9
+robot_dt = 0.25  # Robot time step in seconds
+grid_cell_size = 0.5
 obstacles = jnp.array([
-    [[[-15.,10.], [-15.,-10.]]],
-    [[[-15.,10.], [15.,10.]]],
-    [[[15.,10.], [15.,-10.]]],
-    [[[15.,-10.], [-15.,-10.]]],
-    [[[-15.,7.], [-11.,7.]]],
-    [[[-11.,7.], [-11.,4.]]],
-    [[[-11.,4.], [-13.,4.]]],
-    [[[-15.,2.], [-8.,2.]]],
-    [[[-9.,10.], [-9.,4.]]],
-    [[[-8.,0.], [-8.,-8.]]],
-    [[[-6.,10.], [-6.,7.]]],
-    [[[-2.,10.], [-2.,7.]]],
-    [[[2.,10.], [2.,6.]]],
-    [[[5.,10.], [5.,6.]]],
-    [[[7.,10.], [7.,4.]]],
-    [[[11.,10.], [11.,4.]]],
-    [[[13.,7.], [15.,7.]]],
-    [[[-15.,0.], [-8.,0.]]],
-    [[[-6.,4.], [-6.,-4.]]],
-    [[[-6.,4.], [5.,4.]]],
-    [[[5.,4.], [5.,-4.]]],
-    [[[5.,-4.], [3.,-4.]]],
-    [[[-6.,-4.], [-3.,-4.]]],
-    [[[-6.,-7.], [-7.,-7.]]],
-    [[[7.,-5.], [7.,-4.]]],
-    [[[9.,-6.], [9.,-10.]]],
-    [[[11.,-6.], [11.,-8.]]],
-    [[[13.,-6.], [15.,-6.]]],
-    [[[9.,-4.], [13.,-4.]]],
-    [[[7.,-2.], [8.,-2.]]],
-    [[[7.,-2.], [7.,2.]]],
-    [[[7.,2.], [13.,2.]]],
-    [[[13.,2.], [13.,-2.]]],
-    [[[11.,-2.], [13.,-2.]]],
+    [[[0.0, 0.0], [0.0, 6.0]]],
+    [[[0.0, 6.0], [6.0, 6.0]]], 
+    [[[6.0, 6.0], [6.0, 0.0]]],
+    [[[6.0, 0.0], [0.0, 0.0]]],
+    [[[1.5, 1.8], [4.5, 1.8]]],
+    [[[1.5, 4.2], [4.5, 4.2]]],
+    [[[1.5, 1.8], [1.5, 2.0]]],
+    [[[1.5, 4.0], [1.5, 4.2]]],
+    [[[4.5, 1.8], [4.5, 2.0]]],
+    [[[4.5, 4.0], [4.5, 4.2]]],
+    [[[3.0, 0.0], [3.0, 1.8]]],
+    [[[3.0, 4.2], [3.0, 6.0]]],
 ])
-start_pos = jnp.array([13.5, -8.5])  # Starting position of the robot
-goal_pos = jnp.array([-13.5, 8.5])  # Goal position of the robot
+start_pos = jnp.array([3.75, 0.75])  # Starting position of the robot
+goal_pos = jnp.array([2.25, 5.25])  # Goal position of the robot
 humans_pose = jnp.array([
-    [10, -9, jnp.pi/2],
-    [12, -3.5, jnp.pi],
-    [6, -6, jnp.pi/2],
+    [5.5, 5.5, jnp.pi/2],
+    [0.5, 5.5, -jnp.pi/2],
+    [5.5, 3.0, jnp.pi],
 ])
 humans_goal = jnp.array([
-    [10, -5.],
-    [6, -3.5],
-    [6, 4],
+    [5.5, 0.5],
+    [0.5, 0.5],
+    [0.5, 3.0],
 ])
 
 ### Computations
@@ -347,23 +301,56 @@ else:
 plt.gca().set_aspect('equal', adjustable='box')
 plt.show()
 
-### Simulate SOAPPO to navigate the computed path on the given map
-reward_function = Reward2(
-        target_reached_reward = True,
-        collision_penalty_reward = True,
-        discomfort_penalty_reward = True,
-        v_max = 1.,
-        progress_to_goal_reward = True,
-        progress_to_goal_weight = 0.03,
-        high_rotation_penalty_reward=True,
-        angular_speed_bound=1.,
-        angular_speed_penalty_weight=0.0075,
-    )
+### Simulate DWA to navigate the computed path on the given map
+# Initialize DWA planner
+dwa_config = dwa.Config(
+    max_speed=1.0,
+    min_speed=0.0,
+    max_yawrate=2/0.7,
+    dt = robot_dt,
+    max_accel=4,
+    max_dyawrate=4,
+    predict_time = .5,
+    velocity_resolution = 0.1, # Discretization of the velocity space
+    yawrate_resolution = np.radians(1.0), # Discretization of the yawrate space
+    heading = 0.2,
+    clearance = 0.2,
+    velocity = 0.2,
+    base=[-0.3, -0.3, 0.3, 0.3],  # [x_min, y_min, x_max, y_max] in meters
+)
+def interpolate_obstacle_segments(obstacles, points_per_meter=20):
+    point_list = []
+    for obs in np.array(obstacles):
+        for edge in obs:
+            p0, p1 = edge
+            if np.isnan(p0).any() or np.isnan(p1).any():
+                continue
+            length = np.linalg.norm(p1 - p0)
+            n_points = max(2, int(np.ceil(length * points_per_meter)))
+            t = np.linspace(0, 1, n_points)
+            points = (1 - t)[:, None] * p0 + t[:, None] * p1
+            point_list.append(points)
+    if point_list:
+        return np.vstack(point_list)
+    else:
+        return np.empty((0, 2))
+def interpolate_humans_boundaries(humans_pose, humans_radiuses, points_per_human=20):
+    point_list = []
+    for i, (pose, radius) in enumerate(zip(humans_pose, humans_radiuses)):
+        angle = jnp.linspace(0, 2 * jnp.pi, points_per_human)
+        x = pose[0] + radius * jnp.cos(angle)
+        y = pose[1] + radius * jnp.sin(angle)
+        point_list.append(jnp.stack((x, y), axis=-1))
+    return jnp.concatenate(point_list, axis=0)
+obstacles_point_cloud = interpolate_obstacle_segments(obstacles)
+
+# Initialize environment
+reward_function = DummyReward(kinematics='unicycle')
 env_params = {
     'robot_radius': 0.3,
     'n_humans': len(humans_pose),
     'n_obstacles': len(new_static_obstacles),
-    'robot_dt': 0.25,
+    'robot_dt': robot_dt,
     'humans_dt': 0.01,
     'robot_visible': True,
     'scenario': 'hybrid_scenario',
@@ -373,11 +360,8 @@ env_params = {
     'kinematics': 'unicycle',
 }
 env = SocialNav(**env_params)
-policy = SOAPPO(env.reward_function, v_max=1., dt=env_params['robot_dt'])
-with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
-    actor_params = pickle.load(f)['actor_params']
 # Simulate a custom episode
-policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int))
+reset_key = random.PRNGKey(0)
 state, reset_key, obs, info, outcome = env.reset_custom_episode(
     reset_key, 
     {
@@ -391,13 +375,17 @@ state, reset_key, obs, info, outcome = env.reset_custom_episode(
     }
 )
 all_states = jnp.array([state])
-all_action_space_params = []
 # Humans and robot goals indexing
 waypoint_idx = 1  # Start at the first waypoint
 humans_chase_goal = jnp.ones(env_params['n_humans'], dtype=bool)  # All humans chase their goals initially
 while outcome["nothing"]:
-    action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, sample=True)
-    action_space_params = [distr["vertices"][2,0]/policy.v_max,distr["vertices"][0,1]/(2*policy.v_max/policy.wheels_distance), distr["vertices"][1,1]/(-2*policy.v_max/policy.wheels_distance)]
+    humans_point_cloud = interpolate_humans_boundaries(obs[:-1,:2], info['humans_parameters'][:,0])
+    point_cloud = jnp.concatenate((obstacles_point_cloud, humans_point_cloud), axis=0)
+    ## DEBUG: Visualize the point cloud
+    # plt.scatter(point_cloud[:, 0], point_cloud[:, 1], color='black', s=1, label='Obstacles and Humans', zorder=2)
+    # plt.gca().set_aspect('equal', adjustable='box')
+    # plt.show()
+    action = jnp.array(dwa.planning(tuple(map(float, np.append(obs[-1,:2],obs[-1,5]))), tuple(map(float, obs[-1,2:4])), tuple(map(float, info['robot_goal'])), np.array(point_cloud, dtype=np.float32), dwa_config))
     state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
     # Update robot goal
     if outcome["success"]:
@@ -413,7 +401,6 @@ while outcome["nothing"]:
             humans_chase_goal = humans_chase_goal.at[i].set(not humans_chase_goal[i])  # Toggle chasing goal
             info['humans_goal'] = info['humans_goal'].at[i].set(humans_goal[i] if humans_chase_goal[i] else humans_pose[i,:2])   
     all_states = jnp.vstack((all_states, jnp.array([state])))
-    all_action_space_params.append(action_space_params)
 # Animate trajectory
 animate_trajectory(
     all_states, 
@@ -425,7 +412,4 @@ animate_trajectory(
     robot_dt=env_params['robot_dt'],
     static_obstacles=info['static_obstacles'][-1], # Obstacles are repeated for each agent, index -1 is enough
     kinematics='unicycle',
-    action_space_params=jnp.array(all_action_space_params),
-    vmax=1.,
-    wheels_distance=policy.wheels_distance,
 )
