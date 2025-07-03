@@ -48,7 +48,7 @@ training_hyperparams = {
     'lambda_gae': 0.95, # 0.95
     'humans_policy': 'hsfm',
     'scenario': 'hybrid_scenario',
-    'hybrid_scenario_subset': jnp.array([0,1,2,3,4], jnp.int32), # Subset of the hybrid scenarios to use for training
+    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6], jnp.int32), # Subset of the hybrid scenarios to use for training
     'reward_function': 'socialnav_reward2',
     'custom_episodes': False, # If True, the episodes are loaded from a predefined set
     'gradient_norm_scale': 0.5, # Scale the gradient norm by this value

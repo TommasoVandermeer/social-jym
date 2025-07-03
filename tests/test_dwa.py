@@ -14,33 +14,95 @@ from socialjym.policies.soappo import SOAPPO
 from socialjym.utils.aux_functions import animate_trajectory
 
 ### Parameters
+# robot_dt = 0.25  # Robot time step in seconds
+# time_limit = 50.0
+# grid_cell_size = 0.5
+# obstacles = jnp.array([
+#     [[[0.0, 0.0], [0.0, 6.0]]],
+#     [[[0.0, 6.0], [6.0, 6.0]]], 
+#     [[[6.0, 6.0], [6.0, 0.0]]],
+#     [[[6.0, 0.0], [0.0, 0.0]]],
+#     [[[1.5, 1.8], [4.5, 1.8]]],
+#     [[[1.5, 4.2], [4.5, 4.2]]],
+#     [[[1.5, 1.8], [1.5, 2.0]]],
+#     [[[1.5, 4.0], [1.5, 4.2]]],
+#     [[[4.5, 1.8], [4.5, 2.0]]],
+#     [[[4.5, 4.0], [4.5, 4.2]]],
+#     [[[3.0, 0.0], [3.0, 1.8]]],
+#     [[[3.0, 4.2], [3.0, 6.0]]],
+# ])
+# start_pos = jnp.array([3.75, 0.75])  # Starting position of the robot
+# goal_pos = jnp.array([2.25, 5.25])  # Goal position of the robot
+# humans_pose = jnp.array([
+#     [5.5, 5.5, jnp.pi/2],
+#     [0.5, 5.5, -jnp.pi/2],
+#     [5.5, 3.0, jnp.pi],
+# ])
+# humans_goal = jnp.array([
+#     [5.5, 0.5],
+#     [0.5, 0.5],
+#     [0.5, 3.0],
+# ])
 robot_dt = 0.25  # Robot time step in seconds
-grid_cell_size = 0.5
+time_limit = 120.
+grid_cell_size = .9
 obstacles = jnp.array([
-    [[[0.0, 0.0], [0.0, 6.0]]],
-    [[[0.0, 6.0], [6.0, 6.0]]], 
-    [[[6.0, 6.0], [6.0, 0.0]]],
-    [[[6.0, 0.0], [0.0, 0.0]]],
-    [[[1.5, 1.8], [4.5, 1.8]]],
-    [[[1.5, 4.2], [4.5, 4.2]]],
-    [[[1.5, 1.8], [1.5, 2.0]]],
-    [[[1.5, 4.0], [1.5, 4.2]]],
-    [[[4.5, 1.8], [4.5, 2.0]]],
-    [[[4.5, 4.0], [4.5, 4.2]]],
-    [[[3.0, 0.0], [3.0, 1.8]]],
-    [[[3.0, 4.2], [3.0, 6.0]]],
+    [[[-15.,10.], [-15.,-10.]]],
+    [[[-15.,10.], [15.,10.]]],
+    [[[15.,10.], [15.,-10.]]],
+    [[[15.,-10.], [-15.,-10.]]],
+    [[[-15.,7.], [-11.,7.]]],
+    [[[-11.,7.], [-11.,4.]]],
+    [[[-11.,4.], [-13.,4.]]],
+    [[[-15.,2.], [-8.,2.]]],
+    [[[-9.,10.], [-9.,4.]]],
+    [[[-8.,0.], [-8.,-8.]]],
+    [[[-6.,10.], [-6.,7.]]],
+    [[[-2.,10.], [-2.,7.]]],
+    [[[2.,10.], [2.,6.]]],
+    [[[5.,10.], [5.,6.]]],
+    [[[7.,10.], [7.,4.]]],
+    [[[11.,10.], [11.,4.]]],
+    [[[13.,7.], [15.,7.]]],
+    [[[-15.,0.], [-8.,0.]]],
+    [[[-6.,4.], [-6.,-4.]]],
+    [[[-6.,4.], [5.,4.]]],
+    [[[5.,4.], [5.,-4.]]],
+    [[[5.,-4.], [3.,-4.]]],
+    # [[[-6.,-4.], [-3.,-4.]]],
+    [[[-6.,-7.], [-7.,-7.]]],
+    [[[7.,-5.], [7.,-4.]]],
+    [[[9.,-6.], [9.,-10.]]],
+    [[[11.,-6.], [11.,-8.]]],
+    [[[13.,-6.], [15.,-6.]]],
+    [[[9.,-4.], [13.,-4.]]],
+    [[[7.,-2.], [8.,-2.]]],
+    [[[7.,-2.], [7.,2.]]],
+    [[[7.,2.], [13.,2.]]],
+    [[[13.,2.], [13.,-2.]]],
+    [[[11.,-2.], [13.,-2.]]],
 ])
-start_pos = jnp.array([3.75, 0.75])  # Starting position of the robot
-goal_pos = jnp.array([2.25, 5.25])  # Goal position of the robot
+start_pos = jnp.array([13.5, -8.5])  # Starting position of the robot
+goal_pos = jnp.array([-13.5, 8.5])  # Goal position of the robot
 humans_pose = jnp.array([
-    [5.5, 5.5, jnp.pi/2],
-    [0.5, 5.5, -jnp.pi/2],
-    [5.5, 3.0, jnp.pi],
+    [10, -9, jnp.pi/2],
+    [12, -3.5, jnp.pi],
+    [6, -6, jnp.pi/2],
+    [0., 0., -jnp.pi/2],
+    [-7.25, -5, jnp.pi/2],
+    [-14., 3., 0.],
+    [-6.5, -8.5, 0.],
+    [-13.5, 1., 0.],
 ])
 humans_goal = jnp.array([
-    [5.5, 0.5],
-    [0.5, 0.5],
-    [0.5, 3.0],
+    [10, -5.],
+    [6, -3.5],
+    [6, 4],
+    [0., -7.5],
+    [-7.25, 5.],
+    [-7., 3.],
+    [3.5, 0.],
+    [-7., 1.],
 ])
 
 ### Computations
@@ -345,7 +407,7 @@ def interpolate_humans_boundaries(humans_pose, humans_radiuses, points_per_human
 obstacles_point_cloud = interpolate_obstacle_segments(obstacles)
 
 # Initialize environment
-reward_function = DummyReward(kinematics='unicycle')
+reward_function = DummyReward(kinematics='unicycle', time_limit=time_limit)
 env_params = {
     'robot_radius': 0.3,
     'n_humans': len(humans_pose),

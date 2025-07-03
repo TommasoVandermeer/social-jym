@@ -368,6 +368,9 @@ class SOAPPO(SARL):
 
     @partial(jit, static_argnames=("self"))
     def segment_rectangle_intersection(self, x1, y1, x2, y2, xmin, xmax, ymin, ymax):
+        """
+        This is the Liang-Barsky algorithm for line clipping.
+        """
         @jit
         def _nan_segment(val):
             return False, jnp.array([jnp.nan, jnp.nan]), jnp.array([jnp.nan, jnp.nan])
@@ -475,10 +478,11 @@ class SOAPPO(SARL):
             obstacle_segments[:,0,1],
             obstacle_segments[:,1,0],
             obstacle_segments[:,1,1],
-            0., # xmin
-            self.v_max * self.dt + robot_radius, # xmax
-            -robot_radius, # ymin
-            robot_radius, # ymax
+            # Restricting the rectangle by 1e-6 avoids problems when obstacles are parallel or perpendicular to the robot's direction
+            0. + 1e-6, # xmin
+            self.v_max * self.dt + robot_radius - 1e-6, # xmax
+            -robot_radius + 1e-6, # ymin
+            robot_radius - 1e-6, # ymax
         )
         intersection_points = jnp.vstack((intersection_points0, intersection_points1))
         min_x = jnp.nanmin(intersection_points[:,0])
@@ -497,16 +501,17 @@ class SOAPPO(SARL):
                 obstacle_segments[:,0,1],
                 obstacle_segments[:,1,0],
                 obstacle_segments[:,1,1],
-                -robot_radius, # xmin
-                new_alpha * vmax * dt + robot_radius, # xmax
-                robot_radius, # ymin
-                robot_radius + (new_alpha*dt**2*vmax/(4*wheels_distance)), # ymax
+                # Restricting the rectangle by 1e-6 avoids problems when obstacles are parallel or perpendicular to the robot's direction
+                -robot_radius + 1e-6, # xmin
+                new_alpha * vmax * dt + robot_radius - 1e-6, # xmax
+                robot_radius + 1e-6, # ymin
+                robot_radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance)) - 1e-6, # ymax
             )
             intersection_points = jnp.vstack((intersection_points0, intersection_points1))
             min_y = jnp.nanmin(intersection_points[:,1])
             new_beta = lax.cond(
                 ~jnp.isnan(min_y),
-                lambda _: (min_y - robot_radius) * 4 * wheels_distance / (vmax * dt**2 * new_alpha),
+                lambda _: (min_y - robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
                 lambda _: 1.,
                 None,
             )
@@ -516,16 +521,17 @@ class SOAPPO(SARL):
                 obstacle_segments[:,0,1],
                 obstacle_segments[:,1,0],
                 obstacle_segments[:,1,1],
-                -robot_radius, # xmin
-                new_alpha * vmax * dt + robot_radius, # xmax
-                -robot_radius - (new_alpha*dt**2*vmax/(4*wheels_distance)), # ymin
-                -robot_radius, # ymax
+                # Restricting the rectangle by 1e-6 avoids problems when obstacles are parallel or perpendicular to the robot's direction
+                -robot_radius + 1e-6, # xmin
+                new_alpha * vmax * dt + robot_radius - 1e-6, # xmax
+                -robot_radius - (new_alpha*dt**2*vmax**2/(4*wheels_distance)) + 1e-6, # ymin
+                -robot_radius - 1e-6, # ymax
             )
             intersection_points = jnp.vstack((intersection_points0, intersection_points1))
             max_y = jnp.nanmax(intersection_points[:,1])
             new_gamma = lax.cond(
                 ~jnp.isnan(max_y),
-                lambda _: (-max_y - robot_radius) * 4 * wheels_distance / (vmax * dt**2 * new_alpha),
+                lambda _: (-max_y - robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
                 lambda _: 1.,
                 None,
             )

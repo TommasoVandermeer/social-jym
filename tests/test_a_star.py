@@ -12,6 +12,7 @@ from socialjym.policies.soappo import SOAPPO
 from socialjym.utils.aux_functions import animate_trajectory
 
 ### Parameters
+# time_limit = 120.
 # grid_cell_size = 0.3
 # obstacles = jnp.array([
 #     [[[0.0, 0.0], [0.0, 6.0]]],
@@ -39,6 +40,7 @@ from socialjym.utils.aux_functions import animate_trajectory
 #     [0.5, 0.5],
 #     [0.5, 3.0],
 # ])
+time_limit = 120.
 grid_cell_size = .9
 obstacles = jnp.array([
     [[[-15.,10.], [-15.,-10.]]],
@@ -63,7 +65,7 @@ obstacles = jnp.array([
     [[[-6.,4.], [5.,4.]]],
     [[[5.,4.], [5.,-4.]]],
     [[[5.,-4.], [3.,-4.]]],
-    [[[-6.,-4.], [-3.,-4.]]],
+    # [[[-6.,-4.], [-3.,-4.]]],
     [[[-6.,-7.], [-7.,-7.]]],
     [[[7.,-5.], [7.,-4.]]],
     [[[9.,-6.], [9.,-10.]]],
@@ -82,11 +84,21 @@ humans_pose = jnp.array([
     [10, -9, jnp.pi/2],
     [12, -3.5, jnp.pi],
     [6, -6, jnp.pi/2],
+    [0., 0., -jnp.pi/2],
+    [-7.25, -5, jnp.pi/2],
+    [-14., 3., 0.],
+    [-6.5, -8.5, 0.],
+    [-13.5, 1., 0.],
 ])
 humans_goal = jnp.array([
     [10, -5.],
     [6, -3.5],
     [6, 4],
+    [0., -7.5],
+    [-7.25, 5.],
+    [-7., 3.],
+    [3.5, 0.],
+    [-7., 1.],
 ])
 
 ### Computations
@@ -349,6 +361,7 @@ plt.show()
 
 ### Simulate SOAPPO to navigate the computed path on the given map
 reward_function = Reward2(
+        time_limit=time_limit,
         target_reached_reward = True,
         collision_penalty_reward = True,
         discomfort_penalty_reward = True,
