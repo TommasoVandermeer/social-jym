@@ -30,12 +30,12 @@ reward_function = Reward2(
     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 5,
+    'n_humans': 15,
     'n_obstacles': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'hybrid_scenario',
+    'scenario': 'corner_traffic',
     'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4, 6]), # All scenarios but circular_crossing_with_static_obstacles
     'humans_policy': 'hsfm',
     'reward_function': reward_function,

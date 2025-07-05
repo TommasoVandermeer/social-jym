@@ -127,6 +127,8 @@ def plot_state(
         ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_length/2,traffic_length/2])
     elif scenario == SCENARIOS.index('robot_crowding'): 
         ax.set(xlabel='X',ylabel='Y',xlim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5],ylim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5])
+    elif scenario == SCENARIOS.index('corner_traffic'):
+        ax.set(xlabel='X',ylabel='Y',xlim=[-2,traffic_length/2+traffic_height/2+2],ylim=[-2,traffic_length/2+traffic_height/2+2])
     elif scenario is None:
         ax.set(xlabel='X',ylabel='Y',xlim=xlims,ylim=ylims)
     # Humans

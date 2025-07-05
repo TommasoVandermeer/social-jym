@@ -16,6 +16,7 @@ SCENARIOS = [
     "delayed_circular_crossing",
     "circular_crossing_with_static_obstacles",
     "crowd_navigation",
+    "corner_traffic",
     "hybrid_scenario"] # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
 HUMAN_POLICIES = [
     "orca", # TODO: Implement JORCA (Jax based ORCA)
@@ -240,6 +241,30 @@ class BaseEnv(ABC):
             info, state = val
             info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0))(state[:-1,0:2], info["humans_goal"], info["humans_parameters"][:,0])
             return (info, state)
+        
+        @jit
+        def _update_corner_traffic(val:tuple):
+            @jit
+            def _update_human_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float) -> jnp.ndarray:
+                goal = lax.cond(
+                    jnp.linalg.norm(position - goal) <= radius+0.1,
+                    lambda x: lax.cond(
+                        x[0]==x[1],
+                        lambda y: lax.cond(
+                            position[1] < position[0],
+                            lambda z: jnp.array([0., jnp.max(z)]),
+                            lambda z: jnp.array([jnp.max(z), 0.]),
+                            y,
+                        ),
+                        lambda y: jnp.array([jnp.max(y),jnp.max(y)]),
+                        x,
+                    ),
+                    lambda x: x,
+                    goal)
+                return goal
+            info, state = val
+            info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0))(state[:-1,0:2], info["humans_goal"], info["humans_parameters"][:,0])
+            return (info, state)
 
         new_info, new_state = lax.switch(
             info["current_scenario"], 
@@ -251,6 +276,7 @@ class BaseEnv(ABC):
                 _update_delayed_circular_crossing,
                 _update_circular_crossing_with_static_obstacles,
                 _update_crowd_navigation,
+                _update_corner_traffic,
             ], 
             (info, state))
         return new_info, new_state

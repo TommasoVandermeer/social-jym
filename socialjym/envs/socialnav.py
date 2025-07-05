@@ -111,6 +111,13 @@ class SocialNav(BaseEnv):
                 [[[self.circle_radius/2, self.circle_radius/2],[self.circle_radius/2-1, self.circle_radius/2-1]]],
                 [[[-0.5, self.circle_radius-1],[0.5, self.circle_radius-1]]],
             ]),
+            'corner_traffic': jnp.array([
+                [[[self.traffic_length/2-self.traffic_height/2-0.3, 0.],[self.traffic_length/2-self.traffic_height/2-0.3, self.traffic_length/2-self.traffic_height/2-0.3]]],
+                [[[self.traffic_length/2+self.traffic_height/2+0.3, 0.],[self.traffic_length/2+self.traffic_height/2+0.3, self.traffic_length/2+self.traffic_height/2+0.3]]],
+                [[[self.traffic_length/2-0.25,self.traffic_length/2+0.25],[self.traffic_length/2+0.25,self.traffic_length/2-0.25]]],
+                [[[0.,self.traffic_length/2-self.traffic_height/2-0.3],[self.traffic_length/2-self.traffic_height/2-0.3, self.traffic_length/2-self.traffic_height/2-0.3]]],
+                [[[0.,self.traffic_length/2+self.traffic_height/2+0.3],[self.traffic_length/2+self.traffic_height/2+0.3, self.traffic_length/2+self.traffic_height/2+0.3]]],
+            ]),
         }
         if n_obstacles > 5:
             print("WARNING: The number of obstacles is above 5, the environment is not designed to have more obstacles than that.\n")
@@ -177,6 +184,7 @@ class SocialNav(BaseEnv):
                     lambda _: self.static_obstacles_per_scenario['delayed_circular_crossing'],
                     lambda _: self.static_obstacles_per_scenario['circular_crossing_with_static_obstacles'],
                     lambda _: self.static_obstacles_per_scenario['crowd_navigation'],
+                    lambda _: self.static_obstacles_per_scenario['corner_traffic'],
                 ],
                 None,
             )
@@ -238,6 +246,7 @@ class SocialNav(BaseEnv):
                 self._generate_delayed_circular_crossing_episode,
                 self._generate_circular_crossing_with_static_obstacles_episode,
                 self._generate_crowd_navigation_episode,
+                self._generate_corner_traffic_episode,
             ], 
             subkey
         )
@@ -762,6 +771,79 @@ class SocialNav(BaseEnv):
         )
         return full_state, info
     
+    @partial(jit, static_argnames=("self"))
+    def _generate_corner_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([1., self.traffic_length/2])) # Conform with Social-Navigation-PyEnvs
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, key, valid = while_val
+                key, subkey = random.split(key)
+                normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1) - 0.5
+                new_point = jnp.array([self.traffic_length/2 + normalized_point[0] * self.traffic_height, self.traffic_length/4 + normalized_point[1] * (self.traffic_length/2 - 1)])
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None)
+                return (disturbed_points, key, valid)
+            disturbed_points, key = for_val
+            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            return disturbed_points, key
+    
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
+
+        # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.ones((self.n_humans,)) * jnp.pi/2))
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
+        # Robot
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
+
+        # Assign the humans' and robot goals
+        humans_goal = lax.fori_loop(
+            0, 
+            self.n_humans, 
+            lambda i, humans_goal: humans_goal.at[i].set(jnp.array([disturbed_points[i,0],disturbed_points[i,0]])),
+            humans_goal)
+        robot_goal = jnp.array([disturbed_points[-1,1], disturbed_points[-1,0]])
+
+        # Obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('corner_traffic'))
+        # Info
+        info = self._init_info(
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('corner_traffic'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
+        return full_state, info
+
     # --- Public methods ---
 
     @partial(jit, static_argnames=("self"))
