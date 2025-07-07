@@ -449,7 +449,10 @@ def animate_trajectory(
                 Line2D([0], [0], color='white', marker='o', markersize=10, markerfacecolor='white', markeredgecolor='blue', linewidth=2, label='Humans'),
                 Line2D([0], [0], color='white', marker='*', markersize=10, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Goal')],
             bbox_to_anchor=(0.99, 0.5), loc='center left')
-        ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
+        if len(robot_goal.shape) == 1:
+            ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
+        else:
+            ax.scatter(robot_goal[frame,0], robot_goal[frame,1], marker="*", color="red", zorder=2)
         plot_state(ax, frame*robot_dt, states[frame], humans_policy, scenario, humans_radiuses, robot_radius, plot_time=False, kinematics=kinematics, xlims=xlims, ylims=ylims)
         if lidar_measurements is not None:
             plot_lidar_measurements(ax, lidar_measurements[frame], states[frame][-1], robot_radius)

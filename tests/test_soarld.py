@@ -30,7 +30,7 @@ reward_function = Reward2(
     )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 15,
+    'n_humans': 6,
     'n_obstacles': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
@@ -83,6 +83,7 @@ for i in range(n_episodes):
     episode_start_time = time.time()
     state, reset_key, obs, info, outcome = env.reset(reset_key)
     all_states = np.array([state])
+    all_robot_goals = np.array([info['robot_goal']])
     all_action_space_params = []
     while outcome["nothing"]:
         action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, sample=False)
@@ -94,6 +95,7 @@ for i in range(n_episodes):
         # print("Robot state: ", state[-1,:])
         # print(f"Return in steps [0,{info['step']}):", info["return"])
         all_states = np.vstack((all_states, [state]))
+        all_robot_goals = np.vstack((all_robot_goals, [info['robot_goal']]))
         all_action_space_params.append(action_space_params)
 
     ## Animate trajectory
@@ -102,7 +104,7 @@ for i in range(n_episodes):
         info['humans_parameters'][:,0], 
         env.robot_radius, 
         env_params['humans_policy'],
-        info['robot_goal'],
+        all_robot_goals,
         info['current_scenario'],
         robot_dt=env_params['robot_dt'],
         static_obstacles=info['static_obstacles'][-1], # Obstacles are repeated for each agent, index -1 is enough

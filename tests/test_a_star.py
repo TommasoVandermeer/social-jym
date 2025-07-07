@@ -404,6 +404,7 @@ state, reset_key, obs, info, outcome = env.reset_custom_episode(
     }
 )
 all_states = jnp.array([state])
+all_robot_goals = jnp.array([info['robot_goal']])
 all_action_space_params = []
 # Humans and robot goals indexing
 waypoint_idx = 1  # Start at the first waypoint
@@ -426,6 +427,7 @@ while outcome["nothing"]:
             humans_chase_goal = humans_chase_goal.at[i].set(not humans_chase_goal[i])  # Toggle chasing goal
             info['humans_goal'] = info['humans_goal'].at[i].set(humans_goal[i] if humans_chase_goal[i] else humans_pose[i,:2])   
     all_states = jnp.vstack((all_states, jnp.array([state])))
+    all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
     all_action_space_params.append(action_space_params)
 # Animate trajectory
 animate_trajectory(
@@ -433,7 +435,7 @@ animate_trajectory(
     info['humans_parameters'][:,0], 
     env.robot_radius, 
     env_params['humans_policy'],
-    info['robot_goal'],
+    all_robot_goals,
     None, # Custom scenario
     robot_dt=env_params['robot_dt'],
     static_obstacles=info['static_obstacles'][-1], # Obstacles are repeated for each agent, index -1 is enough
