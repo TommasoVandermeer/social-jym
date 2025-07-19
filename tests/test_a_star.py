@@ -41,7 +41,7 @@ from socialjym.utils.aux_functions import animate_trajectory
 #     [0.5, 3.0],
 # ])
 time_limit = 120.
-grid_cell_size = .9
+grid_cell_size = .95
 obstacles = jnp.array([
     [[[-15.,10.], [-15.,-10.]]],
     [[[-15.,10.], [15.,10.]]],
@@ -78,7 +78,7 @@ obstacles = jnp.array([
     [[[13.,2.], [13.,-2.]]],
     [[[11.,-2.], [13.,-2.]]],
 ])
-start_pos = jnp.array([13.5, -8.5])  # Starting position of the robot
+start_pos = jnp.array([13., -8.5])  # Starting position of the robot
 goal_pos = jnp.array([-13.5, 8.5])  # Goal position of the robot
 humans_pose = jnp.array([
     [10, -9, jnp.pi/2],
@@ -334,7 +334,7 @@ def find_a_star_path(occupancy_grid, start_pos, goal_pos, grid_coordinates, grid
                     heapq.heappush(open_set, (nodes_data['f'][neighbor[0], neighbor[1]], (int(neighbor[0]), int(neighbor[1]))))
     return jnp.array([])  # No path found
 path_to_goal = find_a_star_path(occupancy_grid, start_pos, goal_pos, grid_coordinates, grid_cell_size)
-print(f"Path to goal: {path_to_goal.shape[0]} waypoints")
+print(f"Path to goal: {path_to_goal.shape[0]-1} waypoints")
 
 ### Plotting
 # Plot obstacles and cell decomposition
@@ -410,17 +410,15 @@ all_action_space_params = []
 waypoint_idx = 1  # Start at the first waypoint
 humans_chase_goal = jnp.ones(env_params['n_humans'], dtype=bool)  # All humans chase their goals initially
 while outcome["nothing"]:
+    # Environment step
     action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, sample=True)
     action_space_params = [distr["vertices"][2,0]/policy.v_max,distr["vertices"][0,1]/(2*policy.v_max/policy.wheels_distance), distr["vertices"][1,1]/(-2*policy.v_max/policy.wheels_distance)]
     state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
     # Update robot goal
-    if outcome["success"]:
+    if (waypoint_idx < path_to_goal.shape[0] - 1) and (jnp.linalg.norm(state[-1,:2]-info['robot_goal']) < env.robot_radius*2):
         print(f"Waypoint {waypoint_idx} reached! at time {info['time']:.2f}s")
-        if waypoint_idx < path_to_goal.shape[0] - 1:
-            waypoint_idx += 1
-            info['robot_goal'] = info["robot_goal"].at[:].set(path_to_goal[waypoint_idx])  # Update the goal to the next waypoint
-            outcome["nothing"] = True
-            outcome["success"] = False
+        waypoint_idx += 1
+        info['robot_goal'] = info["robot_goal"].at[:].set(path_to_goal[waypoint_idx])
     # Update humans goals
     for i in range(len(humans_pose)):
         if jnp.linalg.norm(state[i,:2] - info['humans_goal'][i]) < info['humans_parameters'][i,0]:

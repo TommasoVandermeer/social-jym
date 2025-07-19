@@ -8,14 +8,14 @@ import pickle
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.soappo import SOAPPO
-from socialjym.utils.aux_functions import test_k_trials
+from socialjym.utils.aux_functions import test_k_trials, test_k_trials_dwa
 
 ### Hyperparameters
 random_seed = 0 
-tests_n_humans = [5, 10, 15]
+tests_n_humans = [1, 3, 5]
 tests_scenarios = ["parallel_traffic", "perpendicular_traffic", "corner_traffic"]
-n_obstacles = 5
-n_trials = 1000
+tests_n_obstacles = [1, 3, 5]
+n_trials = 100
 reward_function = Reward2(
         target_reached_reward = True,
         collision_penalty_reward = True,
@@ -34,8 +34,8 @@ with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
     actor_params = pickle.load(f)['actor_params']
 
 ### Initialize output data structure
-empty_trials_outcomes_array = jnp.zeros((len(tests_scenarios),len(tests_n_humans)))
-empty_trials_metrics_array = jnp.zeros((len(tests_scenarios),len(tests_n_humans),n_trials))
+empty_trials_outcomes_array = jnp.zeros((len(tests_scenarios),len(tests_n_humans),len(tests_n_obstacles)))
+empty_trials_metrics_array = jnp.zeros((len(tests_scenarios),len(tests_n_humans),len(tests_n_obstacles),n_trials))
 all_metrics = {
     "successes": empty_trials_outcomes_array, 
     "collisions": empty_trials_outcomes_array, 
@@ -52,44 +52,62 @@ all_metrics = {
     "space_compliance": empty_trials_metrics_array,
     "episodic_spl": empty_trials_metrics_array,
     "path_length": empty_trials_metrics_array,
-    "scenario": jnp.zeros((len(tests_scenarios),len(tests_n_humans),n_trials), dtype=jnp.int32),
+    "scenario": jnp.zeros((len(tests_scenarios),len(tests_n_humans),len(tests_n_obstacles),n_trials), dtype=jnp.int32),
 }
+all_metrics_dwa = all_metrics.copy()
 
-# ### Test policy
-# for i, scenario in enumerate(tests_scenarios):
-#     for j, n_humans in enumerate(tests_n_humans):
-#         print(f"\n## Testing scenario: {scenario}, n_humans: {n_humans} ###")
-#         test_env_params = {
-#             'robot_radius': 0.3,
-#             'n_humans': n_humans,
-#             'n_obstacles': n_obstacles,
-#             'robot_dt': 0.25,
-#             'humans_dt': 0.01,
-#             'robot_visible': True,
-#             'scenario': scenario,
-#             'humans_policy': 'hsfm',
-#             'reward_function': reward_function,
-#             'kinematics': 'unicycle',
-#         }
-#         test_env = SocialNav(**test_env_params)
-#         metrics = test_k_trials(
-#             n_trials, 
-#             random_seed, 
-#             test_env, 
-#             policy, 
-#             actor_params, 
-#             reward_function.time_limit
-#         )
-#         ### Save results
-#         all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics)
+### Test policies
+for i, scenario in enumerate(tests_scenarios):
+    for j, n_humans in enumerate(tests_n_humans):
+        for k, n_obstacles in enumerate(tests_n_obstacles):
+            print(f"\n## Testing scenario: {scenario}, n_humans: {n_humans} - n_obstacles: {n_obstacles} ###")
+            test_env_params = {
+                'robot_radius': 0.3,
+                'n_humans': n_humans,
+                'n_obstacles': n_obstacles,
+                'robot_dt': 0.25,
+                'humans_dt': 0.01,
+                'robot_visible': True,
+                'scenario': scenario,
+                'humans_policy': 'hsfm',
+                'reward_function': reward_function,
+                'kinematics': 'unicycle',
+                'ccso_n_static_humans': 0,
+            }
+            test_env = SocialNav(**test_env_params)
+            ### Test trained policy
+            metrics = test_k_trials(
+                n_trials, 
+                random_seed, 
+                test_env, 
+                policy, 
+                actor_params, 
+                reward_function.time_limit
+            )
+            all_metrics = tree_map(lambda x, y: x.at[i,j,k].set(y), all_metrics, metrics)
+            ### Test DWA policy
+            metrics_dwa = test_k_trials_dwa(
+                n_trials, 
+                random_seed, 
+                test_env, 
+                reward_function.time_limit,
+                robot_vmax=policy.v_max,
+                robot_wmax=2*policy.v_max/policy.wheels_distance, 
+            )
+            all_metrics_dwa = tree_map(lambda x, y: x.at[i,j,k].set(y), all_metrics_dwa, metrics_dwa)
+            
 
-# ### Save results
-# with open(os.path.join(os.path.dirname(__file__),"soarld_tests.pkl"), 'wb') as f:
-#     pickle.dump(all_metrics, f)
+### Save results
+with open(os.path.join(os.path.dirname(__file__),"soarld_tests.pkl"), 'wb') as f:
+    pickle.dump(all_metrics, f)
+with open(os.path.join(os.path.dirname(__file__),"dwa_tests.pkl"), 'wb') as f:
+    pickle.dump(all_metrics_dwa, f)
 
 ### Load results
 with open(os.path.join(os.path.dirname(__file__),"soarld_tests.pkl"), 'rb') as f:
     all_metrics = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__),"dwa_tests.pkl"), 'rb') as f:
+    all_metrics_dwa = pickle.load(f)
 
 ### Plot results
 # Matplotlib font
@@ -119,11 +137,12 @@ scenarios = {
     "perpendicular_traffic": {"label": "PeT"},
     "corner_traffic": {"label": "CoT"},
 }
+
 # Plot metrics for each test scenario against number of humans
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 colors = ["red", "green", "blue"]
 figure, ax = plt.subplots(4, 3, figsize=(15, 20))
-figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.85)
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
     j = m % 3
@@ -131,15 +150,84 @@ for m, metric in enumerate(metrics_to_plot):
         xlabel='N° humans',
         title=metrics[metric]['label'],)
     ax[i,j].grid(zorder=0)
-    ax[i,j].set_xticks(tests_n_humans)
+    ax[i,j].set_xticks(jnp.arange(len(tests_n_humans)))
     ax[i,j].set_xticklabels(tests_n_humans)
     for s, scenario in enumerate(tests_scenarios):
         if metric in ['successes', 'collisions', 'timeouts']:
-            y_data = all_metrics[metric][s, :] / n_trials
-            ax[i, j].set_ylim(0, 1)
+            y_data = jnp.nanmean(all_metrics[metric][s, :, :], axis=1) / n_trials
+            ax[i, j].set_ylim(-0.05, 1.05)
         else:
-            y_data = jnp.nanmean(all_metrics[metric][s, :, :], axis=1)
-        ax[i, j].plot(tests_n_humans, y_data, label=scenarios[scenario]["label"], color=colors[s])
+            y_data = jnp.nanmean(all_metrics[metric][s, :, :, :], axis=(1,2))
+        ax[i, j].plot(jnp.arange(len(tests_n_humans)), y_data, label=scenarios[scenario]["label"], color=colors[s], linewidth=2.5)
 h, l = ax[0,0].get_legend_handles_labels()
-figure.legend(h, l, loc='center right')
-figure.savefig(os.path.join(os.path.dirname(__file__), "icar25_soarld_test_results.eps"), format='eps')
+figure.legend(h, l, loc='center right', title='Test scenario')
+figure.savefig(os.path.join(os.path.dirname(__file__), "icar25_soarld_test_results_1.eps"), format='eps')
+
+# Plot metrics for each test scenario against number of obstacles
+metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
+colors = ["red", "green", "blue"]
+figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 3
+    j = m % 3
+    ax[i,j].set(
+        xlabel='N° obstacles',
+        title=metrics[metric]['label'],)
+    ax[i,j].grid(zorder=0)
+    ax[i,j].set_xticks(jnp.arange(len(tests_n_obstacles)))
+    ax[i,j].set_xticklabels(tests_n_obstacles)
+    for s, scenario in enumerate(tests_scenarios):
+        if metric in ['successes', 'collisions', 'timeouts']:
+            y_data = jnp.nanmean(all_metrics[metric][s, :, :], axis=0) / n_trials
+            ax[i, j].set_ylim(-0.05, 1.05)
+        else:
+            y_data = jnp.nanmean(all_metrics[metric][s, :, :, :], axis=(0,2))
+        ax[i, j].plot(jnp.arange(len(tests_n_obstacles)), y_data, label=scenarios[scenario]["label"], color=colors[s], linewidth=2)
+h, l = ax[0,0].get_legend_handles_labels()
+figure.legend(h, l, loc='center right', title='Test scenario')
+figure.savefig(os.path.join(os.path.dirname(__file__), "icar25_soarld_test_results_2.eps"), format='eps')
+
+# Plot metrics against number of humans and obstacles
+metrics_to_plot = ["successes","times_to_goal", "space_compliance"]
+figure, ax = plt.subplots(2, 3, figsize=(15, 10))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.1, top=0.95, left=0.08, right=0.82)
+for m, metric in enumerate(metrics_to_plot):
+    ax[0,m].set(
+        xlabel='N° humans',
+        title=metrics[metric]['label'],)
+    ax[0,m].grid(zorder=0)
+    ax[0,m].set_xticks(jnp.arange(len(tests_n_humans)))
+    ax[0,m].set_xticklabels(tests_n_humans)
+    if metric in ['successes', 'collisions', 'timeouts']:
+            y_data = jnp.nanmean(all_metrics[metric][:, :, :], axis=(0,2)) / n_trials
+            y_dwa_data = jnp.nanmean(all_metrics_dwa[metric][:, :, :], axis=(0,2)) / n_trials
+            ax[0, m].set_ylim(-0.05, 1.05)
+    else:
+        y_data = jnp.nanmean(all_metrics[metric][:, :, :, :], axis=(0,2,3))
+        y_dwa_data = jnp.nanmean(all_metrics_dwa[metric][:, :, :, :], axis=(0,2,3))
+        if metric in ["space_compliance","episodic_spl"]:
+            ax[0, m].set_ylim(-0.05, 1.05)
+    ax[0, m].plot(jnp.arange(len(tests_n_humans)), y_data, linewidth=2.5, label='SOAPPO', color='blue')
+    ax[0, m].plot(jnp.arange(len(tests_n_humans)), y_dwa_data, linewidth=2.5, label='DWA', color='red')
+for m, metric in enumerate(metrics_to_plot):
+    ax[1,m].set(
+        xlabel='N° obstacles',
+        title=metrics[metric]['label'],)
+    ax[1,m].grid(zorder=0)
+    ax[1,m].set_xticks(jnp.arange(len(tests_n_obstacles)))
+    ax[1,m].set_xticklabels(tests_n_obstacles)
+    if metric in ['successes', 'collisions', 'timeouts']:
+        y_data = jnp.nanmean(all_metrics[metric][:, :, :], axis=(0,1)) / n_trials
+        y_dwa_data = jnp.nanmean(all_metrics_dwa[metric][:, :, :], axis=(0,1)) / n_trials
+        ax[1, m].set_ylim(-0.05, 1.05)
+    else:
+        y_data = jnp.nanmean(all_metrics[metric][:, :, :, :], axis=(0,1,3))
+        y_dwa_data = jnp.nanmean(all_metrics_dwa[metric][:, :, :, :], axis=(0,1,3))
+        if metric in ["space_compliance","episodic_spl"]:
+            ax[1, m].set_ylim(-0.05, 1.05)
+    ax[1, m].plot(jnp.arange(len(tests_n_obstacles)), y_data, linewidth=2.5, label='SOAPPO', color='blue')
+    ax[1, m].plot(jnp.arange(len(tests_n_obstacles)), y_dwa_data, linewidth=2.5, label='DWA', color='red')
+h, l = ax[0,0].get_legend_handles_labels()
+figure.legend(h, l, loc='center right', title='Policy')
+figure.savefig(os.path.join(os.path.dirname(__file__), "icar25_soarld_test_results_3.eps"), format='eps')

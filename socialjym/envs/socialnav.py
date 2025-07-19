@@ -636,7 +636,7 @@ class SocialNav(BaseEnv):
                 key, subkey = random.split(key)
                 new_angle = lax.cond(
                     i < (self.ccso_n_static_humans),
-                    lambda _: (jnp.pi / int(self.ccso_n_static_humans)) * (-0.5 + 2 * i + random.uniform(subkey, shape=(1,), minval=-0.25, maxval=0.25)),
+                    lambda _: (jnp.pi / (int(self.ccso_n_static_humans) + 1e-5)) * (-0.5 + 2 * i + random.uniform(subkey, shape=(1,), minval=-0.25, maxval=0.25)),
                     lambda _: random.uniform(subkey, shape=(1,), minval=0, maxval=2*jnp.pi),  # 2 * jnp.pi * (i - self.ccso_n_static_humans) / (self.n_humans - self.ccso_n_static_humans) + random.uniform(subkey, shape=(1,), minval=-0.05, maxval=0.05),
                     None
                 )
@@ -1140,7 +1140,10 @@ class SocialNav(BaseEnv):
         humans_parameters = humans_parameters.at[:,2].set(jnp.array(custom_episode["humans_speed"]))
         robot_goal = jnp.array(custom_episode["robot_goal"])
         # Obstacles
-        static_obstacles = jnp.array(custom_episode["static_obstacles"])
+        if self.n_obstacles == 0:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan)
+        else:
+            static_obstacles = jnp.array(custom_episode["static_obstacles"])
         # Info
         info = self._init_info(
             humans_goal=humans_goal,

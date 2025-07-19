@@ -45,7 +45,7 @@ from socialjym.utils.aux_functions import animate_trajectory
 # ])
 robot_dt = 0.25  # Robot time step in seconds
 time_limit = 120.
-grid_cell_size = .9
+grid_cell_size = .95
 obstacles = jnp.array([
     [[[-15.,10.], [-15.,-10.]]],
     [[[-15.,10.], [15.,10.]]],
@@ -82,7 +82,7 @@ obstacles = jnp.array([
     [[[13.,2.], [13.,-2.]]],
     [[[11.,-2.], [13.,-2.]]],
 ])
-start_pos = jnp.array([13.5, -8.5])  # Starting position of the robot
+start_pos = jnp.array([13, -8.5])  # Starting position of the robot
 goal_pos = jnp.array([-13.5, 8.5])  # Goal position of the robot
 humans_pose = jnp.array([
     [10, -9, jnp.pi/2],
@@ -437,6 +437,7 @@ state, reset_key, obs, info, outcome = env.reset_custom_episode(
     }
 )
 all_states = jnp.array([state])
+all_robot_goals = jnp.array([info['robot_goal']])
 # Humans and robot goals indexing
 waypoint_idx = 1  # Start at the first waypoint
 humans_chase_goal = jnp.ones(env_params['n_humans'], dtype=bool)  # All humans chase their goals initially
@@ -450,26 +451,24 @@ while outcome["nothing"]:
     action = jnp.array(dwa.planning(tuple(map(float, np.append(obs[-1,:2],obs[-1,5]))), tuple(map(float, obs[-1,2:4])), tuple(map(float, info['robot_goal'])), np.array(point_cloud, dtype=np.float32), dwa_config))
     state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
     # Update robot goal
-    if outcome["success"]:
+    if (waypoint_idx < path_to_goal.shape[0] - 1) and (jnp.linalg.norm(state[-1,:2]-info['robot_goal']) < env.robot_radius*2):
         print(f"Waypoint {waypoint_idx} reached! at time {info['time']:.2f}s")
-        if waypoint_idx < path_to_goal.shape[0] - 1:
-            waypoint_idx += 1
-            info['robot_goal'] = info["robot_goal"].at[:].set(path_to_goal[waypoint_idx])  # Update the goal to the next waypoint
-            outcome["nothing"] = True
-            outcome["success"] = False
+        waypoint_idx += 1
+        info['robot_goal'] = info["robot_goal"].at[:].set(path_to_goal[waypoint_idx])
     # Update humans goals
     for i in range(len(humans_pose)):
         if jnp.linalg.norm(state[i,:2] - info['humans_goal'][i]) < info['humans_parameters'][i,0]:
             humans_chase_goal = humans_chase_goal.at[i].set(not humans_chase_goal[i])  # Toggle chasing goal
             info['humans_goal'] = info['humans_goal'].at[i].set(humans_goal[i] if humans_chase_goal[i] else humans_pose[i,:2])   
     all_states = jnp.vstack((all_states, jnp.array([state])))
+    all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
 # Animate trajectory
 animate_trajectory(
     all_states, 
     info['humans_parameters'][:,0], 
     env.robot_radius, 
     env_params['humans_policy'],
-    info['robot_goal'],
+    all_robot_goals,
     None, # Custom scenario
     robot_dt=env_params['robot_dt'],
     static_obstacles=info['static_obstacles'][-1], # Obstacles are repeated for each agent, index -1 is enough

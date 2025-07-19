@@ -147,6 +147,10 @@ font = {'weight' : 'regular',
 rc('font', **font)
 figure, ax = plt.subplots(1, 2, figsize=(25.61, 13.61), gridspec_kw={'width_ratios': [2, 1]})
 figure.subplots_adjust(left=0.06, right=0.97, top=0.98, bottom=0.07, wspace=0.1)
+figure2, ax2 = plt.subplots(1,1,figsize=(17.0733333333, 13.61))
+figure2.subplots_adjust(left=0.06, right=0.97, top=0.98, bottom=0.07, wspace=0.1)
+figure3, ax3 = plt.subplots(1,1,figsize=(8.53666666667, 13.61))
+figure3.subplots_adjust(left=0.12, right=0.97, top=0.98, bottom=0.07, wspace=0.1)
 pxy_theta = v_w * dt
 # plt.scatter(pxy_theta[:,0], pxy_theta[:,1], s=5, color='pink')
 second_order_taylor_approximation_positive_dx = second_order_taylor_approximation_positive_vx * dt
@@ -154,8 +158,8 @@ second_order_taylor_approximation_negative_dx = second_order_taylor_approximatio
 second_order_taylor_approximation_positive_dy = second_order_taylor_approximation_positive_vy * dt
 second_order_taylor_approximation_negative_dy = second_order_taylor_approximation_negative_vy * dt
 # Plot initial configuration
-ax[0].add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--', label='Robot configuration'))
-ax[0].add_artist(plt.Circle((robot_radius, 0), robot_radius/8, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
+ax[0].add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
+ax2.add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
 # Plot convex hull of all possible new configurations
 circles = [(x, y, robot_radius)for x, y in zip(second_order_taylor_approximation_positive_dx[::500], second_order_taylor_approximation_positive_dy[::500])] + [(x, y, robot_radius) for x, y in zip(second_order_taylor_approximation_negative_dx[::500], second_order_taylor_approximation_negative_dy[::500])]
 points = []
@@ -167,12 +171,15 @@ for x, y, r in circles:
 points = jnp.array(points)
 hull = ConvexHull(points)
 ax[0].fill(points[hull.vertices, 0], points[hull.vertices, 1], facecolor='lightcoral', edgecolor='red', zorder=2)
+ax2.fill(points[hull.vertices, 0], points[hull.vertices, 1], facecolor='lightcoral', edgecolor='red', zorder=2)
 # Plot obstacles
 for i, o in enumerate(obstacles): 
     if o.shape[0] == 1:  # Single segment obstacle
         ax[0].plot(o[0,:,0], o[0,:,1], color='black', linewidth=3, zorder=7)
+        ax2.plot(o[0,:,0], o[0,:,1], color='black', linewidth=3, zorder=7)
     else:  # Multiple segments obstacle
         ax[0].fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=7)
+        ax2.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=7)
 ## Plot displacement boundary rectangle 
 ax[0].add_artist(
     plt.Rectangle(
@@ -183,7 +190,19 @@ ax[0].add_artist(
         fill=False, 
         zorder=3, 
         linewidth=3,
-        label='Next feasible configurations envelope/box'
+        label=r'Possible configurations at time $t + \Delta t$'
+    )
+)
+ax2.add_artist(
+    plt.Rectangle(
+        (-robot_radius, -alpha*dt**2*gamma*vmax**2/(4*wheels_distance) - robot_radius), 
+        alpha*vmax*dt + 2 * robot_radius, 
+        2*robot_radius + (alpha*dt**2*vmax**2/(4*wheels_distance) * (beta + gamma)), 
+        color='red', 
+        fill=False, 
+        zorder=3, 
+        linewidth=3,
+        label=r'Possible configurations at time $t + \Delta t$'
     )
 )
 # Lower ALPHA
@@ -279,7 +298,19 @@ ax[0].add_artist(
         fill=False, 
         zorder=8, 
         linewidth=3,
-        label='Next collision-free configurations envelope/box',
+        label=r'Collision-free configurations at time $t + \Delta t$',
+    ),
+)
+ax2.add_artist(
+    plt.Rectangle(
+        (-robot_radius, -new_alpha*dt**2*new_gamma*vmax**2/(4*wheels_distance) - robot_radius), 
+        new_alpha*vmax*dt + 2 * robot_radius, 
+        2*robot_radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance) * (new_beta + new_gamma)), 
+        color='green', 
+        fill=False, 
+        zorder=8, 
+        linewidth=3,
+        label=r'Collision-free configurations at time $t + \Delta t$',
     ),
 )
 # Plot new position displacements and new taylor approximation
@@ -311,20 +342,28 @@ for x, y, r in circles:
 points = jnp.array(points)
 hull = ConvexHull(points)
 ax[0].fill(points[hull.vertices, 0], points[hull.vertices, 1], facecolor='lightgreen', edgecolor='green', zorder=2)
+ax2.fill(points[hull.vertices, 0], points[hull.vertices, 1], facecolor='lightgreen', edgecolor='green', zorder=2)
 # Set plot specs
 ax[0].set_xlim(-robot_radius - 0.05, vmax * dt + robot_radius + 0.05)
 ax[0].set_ylim(-0.5, 0.5)
 ax[0].axis("equal")
 ax[0].set_xlabel("$x$ (m)")
 ax[0].set_ylabel("$y$ (m)")
+ax2.set_xlim(-robot_radius - 0.05, vmax * dt + robot_radius + 0.05)
+ax2.set_ylim(-0.5, 0.5)
+ax2.axis("equal")
+ax2.set_xlabel("$x$ (m)")
+ax2.set_ylabel("$y$ (m)")
 h, l = ax[0].get_legend_handles_labels()
 import matplotlib.patches as mpatches
-h[1] = mpatches.Patch(edgecolor='red', fill=True, facecolor='lightcoral', linewidth=2, label='Next feasible configurations envelope/box')
-h[2] = mpatches.Patch(edgecolor='green', fill=True, facecolor='lightgreen', linewidth=2, label='Next collision-free configurations envelope/box')
+h[0] = mpatches.Patch(edgecolor='red', fill=True, facecolor='lightcoral', linewidth=2, label='Next feasible configurations envelope/box')
+h[1] = mpatches.Patch(edgecolor='green', fill=True, facecolor='lightgreen', linewidth=2, label='Next collision-free configurations envelope/box')
 h.append(mpatches.Patch(color='black', label='Obstacles'))
 l.append('Obstacles')
 ax[0].legend(h, l)
 ax[0].grid(zorder=1)
+ax2.legend(h, l)
+ax2.grid(zorder=1)
 ### Plot original action space (v, w) and the new bounded action space
 ax[1].add_patch(
     plt.Polygon(
@@ -360,23 +399,70 @@ ax[1].add_patch(
 )
 ax[1].set_xlim(-0.1, vmax + 0.1)
 ax[1].set_ylim(-2*vmax/wheels_distance - 0.3, 2*vmax/wheels_distance + 0.3)
-ax[1].set_xlabel("$v_r$ (m/s)")
-ax[1].set_ylabel("$\omega_r$ (rad/s)")
+ax[1].set_xlabel("$v$ (m/s)")
+ax[1].set_ylabel("$\omega$ (rad/s)")
 ax[1].grid()
 ax[1].legend()
+ax[1].set_xticks(jnp.arange(0, vmax+0.2, 0.2))
+ax[1].set_xticklabels([round(i,1) for i in np.arange(0, vmax, 0.2)] + [r"$\overline{v}$"])
+ax[1].set_yticks(np.arange(-2,3,1).tolist() + [2*vmax/wheels_distance,-2*vmax/wheels_distance])
+ax[1].set_yticklabels([round(i) for i in np.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+ax3.add_patch(
+    plt.Polygon(
+        [   
+            [0,2*vmax/wheels_distance],
+            [0,-2*vmax/wheels_distance],
+            [vmax,0],
+        ],
+        closed=True,
+        fill=True,
+        edgecolor='red',
+        facecolor='lightcoral',
+        linewidth=2,
+        zorder=2,
+        label='Feasible action space'
+    ),
+)
+ax3.add_patch(
+    plt.Polygon(
+        [   
+            [0,(2*vmax/wheels_distance)*new_beta],
+            [0,(-2*vmax/wheels_distance)*new_gamma],
+            [new_alpha*vmax,0],
+        ],
+        closed=True,
+        fill=True,
+        edgecolor='green',
+        facecolor='lightgreen',
+        linewidth=2,
+        zorder=3,
+        label='Collision-free action space'
+    ),
+)
+ax3.set_xlim(-0.1, vmax + 0.1)
+ax3.set_ylim(-2*vmax/wheels_distance - 0.3, 2*vmax/wheels_distance + 0.3)
+ax3.set_xlabel("$v$ (m/s)")
+ax3.set_ylabel("$\omega$ (rad/s)")
+ax3.grid()
+ax3.legend()
+ax3.set_xticks(jnp.arange(0, vmax+0.2, 0.2))
+ax3.set_xticklabels([round(i,1) for i in np.arange(0, vmax, 0.2)] + [r"$\overline{v}$"])
+ax3.set_yticks(np.arange(-2,3,1).tolist() + [2*vmax/wheels_distance,-2*vmax/wheels_distance])
+ax3.set_yticklabels([round(i) for i in np.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
 import os
 figure.savefig(os.path.join(os.path.dirname(__file__),"action_space_bounding.eps"), format='eps')
+figure2.savefig(os.path.join(os.path.dirname(__file__),"action_space_bounding_1.eps"), format='eps')
+figure3.savefig(os.path.join(os.path.dirname(__file__),"action_space_bounding_2.eps"), format='eps')
 plt.show()
+
 
 
 ### Plot collision-free rectangle algorithm
 figure, ax = plt.subplots(1, 2, figsize=(25.61, 12.3))
-figure.subplots_adjust(left=0.05, right=0.98, top=0.87, bottom=0.02, wspace=0.13)
+figure.subplots_adjust(left=0.05, right=0.98, top=0.90, bottom=0.02, wspace=0.13)
 # Plot initial configuration
-ax[0].add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=4, linewidth=2, linestyle='--', label='Robot configuration'))
-ax[0].add_artist(plt.Circle((robot_radius, 0), robot_radius/8, color='black', fill=False, zorder=4, linewidth=2, linestyle='--'))
-ax[1].add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=4, linewidth=2, linestyle='--', label='Robot configuration'))
-ax[1].add_artist(plt.Circle((robot_radius, 0), robot_radius/8, color='black', fill=False, zorder=4, linewidth=2, linestyle='--'))
+ax[0].add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=4, linewidth=2, linestyle='--'))
+ax[1].add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=4, linewidth=2, linestyle='--'))
 # Plot obstacles
 for i, o in enumerate(obstacles): 
     if o.shape[0] == 1:  # Single segment obstacle
@@ -405,6 +491,17 @@ ax[0].add_artist(
     plt.Rectangle(
         (-robot_radius,-robot_radius), 
         alpha*vmax*dt + 2 * robot_radius, 
+        2*robot_radius, 
+        edgecolor='red', 
+        fill=False, 
+        zorder=3, 
+        linewidth=3,
+    )
+)
+ax[0].add_artist(
+    plt.Rectangle(
+        (0,-robot_radius), 
+        alpha*vmax*dt + robot_radius, 
         2*robot_radius, 
         edgecolor='red', 
         fill=True, 
@@ -469,15 +566,15 @@ def segment(ax, xy0, xy1, label, label_pos=None, color='black'):
         label_pos = label_pos if label_pos is None else ((xy0[0] + xy1[0]) / 2, (xy0[1] + xy1[1]) / 2)
         ax.text(label_pos[0], label_pos[1], label, verticalalignment='center', horizontalalignment='center', color=color, zorder=8)
     ax.scatter([xy0[0],xy1[0]], [xy0[1],xy1[1]], color=color, s=50, zorder=8, marker=marker)
-segment(ax[0], [0.,0.], [0.,-robot_radius], '$r_r$', color='green')
-segment(ax[1], [0.,0.], [0.,-robot_radius], '$r_r$', color='green')
+segment(ax[0], [0.,0.], [0.,-robot_radius], '$r$', color='green')
+segment(ax[1], [0.,0.], [0.,-robot_radius], '$r$', color='green')
 segment(ax[0], [robot_radius,0.], [alpha*vmax*dt + robot_radius,0.], '$\Delta x_{\max}$', label_pos=(0.6,0.01), color='green')
 segment(ax[1], [robot_radius,0.], [new_alpha*vmax*dt + robot_radius,0.], r'$\tilde{\Delta x}_{\max}$', color='green')
 segment(
     ax[1], 
     [(new_alpha*vmax*dt + 2*robot_radius)/2-robot_radius,-robot_radius], 
     [(new_alpha*vmax*dt + 2*robot_radius)/2-robot_radius,-robot_radius-(new_alpha*dt**2*vmax/(4*wheels_distance) * (gamma))], 
-    r'$|\hat{\Delta y}_{\min}|$', 
+    r'$|\Delta y_{\min}|$', 
     label_pos=((new_alpha*vmax*dt + 2*robot_radius)/2-robot_radius,-robot_radius-(new_alpha*dt**2*vmax/(4*wheels_distance) * (gamma))-0.03), 
     color='green'
 )
@@ -485,7 +582,7 @@ segment(
     ax[1], 
     [(new_alpha*vmax*dt + 2*robot_radius)/2-robot_radius,+robot_radius], 
     [(new_alpha*vmax*dt + 2*robot_radius)/2-robot_radius,+robot_radius+(new_alpha*dt**2*vmax/(4*wheels_distance) * (beta))], 
-    r'$\hat{\Delta y}_{\max}$', 
+    r'$\Delta y_{\max}$', 
     label_pos=((new_alpha*vmax*dt + 2*robot_radius)/2-robot_radius,+robot_radius+(new_alpha*dt**2*vmax/(4*wheels_distance) * (beta))+0.03), 
     color='green'
 )
@@ -506,8 +603,8 @@ ax[1].set_xlabel("$x$ (m)")
 ax[1].set_ylabel("$y$ (m)")
 h, l = ax[0].get_legend_handles_labels()
 h1, l1 = ax[1].get_legend_handles_labels()
-h.append(h1[1])
-l.append(l1[1])
+h.append(h1[0])
+l.append(l1[0])
 h.append(mpatches.Patch(color='black', label='Obstacles'))
 l.append('Obstacles')
 from matplotlib.lines import Line2D

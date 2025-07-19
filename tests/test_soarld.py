@@ -18,24 +18,24 @@ v_max = 1
 tests_n_humans = [5, 10, 15, 20, 25]
 n_trials = 100
 reward_function = Reward2(
-        target_reached_reward = True,
-        collision_penalty_reward = True,
-        discomfort_penalty_reward = True,
-        v_max = v_max,
-        progress_to_goal_reward = True,
-        progress_to_goal_weight = 0.03,
-        high_rotation_penalty_reward=True,
-        angular_speed_bound=1.,
-        angular_speed_penalty_weight=0.0075,
-    )
+    target_reached_reward = True,
+    collision_penalty_reward = True,
+    discomfort_penalty_reward = True,
+    v_max = v_max,
+    progress_to_goal_reward = True,
+    progress_to_goal_weight = 0.03,
+    high_rotation_penalty_reward=True,
+    angular_speed_bound=1.,
+    angular_speed_penalty_weight=0.0075,
+)
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 6,
+    'n_humans': 3,
     'n_obstacles': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'corner_traffic',
+    'scenario': 'parallel_traffic',
     'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4, 6]), # All scenarios but circular_crossing_with_static_obstacles
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
