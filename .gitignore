@@ -1,6 +1,7 @@
-# Pickle and eps files
+# Pickle, eps and mp4 files
 *.pkl
 *.eps
+*.mp4
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

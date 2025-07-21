@@ -101,6 +101,40 @@ humans_goal = jnp.array([
     [-7., 1.],
 ])
 
+### Enlarge obstacles to prevent the robot getting too close from them
+def enlarge_obstacles(obstacles, enlargement_size):
+    """
+    For each obstacle (single segment), enlarge it to a rectangle (four segments) with the given enlargement size.
+    Returns a new array of obstacles, each as a rectangle (4 segments).
+    """
+    enlarged = []
+    for obs in obstacles:
+        # obs shape: (1, 2, 2) -> one segment, two endpoints, two coordinates
+        p1 = obs[0, 0]
+        p2 = obs[0, 1]
+        # Direction vector
+        d = p2 - p1
+        d_norm = d / (jnp.linalg.norm(d) + 1e-8)
+        # Perpendicular vector
+        perp = jnp.array([-d_norm[1], d_norm[0]])
+        # Parallel vector
+        parallel = d_norm
+        # Offset points (enlarge in both perpendicular and parallel directions)
+        p1a = p1 + perp * enlargement_size / 2 - parallel * enlargement_size / 2
+        p1b = p1 - perp * enlargement_size / 2 - parallel * enlargement_size / 2
+        p2a = p2 + perp * enlargement_size / 2 + parallel * enlargement_size / 2
+        p2b = p2 - perp * enlargement_size / 2 + parallel * enlargement_size / 2
+        # Rectangle segments: [p1a-p2a], [p2a-p2b], [p2b-p1b], [p1b-p1a]
+        rect = jnp.array([
+            [p1a, p2a],
+            [p2a, p2b],
+            [p2b, p1b],
+            [p1b, p1a]
+        ])
+        enlarged.append(rect[None, ...])  # shape (1, 4, 2, 2)
+    return jnp.concatenate(enlarged, axis=0)
+enlarged_obstacles = enlarge_obstacles(obstacles, enlargement_size=0.2)
+
 ### Computations
 # Generate grid coordinates
 @jit
@@ -375,7 +409,8 @@ reward_function = Reward2(
 env_params = {
     'robot_radius': 0.3,
     'n_humans': len(humans_pose),
-    'n_obstacles': len(new_static_obstacles),
+    'n_obstacles': len(enlarged_obstacles),
+    'n_segments_per_obstacle': enlarged_obstacles.shape[1],
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
@@ -399,7 +434,7 @@ state, reset_key, obs, info, outcome = env.reset_custom_episode(
         "robot_goal": path_to_goal[1],  # Start at the first waypoint
         "humans_radius": jnp.ones(env_params['n_humans']) * env_params['robot_radius'],
         "humans_speed": jnp.ones(env_params['n_humans']),
-        "static_obstacles": jnp.repeat(new_static_obstacles[None, :, :, :], env_params['n_humans']+1, axis=0),
+        "static_obstacles": jnp.repeat(enlarged_obstacles[None, :, :, :], env_params['n_humans']+1, axis=0),
         "scenario": 3,
     }
 )
@@ -436,9 +471,12 @@ animate_trajectory(
     all_robot_goals,
     None, # Custom scenario
     robot_dt=env_params['robot_dt'],
-    static_obstacles=info['static_obstacles'][-1], # Obstacles are repeated for each agent, index -1 is enough
+    static_obstacles=new_static_obstacles, #enlarged_obstacles, 
     kinematics='unicycle',
-    action_space_params=jnp.array(all_action_space_params),
+    # action_space_params=jnp.array(all_action_space_params),
     vmax=1.,
     wheels_distance=policy.wheels_distance,
+    save=True,
+    save_path=os.path.join(os.path.dirname(__file__), 'icar25_astar_local_planner.mp4'),
+    figsize= (11, 6.6),
 )

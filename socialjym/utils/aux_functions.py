@@ -7,7 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
-from matplotlib.animation import FuncAnimation
+from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.lines import Line2D
 import pickle as pkl
 import os
@@ -316,7 +316,10 @@ def test_k_trials(
     - metrics: dict. A dictionary containing the metrics of the tests.
     """
 
-    ppo = (policy.name == "SARL-PPO") or (policy.name == "SOAPPO")
+    if isinstance(policy, str) and policy == "imitation_learning": # The robot will move as humans in the environment
+        imitation_learning = True
+    else:
+        ppo = (policy.name == "SARL-PPO") or (policy.name == "SOAPPO")
 
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
     if custom_episodes is not None:
@@ -348,11 +351,22 @@ def test_k_trials(
             # Retrieve data from the tuple
             state, obs, info, outcome, policy_key, steps, all_actions, all_states = while_val
             # Make a step in the environment
-            if ppo:
-                action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
+            if imitation_learning:
+                old_state = state.copy()
+                state, obs, info, _, outcome = env.imitation_learning_step(state,info)
+                dp = state[-1,0:2] - old_state[-1,0:2]
+                if env.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+                    action = dp / env.robot_dt
+                elif env.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+                    if env.humans_policy == HUMAN_POLICIES.index('sfm') or env.humans_policy == HUMAN_POLICIES.index('orca'):
+                        state = state.at[-1,4].set(jnp.arctan2(*jnp.flip(dp)))
+                    action = jnp.array([jnp.linalg.norm(dp / env.robot_dt), wrap_angle(state[-1,4] - old_state[-1,4]) / env.robot_dt])
             else:
-                action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
-            state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
+                if ppo:
+                    action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
+                else:
+                    action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
+                state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
             # Save data
             all_actions = all_actions.at[steps].set(action)
             all_states = all_states.at[steps].set(state)
@@ -440,7 +454,7 @@ def test_k_trials(
         print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
         print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
         print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
-        if policy.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+        if env.kinematics == ROBOT_KINEMATICS.index('unicycle'):
             print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
             print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
             print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
@@ -473,7 +487,7 @@ def test_k_trials_dwa(
     try:
         import dwa
     except ImportError:
-        raise ImportError("DWA package is not installed. Please install it to use this function.\nYou can install it with 'pip3 install dynamic-window-approach --user'.\n Checkout https://github.com/goktug97/DynamicWindowApproach")
+        raise ImportError("DWA package is not installed. Please install it to use this function.\nYou can install it with 'pip3 install dynamic-window-approach'.\n Checkout https://github.com/goktug97/DynamicWindowApproach")
     
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
     if custom_episodes is not None:
@@ -657,8 +671,12 @@ def animate_trajectory(
     lidar_measurements:jnp.ndarray=None,
     kinematics:str='holonomic',
     action_space_params:jnp.ndarray=None,
+    action_space_aside:bool=False,
     vmax:float=None,
     wheels_distance:float=None,
+    save:bool=False,
+    save_path:str=None,
+    figsize:tuple=None,
     ) -> None:
 
     if action_space_params is not None:
@@ -666,9 +684,22 @@ def animate_trajectory(
         assert vmax is not None, "vmax must be provided if action space parameters are used."
         assert wheels_distance is not None, "wheels_distance must be provided if action space parameters are used."
 
-    # TODO: Add a progress bar,
-    fig, ax = plt.subplots()
-    fig.subplots_adjust(right=0.78, top=0.90, bottom=0.05)
+    if save:
+        assert save_path is not None, "save_path must be provided if save is True."
+        if not save_path.endswith('.mp4'):
+            save_path += '.mp4'
+        if os.path.exists(save_path):
+            print(f"Warning: {save_path} already exists. It will be overwritten.")
+
+    # TODO: Add a progress bar
+    
+    if action_space_params is not None and action_space_aside:
+        fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=300, gridspec_kw={'width_ratios': [2, 1]})
+        fig.subplots_adjust(right=0.95, left=0.1, bottom=0.1)
+        ax = axes[0]
+    else:
+        fig, ax = plt.subplots(figsize=figsize, dpi=300)
+        fig.subplots_adjust(right=0.78, top=0.90, bottom=0.05)
     ax.set_aspect('equal')
     ax.set(xlim=[-10,10],ylim=[-10,10])
     ax.set_xlabel('X')
@@ -682,13 +713,29 @@ def animate_trajectory(
 
     def animate(frame):
         ax.clear()
-        ax.set_title(f"Time: {'{:.2f}'.format(round(frame*robot_dt,2))} - Humans policy: {humans_policy.upper()}", weight='bold')
-        ax.legend(
-            handles=[
-                Line2D([0], [0], color='white', marker='o', markersize=10, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Robot'), 
-                Line2D([0], [0], color='white', marker='o', markersize=10, markerfacecolor='white', markeredgecolor='blue', linewidth=2, label='Humans'),
-                Line2D([0], [0], color='white', marker='*', markersize=10, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Goal')],
-            bbox_to_anchor=(0.99, 0.5), loc='center left')
+        if action_space_params is not None and action_space_aside:
+            ax.legend(
+                title=f"Time: {'{:.2f}'.format(round(frame*robot_dt,2))}",
+                handles=[
+                    Line2D([0], [0], color='white', marker='o', markersize=7, markerfacecolor='red', markeredgecolor='black', linewidth=2, label='Robot'), 
+                    Line2D([0], [0], color='white', marker='o', markersize=7, markerfacecolor='white', markeredgecolor='blue', linewidth=2, label='Humans'),
+                    Line2D([0], [0], color='white', marker='*', markersize=7, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Goal')
+                ],
+                bbox_to_anchor=(0.6, 1.25),
+                fontsize=7,
+                title_fontsize=7,
+            )
+        else:
+            ax.set_title(f"Time: {'{:.2f}'.format(round(frame*robot_dt,2))} - Humans policy: {humans_policy.upper()}", weight='bold')
+            ax.legend(
+                handles=[
+                    Line2D([0], [0], color='white', marker='o', markersize=10, markerfacecolor='red', markeredgecolor='black', linewidth=2, label='Robot'), 
+                    Line2D([0], [0], color='white', marker='o', markersize=10, markerfacecolor='white', markeredgecolor='blue', linewidth=2, label='Humans'),
+                    Line2D([0], [0], color='white', marker='*', markersize=10, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Goal')
+                ],
+                bbox_to_anchor=(0.99, 0.5), 
+                loc='center left',
+            )
         if len(robot_goal.shape) == 1:
             ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
         else:
@@ -698,27 +745,75 @@ def animate_trajectory(
             plot_lidar_measurements(ax, lidar_measurements[frame], states[frame][-1], robot_radius)
         if static_obstacles is not None:
             if static_obstacles.shape[1] > 1: # Polygon obstacles
-                for o in static_obstacles: plt.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+                for o in static_obstacles: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
             else: # One segment obstacles
-                for o in static_obstacles: plt.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+                for o in static_obstacles: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
         if action_space_params is not None and frame < len(action_space_params):
             new_alpha, new_beta, new_gamma = action_space_params[frame]
-            ax.add_artist(plt.Rectangle(
-                (states[frame,-1,0] - robot_radius, states[frame,-1,1] - new_alpha*robot_dt**2*new_gamma*vmax/(4*wheels_distance) - robot_radius), 
-                new_alpha*vmax*robot_dt + 2 * robot_radius, 
-                2*robot_radius + (new_alpha*robot_dt**2*vmax/(4*wheels_distance) * (new_beta + new_gamma)), 
-                rotation_point=(float(states[frame,-1,0]), float(states[frame,-1,1])), 
-                angle=jnp.rad2deg(states[frame,-1,4]), 
-                color='green', 
-                fill=False, 
-                zorder=3, 
-                linewidth=2,
-                linestyle='--'
-            ))
-
+            if not action_space_aside:
+                ax.add_artist(plt.Rectangle(
+                    (states[frame,-1,0] - robot_radius, states[frame,-1,1] - new_alpha*robot_dt**2*new_gamma*vmax/(4*wheels_distance) - robot_radius), 
+                    new_alpha*vmax*robot_dt + 2 * robot_radius, 
+                    2*robot_radius + (new_alpha*robot_dt**2*vmax/(4*wheels_distance) * (new_beta + new_gamma)), 
+                    rotation_point=(float(states[frame,-1,0]), float(states[frame,-1,1])), 
+                    angle=jnp.rad2deg(states[frame,-1,4]), 
+                    color='green', 
+                    fill=False, 
+                    zorder=3, 
+                    linewidth=2,
+                    linestyle='--'
+                ))
+            else:
+                axes[1].clear()
+                axes[1].set_xlabel("$v$ (m/s)")
+                axes[1].set_ylabel("$\omega$ (rad/s)")
+                axes[1].set_xlim(-0.1, vmax + 0.1)
+                axes[1].set_ylim(-2*vmax/wheels_distance - 0.3, 2*vmax/wheels_distance + 0.3)
+                axes[1].set_xticks(jnp.arange(0, vmax+0.2, 0.2))
+                axes[1].set_xticklabels([round(i,1) for i in np.arange(0, vmax, 0.2)] + [r"$\overline{v}$"])
+                axes[1].set_yticks(np.arange(-2,3,1).tolist() + [2*vmax/wheels_distance,-2*vmax/wheels_distance])
+                axes[1].set_yticklabels([round(i) for i in np.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+                axes[1].grid()
+                axes[1].add_patch(
+                    plt.Polygon(
+                        [   
+                            [0,2*vmax/wheels_distance],
+                            [0,-2*vmax/wheels_distance],
+                            [vmax,0],
+                        ],
+                        closed=True,
+                        fill=True,
+                        edgecolor='red',
+                        facecolor='lightcoral',
+                        linewidth=2,
+                        zorder=2,
+                        label='Feasible action space'
+                    ),
+                )
+                axes[1].add_patch(
+                    plt.Polygon(
+                        [   
+                            [0,(2*vmax/wheels_distance)*new_beta],
+                            [0,(-2*vmax/wheels_distance)*new_gamma],
+                            [new_alpha*vmax,0],
+                        ],
+                        closed=True,
+                        fill=True,
+                        edgecolor='green',
+                        facecolor='lightgreen',
+                        linewidth=2,
+                        zorder=3,
+                        label='Collision-free action space'
+                    ),
+                )
+                axes[1].legend(fontsize=7, bbox_to_anchor=(0.95, 1.12))
 
     anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(states))
     
+    if save:
+        writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
+        anim.save(save_path, writer=writer_video, dpi=300)
+
     anim.paused = False
     def toggle_pause(self, *args, **kwargs):
         if anim.paused: anim.resume()

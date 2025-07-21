@@ -35,7 +35,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'parallel_traffic',
+    'scenario': 'perpendicular_traffic',
     'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4, 6]), # All scenarios but circular_crossing_with_static_obstacles
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
@@ -110,7 +110,11 @@ for i in range(n_episodes):
         static_obstacles=info['static_obstacles'][-1], # Obstacles are repeated for each agent, index -1 is enough
         kinematics='unicycle',
         action_space_params=np.array(all_action_space_params),
+        action_space_aside=True,
         vmax=v_max,
         wheels_distance=policy.wheels_distance,
+        figsize=(8.54, 4.54),
+        save=True,
+        save_path=os.path.join(os.path.dirname(__file__),f'episode_{i}.mp4')
     )
     

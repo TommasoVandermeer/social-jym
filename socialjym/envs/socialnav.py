@@ -20,6 +20,7 @@ class SocialNav(BaseEnv):
             n_humans:int, 
             reward_function:FunctionType,
             n_obstacles:int = 0,
+            n_segments_per_obstacle:int = 1,
             humans_policy='hsfm', 
             robot_visible=False, 
             circle_radius=7, 
@@ -67,71 +68,76 @@ class SocialNav(BaseEnv):
         self.robot_dt = robot_dt
         self.reward_function = reward_function
         ## Static obstacles initialization
-        self.static_obstacles_per_scenario = jnp.array([
-            [ # Circular crossing
-                [[[0.75, -2*self.circle_radius/3],[2, -2*self.circle_radius/3+1.5*self.circle_radius/7]]],
-                [[[-0.75, -2*self.circle_radius/3+2*self.circle_radius/7],[-2, -2*self.circle_radius/3+3.5*self.circle_radius/7]]],
-                [[[0.75, -2*self.circle_radius/3+4*self.circle_radius/7],[2, -2*self.circle_radius/3+5.5*self.circle_radius/7]]],
-                [[[-0.75, -2*self.circle_radius/3+6*self.circle_radius/7],[-2, -2*self.circle_radius/3+7.5*self.circle_radius/7]]],
-                [[[0.75, -2*self.circle_radius/3+8*self.circle_radius/7],[2, -2*self.circle_radius/3+9.5*self.circle_radius/7]]],
-            ], 
-            [ # Parallel traffic
-                [[[-self.traffic_length/2-1, self.traffic_height/2 + 0.3],[self.traffic_length/2-0.5, self.traffic_height/2 + 0.3]]],
-                [[[-self.traffic_length/2-1, -(self.traffic_height/2 + 0.3)],[self.traffic_length/2-0.5, -(self.traffic_height/2 + 0.3)]]],
-                [[[-1.,0],[1.,0.]]],
-                [[[-self.traffic_length/4-0.5,self.traffic_height/4],[-self.traffic_length/4+0.5,self.traffic_height/4]]],
-                [[[self.traffic_length/4-0.5,self.traffic_height/4],[self.traffic_length/4+0.5,self.traffic_height/4]]],
-            ], 
-            [ # Perpendicular traffic
-                [[[-self.traffic_length/8, self.traffic_length/2 +1],[-self.traffic_length/8, self.traffic_height/2+0.5]]],
-                [[[self.traffic_length/8, self.traffic_length/2 +1],[self.traffic_length/8, self.traffic_height/2+0.5]]],
-                [[[-1.,0],[1.,0.]]],
-                [[[0., -self.traffic_height/2-0.5],[0., -self.traffic_height/2-2]]],
-                [[[-0.5,-self.traffic_length/2+0.5],[0.5,-self.traffic_length/2+0.5]]],
-            ], 
-            [ # Robot crowding
-                [[[-1.,0],[1.,0.]]],
-                [[[self.crowding_square_side/4, 1],[self.crowding_square_side/4-1, -1]]],
-                [[[-self.crowding_square_side/4, -1],[-self.crowding_square_side/4-1, 1]]],
-                [[[-self.crowding_square_side/2, 2],[-self.crowding_square_side/2-1, 0.5]]],
-                [[[-self.crowding_square_side/2, -2],[-self.crowding_square_side/2-1, -0.5]]],
-            ], 
-            [ # Delayed circular crossing
-                [[[1.5*self.circle_radius/7 * jnp.cos(2*jnp.pi/5), 1.5*self.circle_radius/7 * jnp.sin(2*jnp.pi/5)],[3.5*self.circle_radius/7*jnp.cos(2*jnp.pi/5), 3.5*self.circle_radius/7*jnp.sin(2*jnp.pi/5)]]],
-                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*2), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*2)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*2), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*2)]]],
-                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*3), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*3)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*3), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*3)]]],
-                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*4), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*4)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*4), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*4)]]],
-                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*5), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*5)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*5), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*5)]]],
-            ], 
-            [ # Circular crossing with static obstacles (this scenario is already challenging enough, so we do not add more static obstacles)
-                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
-                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
-                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
-                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
-                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
-            ], 
-            [ # Crowd navigation
-                [[[-self.circle_radius/2, -self.circle_radius/2],[-self.circle_radius/2+1, -self.circle_radius/2+1]]],
-                [[[0., -self.circle_radius/2-1],[0., -self.circle_radius/2+2]]],
-                [[[0., self.circle_radius/2-1],[0., self.circle_radius/2+2]]],
-                [[[self.circle_radius/2, self.circle_radius/2],[self.circle_radius/2-1, self.circle_radius/2-1]]],
-                [[[-0.5, self.circle_radius-1],[0.5, self.circle_radius-1]]],
-            ],
-            [ # Corner traffic
-                [[[self.traffic_length/2-self.traffic_height/2-0.3, 0.],[self.traffic_length/2-self.traffic_height/2-0.3, self.traffic_length/2-self.traffic_height/2-0.3]]],
-                [[[self.traffic_length/2+self.traffic_height/2+0.3, 0.],[self.traffic_length/2+self.traffic_height/2+0.3, self.traffic_length/2+self.traffic_height/2+0.3]]],
-                [[[self.traffic_length/2-0.25,self.traffic_length/2+0.25],[self.traffic_length/2+0.25,self.traffic_length/2-0.25]]],
-                [[[0.,self.traffic_length/2-self.traffic_height/2-0.3],[self.traffic_length/2-self.traffic_height/2-0.3, self.traffic_length/2-self.traffic_height/2-0.3]]],
-                [[[0.,self.traffic_length/2+self.traffic_height/2+0.3],[self.traffic_length/2+self.traffic_height/2+0.3, self.traffic_length/2+self.traffic_height/2+0.3]]],
-            ],
-        ])
-        if n_obstacles > 5:
-            print("WARNING: The number of obstacles is above 5, the environment is not designed to have more obstacles than that.\n")
-            self.static_obstacles_per_scenario = jnp.concatenate(
-                [self.static_obstacles_per_scenario, 
-                jnp.full((len(SCENARIOS)-1,n_obstacles-5, 1, 2, 2), jnp.nan)],
-                axis=1
-            )
+        self.n_segments_per_obstacle = n_segments_per_obstacle
+        if n_segments_per_obstacle > 1:
+            # Only custom obstacle through the reset custom episode function
+            self.static_obstacles_per_scenario = jnp.full((len(SCENARIOS)-1,n_obstacles, self.n_segments_per_obstacle, 2, 2), jnp.nan)
+        else:
+            self.static_obstacles_per_scenario = jnp.array([
+                [ # Circular crossing
+                    [[[0.75, -2*self.circle_radius/3],[2, -2*self.circle_radius/3+1.5*self.circle_radius/7]]],
+                    [[[-0.75, -2*self.circle_radius/3+2*self.circle_radius/7],[-2, -2*self.circle_radius/3+3.5*self.circle_radius/7]]],
+                    [[[0.75, -2*self.circle_radius/3+4*self.circle_radius/7],[2, -2*self.circle_radius/3+5.5*self.circle_radius/7]]],
+                    [[[-0.75, -2*self.circle_radius/3+6*self.circle_radius/7],[-2, -2*self.circle_radius/3+7.5*self.circle_radius/7]]],
+                    [[[0.75, -2*self.circle_radius/3+8*self.circle_radius/7],[2, -2*self.circle_radius/3+9.5*self.circle_radius/7]]],
+                ], 
+                [ # Parallel traffic
+                    [[[-self.traffic_length/2-1, self.traffic_height/2 + 0.3],[self.traffic_length/2-0.5, self.traffic_height/2 + 0.3]]],
+                    [[[-self.traffic_length/2-1, -(self.traffic_height/2 + 0.3)],[self.traffic_length/2-0.5, -(self.traffic_height/2 + 0.3)]]],
+                    [[[-1.,0],[1.,0.]]],
+                    [[[-self.traffic_length/4-0.5,self.traffic_height/4],[-self.traffic_length/4+0.5,self.traffic_height/4]]],
+                    [[[self.traffic_length/4-0.5,self.traffic_height/4],[self.traffic_length/4+0.5,self.traffic_height/4]]],
+                ], 
+                [ # Perpendicular traffic
+                    [[[-self.traffic_length/8, self.traffic_length/2 +1],[-self.traffic_length/8, self.traffic_height/2+0.5]]],
+                    [[[self.traffic_length/8, self.traffic_length/2 +1],[self.traffic_length/8, self.traffic_height/2+0.5]]],
+                    [[[-1.,0],[1.,0.]]],
+                    [[[0., -self.traffic_height/2-0.5],[0., -self.traffic_height/2-2]]],
+                    [[[-0.5,-self.traffic_length/2+0.5],[0.5,-self.traffic_length/2+0.5]]],
+                ], 
+                [ # Robot crowding
+                    [[[-1.,0],[1.,0.]]],
+                    [[[self.crowding_square_side/4, 1],[self.crowding_square_side/4-1, -1]]],
+                    [[[-self.crowding_square_side/4, -1],[-self.crowding_square_side/4-1, 1]]],
+                    [[[-self.crowding_square_side/2, 2],[-self.crowding_square_side/2-1, 0.5]]],
+                    [[[-self.crowding_square_side/2, -2],[-self.crowding_square_side/2-1, -0.5]]],
+                ], 
+                [ # Delayed circular crossing
+                    [[[1.5*self.circle_radius/7 * jnp.cos(2*jnp.pi/5), 1.5*self.circle_radius/7 * jnp.sin(2*jnp.pi/5)],[3.5*self.circle_radius/7*jnp.cos(2*jnp.pi/5), 3.5*self.circle_radius/7*jnp.sin(2*jnp.pi/5)]]],
+                    [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*2), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*2)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*2), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*2)]]],
+                    [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*3), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*3)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*3), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*3)]]],
+                    [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*4), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*4)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*4), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*4)]]],
+                    [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*5), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*5)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*5), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*5)]]],
+                ], 
+                [ # Circular crossing with static obstacles (this scenario is already challenging enough, so we do not add more static obstacles)
+                    [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                    [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                    [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                    [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                    [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                ], 
+                [ # Crowd navigation
+                    [[[-self.circle_radius/2, -self.circle_radius/2],[-self.circle_radius/2+1, -self.circle_radius/2+1]]],
+                    [[[0., -self.circle_radius/2-1],[0., -self.circle_radius/2+2]]],
+                    [[[0., self.circle_radius/2-1],[0., self.circle_radius/2+2]]],
+                    [[[self.circle_radius/2, self.circle_radius/2],[self.circle_radius/2-1, self.circle_radius/2-1]]],
+                    [[[-0.5, self.circle_radius-1],[0.5, self.circle_radius-1]]],
+                ],
+                [ # Corner traffic
+                    [[[self.traffic_length/2-self.traffic_height/2-0.3, 0.],[self.traffic_length/2-self.traffic_height/2-0.3, self.traffic_length/2-self.traffic_height/2-0.3]]],
+                    [[[self.traffic_length/2+self.traffic_height/2+0.3, 0.],[self.traffic_length/2+self.traffic_height/2+0.3, self.traffic_length/2+self.traffic_height/2+0.3]]],
+                    [[[self.traffic_length/2-0.25,self.traffic_length/2+0.25],[self.traffic_length/2+0.25,self.traffic_length/2-0.25]]],
+                    [[[0.,self.traffic_length/2-self.traffic_height/2-0.3],[self.traffic_length/2-self.traffic_height/2-0.3, self.traffic_length/2-self.traffic_height/2-0.3]]],
+                    [[[0.,self.traffic_length/2+self.traffic_height/2+0.3],[self.traffic_length/2+self.traffic_height/2+0.3, self.traffic_length/2+self.traffic_height/2+0.3]]],
+                ],
+            ])
+            if n_obstacles > 5:
+                print("WARNING: The number of obstacles is above 5, the environment is not designed to have more obstacles than that.\n")
+                self.static_obstacles_per_scenario = jnp.concatenate(
+                    [self.static_obstacles_per_scenario, 
+                    jnp.full((len(SCENARIOS)-1,n_obstacles-5, 1, 2, 2), jnp.nan)],
+                    axis=1
+                )
         ## Robot goals initialization
         self.robot_goals_per_scenario = jnp.array([
             [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Circular crossing
@@ -1141,7 +1147,7 @@ class SocialNav(BaseEnv):
         robot_goal = jnp.array(custom_episode["robot_goal"])
         # Obstacles
         if self.n_obstacles == 0:
-            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan)
+            static_obstacles = jnp.full((self.n_humans+1, 1, self.n_segments_per_obstacle, 2, 2), jnp.nan)
         else:
             static_obstacles = jnp.array(custom_episode["static_obstacles"])
         # Info
