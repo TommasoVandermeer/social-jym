@@ -533,7 +533,7 @@ def test_k_custom_trials(
                 lambda h, x: lax.cond(
                     jnp.linalg.norm(state[h,:2] - info["humans_goal"][h]) <= info["humans_parameters"][h,0],
                     lambda y: lax.cond(
-                        jnp.all(info["humans_goal"] == custom_episodes["humans_goal"][episode_idx,h]),
+                        jnp.all(info["humans_goal"][h] == custom_episodes["humans_goal"][episode_idx,h]),
                         lambda z: z.at[h].set(custom_episodes["full_state"][episode_idx,h,:2]),
                         lambda z: z.at[h].set(custom_episodes["humans_goal"][episode_idx,h]),
                         y,
