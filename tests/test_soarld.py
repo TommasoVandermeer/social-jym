@@ -114,7 +114,7 @@ for i in range(n_episodes):
         vmax=v_max,
         wheels_distance=policy.wheels_distance,
         figsize=(8.54, 4.54),
-        save=True,
+        save=False,
         save_path=os.path.join(os.path.dirname(__file__),f'episode_{i}.mp4')
     )
     

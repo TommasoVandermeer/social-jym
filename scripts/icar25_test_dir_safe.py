@@ -1,6 +1,5 @@
 import jax.numpy as jnp
 from jax.tree_util import tree_map
-import numpy as np
 import matplotlib.pyplot as plt
 import os
 import pickle
@@ -97,13 +96,13 @@ for i, scenario in enumerate(tests_scenarios):
             all_metrics_dwa = tree_map(lambda x, y: x.at[i,j,k].set(y), all_metrics_dwa, metrics_dwa)
 
 ### Save results
-with open(os.path.join(os.path.dirname(__file__),"soarld_tests.pkl"), 'wb') as f:
+with open(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl"), 'wb') as f:
     pickle.dump(all_metrics, f)
 with open(os.path.join(os.path.dirname(__file__),"dwa_tests.pkl"), 'wb') as f:
     pickle.dump(all_metrics_dwa, f)
 
 ### Load results
-with open(os.path.join(os.path.dirname(__file__),"soarld_tests.pkl"), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl"), 'rb') as f:
     all_metrics = pickle.load(f)
 with open(os.path.join(os.path.dirname(__file__),"dwa_tests.pkl"), 'rb') as f:
     all_metrics_dwa = pickle.load(f)
@@ -111,8 +110,10 @@ with open(os.path.join(os.path.dirname(__file__),"dwa_tests.pkl"), 'rb') as f:
 ### Plot results
 # Matplotlib font
 from matplotlib import rc
-font = {'weight' : 'regular',
-        'size'   : 23}
+font = {
+    'weight' : 'regular',
+    'size'   : 23
+}
 rc('font', **font)
 metrics = {
     "successes": {"label": "Success Rate", "episodic": False}, 
@@ -237,7 +238,7 @@ for m, metric in enumerate(metrics_to_plot):
         y_dwa_data = jnp.nanmean(all_metrics_dwa[metric][:, :, :, :], axis=(0,2,3))
         if metric in ["space_compliance","episodic_spl"]:
             ax[0, m].set_ylim(-0.05, 1.05)
-    ax[0, m].plot(jnp.arange(len(tests_n_humans)), y_data, linewidth=2.5, label='SOAPPO', color='blue')
+    ax[0, m].plot(jnp.arange(len(tests_n_humans)), y_data, linewidth=2.5, label='DIR-SAFE', color='blue')
     ax[0, m].plot(jnp.arange(len(tests_n_humans)), y_dwa_data, linewidth=2.5, label='DWA', color='red')
 for m, metric in enumerate(metrics_to_plot):
     ax[1,m].set(
@@ -255,7 +256,7 @@ for m, metric in enumerate(metrics_to_plot):
         y_dwa_data = jnp.nanmean(all_metrics_dwa[metric][:, :, :, :], axis=(0,1,3))
         if metric in ["space_compliance","episodic_spl"]:
             ax[1, m].set_ylim(-0.05, 1.05)
-    ax[1, m].plot(jnp.arange(len(tests_n_obstacles)), y_data, linewidth=2.5, label='SOAPPO', color='blue')
+    ax[1, m].plot(jnp.arange(len(tests_n_obstacles)), y_data, linewidth=2.5, label='DIR-SAFE', color='blue')
     ax[1, m].plot(jnp.arange(len(tests_n_obstacles)), y_dwa_data, linewidth=2.5, label='DWA', color='red')
 h, l = ax[0,0].get_legend_handles_labels()
 figure.legend(h, l, loc='center right', title='Policy')

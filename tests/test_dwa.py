@@ -14,35 +14,6 @@ from socialjym.policies.soappo import SOAPPO
 from socialjym.utils.aux_functions import animate_trajectory
 
 ### Parameters
-# robot_dt = 0.25  # Robot time step in seconds
-# time_limit = 50.0
-# grid_cell_size = 0.5
-# obstacles = jnp.array([
-#     [[[0.0, 0.0], [0.0, 6.0]]],
-#     [[[0.0, 6.0], [6.0, 6.0]]], 
-#     [[[6.0, 6.0], [6.0, 0.0]]],
-#     [[[6.0, 0.0], [0.0, 0.0]]],
-#     [[[1.5, 1.8], [4.5, 1.8]]],
-#     [[[1.5, 4.2], [4.5, 4.2]]],
-#     [[[1.5, 1.8], [1.5, 2.0]]],
-#     [[[1.5, 4.0], [1.5, 4.2]]],
-#     [[[4.5, 1.8], [4.5, 2.0]]],
-#     [[[4.5, 4.0], [4.5, 4.2]]],
-#     [[[3.0, 0.0], [3.0, 1.8]]],
-#     [[[3.0, 4.2], [3.0, 6.0]]],
-# ])
-# start_pos = jnp.array([3.75, 0.75])  # Starting position of the robot
-# goal_pos = jnp.array([2.25, 5.25])  # Goal position of the robot
-# humans_pose = jnp.array([
-#     [5.5, 5.5, jnp.pi/2],
-#     [0.5, 5.5, -jnp.pi/2],
-#     [5.5, 3.0, jnp.pi],
-# ])
-# humans_goal = jnp.array([
-#     [5.5, 0.5],
-#     [0.5, 0.5],
-#     [0.5, 3.0],
-# ])
 robot_dt = 0.25  # Robot time step in seconds
 time_limit = 120.
 grid_cell_size = .95

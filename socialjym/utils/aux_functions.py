@@ -311,6 +311,7 @@ def test_k_trials(
     - model_params: dict. The parameters of the policy model.
     - time_limit: float. The maximum time limit for each trial. WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage.
     - personal_space: float. A parameter used to compute space compliance.
+    - custom_episodes: dict. A dictionary containing custom episodes OF THE STANDARD SCENARIOS (not fully custom episodes) to test the policy on. If None, the environment will be reset normally.
 
     output:
     - metrics: dict. A dictionary containing the metrics of the tests.
@@ -319,6 +320,7 @@ def test_k_trials(
     if isinstance(policy, str) and policy == "imitation_learning": # The robot will move as humans in the environment
         imitation_learning = True
     else:
+        imitation_learning = False
         ppo = (policy.name == "SARL-PPO") or (policy.name == "SOAPPO")
 
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
@@ -454,6 +456,198 @@ def test_k_trials(
         print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
         print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
         print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
+        if env.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+            print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
+            print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
+            print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
+    return metrics
+
+def test_k_custom_trials(
+    k: int, 
+    random_seed: int, 
+    env: BaseEnv, 
+    policy: BasePolicy, 
+    model_params: dict, 
+    time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
+    custom_episodes:dict,
+    personal_space:float=0.5,
+    print_avg_metrics:bool=True
+) -> tuple:
+    """
+    This function tests a policy in a given environment for k trials and outputs a series of metrics.
+
+    args:
+    - k: int. The number of trials to execute.
+    - random_seed: int. The random seed to use for the execution.
+    - env: BaseEnv. The environment to test the policy in.
+    - policy: BasePolicy. The policy to test.
+    - model_params: dict. The parameters of the policy model.
+    - time_limit: float. The maximum time limit for each trial. WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage.
+    - custom_episode: dictionary containing the custom episode data. Its keys are:
+        full_state (jnp.array): initial full state of the environment. WARNING: The velocity of humans is always in the global frame (for hsfm you should be using the velocity on the body frame)
+        humans_goal (jnp.array): goal positions of the humans.
+        robot_goals (jnp.array): final goal position of the robot.
+        static_obstacles (jnp.array): positions of the static obstacles.
+        humans_radius (float): radius of the humans.
+        humans_speed (float): max speed of the humans.
+    - personal_space: float. A parameter used to compute space compliance.
+
+    output:
+    - metrics: dict. A dictionary containing the metrics of the tests.
+    """
+
+    ### Assert data correctness
+    assert env.scenario == -1, "The environment must be an environment with custom episodes."
+    assert list(custom_episodes.keys()) == ["full_state", "humans_goal", "robot_goals", "static_obstacles", "humans_radius", "humans_speed"], "Invalid keys in custom_episodes. Expected keys: ['full_state', 'humans_goal', 'robot_goals', 'static_obstacles', 'humans_radius', 'humans_speed']"
+    for key, value in custom_episodes.items():
+        assert key in ["full_state", "humans_goal", "robot_goals", "static_obstacles", "humans_radius", "humans_speed"], f"Invalid key {key} in custom_episodes."
+        assert value.shape[0] == k, f"Invalid shape for {key} in custom_episodes. Expected shape ({k}, ...), got {value.shape}."
+
+    ### Check if the policy is imitation learning or PPO
+    if isinstance(policy, str) and policy == "imitation_learning": # The robot will move as humans in the environment
+        imitation_learning = True
+    else:
+        imitation_learning = False
+        ppo = (policy.name == "SARL-PPO") or (policy.name == "SOAPPO")
+
+    @loop_tqdm(k)
+    @jit
+    def _fori_body(i:int, for_val:tuple):   
+        @jit
+        def _while_body(while_val:tuple):
+            # Retrieve data from the tuple
+            episode_idx, state, obs, info, outcome, policy_key, steps, all_actions, all_states = while_val
+            # Update robot goal
+            info["robot_goal"], info["robot_goal_index"] = lax.cond(
+                (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= env.robot_radius*2) & # Waypoint reached threshold is set to be higher
+                (info['robot_goal_index'] < len(custom_episodes["robot_goals"][episode_idx])-1) & # Check if current goal is not the last one
+                (~(jnp.any(jnp.isnan(custom_episodes["robot_goals"][episode_idx,info['robot_goal_index']+1])))), # Check if next goal is not NaN
+                lambda _: (custom_episodes["robot_goals"][episode_idx,info['robot_goal_index']+1], info['robot_goal_index']+1),
+                lambda x: x,
+                (info["robot_goal"], info["robot_goal_index"])
+            )
+            # Update humans goal
+            info["humans_goal"] = lax.fori_loop(
+                0, 
+                env.n_humans, 
+                lambda h, x: lax.cond(
+                    jnp.linalg.norm(state[h,:2] - info["humans_goal"][h]) <= info["humans_parameters"][h,0],
+                    lambda y: lax.cond(
+                        jnp.all(info["humans_goal"] == custom_episodes["humans_goal"][episode_idx,h]),
+                        lambda z: z.at[h].set(custom_episodes["full_state"][episode_idx,h,:2]),
+                        lambda z: z.at[h].set(custom_episodes["humans_goal"][episode_idx,h]),
+                        y,
+                    ),
+                    lambda y: y,
+                    x
+                ),
+                info["humans_goal"],
+            )
+            # Make a step in the environment
+            if imitation_learning:
+                old_state = state.copy()
+                state, obs, info, _, outcome = env.imitation_learning_step(state,info)
+                dp = state[-1,0:2] - old_state[-1,0:2]
+                if env.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+                    action = dp / env.robot_dt
+                elif env.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+                    if env.humans_policy == HUMAN_POLICIES.index('sfm') or env.humans_policy == HUMAN_POLICIES.index('orca'):
+                        state = state.at[-1,4].set(jnp.arctan2(*jnp.flip(dp)))
+                    action = jnp.array([jnp.linalg.norm(dp / env.robot_dt), wrap_angle(state[-1,4] - old_state[-1,4]) / env.robot_dt])
+            else:
+                if ppo:
+                    action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
+                else:
+                    action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
+                state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
+            # Save data
+            all_actions = all_actions.at[steps].set(action)
+            all_states = all_states.at[steps].set(state)
+            # Update step counter
+            steps += 1
+            return episode_idx, state, obs, info, outcome, policy_key, steps, all_actions, all_states
+
+        ## Retrieve data from the tuple
+        seed, metrics = for_val
+        policy_key = random.PRNGKey(seed) # We don't care if we generate two identical keys, they operate differently
+        ## Reset the environment
+        state, _, obs, info, init_outcome = env.reset_custom_episode(
+            random.PRNGKey(0), # Not used, but required by the function
+            {
+                "full_state": custom_episodes["full_state"][i],
+                "robot_goal": custom_episodes["robot_goals"][i,0],
+                "humans_goal": custom_episodes["humans_goal"][i],
+                "static_obstacles": custom_episodes["static_obstacles"][i],
+                "scenario": -1,
+                "humans_radius": custom_episodes["humans_radius"][i],
+                "humans_speed": custom_episodes["humans_speed"][i],
+            }
+        )
+        initial_robot_position = state[-1,:2]
+        ## Episode loop
+        all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+        all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+        while_val_init = (i, state, obs, info, init_outcome, policy_key, 0, all_actions, all_states)
+        _, _, _, end_info, outcome, policy_key, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[4]["nothing"] == True, _while_body, while_val_init)
+        ## Update metrics
+        metrics["waypoint_reached"] = metrics["waypoint_reached"].at[i].set(end_info["robot_goal_index"])
+        metrics = compute_episode_metrics(
+            metrics=metrics,
+            episode_idx=i, 
+            initial_robot_position=initial_robot_position, 
+            all_states=all_states, 
+            all_actions=all_actions, 
+            outcome=outcome, 
+            episode_steps=episode_steps, 
+            end_info=end_info, 
+            max_steps=int(time_limit/env.robot_dt)+1, 
+            personal_space=personal_space,
+            robot_dt=env.robot_dt,
+            robot_radius=env.robot_radius,
+            ccso_n_static_humans=env.ccso_n_static_humans
+        )
+        seed += 1
+        return seed, metrics
+    
+    # Initialize metrics
+    metrics = {
+        "successes": 0, 
+        "collisions": 0, 
+        "timeouts": 0, 
+        "returns": jnp.empty((k,)),
+        "times_to_goal": jnp.empty((k,)),
+        "average_speed": jnp.empty((k,)),
+        "average_acceleration": jnp.empty((k,)),
+        "average_jerk": jnp.empty((k,)),
+        "average_angular_speed": jnp.empty((k,)),
+        "average_angular_acceleration": jnp.empty((k,)),
+        "average_angular_jerk": jnp.empty((k,)),
+        "min_distance": jnp.empty((k,)),
+        "space_compliance": jnp.empty((k,)),
+        "episodic_spl": jnp.empty((k,)),
+        "path_length": jnp.empty((k,)),
+        "scenario": jnp.empty((k,), dtype=int),
+        "waypoint_reached": jnp.empty((k,), dtype=int),
+    }
+    # Execute k tests
+    print(f"\nExecuting {k} tests with {env.n_humans} humans...")
+    _, metrics = lax.fori_loop(0, k, _fori_body, (random_seed, metrics))
+    # Print results
+    if print_avg_metrics:
+        print("RESULTS")
+        print(f"Success rate: {round(metrics['successes']/k,2):.2f}")
+        print(f"Collision rate: {round(metrics['collisions']/k,2):.2f}")
+        print(f"Timeout rate: {round(metrics['timeouts']/k,2):.2f}")
+        print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
+        print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
+        print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
+        print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
+        print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
+        print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
+        print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
+        print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
+        print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
+        print(f"Average waypoint reached: {round(jnp.nanmean(metrics['waypoint_reached']),2):.2f}")
         if env.kinematics == ROBOT_KINEMATICS.index('unicycle'):
             print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
             print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
@@ -695,7 +889,7 @@ def animate_trajectory(
     
     if action_space_params is not None and action_space_aside:
         fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=300, gridspec_kw={'width_ratios': [2, 1]})
-        fig.subplots_adjust(right=0.95, left=0.1, bottom=0.1)
+        fig.subplots_adjust(right=0.95, left=0.1, bottom=0.1, top=0.85)
         ax = axes[0]
     else:
         fig, ax = plt.subplots(figsize=figsize, dpi=300)
@@ -721,7 +915,8 @@ def animate_trajectory(
                     Line2D([0], [0], color='white', marker='o', markersize=7, markerfacecolor='white', markeredgecolor='blue', linewidth=2, label='Humans'),
                     Line2D([0], [0], color='white', marker='*', markersize=7, markerfacecolor='red', markeredgecolor='red', linewidth=2, label='Goal')
                 ],
-                bbox_to_anchor=(0.6, 1.25),
+                loc='lower center',    
+                bbox_to_anchor=(0.5, 1.0),
                 fontsize=7,
                 title_fontsize=7,
             )

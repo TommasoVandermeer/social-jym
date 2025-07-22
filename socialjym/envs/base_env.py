@@ -68,13 +68,18 @@ class BaseEnv(ABC):
         ccso_n_static_humans:int,
     ) -> None:
         ## Args validation
-        assert scenario in SCENARIOS, f"Invalid scenario. Choose one of {SCENARIOS}"
+        assert scenario in SCENARIOS or scenario is None, f"Invalid scenario. Choose one of {SCENARIOS}, or None for custom scenario."
+        if scenario is None:
+            print("\nWARNING: Custom scenario is selected. Make sure to implement the 'reset_custom_episode' method in the derived class (not 'reset').\n")
         assert humans_policy in HUMAN_POLICIES, f"Invalid human policy. Choose one of {HUMAN_POLICIES}"
         assert kinematics in ROBOT_KINEMATICS, f"Invalid robot kinematics. Choose one of {ROBOT_KINEMATICS}"
         ## Env initialization
         self.robot_radius = robot_radius
         self.humans_dt = humans_dt
-        self.scenario = SCENARIOS.index(scenario)
+        if scenario is None:
+            self.scenario = -1  # Custom scenario
+        else:
+            self.scenario = SCENARIOS.index(scenario)
         self.n_humans = n_humans
         self.n_obstacles = n_obstacles
         self.humans_policy = HUMAN_POLICIES.index(humans_policy)
@@ -266,19 +271,24 @@ class BaseEnv(ABC):
             info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0))(state[:-1,0:2], info["humans_goal"], info["humans_parameters"][:,0])
             return (info, state)
 
-        new_info, new_state = lax.switch(
-            info["current_scenario"], 
-            [
-                _update_circular_crossing, 
-                _update_traffic_scenarios, 
-                _update_traffic_scenarios, 
-                lambda x: x,
-                _update_delayed_circular_crossing,
-                _update_circular_crossing_with_static_obstacles,
-                _update_crowd_navigation,
-                _update_corner_traffic,
-            ], 
-            (info, state))
+        if self.scenario != -1:  # If not custom scenario
+            new_info, new_state = lax.switch(
+                info["current_scenario"], 
+                [
+                    _update_circular_crossing, 
+                    _update_traffic_scenarios, 
+                    _update_traffic_scenarios, 
+                    lambda x: x,
+                    _update_delayed_circular_crossing,
+                    _update_circular_crossing_with_static_obstacles,
+                    _update_crowd_navigation,
+                    _update_corner_traffic,
+                ], 
+                (info, state),
+            )
+        else:
+            new_info = info
+            new_state = state
         return new_info, new_state
 
     @partial(jit, static_argnames=("self"))

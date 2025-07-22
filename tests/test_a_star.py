@@ -12,34 +12,6 @@ from socialjym.policies.soappo import SOAPPO
 from socialjym.utils.aux_functions import animate_trajectory
 
 ### Parameters
-# time_limit = 120.
-# grid_cell_size = 0.3
-# obstacles = jnp.array([
-#     [[[0.0, 0.0], [0.0, 6.0]]],
-#     [[[0.0, 6.0], [6.0, 6.0]]], 
-#     [[[6.0, 6.0], [6.0, 0.0]]],
-#     [[[6.0, 0.0], [0.0, 0.0]]],
-#     [[[1.5, 1.8], [4.5, 1.8]]],
-#     [[[1.5, 4.2], [4.5, 4.2]]],
-#     [[[1.5, 1.8], [1.5, 2.0]]],
-#     [[[1.5, 4.0], [1.5, 4.2]]],
-#     [[[4.5, 1.8], [4.5, 2.0]]],
-#     [[[4.5, 4.0], [4.5, 4.2]]],
-#     [[[3.0, 0.0], [3.0, 1.8]]],
-#     [[[3.0, 4.2], [3.0, 6.0]]],
-# ])
-# start_pos = jnp.array([3.75, 0.75])  # Starting position of the robot
-# goal_pos = jnp.array([2.25, 5.25])  # Goal position of the robot
-# humans_pose = jnp.array([
-#     [5.5, 5.5, jnp.pi/2],
-#     [0.5, 5.5, -jnp.pi/2],
-#     [5.5, 3.0, jnp.pi],
-# ])
-# humans_goal = jnp.array([
-#     [5.5, 0.5],
-#     [0.5, 0.5],
-#     [0.5, 3.0],
-# ])
 time_limit = 120.
 grid_cell_size = .95
 obstacles = jnp.array([
@@ -410,11 +382,10 @@ env_params = {
     'robot_radius': 0.3,
     'n_humans': len(humans_pose),
     'n_obstacles': len(enlarged_obstacles),
-    'n_segments_per_obstacle': enlarged_obstacles.shape[1],
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'hybrid_scenario',
+    'scenario': None,
     'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4, 6]), # All scenarios but circular_crossing_with_static_obstacles
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
@@ -435,7 +406,7 @@ state, reset_key, obs, info, outcome = env.reset_custom_episode(
         "humans_radius": jnp.ones(env_params['n_humans']) * env_params['robot_radius'],
         "humans_speed": jnp.ones(env_params['n_humans']),
         "static_obstacles": jnp.repeat(enlarged_obstacles[None, :, :, :], env_params['n_humans']+1, axis=0),
-        "scenario": 3,
+        "scenario": -1,  # Custom scenario
     }
 )
 all_states = jnp.array([state])
