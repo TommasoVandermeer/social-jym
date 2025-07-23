@@ -6,7 +6,7 @@ import os
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.aux_functions import animate_trajectory
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
-from socialjym.policies.sarl_a2c import SARLA2C
+from socialjym.policies.sarl_ppo import SARLPPO
 
 # Hyperparameters
 random_seed = 1
@@ -41,7 +41,7 @@ env_params = {
 env = SocialNav(**env_params)
 
 # Initialize robot policy
-policy = SARLA2C(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
+policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=kinematics)
 actor_params = policy.actor.init(random_seed, jnp.zeros((env_params['n_humans'], policy.vnet_input_size)))
 
 # Initialize random keys

@@ -9,7 +9,7 @@ import pickle
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.sarl_ppo import SARLPPO
-from socialjym.policies.soappo import SOAPPO
+from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.utils.aux_functions import animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
 
 ### Hyperparameters

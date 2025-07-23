@@ -16,7 +16,7 @@ from socialjym.utils.rollouts.act_cri_rollouts import actor_critic_il_rollout
 from socialjym.utils.rollouts.ppo_rollouts import ppo_rl_rollout
 from socialjym.utils.replay_buffers.base_act_cri_buffer import BaseACBuffer
 from socialjym.utils.replay_buffers.ppo_replay_buffer import PPOBuffer
-from socialjym.policies.soappo import SOAPPO
+from socialjym.policies.dir_safe import DIRSAFE
 
 ### Hyperparameters
 n_humans_for_tests = [5, 10, 15, 20, 25]
@@ -89,7 +89,7 @@ env_params = {
 env = SocialNav(**env_params)
 _, _, obs, info, _ = env.reset(random.PRNGKey(training_hyperparams['random_seed']))
 # Initialize robot policy and vnet params
-policy = SOAPPO(
+policy = DIRSAFE(
     env.reward_function, 
     v_max=robot_vmax, 
     dt=env_params['robot_dt'], 

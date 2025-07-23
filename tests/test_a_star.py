@@ -8,7 +8,7 @@ import pickle
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
-from socialjym.policies.soappo import SOAPPO
+from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.utils.aux_functions import animate_trajectory
 
 ### Parameters
@@ -365,7 +365,7 @@ else:
 plt.gca().set_aspect('equal', adjustable='box')
 plt.show()
 
-### Simulate SOAPPO to navigate the computed path on the given map
+### Simulate DIRSAFE to navigate the computed path on the given map
 reward_function = Reward2(
         time_limit=time_limit,
         target_reached_reward = True,
@@ -392,7 +392,7 @@ env_params = {
     'kinematics': 'unicycle',
 }
 env = SocialNav(**env_params)
-policy = SOAPPO(env.reward_function, v_max=1., dt=env_params['robot_dt'])
+policy = DIRSAFE(env.reward_function, v_max=1., dt=env_params['robot_dt'])
 with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
     actor_params = pickle.load(f)['actor_params']
 # Simulate a custom episode

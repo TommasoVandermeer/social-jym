@@ -321,7 +321,7 @@ def test_k_trials(
         imitation_learning = True
     else:
         imitation_learning = False
-        ppo = (policy.name == "SARL-PPO") or (policy.name == "SOAPPO")
+        ppo = (policy.name == "SARL-PPO") or (policy.name == "DIRSAFE")
 
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
     if custom_episodes is not None:
@@ -508,7 +508,7 @@ def test_k_custom_trials(
         imitation_learning = True
     else:
         imitation_learning = False
-        ppo = (policy.name == "SARL-PPO") or (policy.name == "SOAPPO")
+        ppo = (policy.name == "SARL-PPO") or (policy.name == "DIRSAFE")
 
     @loop_tqdm(k)
     @jit

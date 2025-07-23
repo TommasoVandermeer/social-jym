@@ -32,7 +32,7 @@ def ppo_rl_rollout(
         debugging: bool = False,
         debugging_interval: int = 100,
 ) -> dict:
-        policies = ["SARL-PPO", "SOAPPO"]
+        policies = ["SARL-PPO", "DIRSAFE"]
         assert policy.name in policies, "This function is only compatible with PPO policies."
         # Compute number of steps to simulate per update for each parallel env
         assert buffer_capacity % n_parallel_envs == 0, "The buffer capacity must be a multiple of the number of parallel environments. Otherwise you will trow away experiences."

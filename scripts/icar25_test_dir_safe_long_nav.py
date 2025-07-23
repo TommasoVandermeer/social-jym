@@ -7,10 +7,11 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import os
 import pickle
+import pandas as pd
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
-from socialjym.policies.soappo import SOAPPO
+from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.utils.aux_functions import test_k_custom_trials, test_k_custom_trials_dwa, plot_state
 
 ### Hyperparameters
@@ -437,7 +438,7 @@ else:
 #     plt.show()
 
 ### Initialize robot policy
-policy = SOAPPO(reward_function, v_max=1., dt=0.25)
+policy = DIRSAFE(reward_function, v_max=1., dt=0.25)
 with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
     actor_params = pickle.load(f)['actor_params']
 
@@ -561,3 +562,57 @@ metrics = {
     "path_length": {"label": "Path length ($m$)", "episodic": True},
     "waypoint_reached": {"label": "Last Waypoint Reached", "episodic": True},
 }
+# Plot boxplots of metrics DIR-SAFE vs DWA
+metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_jerk", "average_angular_speed", "average_angular_jerk", "space_compliance"]
+colors = ["red", "blue"]
+figure, ax = plt.subplots(3, 3, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.3, wspace=0.35, bottom=0.1, top=0.95, left=0.08, right=0.95)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 3
+    j = m % 3
+    ax[i,j].set(
+        xlabel='Policy',
+        title=metrics[metric]['label'],
+    )
+    # ax[i,j].grid(zorder=0)
+    p0 = jnp.arange(2)
+    box_width = 0.3
+    if metric in ['successes', 'collisions', 'timeouts']:
+        y_data = all_metrics[metric] / n_trials
+        y_dwa_data = all_metrics_dwa[metric] / n_trials
+        ax[i, j].set_ylim(-0.05, 1.05)
+        ax[i, j].grid(axis='y', zorder=0)
+        ax[i, j].bar(p0 + box_width, [y_data[0], y_dwa_data[0]], color=colors, width=0.4, zorder=3)
+    else:
+        y_data = all_metrics[metric]
+        y_dwa_data = all_metrics_dwa[metric]
+        data = pd.DataFrame(y_data)
+        data = data.dropna()
+        data_dwa = pd.DataFrame(y_dwa_data)
+        data_dwa = data_dwa.dropna()
+        ax[i,j].boxplot(
+            data, 
+            widths=[box_width],
+            positions=[box_width], 
+            patch_artist=True, 
+            boxprops=dict(facecolor=colors[0], edgecolor=colors[0]),
+            meanprops=dict(markerfacecolor="white", markeredgecolor="white"), 
+            medianprops=dict(color='black'),
+            showfliers=False,
+            showmeans=True, 
+            zorder=3,
+        )
+        ax[i,j].boxplot(
+            data_dwa, 
+            widths=[box_width],
+            positions=[1 + box_width], 
+            patch_artist=True, 
+            boxprops=dict(facecolor=colors[1], edgecolor=colors[1]),
+            meanprops=dict(markerfacecolor="white", markeredgecolor="white"), 
+            medianprops=dict(color='black'),
+            showfliers=False,
+            showmeans=True, 
+            zorder=3,
+        )
+    ax[i,j].set_xticks(p0 + box_width, labels=['DIR-SAFE', 'DWA'])
+figure.savefig(os.path.join(os.path.dirname(__file__), f"dir_safe_vs_dwa_long_nav_{n_humans}_humans.eps"), format='eps')

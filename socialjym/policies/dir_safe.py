@@ -89,7 +89,7 @@ class Actor(hk.Module):
         sampled_action = self.distr.sample(distribution, random_key)
         return sampled_action, distribution
 
-class SOAPPO(SARL):
+class DIRSAFE(SARL):
     def __init__(
             self, 
             reward_function:FunctionType, 
@@ -101,8 +101,8 @@ class SOAPPO(SARL):
             noise_sigma_percentage:float=0., # Standard deviation of the noise as a percentage of the absolute value of the difference between the robot and the humans
         ) -> None:
         """
-        SOAPPO (Social and Obstacle Aware Proximal Policy Optimization) is an RL policy that takes in input a local map of the static obstacles in the environment, the robot state and the human states, and
-        outputs a constinuous action parameterized by a Dirichlet distribution whose support is guaranteed to avoid collisions with the static obstacles.
+        DIRSAFE (DIRichlet-based Socially Aware FEasible-action) is an RL policy that takes in input a local map of the static obstacles in the environment, the robot state and the human states, and
+        outputs a continuous action parameterized by a Dirichlet distribution whose support is guaranteed to avoid collisions with the static obstacles.
         """
         # Configurable attributes
         super().__init__(
@@ -116,7 +116,7 @@ class SOAPPO(SARL):
             noise_sigma_percentage=noise_sigma_percentage,
         )
         # Default attributes
-        self.name = "SOAPPO"
+        self.name = "DIRSAFE"
         self.distr_id = DISTRIBUTIONS.index('dirichlet')
         self.distr = Dirichlet(EPSILON)
         self.normalize_and_clip_obs =  False
@@ -431,7 +431,7 @@ class SOAPPO(SARL):
     
     @partial(jit, static_argnames=("self"))
     def batch_segment_rectangle_intersection(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax):
-        return vmap(SOAPPO.segment_rectangle_intersection, in_axes=(None,0,0,0,0,None,None,None,None))(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax)
+        return vmap(DIRSAFE.segment_rectangle_intersection, in_axes=(None,0,0,0,0,None,None,None,None))(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax)
 
     # Public methods
 
@@ -446,7 +446,7 @@ class SOAPPO(SARL):
             robot_obs[5], # robot orientation
             robot_obs[4], # robot radius
         )
-        return vmap(SOAPPO._compute_vnet_input,in_axes=(None,None,0,None,None))(self, robot_obs, humans_obs, action_space_params, info)
+        return vmap(DIRSAFE._compute_vnet_input,in_axes=(None,None,0,None,None))(self, robot_obs, humans_obs, action_space_params, info)
 
     @partial(jit, static_argnames=("self"))
     def init_nns(
@@ -584,7 +584,7 @@ class SOAPPO(SARL):
         actor_params,
         sample,
     ):
-        return vmap(SOAPPO.act, in_axes=(None, 0, 0, 0, None, None))(
+        return vmap(DIRSAFE.act, in_axes=(None, 0, 0, 0, None, None))(
             self,
             keys, 
             obses, 

@@ -8,7 +8,7 @@ import pickle
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
-from socialjym.policies.soappo import SOAPPO
+from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.utils.aux_functions import animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
 
 ### Hyperparameters
@@ -47,7 +47,7 @@ env_params = {
 env = SocialNav(**env_params)
 
 ### Initialize robot policy
-policy = SOAPPO(env.reward_function, v_max=v_max, dt=env_params['robot_dt'])
+policy = DIRSAFE(env.reward_function, v_max=v_max, dt=env_params['robot_dt'])
 # _, _, obs, info, _ = env.reset(random.PRNGKey(0))
 # actor_params, critic_params = policy.init_nns(random.PRNGKey(0), obs, info)
 with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
