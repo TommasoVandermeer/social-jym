@@ -826,7 +826,7 @@ def test_k_trials_dwa(
         predict_time = .5,
         velocity_resolution = 0.1, # Discretization of the velocity space
         yawrate_resolution = np.radians(1.0), # Discretization of the yawrate space
-        heading = 0.2,
+        heading = 0.04,
         clearance = 0.2,
         velocity = 0.2,
         base=[-env.robot_radius, -env.robot_radius, env.robot_radius, env.robot_radius],  # [x_min, y_min, x_max, y_max] in meters
@@ -1013,7 +1013,7 @@ def test_k_custom_trials_dwa(
         predict_time = .5,
         velocity_resolution = 0.1, # Discretization of the velocity space
         yawrate_resolution = np.radians(1.0), # Discretization of the yawrate space
-        heading = 0.2,
+        heading = 0.04,
         clearance = 0.2,
         velocity = 0.2,
         base=[-env.robot_radius, -env.robot_radius, env.robot_radius, env.robot_radius],  # [x_min, y_min, x_max, y_max] in meters

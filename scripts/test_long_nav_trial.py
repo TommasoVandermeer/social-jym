@@ -12,7 +12,7 @@ from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.utils.aux_functions import animate_trajectory, interpolate_humans_boundaries, interpolate_obstacle_segments, plot_state
 
 ### Hyperparameters
-policy = 'dir-safe' # 'dir-safe' or 'dwa'
+policy = 'dwa' # 'dir-safe' or 'dwa'
 trial = 15 # 23
 n_humans = 20
 time_limit = 100.
@@ -143,7 +143,7 @@ elif policy == 'dwa':
         predict_time = .5,
         velocity_resolution = 0.1, # Discretization of the velocity space
         yawrate_resolution = np.radians(1.0), # Discretization of the yawrate space
-        heading = 0.2,
+        heading = 0.04,
         clearance = 0.2,
         velocity = 0.2,
         base=[-test_env.robot_radius, -test_env.robot_radius, test_env.robot_radius, test_env.robot_radius],  # [x_min, y_min, x_max, y_max] in meters
