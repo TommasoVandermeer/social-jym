@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import random, lax, debug
+from jax import random, lax
 import os
 import pickle
 
@@ -10,9 +10,9 @@ from socialjym.utils.aux_functions import animate_trajectory
 
 ### Hyperparameters
 policy = 'dir-safe' # 'dir-safe' or 'dwa'
-trial = 12
-n_humans = 15
-time_limit = 120.
+trial = 15
+n_humans = 20
+time_limit = 100.
 reward_function = Reward2(
     time_limit=time_limit,
     target_reached_reward = True,

@@ -11,13 +11,13 @@ import pickle
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.soappo import SOAPPO
-from socialjym.utils.aux_functions import test_k_custom_trials, plot_state
+from socialjym.utils.aux_functions import test_k_custom_trials, test_k_custom_trials_dwa, plot_state
 
 ### Hyperparameters
 random_seed = 0 
 n_trials = 100
-n_humans = 15
-time_limit = 120.
+n_humans = 20
+time_limit = 100.
 reward_function = Reward2(
     time_limit=time_limit,
     target_reached_reward = True,
@@ -30,6 +30,9 @@ reward_function = Reward2(
     angular_speed_bound=1.,
     angular_speed_penalty_weight=0.0075,
 )
+
+### Set numpy seed
+np.random.seed(random_seed)
 
 ### Environment parameters
 ### Parameters
@@ -377,7 +380,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'custom_episodes_
                 human_goal = jnp.clip(human_pos + jnp.array([distance * jnp.cos(angle), distance * jnp.sin(angle)]), jnp.array([-15+0.1, -10+0.1]), jnp.array([15-0.1, 10-0.1]))
                 # Ensure the human goal is not too close to the robot start position, robot goal position or already covered positions and ensure it does not intersect with obstacles
                 iteration = 0
-                while jnp.any(jnp.abs(human_goal - jnp.array(covered_positions)) < 0.6) \
+                while jnp.any(jnp.abs(human_goal - jnp.array(covered_positions)) < 0.3) \
                     or jnp.any(jnp.array([segment_segment_intersection(human_pos[0], human_pos[1], human_goal[0], human_goal[1], obs[0, 0, 0], obs[0, 0, 1], obs[0, 1, 0], obs[0, 1, 1]) for obs in obstacles])):
                     distance = np.random.uniform(1.0, 7.0)
                     angle = np.random.uniform(0, 2 * np.pi)
@@ -497,25 +500,40 @@ else:
     with open(os.path.join(os.path.dirname(__file__),f"dir_safe_tests_long_nav_{n_humans}_humans.pkl"), 'rb') as f:
         all_metrics = pickle.load(f)
 if not os.path.exists(os.path.join(os.path.dirname(__file__),f"dwa_tests_long_nav_{n_humans}_humans.pkl")):
-    pass
-    # # Test DWA policy
-    # metrics_dwa = test_k_trials_dwa(
-    #     n_trials, 
-    #     random_seed, 
-    #     test_env, 
-    #     reward_function.time_limit,
-    #     robot_vmax=policy.v_max,
-    #     robot_wmax=2*policy.v_max/policy.wheels_distance, 
-    # )
-    # all_metrics_dwa = tree_map(lambda x, y: x.at[:].set(y), all_metrics_dwa, metrics_dwa)
+    print(f"\n## Testing DWA ###")
+    test_env_params = {
+        'robot_radius': 0.3,
+        'n_humans': n_humans,
+        'n_obstacles': len(obstacles),
+        'robot_dt': 0.25,
+        'humans_dt': 0.01,
+        'robot_visible': True,
+        'scenario': None, # Custom scenario
+        'humans_policy': 'hsfm',
+        'reward_function': reward_function,
+        'kinematics': 'unicycle',
+        'ccso_n_static_humans': 0,
+    }
+    test_env = SocialNav(**test_env_params)
+    # Test DWA policy
+    metrics_dwa = test_k_custom_trials_dwa(
+        n_trials, 
+        random_seed, 
+        test_env, 
+        reward_function.time_limit,
+        robot_vmax=policy.v_max,
+        robot_wmax=2*policy.v_max/policy.wheels_distance, 
+        custom_episodes=custom_episodes,
+    )
+    all_metrics_dwa = tree_map(lambda x, y: x.at[:].set(y), all_metrics_dwa, metrics_dwa)
 
-    # ## Save results
-    # with open(os.path.join(os.path.dirname(__file__),f"dwa_tests_long_nav_{n_humans}_humans.pkl"), 'wb') as f:
-    #     pickle.dump(all_metrics_dwa, f)
-
-    # ## Load results
-    # with open(os.path.join(os.path.dirname(__file__),f"dwa_tests_long_nav_{n_humans}_humans.pkl"), 'rb') as f:
-    #     all_metrics_dwa = pickle.load(f)
+    ## Save results
+    with open(os.path.join(os.path.dirname(__file__),f"dwa_tests_long_nav_{n_humans}_humans.pkl"), 'wb') as f:
+        pickle.dump(all_metrics_dwa, f)
+else:
+    ## Load results
+    with open(os.path.join(os.path.dirname(__file__),f"dwa_tests_long_nav_{n_humans}_humans.pkl"), 'rb') as f:
+        all_metrics_dwa = pickle.load(f)
 
 ### Plot results
 # Matplotlib font

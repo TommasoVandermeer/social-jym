@@ -654,6 +654,34 @@ def test_k_custom_trials(
             print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
     return metrics
 
+def interpolate_obstacle_segments(obstacles, points_per_meter=10):
+    # TODO: JIT and VMAP this function
+    point_list = []
+    for obs in np.array(obstacles):
+        for edge in obs:
+            p0, p1 = edge
+            if np.isnan(p0).any() or np.isnan(p1).any():
+                continue
+            length = np.linalg.norm(p1 - p0)
+            n_points = max(2, int(np.ceil(length * points_per_meter)))
+            t = np.linspace(0, 1, n_points)
+            points = (1 - t)[:, None] * p0 + t[:, None] * p1
+            point_list.append(points)
+    if point_list:
+        return np.vstack(point_list)
+    else:
+        return np.empty((0, 2))
+    
+def interpolate_humans_boundaries(humans_pose, humans_radiuses, points_per_human=10):
+    # TODO: JIT and VMAP this function
+    point_list = []
+    for i, (pose, radius) in enumerate(zip(humans_pose, humans_radiuses)):
+        angle = jnp.linspace(0, 2 * jnp.pi, points_per_human)
+        x = pose[0] + radius * jnp.cos(angle)
+        y = pose[1] + radius * jnp.sin(angle)
+        point_list.append(jnp.stack((x, y), axis=-1))
+    return jnp.concatenate(point_list, axis=0)
+
 def test_k_trials_dwa(
     k: int,
     random_seed: int, 
@@ -706,35 +734,9 @@ def test_k_trials_dwa(
         custom_humans_speed = jnp.empty((k, env.n_humans))
     
     def _fori_body(i:int, for_val:tuple):   
-        # Construct point cloud functions
-        def interpolate_obstacle_segments(obstacles, points_per_meter=10):
-            point_list = []
-            for obs in np.array(obstacles):
-                for edge in obs:
-                    p0, p1 = edge
-                    if np.isnan(p0).any() or np.isnan(p1).any():
-                        continue
-                    length = np.linalg.norm(p1 - p0)
-                    n_points = max(2, int(np.ceil(length * points_per_meter)))
-                    t = np.linspace(0, 1, n_points)
-                    points = (1 - t)[:, None] * p0 + t[:, None] * p1
-                    point_list.append(points)
-            if point_list:
-                return np.vstack(point_list)
-            else:
-                return np.empty((0, 2))
-        def interpolate_humans_boundaries(humans_pose, humans_radiuses, points_per_human=10):
-            point_list = []
-            for i, (pose, radius) in enumerate(zip(humans_pose, humans_radiuses)):
-                angle = jnp.linspace(0, 2 * jnp.pi, points_per_human)
-                x = pose[0] + radius * jnp.cos(angle)
-                y = pose[1] + radius * jnp.sin(angle)
-                point_list.append(jnp.stack((x, y), axis=-1))
-            return jnp.concatenate(point_list, axis=0)
-
         def _while_body(while_val:tuple):
             # Retrieve data from the tuple
-            state, obs, info, outcome, policy_key, steps, all_actions, all_states, obstacles_point_cloud = while_val
+            state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud = while_val
             # Construct point cloud
             humans_point_cloud = interpolate_humans_boundaries(obs[:-1,:2], info['humans_parameters'][:,0])
             point_cloud = jnp.concatenate((obstacles_point_cloud, humans_point_cloud), axis=0)
@@ -746,11 +748,11 @@ def test_k_trials_dwa(
             all_states = all_states.at[steps].set(state)
             # Update step counter
             steps += 1
-            return state, obs, info, outcome, policy_key, steps, all_actions, all_states, obstacles_point_cloud
+            return state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud
 
         ## Retrieve data from the tuple
         seed, metrics, dwa_config = for_val
-        policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
+        reset_key = random.PRNGKey(seed) 
         ## Reset the environment
         state, reset_key, obs, info, outcome = lax.cond(
             custom_trials, 
@@ -771,11 +773,11 @@ def test_k_trials_dwa(
         ## Episode loop
         all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
         all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
-        while_val = (state, obs, info, outcome, policy_key, 0, all_actions, all_states, obstacles_point_cloud)
+        while_val = (state, obs, info, outcome, 0, all_actions, all_states, obstacles_point_cloud)
         while outcome["nothing"]:
-            state, obs, info, outcome, policy_key, steps, all_actions, all_states, obstacles_point_cloud = _while_body(while_val)
-            while_val = (state, obs, info, outcome, policy_key, steps, all_actions, all_states, obstacles_point_cloud)
-        _, _, end_info, outcome, policy_key, episode_steps, all_actions, all_states, _ = while_val
+            state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud = _while_body(while_val)
+            while_val = (state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud)
+        _, _, end_info, outcome, episode_steps, all_actions, all_states, _ = while_val
         ## Update metrics
         metrics = compute_episode_metrics(
             metrics=metrics,
@@ -848,6 +850,194 @@ def test_k_trials_dwa(
         print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
         print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
         print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
+        print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
+        print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
+        print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
+    return metrics
+
+def test_k_custom_trials_dwa(
+    k: int,
+    random_seed: int, 
+    env: BaseEnv, 
+    time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
+    custom_episodes:dict,
+    robot_vmax:float=1.0,
+    robot_wmax:float=2*1.0/0.7,
+    personal_space:float=0.5,
+    print_avg_metrics:bool=True
+) -> tuple:
+    """
+    This function tests a policy in a given environment for k trials and outputs a series of metrics.
+
+    args:
+    - k: int. The number of trials to execute.
+    - random_seed: int. The random seed to use for the execution.
+    - env: BaseEnv. The environment to test the policy in.
+    - time_limit: float. The maximum time limit for each trial. WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage.
+    - personal_space: float. A parameter used to compute space compliance.
+
+    output:
+    - metrics: dict. A dictionary containing the metrics of the tests.
+    """
+    try:
+        import dwa
+    except ImportError:
+        raise ImportError("DWA package is not installed. Please install it to use this function.\nYou can install it with 'pip3 install dynamic-window-approach'.\n Checkout https://github.com/goktug97/DynamicWindowApproach")
+    
+    ### Assert data correctness
+    assert env.scenario == -1, "The environment must be an environment with custom episodes."
+    assert list(custom_episodes.keys()) == ["full_state", "humans_goal", "robot_goals", "static_obstacles", "humans_radius", "humans_speed"], "Invalid keys in custom_episodes. Expected keys: ['full_state', 'humans_goal', 'robot_goals', 'static_obstacles', 'humans_radius', 'humans_speed']"
+    for key, value in custom_episodes.items():
+        assert key in ["full_state", "humans_goal", "robot_goals", "static_obstacles", "humans_radius", "humans_speed"], f"Invalid key {key} in custom_episodes."
+        assert value.shape[0] == k, f"Invalid shape for {key} in custom_episodes. Expected shape ({k}, ...), got {value.shape}."
+    
+    def _fori_body(i:int, for_val:tuple):   
+        # Construct point cloud functions
+
+        def _while_body(while_val:tuple):
+            # Retrieve data from the tuple
+            episode_idx, state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud = while_val
+            # Update robot goal
+            info["robot_goal"], info["robot_goal_index"] = lax.cond(
+                (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= env.robot_radius*2) & # Waypoint reached threshold is set to be higher
+                (info['robot_goal_index'] < len(custom_episodes["robot_goals"][episode_idx])-1) & # Check if current goal is not the last one
+                (~(jnp.any(jnp.isnan(custom_episodes["robot_goals"][episode_idx,info['robot_goal_index']+1])))), # Check if next goal is not NaN
+                lambda _: (custom_episodes["robot_goals"][episode_idx,info['robot_goal_index']+1], info['robot_goal_index']+1),
+                lambda x: x,
+                (info["robot_goal"], info["robot_goal_index"])
+            )
+            # Update humans goal
+            info["humans_goal"] = lax.fori_loop(
+                0, 
+                env.n_humans, 
+                lambda h, x: lax.cond(
+                    jnp.linalg.norm(state[h,:2] - info["humans_goal"][h]) <= info["humans_parameters"][h,0],
+                    lambda y: lax.cond(
+                        jnp.all(info["humans_goal"][h] == custom_episodes["humans_goal"][episode_idx,h]),
+                        lambda z: z.at[h].set(custom_episodes["full_state"][episode_idx,h,:2]),
+                        lambda z: z.at[h].set(custom_episodes["humans_goal"][episode_idx,h]),
+                        y,
+                    ),
+                    lambda y: y,
+                    x
+                ),
+                info["humans_goal"],
+            )
+            # Construct point cloud
+            humans_point_cloud = interpolate_humans_boundaries(obs[:-1,:2], info['humans_parameters'][:,0])
+            point_cloud = jnp.concatenate((obstacles_point_cloud, humans_point_cloud), axis=0)
+            # Make a step in the environment
+            action = jnp.array(dwa.planning(tuple(map(float, np.append(obs[-1,:2],obs[-1,5]))), tuple(map(float, obs[-1,2:4])), tuple(map(float, info['robot_goal'])), np.array(point_cloud, dtype=np.float32), dwa_config))
+            state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
+            # Save data
+            all_actions = all_actions.at[steps].set(action)
+            all_states = all_states.at[steps].set(state)
+            # Update step counter
+            steps += 1
+            return episode_idx, state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud
+
+        ## Retrieve data from the tuple
+        seed, metrics, dwa_config = for_val
+        ## Reset the environment
+        state, _, obs, info, outcome = env.reset_custom_episode(
+            random.PRNGKey(0), # Not used, but required by the function
+            {
+                "full_state": custom_episodes["full_state"][i],
+                "robot_goal": custom_episodes["robot_goals"][i,0],
+                "humans_goal": custom_episodes["humans_goal"][i],
+                "static_obstacles": custom_episodes["static_obstacles"][i],
+                "scenario": -1,
+                "humans_radius": custom_episodes["humans_radius"][i],
+                "humans_speed": custom_episodes["humans_speed"][i],
+            }
+        )
+        initial_robot_position = state[-1,:2]
+        # Construct obstacles point cloud
+        obstacles_point_cloud = interpolate_obstacle_segments(info["static_obstacles"][-1])
+        initial_robot_position = state[-1,:2]
+        ## Episode loop
+        all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+        all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+        while_val = (i, state, obs, info, outcome, 0, all_actions, all_states, obstacles_point_cloud)
+        while outcome["nothing"]:
+            i, state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud = _while_body(while_val)
+            while_val = (i, state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud)
+        _, _, _, end_info, outcome, episode_steps, all_actions, all_states, _ = while_val
+        ## Update metrics
+        metrics["waypoint_reached"] = metrics["waypoint_reached"].at[i].set(end_info["robot_goal_index"])
+        metrics = compute_episode_metrics(
+            metrics=metrics,
+            episode_idx=i, 
+            initial_robot_position=initial_robot_position, 
+            all_states=all_states, 
+            all_actions=all_actions, 
+            outcome=outcome, 
+            episode_steps=episode_steps, 
+            end_info=end_info, 
+            max_steps=int(time_limit/env.robot_dt)+1, 
+            personal_space=personal_space,
+            robot_dt=env.robot_dt,
+            robot_radius=env.robot_radius,
+            ccso_n_static_humans=env.ccso_n_static_humans
+        )
+        seed += 1
+        return seed, metrics
+    # Initialize metrics
+    metrics = {
+        "successes": 0, 
+        "collisions": 0, 
+        "timeouts": 0, 
+        "returns": jnp.empty((k,)),
+        "times_to_goal": jnp.empty((k,)),
+        "average_speed": jnp.empty((k,)),
+        "average_acceleration": jnp.empty((k,)),
+        "average_jerk": jnp.empty((k,)),
+        "average_angular_speed": jnp.empty((k,)),
+        "average_angular_acceleration": jnp.empty((k,)),
+        "average_angular_jerk": jnp.empty((k,)),
+        "min_distance": jnp.empty((k,)),
+        "space_compliance": jnp.empty((k,)),
+        "episodic_spl": jnp.empty((k,)),
+        "path_length": jnp.empty((k,)),
+        "scenario": jnp.empty((k,), dtype=int),
+        "waypoint_reached": jnp.empty((k,), dtype=int),
+    }
+    # Define DWA configuration
+    dwa_config = dwa.Config(
+        max_speed=robot_vmax,
+        min_speed=0.0,
+        max_yawrate=robot_wmax,
+        dt = env.robot_dt,
+        max_accel=4,
+        max_dyawrate=4,
+        predict_time = .5,
+        velocity_resolution = 0.1, # Discretization of the velocity space
+        yawrate_resolution = np.radians(1.0), # Discretization of the yawrate space
+        heading = 0.2,
+        clearance = 0.2,
+        velocity = 0.2,
+        base=[-env.robot_radius, -env.robot_radius, env.robot_radius, env.robot_radius],  # [x_min, y_min, x_max, y_max] in meters
+    )
+    # Execute k tests
+    print(f"\nExecuting {k} tests with {env.n_humans} humans...")
+    for i in tqdm(range(k), desc="Testing DWA policy"):
+        random_seed, metrics = _fori_body(i, (random_seed, metrics, dwa_config))
+    # Print results
+    if print_avg_metrics:
+        print("RESULTS")
+        print(f"Success rate: {round(metrics['successes']/k,2):.2f}")
+        print(f"Collision rate: {round(metrics['collisions']/k,2):.2f}")
+        print(f"Timeout rate: {round(metrics['timeouts']/k,2):.2f}")
+        print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
+        print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
+        print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
+        print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
+        print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
+        print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
+        print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
+        print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
+        print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
+        print(f"Average waypoint reached: {round(jnp.nanmean(metrics['waypoint_reached']),2):.2f}")
         print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
         print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
         print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
