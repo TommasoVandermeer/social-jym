@@ -17,7 +17,7 @@ from socialjym.utils.aux_functions import test_k_custom_trials, test_k_custom_tr
 ### Hyperparameters
 random_seed = 0 
 n_trials = 100
-n_humans = 20
+n_humans = 30
 time_limit = 100.
 reward_function = Reward2(
     time_limit=time_limit,
@@ -368,7 +368,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'custom_episodes_
                     np.random.uniform(-10+0.05, 10-0.05),
                 ])
                 # Ensure the human is not too close to the robot start position, robot goal position or already covered positions
-                while jnp.any(jnp.abs(human_pos - jnp.array(covered_positions)) < 0.6):
+                while jnp.any(jnp.linalg.norm(human_pos - jnp.array(covered_positions), axis=1) < 0.6):
                     human_pos = jnp.array([
                         np.random.uniform(-15+0.05, 15-0.05),
                         np.random.uniform(-10+0.05, 10-0.05),
@@ -381,7 +381,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'custom_episodes_
                 human_goal = jnp.clip(human_pos + jnp.array([distance * jnp.cos(angle), distance * jnp.sin(angle)]), jnp.array([-15+0.1, -10+0.1]), jnp.array([15-0.1, 10-0.1]))
                 # Ensure the human goal is not too close to the robot start position, robot goal position or already covered positions and ensure it does not intersect with obstacles
                 iteration = 0
-                while jnp.any(jnp.abs(human_goal - jnp.array(covered_positions)) < 0.3) \
+                while jnp.any(jnp.linalg.norm(human_goal - jnp.array(covered_positions), axis=1) < 0.3) \
                     or jnp.any(jnp.array([segment_segment_intersection(human_pos[0], human_pos[1], human_goal[0], human_goal[1], obs[0, 0, 0], obs[0, 0, 1], obs[0, 1, 0], obs[0, 1, 1]) for obs in obstacles])):
                     distance = np.random.uniform(1.0, 7.0)
                     angle = np.random.uniform(0, 2 * np.pi)
@@ -500,6 +500,7 @@ else:
     ### Load results
     with open(os.path.join(os.path.dirname(__file__),f"dir_safe_tests_long_nav_{n_humans}_humans.pkl"), 'rb') as f:
         all_metrics = pickle.load(f)
+    print(f"DIR-SAFE Success Rate: {all_metrics['successes'][0] / n_trials:.2f}")
 if not os.path.exists(os.path.join(os.path.dirname(__file__),f"dwa_tests_long_nav_{n_humans}_humans.pkl")):
     print(f"\n## Testing DWA ###")
     test_env_params = {
@@ -535,6 +536,7 @@ else:
     ## Load results
     with open(os.path.join(os.path.dirname(__file__),f"dwa_tests_long_nav_{n_humans}_humans.pkl"), 'rb') as f:
         all_metrics_dwa = pickle.load(f)
+    print(f"DWA Success Rate: {all_metrics_dwa['successes'][0] / n_trials:.2f}")
 
 ### Plot results
 # Matplotlib font
