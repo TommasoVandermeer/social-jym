@@ -344,11 +344,34 @@ print(f"Path to goal: {path_to_goal.shape[0]-1} waypoints")
 
 ### Plotting
 # Plot obstacles and cell decomposition
+from matplotlib import rc
+font = {
+    'weight' : 'regular',
+    'size'   : 20
+}
+rc('font', **font)
 fig, ax = plt.subplots(figsize=(8, 8))
+fig2, ax2 = plt.subplots(figsize=(6, 4.2))
+fig2.subplots_adjust(right=0.99, left=0.1, top=0.99, bottom=0.17)
+try:
+    with open(os.path.join(os.path.dirname(__file__), 'custom_episodes_30_humans.pkl'), 'rb') as f:
+        custom_episodes = pickle.load(f)
+        full_state = custom_episodes['full_state'][1, :-1]
+        for h in range(full_state.shape[0]):
+            head = plt.Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * 0.3, full_state[h,1] + jnp.sin(full_state[h,4]) * 0.3), 0.1, color='purple', zorder=10)
+            ax2.add_patch(head)
+            circle = plt.Circle((full_state[h,0],full_state[h,1]),0.3, edgecolor='purple', facecolor="white", fill=True, zorder=10)
+            ax2.add_patch(circle)
+except:
+    pass
 if obstacles.shape[1] > 1: # Polygon obstacles
-    for o in obstacles: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+    for o in obstacles: 
+        ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+        ax2.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
 else: # One segment obstacles
-    for o in obstacles: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+    for o in obstacles: 
+        ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+        ax2.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
 for idx, coord in enumerate(grid_coordinates.reshape(-1,2)):
     i = idx // static_obstacles_for_each_cell.shape[1]
     j = idx % static_obstacles_for_each_cell.shape[1]
@@ -357,12 +380,25 @@ for idx, coord in enumerate(grid_coordinates.reshape(-1,2)):
     ax.add_patch(rect)
 ax.scatter(start_pos[0], start_pos[1], color='green', label='Start Position', zorder=4, marker='o', s=100)
 ax.scatter(goal_pos[0], goal_pos[1], color='red', label='Goal Position', zorder=4, marker='*', s=100)
+ax2.scatter(start_pos[0], start_pos[1], color='green', label='Start Position', zorder=4, marker='o', s=100)
+ax2.scatter(goal_pos[0], goal_pos[1], color='red', label='Goal Position', zorder=4, marker='*', s=100)
 if path_to_goal.shape[0] > 0:
-    ax.plot(path_to_goal[:, 0], path_to_goal[:, 1], color='blue', linewidth=2, label='A* Path', zorder=3)
-    ax.scatter(path_to_goal[1:-1, 0], path_to_goal[1:-1, 1], color='blue', s=10, zorder=3)
+    path_to_goal_to_plot = path_to_goal.at[0].set(start_pos)
+    path_to_goal_to_plot = path_to_goal_to_plot.at[-1].set(goal_pos)
+    ax.plot(path_to_goal_to_plot[:, 0], path_to_goal_to_plot[:, 1], color='blue', linewidth=2, label='A* Path', zorder=3)
+    ax.scatter(path_to_goal_to_plot[1:-1, 0], path_to_goal_to_plot[1:-1, 1], color='blue', s=10, zorder=3)
+    ax2.plot(path_to_goal_to_plot[:, 0], path_to_goal_to_plot[:, 1], color='blue', linewidth=2, label='A* path to goal', zorder=3)
 else:
     print("No path found.")
-plt.gca().set_aspect('equal', adjustable='box')
+ax2.set_xlabel('x (m)')
+ax2.set_ylabel('y (m)', labelpad=-30)
+ax2.set_xticks(jnp.arange(-15, 16, 5))
+# h, l = ax2.get_legend_handles_labels()
+# h.append(plt.Line2D([0], [0], color='black', lw=2, label='Obstacles'))
+# l.append('Obstacles')
+# ax2.legend(h, l, loc='center left', bbox_to_anchor=(1, 0.5))
+ax2.set_aspect('equal', adjustable='box')
+fig2.savefig(os.path.join(os.path.dirname(__file__), 'long_nav_snapshot.eps'), format='eps')
 plt.show()
 
 ### Simulate DIRSAFE to navigate the computed path on the given map

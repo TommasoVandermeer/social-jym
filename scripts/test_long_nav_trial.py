@@ -14,7 +14,7 @@ from socialjym.utils.aux_functions import animate_trajectory, interpolate_humans
 ### Hyperparameters
 policy = 'dwa' # 'dir-safe' or 'dwa'
 trial = 15 # 23
-n_humans = 20
+n_humans = 30
 time_limit = 100.
 reward_function = Reward2(
     time_limit=time_limit,
@@ -34,7 +34,7 @@ with open(os.path.join(os.path.dirname(__file__), f'custom_episodes_{n_humans}_h
     custom_episodes = pickle.load(f)
 
 ### Visualize initial configuration
-colors = list(mcolors.TABLEAU_COLORS.values()) + list(mcolors.TABLEAU_COLORS.values()) + list(mcolors.TABLEAU_COLORS.values())
+colors = list(mcolors.TABLEAU_COLORS.values()) * 10
 xlims = [jnp.nanmin(custom_episodes["static_obstacles"][trial][-1][:,:,:,0]), jnp.nanmax(custom_episodes["static_obstacles"][trial][-1][:,:,:,0])]
 ylims = [jnp.nanmin(custom_episodes["static_obstacles"][trial][-1][:,:,:,1]), jnp.nanmax(custom_episodes["static_obstacles"][trial][-1][:,:,:,1])]
 figure, ax = plt.subplots(1,1)
