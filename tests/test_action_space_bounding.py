@@ -5,7 +5,7 @@ from scipy.spatial import ConvexHull
 
 vmax = 1.
 wheels_distance = 0.7
-samples = 5
+samples = 205
 dt = .75
 robot_radius = 0.3
 # Control parameters
@@ -547,10 +547,9 @@ ax[0].add_artist(
         2*robot_radius, 
         edgecolor='red', 
         fill=True, 
-        facecolor='lightcoral',
+        facecolor='lightgrey',
         zorder=3, 
-        linewidth=3,
-        label='Intersect.\ncheck box'
+        linewidth=3
     )
 )
 ax[1].add_artist(
@@ -571,7 +570,7 @@ ax[1].add_artist(
         (new_alpha*dt**2*vmax/(4*wheels_distance) * (beta)), 
         edgecolor='red', 
         fill=True, 
-        facecolor='lightcoral',
+        facecolor='lightgrey',
         zorder=3, 
         linewidth=3,
     )
@@ -583,7 +582,7 @@ ax[1].add_artist(
         (new_alpha*dt**2*vmax/(4*wheels_distance) * (gamma)), 
         edgecolor='red', 
         fill=True, 
-        facecolor='lightcoral', 
+        facecolor='lightgrey', 
         zorder=3, 
         linewidth=3,
     )
@@ -593,12 +592,9 @@ alpha_intersection_points = alpha_intersection_points[~jnp.isnan(alpha_intersect
 beta_intersection_points = beta_intersection_points[~jnp.isnan(beta_intersection_points).any(axis=1)]
 gamma_intersection_points = gamma_intersection_points[~jnp.isnan(gamma_intersection_points).any(axis=1)]
 # Remove NaN points
-ax[0].fill(alpha_intersection_points[:,0], alpha_intersection_points[:,1], color='cyan', zorder=8, label=r'$\mathcal{I}_{\alpha}$')
-ax[1].fill(beta_intersection_points[:,0], beta_intersection_points[:,1], color='springgreen', zorder=8, label=r'$\mathcal{I}_{\beta}$')
+ax[0].fill(alpha_intersection_points[:,0], alpha_intersection_points[:,1], color='blue', zorder=8, label=r'$\mathcal{I}_{\alpha}$')
+ax[1].fill(beta_intersection_points[:,0], beta_intersection_points[:,1], color='green', zorder=8, label=r'$\mathcal{I}_{\beta}$')
 ax[1].fill(gamma_intersection_points[:,0], gamma_intersection_points[:,1], color='pink', zorder=8, label=r'$\mathcal{I}_{\gamma}$')
-# ax[0].scatter(alpha_intersection_points[:,0], alpha_intersection_points[:,1], edgecolor='blue', linewidth=1.5, facecolor='cyan', s=200, zorder=8, marker='*', label=r'$\mathcal{I}_{\alpha}$')
-# ax[1].scatter(beta_intersection_points[:,0], beta_intersection_points[:,1], edgecolor='green', linewidth=1.5, facecolor='springgreen', s=200, zorder=8, marker='*', label=r'$\mathcal{I}_{\beta}$')
-# ax[1].scatter(gamma_intersection_points[:,0], gamma_intersection_points[:,1], edgecolor='deeppink', linewidth=1.5, facecolor='pink', s=200, zorder=8, marker='*', label=r'$\mathcal{I}_{\gamma}$')
 # Plot segments and labels for algorithm understanding
 def segment(ax, xy0, xy1, label, label_pos=None, color='black'):
     ax.plot([xy0[0],xy1[0]], [xy0[1],xy1[1]], color=color, zorder=8, linewidth=2)
@@ -640,7 +636,8 @@ ax[0].text(-robot_radius/2, 0, r'$\mathcal{B}_0$', verticalalignment='center', h
 ax[0].text(-robot_radius + (2*robot_radius + vmax * dt)/2, -robot_radius-(alpha*dt**2*vmax/(4*wheels_distance))/2, r'$\mathcal{B}_{\gamma}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=35)
 ax[0].text(-robot_radius + (2*robot_radius + vmax * dt)/2, robot_radius+(alpha*dt**2*vmax/(4*wheels_distance))/2+0.02, r'$\mathcal{B}_{\beta}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=35)
 ax[0].text((robot_radius + vmax * dt)/2, -0.05, r'$\mathcal{B}_{\alpha}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=35)
-
+ax[1].text(-robot_radius + 0.05, -robot_radius-(new_gamma*new_alpha*dt**2*vmax/(4*wheels_distance))/2 - 0.015, r'$\mathcal{B}_{\overline{\gamma}}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=35)
+ax[1].text(-robot_radius + 0.05, robot_radius+(new_beta*new_alpha*dt**2*vmax/(4*wheels_distance))/2 + 0.015, r'$\mathcal{B}_{\overline{\beta}}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=35)
 # Plot specs
 ax[0].grid(zorder=1)
 ax[0].set_title(r"Stage 1: Reduce $\alpha$", weight="bold")

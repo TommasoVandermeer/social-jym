@@ -347,12 +347,12 @@ print(f"Path to goal: {path_to_goal.shape[0]-1} waypoints")
 from matplotlib import rc
 font = {
     'weight' : 'regular',
-    'size'   : 20
+    'size'   : 12
 }
 rc('font', **font)
 fig, ax = plt.subplots(figsize=(8, 8))
 fig2, ax2 = plt.subplots(figsize=(6, 4.2))
-fig2.subplots_adjust(right=0.99, left=0.1, top=0.99, bottom=0.17)
+fig2.subplots_adjust(right=0.99, left=0.12, top=0.99, bottom=0.14)
 try:
     with open(os.path.join(os.path.dirname(__file__), 'custom_episodes_30_humans.pkl'), 'rb') as f:
         custom_episodes = pickle.load(f)
@@ -391,7 +391,7 @@ if path_to_goal.shape[0] > 0:
 else:
     print("No path found.")
 ax2.set_xlabel('x (m)')
-ax2.set_ylabel('y (m)', labelpad=-30)
+ax2.set_ylabel('y (m)', labelpad=-10)
 ax2.set_xticks(jnp.arange(-15, 16, 5))
 # h, l = ax2.get_legend_handles_labels()
 # h.append(plt.Line2D([0], [0], color='black', lw=2, label='Obstacles'))
