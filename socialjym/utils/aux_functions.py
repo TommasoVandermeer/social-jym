@@ -119,20 +119,9 @@ def plot_state(
     output:
     - None
     """
+    n_humans = len(humans_radiuses)
     colors = list(mcolors.TABLEAU_COLORS.values())
     num = int(time) if (time).is_integer() else (time)
-    if scenario == SCENARIOS.index('circular_crossing') or scenario == SCENARIOS.index('delayed_circular_crossing') or scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or scenario == SCENARIOS.index('crowd_navigation'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-circle_radius-1,circle_radius+1],ylim=[-circle_radius-1,circle_radius+1])
-    elif scenario == SCENARIOS.index('parallel_traffic'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_height-3,traffic_height+3])
-    elif scenario == SCENARIOS.index('perpendicular_traffic'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_length/2,traffic_length/2])
-    elif scenario == SCENARIOS.index('robot_crowding'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5],ylim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5])
-    elif scenario == SCENARIOS.index('corner_traffic'):
-        ax.set(xlabel='X',ylabel='Y',xlim=[-2,traffic_length/2+traffic_height/2+2],ylim=[-2,traffic_length/2+traffic_height/2+2])
-    elif scenario is None:
-        ax.set(xlabel='X',ylabel='Y',xlim=xlims,ylim=ylims)
     # Humans
     for h in range(len(full_state)-1): 
         if humans_policy == 'hsfm': 
@@ -140,8 +129,10 @@ def plot_state(
             ax.add_patch(head)
         circle = plt.Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor=colors[h%len(colors)], facecolor="white", fill=True, zorder=1)
         ax.add_patch(circle)
-        if plot_time: ax.text(full_state[h,0],full_state[h,1], f"{num}", color=colors[h%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
-        else: ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
+        if plot_time: 
+            ax.text(full_state[h,0],full_state[h,1], f"{num}", color=colors[h%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
+        elif (not plot_time) and (n_humans < 11): 
+            ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
     # Robot
     if kinematics == 'unicycle':
         head = plt.Circle((full_state[-1,0] + np.cos(full_state[-1,4]) * robot_radius, full_state[-1,1] + np.sin(full_state[-1,4]) * robot_radius), 0.1, color='black', zorder=1)
@@ -153,6 +144,20 @@ def plot_state(
         ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color="black", va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=3, weight='bold')
     else: 
         ax.text(full_state[-1,0],full_state[-1,1], f"R", color="black", va="center", ha="center", size=10, zorder=3, weight='bold')
+    # Set axis limits and labels
+    if scenario == SCENARIOS.index('circular_crossing') or scenario == SCENARIOS.index('delayed_circular_crossing') or scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or scenario == SCENARIOS.index('crowd_navigation'): 
+        ax.set(xlabel='X',ylabel='Y',xlim=[-circle_radius-1,circle_radius+1],ylim=[-circle_radius-1,circle_radius+1])
+    elif scenario == SCENARIOS.index('parallel_traffic'): 
+        ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_height-3,traffic_height+3])
+    elif scenario == SCENARIOS.index('perpendicular_traffic'): 
+        ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_length/2,traffic_length/2])
+    elif scenario == SCENARIOS.index('robot_crowding'): 
+        ax.set(xlabel='X',ylabel='Y',xlim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5],ylim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5])
+    elif scenario == SCENARIOS.index('corner_traffic'):
+        ax.set(xlabel='X',ylabel='Y',xlim=[-2,traffic_length/2+traffic_height/2+2],ylim=[-2,traffic_length/2+traffic_height/2+2])
+    elif scenario is None:
+        ax.set_aspect('equal', adjustable='box')
+        ax.set(xlabel='X',ylabel='Y',xlim=xlims,ylim=ylims)
 
 def plot_trajectory(ax:Axes, agents_positions:jnp.ndarray, humans_goal:jnp.ndarray, robot_goal:jnp.ndarray):
     colors = list(mcolors.TABLEAU_COLORS.values())
@@ -1078,19 +1083,20 @@ def animate_trajectory(
     # TODO: Add a progress bar
     
     if action_space_params is not None and action_space_aside:
-        fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=300, gridspec_kw={'width_ratios': [2, 1]})
+        fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=300, gridspec_kw={'width_ratios': [4, 1]})
         fig.subplots_adjust(right=0.95, left=0.1, bottom=0.1, top=0.85)
         ax = axes[0]
     else:
         fig, ax = plt.subplots(figsize=figsize, dpi=300)
         fig.subplots_adjust(right=0.78, top=0.90, bottom=0.05)
-    ax.set_aspect('equal')
+    ax.set_aspect('equal', adjustable='box')
     ax.set(xlim=[-10,10],ylim=[-10,10])
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     if (static_obstacles is not None) and (scenario is None):
         xlims = [jnp.nanmin(static_obstacles[:,:,:,0]), jnp.nanmax(static_obstacles[:,:,:,0])]
         ylims = [jnp.nanmin(static_obstacles[:,:,:,1]), jnp.nanmax(static_obstacles[:,:,:,1])]
+        ax.autoscale(enable=False)
     else:
         xlims = None
         ylims = None
