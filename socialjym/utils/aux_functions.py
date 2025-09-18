@@ -321,7 +321,7 @@ def test_k_trials(
         imitation_learning = True
     else:
         imitation_learning = False
-        ppo = (policy.name == "SARL-PPO") or (policy.name == "DIRSAFE")
+        actor_critic_policy = (policy.name == "SARL-PPO") or (policy.name == "DIRSAFE")
 
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
     if custom_episodes is not None:
@@ -364,7 +364,7 @@ def test_k_trials(
                         state = state.at[-1,4].set(jnp.arctan2(*jnp.flip(dp)))
                     action = jnp.array([jnp.linalg.norm(dp / env.robot_dt), wrap_angle(state[-1,4] - old_state[-1,4]) / env.robot_dt])
             else:
-                if ppo:
+                if actor_critic_policy:
                     action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
                 else:
                     action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
@@ -508,7 +508,7 @@ def test_k_custom_trials(
         imitation_learning = True
     else:
         imitation_learning = False
-        ppo = (policy.name == "SARL-PPO") or (policy.name == "DIRSAFE")
+        actor_critic_policy = (policy.name == "SARL-PPO") or (policy.name == "DIRSAFE")
 
     @loop_tqdm(k)
     @jit
@@ -555,7 +555,7 @@ def test_k_custom_trials(
                         state = state.at[-1,4].set(jnp.arctan2(*jnp.flip(dp)))
                     action = jnp.array([jnp.linalg.norm(dp / env.robot_dt), wrap_angle(state[-1,4] - old_state[-1,4]) / env.robot_dt])
             else:
-                if ppo:
+                if actor_critic_policy:
                     action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
                 else:
                     action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)

@@ -367,7 +367,7 @@ class DIRSAFE(SARL):
         return vnet_input
 
     @partial(jit, static_argnames=("self"))
-    def segment_rectangle_intersection(self, x1, y1, x2, y2, xmin, xmax, ymin, ymax):
+    def _segment_rectangle_intersection(self, x1, y1, x2, y2, xmin, xmax, ymin, ymax):
         """
         This is the Liang-Barsky algorithm for line clipping.
         """
@@ -428,12 +428,34 @@ class DIRSAFE(SARL):
             _not_nan_segment,
             (x1, y1, x2, y2, xmin, xmax, ymin, ymax),
         )
-    
-    @partial(jit, static_argnames=("self"))
-    def batch_segment_rectangle_intersection(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax):
-        return vmap(DIRSAFE.segment_rectangle_intersection, in_axes=(None,0,0,0,0,None,None,None,None))(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax)
 
+    @partial(jit, static_argnames=("self"))
+    def _batch_segment_rectangle_intersection(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax):
+        return vmap(DIRSAFE._segment_rectangle_intersection, in_axes=(None,0,0,0,0,None,None,None,None))(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax)
+
+    @partial(jit, static_argnames=("self","n_edges"))
+    def _compute_disk_circumscribing_n_agon(self, pos, rad, n_edges):
+        shape_radius = rad / jnp.cos(jnp.pi / n_edges)  # Circumscribed radius
+        angles = jnp.linspace(0, 2 * jnp.pi, n_edges+1)[:-1] + jnp.pi / n_edges  # Start at pi/n_edges for horizontal side
+        shape_vertices = jnp.array([jnp.cos(angles), jnp.sin(angles)]).T * shape_radius + jnp.array(pos)
+        shape_edges = lax.fori_loop(
+            0,
+            n_edges,
+            lambda j, edges: edges.at[j].set(jnp.array([shape_vertices[j], shape_vertices[(j + 1) % n_edges]])),
+            jnp.zeros((n_edges, 2, 2))
+        )
+        return jnp.array(shape_edges)
+    
     # Public methods
+  
+    @partial(jit, static_argnames=("self","n_edges"))
+    def batch_compute_disk_circumscribing_n_agon(self, positions, radii, n_edges=10):
+        return vmap(DIRSAFE._compute_disk_circumscribing_n_agon, in_axes=(None, 0, 0, None))(
+            self, 
+            positions, 
+            radii, 
+            n_edges
+        )
 
     @partial(jit, static_argnames=("self"))
     def batch_compute_vnet_input(self, robot_obs:jnp.ndarray, humans_obs:jnp.ndarray, info:dict) -> jnp.ndarray:
@@ -473,7 +495,7 @@ class DIRSAFE(SARL):
         rot = jnp.array([[c, -s], [s, c]])
         obstacle_segments = jnp.einsum('ij,klj->kli', rot, obstacle_segments)
         # Lower ALPHA
-        _, intersection_points0, intersection_points1 = self.batch_segment_rectangle_intersection(
+        _, intersection_points0, intersection_points1 = self._batch_segment_rectangle_intersection(
             obstacle_segments[:,0,0],
             obstacle_segments[:,0,1],
             obstacle_segments[:,1,0],
@@ -496,7 +518,7 @@ class DIRSAFE(SARL):
         def _lower_beta_and_gamma(tup:tuple):
             obstacle_segments, new_alpha, vmax, wheels_distance, dt, robot_radius = tup
             # Lower BETA
-            _, intersection_points0, intersection_points1 = self.batch_segment_rectangle_intersection(
+            _, intersection_points0, intersection_points1 = self._batch_segment_rectangle_intersection(
                 obstacle_segments[:,0,0],
                 obstacle_segments[:,0,1],
                 obstacle_segments[:,1,0],
@@ -516,7 +538,7 @@ class DIRSAFE(SARL):
                 None,
             )
             # Lower GAMMA
-            _, intersection_points0, intersection_points1 = self.batch_segment_rectangle_intersection(
+            _, intersection_points0, intersection_points1 = self._batch_segment_rectangle_intersection(
                 obstacle_segments[:,0,0],
                 obstacle_segments[:,0,1],
                 obstacle_segments[:,1,0],
