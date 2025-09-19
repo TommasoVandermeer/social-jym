@@ -296,10 +296,10 @@ h, l = ax[0,0].get_legend_handles_labels()
 figure.legend(h, l, loc='center right', title='Policy')
 figure.savefig(os.path.join(os.path.dirname(__file__), "icar25_soarld_test_results_3.eps"), format='eps')
 
-# Plot metrics against number of humans and obstacles
+# Plot metrics against number of humans
 metrics_to_plot = ["successes","times_to_goal", "space_compliance"]
-figure, ax = plt.subplots(1, 3, figsize=(15, 5))
-figure.subplots_adjust(hspace=0.4, wspace=0.35, bottom=0.15, top=0.9, left=0.08, right=0.8)
+figure, ax = plt.subplots(1, 3, figsize=(13, 3.8))
+figure.subplots_adjust(hspace=0.4, wspace=0.2, bottom=0.19, top=0.89, left=0.05, right=0.99)
 for m, metric in enumerate(metrics_to_plot):
     ax[m].set(
         xlabel='N° humans',
@@ -310,14 +310,14 @@ for m, metric in enumerate(metrics_to_plot):
     if metric in ['successes', 'collisions', 'timeouts']:
             y_data = jnp.nanmean(all_metrics[metric][:, :, :], axis=(0,2)) / n_trials
             y_dwa_data = jnp.nanmean(all_metrics_dwa[metric][:, :, :], axis=(0,2)) / n_trials
-            ax[m].set_ylim(-0.05, 1.05)
+            ax[m].set_ylim(0.7, 1.05)
     else:
         y_data = jnp.nanmean(all_metrics[metric][:, :, :, :], axis=(0,2,3))
         y_dwa_data = jnp.nanmean(all_metrics_dwa[metric][:, :, :, :], axis=(0,2,3))
         if metric in ["space_compliance","episodic_spl"]:
-            ax[m].set_ylim(-0.05, 1.05)
+            ax[m].set_ylim(0.7, 1.05)
     ax[m].plot(jnp.arange(len(tests_n_humans)), y_data, linewidth=2.5, label='DIR-SAFE', color='blue')
     ax[m].plot(jnp.arange(len(tests_n_humans)), y_dwa_data, linewidth=2.5, label='DWA', color='red')
-h, l = ax[0].get_legend_handles_labels()
-figure.legend(h, l, loc='center right', title='Policy', bbox_to_anchor=(1.0, 0.5))
+# h, l = ax[0].get_legend_handles_labels()
+# figure.legend(h, l, loc='center right', title='Policy', bbox_to_anchor=(1.0, 0.5))
 figure.savefig(os.path.join(os.path.dirname(__file__), "icar25_soarld_test_results_4.eps"), format='eps')

@@ -87,7 +87,7 @@ class SocialNav(BaseEnv):
                 [[[self.traffic_length/8, self.traffic_length/2 +1],[self.traffic_length/8, self.traffic_height/2+0.5]]],
                 [[[-1.,0],[1.,0.]]],
                 [[[0., -self.traffic_height/2-0.5],[0., -self.traffic_height/2-2]]],
-                [[[-0.5,-self.traffic_length/2+0.5],[0.5,-self.traffic_length/2+0.5]]],
+                [[[-0.5,-self.traffic_length/2+0.6],[0.5,-self.traffic_length/2+0.6]]],
             ], 
             [ # Robot crowding
                 [[[-1.,0],[1.,0.]]],

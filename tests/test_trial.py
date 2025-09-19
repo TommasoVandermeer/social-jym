@@ -59,7 +59,7 @@ if policy == 'dir-safe':
     if scenario == 'circular_crossing_with_static_obstacles':
         static_humans_positions = state[0:test_env_params['ccso_n_static_humans'],0:2]
         static_humans_radii = info['humans_parameters'][0:test_env_params['ccso_n_static_humans'],0]
-        static_obstacles = jnp.array([actor.batch_compute_disk_circumscribing_n_agon(static_humans_positions, static_humans_radii, 10)])
+        static_obstacles = jnp.array([actor.batch_compute_disk_circumscribing_n_agon(static_humans_positions, static_humans_radii, n_edges=10)])
         nan_obstacles = jnp.full((test_env_params['n_humans'],) + static_obstacles.shape[1:], jnp.nan)
         static_obstacles = jnp.vstack((nan_obstacles, static_obstacles))
     ## Run the episode
@@ -71,7 +71,7 @@ if policy == 'dir-safe':
         aux_obs = obs.copy()
         if scenario == 'circular_crossing_with_static_obstacles':
             aux_info['static_obstacles'] = static_obstacles # Set obstacles as squares circumscribing static humans
-            aux_obs = obs[test_env_params['ccso_n_static_humans']:, :] # Remove static humans from observations (so they are not considered as humans by the policy, but only as obstacles)
+            aux_obs = aux_obs[test_env_params['ccso_n_static_humans']:, :] # Remove static humans from observations (so they are not considered as humans by the policy, but only as obstacles)
         # Step the environment
         action, _, _, _, _ = actor.act(random.PRNGKey(0), aux_obs, aux_info, actor_params, sample=False)
         state, obs, info, _, outcome, _ = test_env.step(state,info,action,test=True)
@@ -94,7 +94,7 @@ elif policy == 'dwa':
         predict_time = .5,
         velocity_resolution = 0.1, # Discretization of the velocity space
         yawrate_resolution = np.radians(1.0), # Discretization of the yawrate space
-        heading = 0.2,
+        heading = 0.04,
         clearance = 0.2,
         velocity = 0.2,
         base=[-test_env.robot_radius, -test_env.robot_radius, test_env.robot_radius, test_env.robot_radius],  # [x_min, y_min, x_max, y_max] in meters
