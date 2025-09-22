@@ -42,8 +42,9 @@ sarl = SARL(reward_function, v_max=1., dt=0.25, kinematics='unicycle')
 sarl_params = load_socialjym_policy(os.path.join(os.path.dirname(__file__), 'best_sarl.pkl'))
 
 ### Initialize output data structure
-empty_trials_outcomes_array = jnp.zeros((3,len(n_humans),len(n_obstacles)))
-empty_trials_metrics_array = jnp.zeros((3,len(n_humans),len(n_obstacles),n_trials))
+n_policies = 3 # DIR-SAFE, DWA, SARL, HSFM
+empty_trials_outcomes_array = jnp.zeros((n_policies,len(n_humans),len(n_obstacles)))
+empty_trials_metrics_array = jnp.zeros((n_policies,len(n_humans),len(n_obstacles),n_trials))
 all_metrics = {
     "successes": empty_trials_outcomes_array, 
     "collisions": empty_trials_outcomes_array, 
@@ -60,7 +61,7 @@ all_metrics = {
     "space_compliance": empty_trials_metrics_array,
     "episodic_spl": empty_trials_metrics_array,
     "path_length": empty_trials_metrics_array,
-    "scenario": jnp.zeros((3,len(n_humans),len(n_obstacles),n_trials), dtype=jnp.int32),
+    "scenario": jnp.zeros((n_policies,len(n_humans),len(n_obstacles),n_trials), dtype=jnp.int32),
 }
 
 # ### Visualize one episode
@@ -120,7 +121,7 @@ all_metrics = {
 #     figsize= (11, 6.6),
 # )
 
-### Test function
+### Test function (we create a dedicated test function for DIR-SAFE because we need to handle static obstacles not as humans, conversely to SARL)
 def test_dir_safe_on_ccso(
     n_trials: int, 
     random_seed: int, 
@@ -256,7 +257,7 @@ for i, nh in enumerate(n_humans):
         print("\nDWA Tests")
         metrics_dwa = test_k_trials_dwa(n_trials, random_seed, test_env, time_limit=50.)
         ## SARL Tests
-        print("\n   SARL Tests")
+        print("\nSARL Tests")
         metrics_sarl = test_k_trials(n_trials, random_seed, test_env, sarl, sarl_params, time_limit=50.)
         ### Store results
         all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_dir_safe)

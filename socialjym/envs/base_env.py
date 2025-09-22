@@ -5,8 +5,10 @@ import jax.numpy as jnp
 
 from jhsfm.hsfm import step as hsfm_humans_step
 from jsfm.sfm import step as sfm_humans_step
+from jorca.orca import step as orca_humans_step
 from jhsfm.utils import get_standard_humans_parameters as hsfm_get_standard_humans_parameters
 from jsfm.utils import get_standard_humans_parameters as sfm_get_standard_humans_parameters
+from jorca.utils import get_standard_humans_parameters as orca_get_standard_humans_parameters
 
 SCENARIOS = [
     "circular_crossing", 
@@ -19,7 +21,7 @@ SCENARIOS = [
     "corner_traffic",
     "hybrid_scenario"] # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
 HUMAN_POLICIES = [
-    "orca", # TODO: Implement JORCA (Jax based ORCA)
+    "orca",
     "sfm", 
     "hsfm"]
 ROBOT_KINEMATICS = [
@@ -90,7 +92,11 @@ class BaseEnv(ABC):
             self.humans_step = sfm_humans_step
             self.get_standard_humans_parameters = sfm_get_standard_humans_parameters
         elif humans_policy == 'orca':
-            raise NotImplementedError("ORCA policy is not implemented yet.")
+            self.humans_step = orca_humans_step
+            self.get_standard_humans_parameters = orca_get_standard_humans_parameters
+            assert self.n_obstacles == 0, "ORCA human model does not support avoidance of static obstacles yet.\n"
+            print("\nWARNING: ORCA human model (JORCA library) might still be buggy.")
+            print("WARNING: ORCA human model is not properly optimized (JORCA library), RL training could be seriously slowed down. It is recommended to use it only for evaluation purposes.\n")
         self.robot_visible = robot_visible
         self.circle_radius = circle_radius
         self.traffic_height = traffic_height
@@ -312,7 +318,8 @@ class BaseEnv(ABC):
         - new_state ((n_humans+1,6): jnp.ndarray containing the new state of the environment.
         """
         goals = jnp.vstack((info["humans_goal"], info["robot_goal"]))
-        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, 80., *self.get_standard_humans_parameters(1)[0,2:]])))
+        second_parameter = 80. if self.humans_policy == HUMAN_POLICIES.index("hsfm") or self.humans_policy == HUMAN_POLICIES.index("sfm") else 5.  # Mass if HSFM or SFM, time horizon if ORCA
+        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, second_parameter, *self.get_standard_humans_parameters(1)[0,2:]])))
         static_obstacles = info["static_obstacles"]
         ## Humans update
         if self.humans_policy == HUMAN_POLICIES.index("hsfm"):
@@ -379,7 +386,8 @@ class BaseEnv(ABC):
         - new_state ((n_humans+1,6) or (n_humans+1,4)): jnp.ndarray containing the new state of the environment.
         """
         goals = jnp.vstack((info["humans_goal"], info["robot_goal"]))
-        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, 80., *self.get_standard_humans_parameters(1)[0,2:-1], 0.1]))) # Add safety space of 0.1 to robot
+        second_parameter = 80. if self.humans_policy == HUMAN_POLICIES.index("hsfm") or self.humans_policy == HUMAN_POLICIES.index("sfm") else 5. # Mass if HSFM or SFM, time horizon if ORCA
+        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, second_parameter, *self.get_standard_humans_parameters(1)[0,2:-1], 0.1]))) # Add safety space of 0.1 to robot
         static_obstacles = info["static_obstacles"]
         if self.robot_visible:
             new_state = self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)
