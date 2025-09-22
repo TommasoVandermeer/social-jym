@@ -664,7 +664,6 @@ def test_k_custom_trials(
     return metrics
 
 def interpolate_obstacle_segments(obstacles, points_per_meter=10):
-    # TODO: JIT and VMAP this function
     point_list = []
     for obs in np.array(obstacles):
         for edge in obs:
@@ -680,11 +679,10 @@ def interpolate_obstacle_segments(obstacles, points_per_meter=10):
         return np.vstack(point_list)
     else:
         return np.empty((0, 2))
-    
+
 def interpolate_humans_boundaries(humans_pose, humans_radiuses, points_per_human=10):
-    # TODO: JIT and VMAP this function
     point_list = []
-    for i, (pose, radius) in enumerate(zip(humans_pose, humans_radiuses)):
+    for pose, radius in zip(humans_pose, humans_radiuses):
         angle = jnp.linspace(0, 2 * jnp.pi, points_per_human)
         x = pose[0] + radius * jnp.cos(angle)
         y = pose[1] + radius * jnp.sin(angle)

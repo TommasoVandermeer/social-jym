@@ -13,7 +13,8 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.base_env import SCENARIOS
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.dir_safe import DIRSAFE
-from socialjym.utils.aux_functions import animate_trajectory, compute_episode_metrics, test_k_trials_dwa, test_k_trials
+from socialjym.policies.sarl import SARL
+from socialjym.utils.aux_functions import animate_trajectory, compute_episode_metrics, test_k_trials_dwa, test_k_trials, load_socialjym_policy
 
 ### Hyperparameters
 n_trials = 100
@@ -33,11 +34,12 @@ reward_function = Reward2(
 )
 
 ### Initialize DIRSAFE policy
-actor = DIRSAFE(reward_function, v_max=1., dt=0.25)
+dirsafe = DIRSAFE(reward_function, v_max=1., dt=0.25)
 with open(os.path.join(os.path.dirname(__file__), 'best_dir_safe.pkl'), 'rb') as f:
-    actor_params = pickle.load(f)['actor_params']
+    dirsafe_params = pickle.load(f)['actor_params']
 ### Initialize SARL policy
-# TODO: Add SARL policy initialization here
+sarl = SARL(reward_function, v_max=1., dt=0.25, kinematics='unicycle')
+sarl_params = load_socialjym_policy(os.path.join(os.path.dirname(__file__), 'best_sarl.pkl'))
 
 ### Initialize output data structure
 empty_trials_outcomes_array = jnp.zeros((3,len(n_humans),len(n_obstacles)))
@@ -85,7 +87,7 @@ all_metrics = {
 # ## Compute obstacles if in "circular_crossing_with_static_obstacles" scenario (squares circumscribing humans disks)
 # static_humans_positions = state[0:test_env_params['ccso_n_static_humans'],0:2]
 # static_humans_radii = info['humans_parameters'][0:test_env_params['ccso_n_static_humans'],0]
-# static_obstacles = jnp.array([actor.batch_compute_disk_circumscribing_n_agon(static_humans_positions, static_humans_radii, n_edges=10)])
+# static_obstacles = jnp.array([dirsafe.batch_compute_disk_circumscribing_n_agon(static_humans_positions, static_humans_radii, n_edges=10)])
 # nan_obstacles = jnp.full((test_env_params['n_humans'],) + static_obstacles.shape[1:], jnp.nan)
 # static_obstacles = jnp.vstack((nan_obstacles, static_obstacles))
 # ## Run the episode
@@ -97,7 +99,7 @@ all_metrics = {
 #     aux_info['static_obstacles'] = static_obstacles # Set obstacles as squares circumscribing static humans
 #     aux_obs = obs[test_env_params['ccso_n_static_humans']:, :] # Remove static humans from observations (so they are not considered as humans by the policy, but only as obstacles)
 #     # Step the environment
-#     action, _, _, _, _ = actor.act(random.PRNGKey(0), aux_obs, aux_info, actor_params, sample=False)
+#     action, _, _, _, _ = dirsafe.act(random.PRNGKey(0), aux_obs, aux_info, actor_params, sample=False)
 #     state, obs, info, _, outcome, _ = test_env.step(state,info,action,test=True)
 #     # Save the state
 #     all_states = jnp.vstack((all_states, jnp.array([state])))
@@ -123,7 +125,7 @@ def test_dir_safe_on_ccso(
     n_trials: int, 
     random_seed: int, 
     env: SocialNav, 
-    actor: DIRSAFE, 
+    dirsafe: DIRSAFE, 
     actor_params: dict, 
     time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
     personal_space:float=0.5,
@@ -139,7 +141,7 @@ def test_dir_safe_on_ccso(
             aux_info['static_obstacles'] = static_obstacles # Set obstacles as squares circumscribing static humans
             aux_obs = obs[test_env_params['ccso_n_static_humans']:, :] # Remove static humans from observations (so they are not considered as humans by the policy, but only as obstacles)
             # Step the environment
-            action, _, _, _, _ = actor.act(random.PRNGKey(0), aux_obs, aux_info, actor_params, sample=False)
+            action, _, _, _, _ = dirsafe.act(random.PRNGKey(0), aux_obs, aux_info, actor_params, sample=False)
             state, obs, info, _, outcome, _ = test_env.step(state,info,action,test=True)
             # Save data
             all_actions = all_actions.at[steps].set(action)
@@ -158,7 +160,7 @@ def test_dir_safe_on_ccso(
         ## Compute static obstacles correspondig to static humans (decagon circumscribing humans disks)
         static_humans_positions = state[0:env.ccso_n_static_humans,0:2]
         static_humans_radii = info['humans_parameters'][0:env.ccso_n_static_humans,0]
-        static_obstacles = jnp.array([actor.batch_compute_disk_circumscribing_n_agon(static_humans_positions, static_humans_radii, n_edges=10)])
+        static_obstacles = jnp.array([dirsafe.batch_compute_disk_circumscribing_n_agon(static_humans_positions, static_humans_radii, n_edges=10)])
         nan_obstacles = jnp.full((env.n_humans,) + static_obstacles.shape[1:], jnp.nan)
         static_obstacles = jnp.vstack((nan_obstacles, static_obstacles))
         ## Episode loop
@@ -187,7 +189,7 @@ def test_dir_safe_on_ccso(
 
     ## Check that the environment scenario is correct
     assert env.scenario == SCENARIOS.index("circular_crossing_with_static_obstacles"), "This function is designed to work with the 'circular_crossing_with_static_obstacles' scenario only"
-    assert actor.name == 'DIRSAFE', "This function is designed to work with the 'DIR-SAFE' policy only"    
+    assert dirsafe.name == 'DIRSAFE', "This function is designed to work with the 'DIR-SAFE' policy only"    
     ## Initialize metrics
     metrics = {
         "successes": 0, 
@@ -232,7 +234,6 @@ def test_dir_safe_on_ccso(
 ### Execute tests
 for i, nh in enumerate(n_humans):
     for j, no in enumerate(n_obstacles):
-        print(f"\nTesting with {nh} dynamic humans and {no} static humans...")
         ## Initialize environment
         test_env_params = {
             'robot_radius': 0.3,
@@ -249,12 +250,24 @@ for i, nh in enumerate(n_humans):
         }
         test_env = SocialNav(**test_env_params)
         ## DIR-SAFE tests
-        metrics_dir_safe = test_dir_safe_on_ccso(n_trials, random_seed, test_env, actor, actor_params, time_limit=50.)
+        print("\nDIR-SAFE Tests")
+        metrics_dir_safe = test_dir_safe_on_ccso(n_trials, random_seed, test_env, dirsafe, dirsafe_params, time_limit=50.)
         ## DWA Tests
+        print("\nDWA Tests")
         metrics_dwa = test_k_trials_dwa(n_trials, random_seed, test_env, time_limit=50.)
         ## SARL Tests
-        # TODO: Add SARL tests here
+        print("\n   SARL Tests")
+        metrics_sarl = test_k_trials(n_trials, random_seed, test_env, sarl, sarl_params, time_limit=50.)
         ### Store results
         all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_dir_safe)
         all_metrics = tree_map(lambda x, y: x.at[1,i,j].set(y), all_metrics, metrics_dwa)
-        # TODO: Add SARL metrics storage here
+        all_metrics = tree_map(lambda x, y: x.at[2,i,j].set(y), all_metrics, metrics_sarl)
+
+### Save results
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_results.pkl')):
+    with open(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_results.pkl'), 'wb') as f:
+        pickle.dump(all_metrics, f)
+### Load results
+else:
+    with open(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_results.pkl'), 'rb') as f:
+        all_metrics = pickle.load(f)
