@@ -14,7 +14,16 @@ from socialjym.envs.base_env import SCENARIOS
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.policies.sarl import SARL
-from socialjym.utils.aux_functions import animate_trajectory, compute_episode_metrics, test_k_trials_dwa, test_k_trials, load_socialjym_policy
+from socialjym.utils.aux_functions import \
+    animate_trajectory, \
+    initialize_metrics_dict, \
+    print_average_metrics, \
+    compute_episode_metrics, \
+    load_socialjym_policy, \
+    test_k_trials_dwa, \
+    test_k_trials, \
+    test_k_trials_sfm, \
+    test_k_trials_hsfm
 
 ### Hyperparameters
 n_trials = 100
@@ -32,37 +41,22 @@ reward_function = Reward2(
     angular_speed_bound=1.,
     angular_speed_penalty_weight=0.0075,
 )
+robot_vmax = 1.0
+robot_wheels_distance = 0.7
 
 ### Initialize DIRSAFE policy
-dirsafe = DIRSAFE(reward_function, v_max=1., dt=0.25)
+dirsafe = DIRSAFE(reward_function, v_max=robot_vmax, dt=0.25, wheels_distance=robot_wheels_distance)
 with open(os.path.join(os.path.dirname(__file__), 'best_dir_safe.pkl'), 'rb') as f:
     dirsafe_params = pickle.load(f)['actor_params']
 ### Initialize SARL policy
-sarl = SARL(reward_function, v_max=1., dt=0.25, kinematics='unicycle')
+sarl = SARL(reward_function, v_max=robot_vmax, dt=0.25, kinematics='unicycle', wheels_distance=robot_wheels_distance)
 sarl_params = load_socialjym_policy(os.path.join(os.path.dirname(__file__), 'best_sarl.pkl'))
 
 ### Initialize output data structure
-n_policies = 3 # DIR-SAFE, DWA, SARL, HSFM
-empty_trials_outcomes_array = jnp.zeros((n_policies,len(n_humans),len(n_obstacles)))
-empty_trials_metrics_array = jnp.zeros((n_policies,len(n_humans),len(n_obstacles),n_trials))
-all_metrics = {
-    "successes": empty_trials_outcomes_array, 
-    "collisions": empty_trials_outcomes_array, 
-    "timeouts": empty_trials_outcomes_array, 
-    "returns": empty_trials_metrics_array,
-    "times_to_goal": empty_trials_metrics_array,
-    "average_speed": empty_trials_metrics_array,
-    "average_acceleration": empty_trials_metrics_array,
-    "average_jerk": empty_trials_metrics_array,
-    "average_angular_speed": empty_trials_metrics_array,
-    "average_angular_acceleration": empty_trials_metrics_array,
-    "average_angular_jerk": empty_trials_metrics_array,
-    "min_distance": empty_trials_metrics_array,
-    "space_compliance": empty_trials_metrics_array,
-    "episodic_spl": empty_trials_metrics_array,
-    "path_length": empty_trials_metrics_array,
-    "scenario": jnp.zeros((n_policies,len(n_humans),len(n_obstacles),n_trials), dtype=jnp.int32),
-}
+policies = ['DIR-SAFE', 'DWA', 'SARL', 'SFM', 'HSFM']
+n_policies = len(policies)
+metrics_dims = (n_policies,len(n_humans),len(n_obstacles))
+all_metrics = initialize_metrics_dict(n_trials, dims=metrics_dims)
 
 # ### Visualize one episode
 # episode = 500
@@ -183,7 +177,8 @@ def test_dir_safe_on_ccso(
             personal_space=personal_space,
             robot_dt=env.robot_dt,
             robot_radius=env.robot_radius,
-            ccso_n_static_humans=env.ccso_n_static_humans
+            ccso_n_static_humans=env.ccso_n_static_humans,
+            robot_specs={'kinematics': env.kinematics, 'v_max': dirsafe.v_max, 'wheels_distance': dirsafe.wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
         )
         seed += 1
         return seed, metrics
@@ -192,44 +187,12 @@ def test_dir_safe_on_ccso(
     assert env.scenario == SCENARIOS.index("circular_crossing_with_static_obstacles"), "This function is designed to work with the 'circular_crossing_with_static_obstacles' scenario only"
     assert dirsafe.name == 'DIRSAFE', "This function is designed to work with the 'DIR-SAFE' policy only"    
     ## Initialize metrics
-    metrics = {
-        "successes": 0, 
-        "collisions": 0, 
-        "timeouts": 0, 
-        "returns": jnp.empty((n_trials,)),
-        "times_to_goal": jnp.empty((n_trials,)),
-        "average_speed": jnp.empty((n_trials,)),
-        "average_acceleration": jnp.empty((n_trials,)),
-        "average_jerk": jnp.empty((n_trials,)),
-        "average_angular_speed": jnp.empty((n_trials,)),
-        "average_angular_acceleration": jnp.empty((n_trials,)),
-        "average_angular_jerk": jnp.empty((n_trials,)),
-        "min_distance": jnp.empty((n_trials,)),
-        "space_compliance": jnp.empty((n_trials,)),
-        "episodic_spl": jnp.empty((n_trials,)),
-        "path_length": jnp.empty((n_trials,)),
-        "scenario": jnp.empty((n_trials,), dtype=int),
-    }
+    metrics = initialize_metrics_dict(n_trials)
     ## Execute n_trials tests
     print(f"\nExecuting {n_trials} tests with {env.n_humans - env.ccso_n_static_humans} dynamic humans and {env.ccso_n_static_humans} static humans...")
     _, metrics = lax.fori_loop(0, n_trials, _episode_loop, (random_seed, metrics))
     ## Print average results
-    print("RESULTS")
-    print(f"Success rate: {round(metrics['successes']/n_trials,2):.2f}")
-    print(f"Collision rate: {round(metrics['collisions']/n_trials,2):.2f}")
-    print(f"Timeout rate: {round(metrics['timeouts']/n_trials,2):.2f}")
-    print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
-    print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
-    print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
-    print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
-    print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
-    print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
-    print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
-    print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
-    print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
-    print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
-    print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
-    print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
+    print_average_metrics(n_trials, metrics)
     return metrics
 
 ### Execute tests
@@ -255,14 +218,22 @@ for i, nh in enumerate(n_humans):
         metrics_dir_safe = test_dir_safe_on_ccso(n_trials, random_seed, test_env, dirsafe, dirsafe_params, time_limit=50.)
         ## DWA Tests
         print("\nDWA Tests")
-        metrics_dwa = test_k_trials_dwa(n_trials, random_seed, test_env, time_limit=50.)
+        metrics_dwa = test_k_trials_dwa(n_trials, random_seed, test_env, time_limit=50, robot_vmax=robot_vmax, robot_wheels_distance=robot_wheels_distance)
         ## SARL Tests
         print("\nSARL Tests")
         metrics_sarl = test_k_trials(n_trials, random_seed, test_env, sarl, sarl_params, time_limit=50.)
+        ## SFM Tests
+        print("\nSFM Tests")
+        metrics_sfm = test_k_trials_sfm(n_trials, random_seed, test_env, time_limit=50., robot_vmax=robot_vmax, robot_wheels_distance=robot_wheels_distance)
+        ## HSFM Tests
+        print("\nHSFM Tests")
+        metrics_hsfm = test_k_trials_hsfm(n_trials, random_seed, test_env, time_limit=50., robot_vmax=robot_vmax, robot_wheels_distance=robot_wheels_distance)
         ### Store results
         all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_dir_safe)
         all_metrics = tree_map(lambda x, y: x.at[1,i,j].set(y), all_metrics, metrics_dwa)
         all_metrics = tree_map(lambda x, y: x.at[2,i,j].set(y), all_metrics, metrics_sarl)
+        all_metrics = tree_map(lambda x, y: x.at[3,i,j].set(y), all_metrics, metrics_sfm)
+        all_metrics = tree_map(lambda x, y: x.at[4,i,j].set(y), all_metrics, metrics_hsfm)
 
 ### Save results
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_results.pkl')):

@@ -7,7 +7,7 @@ import pickle
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.dir_safe import DIRSAFE
-from socialjym.utils.aux_functions import test_k_trials, test_k_trials_dwa
+from socialjym.utils.aux_functions import test_k_trials, test_k_trials_dwa, initialize_metrics_dict
 
 ### Hyperparameters
 random_seed = 0 
@@ -33,26 +33,8 @@ with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
     actor_params = pickle.load(f)['actor_params']
 
 ### Initialize output data structure
-empty_trials_outcomes_array = jnp.zeros((len(tests_scenarios),len(tests_n_humans),len(tests_n_obstacles)))
-empty_trials_metrics_array = jnp.zeros((len(tests_scenarios),len(tests_n_humans),len(tests_n_obstacles),n_trials))
-all_metrics = {
-    "successes": empty_trials_outcomes_array, 
-    "collisions": empty_trials_outcomes_array, 
-    "timeouts": empty_trials_outcomes_array, 
-    "returns": empty_trials_metrics_array,
-    "times_to_goal": empty_trials_metrics_array,
-    "average_speed": empty_trials_metrics_array,
-    "average_acceleration": empty_trials_metrics_array,
-    "average_jerk": empty_trials_metrics_array,
-    "average_angular_speed": empty_trials_metrics_array,
-    "average_angular_acceleration": empty_trials_metrics_array,
-    "average_angular_jerk": empty_trials_metrics_array,
-    "min_distance": empty_trials_metrics_array,
-    "space_compliance": empty_trials_metrics_array,
-    "episodic_spl": empty_trials_metrics_array,
-    "path_length": empty_trials_metrics_array,
-    "scenario": jnp.zeros((len(tests_scenarios),len(tests_n_humans),len(tests_n_obstacles),n_trials), dtype=jnp.int32),
-}
+metrics_dims = (len(tests_scenarios),len(tests_n_humans),len(tests_n_obstacles))
+all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
 all_metrics_dwa = all_metrics.copy()
 
 if not os.path.exists(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl")):
@@ -92,7 +74,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl
                     test_env, 
                     reward_function.time_limit,
                     robot_vmax=policy.v_max,
-                    robot_wmax=2*policy.v_max/policy.wheels_distance, 
+                    robot_wheels_distance=policy.wheels_distance, 
                 )
                 all_metrics_dwa = tree_map(lambda x, y: x.at[i,j,k].set(y), all_metrics_dwa, metrics_dwa)
     ### Save results
@@ -130,7 +112,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dwa_tests.pkl")):
                     test_env, 
                     reward_function.time_limit,
                     robot_vmax=policy.v_max,
-                    robot_wmax=2*policy.v_max/policy.wheels_distance, 
+                    robot_wheels_distance=policy.wheels_distance,
                 )
                 all_metrics_dwa = tree_map(lambda x, y: x.at[i,j,k].set(y), all_metrics_dwa, metrics_dwa)
     ### Save results

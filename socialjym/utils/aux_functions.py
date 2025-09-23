@@ -177,6 +177,47 @@ def plot_lidar_measurements(ax:Axes, lidar_measurements:jnp.ndarray, robot_state
             linewidth=0.5, 
             zorder=0)
 
+def initialize_metrics_dict(n_trials:int, dims:tuple=()) -> dict:
+    metrics = {
+        "successes": 0 if len(dims) == 0 else jnp.zeros(dims),
+        "collisions": 0 if len(dims) == 0 else jnp.zeros(dims),
+        "timeouts": 0 if len(dims) == 0 else jnp.zeros(dims),
+        "returns": jnp.empty((*dims, n_trials,)),
+        "times_to_goal": jnp.empty((*dims, n_trials,)),
+        "average_speed": jnp.empty((*dims, n_trials,)),
+        "average_acceleration": jnp.empty((*dims, n_trials,)),
+        "average_jerk": jnp.empty((*dims, n_trials,)),
+        "average_angular_speed": jnp.empty((*dims, n_trials,)),
+        "average_angular_acceleration": jnp.empty((*dims, n_trials,)),
+        "average_angular_jerk": jnp.empty((*dims, n_trials,)),
+        "min_distance": jnp.empty((*dims, n_trials,)),
+        "space_compliance": jnp.empty((*dims, n_trials,)),
+        "episodic_spl": jnp.empty((*dims, n_trials,)),
+        "path_length": jnp.empty((*dims, n_trials,)),
+        "scenario": jnp.empty((*dims, n_trials,), dtype=int),
+        "feasible_actions_rate": jnp.empty((*dims, n_trials,)),
+    }
+    return metrics
+
+def print_average_metrics(n_trials:int, metrics:dict) -> None:
+    print("RESULTS")
+    print(f"Success rate: {round(metrics['successes']/n_trials,2):.2f}")
+    print(f"Collision rate: {round(metrics['collisions']/n_trials,2):.2f}")
+    print(f"Timeout rate: {round(metrics['timeouts']/n_trials,2):.2f}")
+    print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
+    print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
+    print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
+    print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
+    print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
+    print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
+    print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
+    print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
+    print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
+    print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
+    print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
+    print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
+    print(f"Average feasible actions rate: {round(jnp.nanmean(metrics['feasible_actions_rate']),2):.2f}")
+
 @partial(jit, static_argnames=["robot_dt", "robot_radius", "ccso_n_static_humans", "max_steps", "personal_space"])
 def compute_episode_metrics(
     # Saving variables
@@ -196,6 +237,7 @@ def compute_episode_metrics(
     robot_dt:float,
     robot_radius:float,
     ccso_n_static_humans:int,
+    robot_specs:dict = {'kinematics': 1, 'v_max': 1.0, 'wheels_distance': 0.7, 'dt': 0.25, 'radius': 0.3},
 ) -> dict:
     robot_goal = end_info["robot_goal"]
     ## Update metrics
@@ -293,6 +335,28 @@ def compute_episode_metrics(
             x),
         jnp.empty((max_steps,)))
     metrics["space_compliance"] = lax.cond(outcome["success"], lambda x: x.at[episode_idx].set(jnp.nanmean(space_compliances)), lambda x: x.at[episode_idx].set(jnp.nan), metrics["space_compliance"])
+    # Only computed for unicycle robot kinematics during successful episodes
+    all_actions = all_actions.at[:].set(jnp.round(all_actions, 3))
+    out_of_boundary_conditions = \
+        (jnp.abs(all_actions[:,1]) - (2 * (robot_specs["v_max"] - all_actions[:,0]) / robot_specs["wheels_distance"]) > 1e-2) | \
+        (all_actions[:,0] < 0) | \
+        (all_actions[:,0] > robot_specs["v_max"])
+    # debug.print("Not feasible actions: {x}", x=jnp.where(out_of_boundary_conditions[:, None], all_actions, jnp.full_like(all_actions, jnp.nan)))
+    feasible_actions = lax.fori_loop(
+        0,
+        max_steps,
+        lambda f, x: lax.cond(
+            f < episode_steps - 1,
+            lambda y: y.at[f].set(~out_of_boundary_conditions[f]),
+            lambda y: y.at[f].set(jnp.nan),
+            x),
+        jnp.empty((max_steps,)))
+    metrics["feasible_actions_rate"] = lax.cond(
+        (robot_specs["kinematics"] == ROBOT_KINEMATICS.index("unicycle")) & outcome["success"],
+        lambda x: x.at[episode_idx].set(jnp.nansum(feasible_actions)/(episode_steps-1)),
+        lambda x: x.at[episode_idx].set(jnp.nan),
+        metrics["feasible_actions_rate"],
+    )
     return metrics
 
 def test_k_trials(
@@ -420,30 +484,14 @@ def test_k_trials(
             personal_space=personal_space,
             robot_dt=env.robot_dt,
             robot_radius=env.robot_radius,
-            ccso_n_static_humans=env.ccso_n_static_humans
+            ccso_n_static_humans=env.ccso_n_static_humans,
+            robot_specs={'kinematics': env.kinematics, 'v_max': policy.v_max, 'wheels_distance': policy.wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
         )
         seed += 1
         return seed, metrics
     
     # Initialize metrics
-    metrics = {
-        "successes": 0, 
-        "collisions": 0, 
-        "timeouts": 0, 
-        "returns": jnp.empty((k,)),
-        "times_to_goal": jnp.empty((k,)),
-        "average_speed": jnp.empty((k,)),
-        "average_acceleration": jnp.empty((k,)),
-        "average_jerk": jnp.empty((k,)),
-        "average_angular_speed": jnp.empty((k,)),
-        "average_angular_acceleration": jnp.empty((k,)),
-        "average_angular_jerk": jnp.empty((k,)),
-        "min_distance": jnp.empty((k,)),
-        "space_compliance": jnp.empty((k,)),
-        "episodic_spl": jnp.empty((k,)),
-        "path_length": jnp.empty((k,)),
-        "scenario": jnp.empty((k,), dtype=int),
-    }
+    metrics = initialize_metrics_dict(k)
     # Execute k tests
     if env.scenario == SCENARIOS.index("circular_crossing_with_static_obstacles"):
         print(f"\nExecuting {k} tests with {env.n_humans - env.ccso_n_static_humans} dynamic humans and {env.ccso_n_static_humans} static humans...")
@@ -452,23 +500,7 @@ def test_k_trials(
     _, metrics = lax.fori_loop(0, k, _fori_body, (random_seed, metrics))
     # Print results
     if print_avg_metrics:
-        print("RESULTS")
-        print(f"Success rate: {round(metrics['successes']/k,2):.2f}")
-        print(f"Collision rate: {round(metrics['collisions']/k,2):.2f}")
-        print(f"Timeout rate: {round(metrics['timeouts']/k,2):.2f}")
-        print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
-        print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
-        print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
-        print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
-        print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
-        print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
-        print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
-        print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
-        print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
-        if env.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-            print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
-            print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
-            print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
+        print_average_metrics(k, metrics)
     return metrics
 
 def test_k_custom_trials(
@@ -613,54 +645,20 @@ def test_k_custom_trials(
             personal_space=personal_space,
             robot_dt=env.robot_dt,
             robot_radius=env.robot_radius,
-            ccso_n_static_humans=env.ccso_n_static_humans
+            ccso_n_static_humans=env.ccso_n_static_humans,
+            robot_specs={'kinematics': env.kinematics, 'v_max': policy.v_max, 'wheels_distance': policy.wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
         )
         seed += 1
         return seed, metrics
     
     # Initialize metrics
-    metrics = {
-        "successes": 0, 
-        "collisions": 0, 
-        "timeouts": 0, 
-        "returns": jnp.empty((k,)),
-        "times_to_goal": jnp.empty((k,)),
-        "average_speed": jnp.empty((k,)),
-        "average_acceleration": jnp.empty((k,)),
-        "average_jerk": jnp.empty((k,)),
-        "average_angular_speed": jnp.empty((k,)),
-        "average_angular_acceleration": jnp.empty((k,)),
-        "average_angular_jerk": jnp.empty((k,)),
-        "min_distance": jnp.empty((k,)),
-        "space_compliance": jnp.empty((k,)),
-        "episodic_spl": jnp.empty((k,)),
-        "path_length": jnp.empty((k,)),
-        "scenario": jnp.empty((k,), dtype=int),
-        "waypoint_reached": jnp.empty((k,), dtype=int),
-    }
+    metrics = initialize_metrics_dict(k)
     # Execute k tests
     print(f"\nExecuting {k} tests with {env.n_humans} humans...")
     _, metrics = lax.fori_loop(0, k, _fori_body, (random_seed, metrics))
     # Print results
     if print_avg_metrics:
-        print("RESULTS")
-        print(f"Success rate: {round(metrics['successes']/k,2):.2f}")
-        print(f"Collision rate: {round(metrics['collisions']/k,2):.2f}")
-        print(f"Timeout rate: {round(metrics['timeouts']/k,2):.2f}")
-        print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
-        print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
-        print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
-        print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
-        print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
-        print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
-        print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
-        print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
-        print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
-        print(f"Average waypoint reached: {round(jnp.nanmean(metrics['waypoint_reached']),2):.2f}")
-        if env.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-            print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
-            print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
-            print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
+        print_average_metrics(k, metrics)
     return metrics
 
 def interpolate_obstacle_segments(obstacles, points_per_meter=10):
@@ -695,7 +693,7 @@ def test_k_trials_dwa(
     env: BaseEnv, 
     time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
     robot_vmax:float=1.0,
-    robot_wmax:float=2*1.0/0.7,
+    robot_wheels_distance:float=0.7,
     personal_space:float=0.5,
     custom_episodes:dict=None,
     print_avg_metrics:bool=True
@@ -718,6 +716,8 @@ def test_k_trials_dwa(
     except ImportError:
         raise ImportError("DWA package is not installed. Please install it to use this function.\nYou can install it with 'pip3 install dynamic-window-approach'.\n Checkout https://github.com/goktug97/DynamicWindowApproach")
     
+    assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "DWA can only be used with unicycle robots."
+
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
     if custom_episodes is not None:
         assert len(custom_episodes) == k, "The number of custom episodes must be equal to the number of trials."
@@ -799,34 +799,18 @@ def test_k_trials_dwa(
             personal_space=personal_space,
             robot_dt=env.robot_dt,
             robot_radius=env.robot_radius,
-            ccso_n_static_humans=env.ccso_n_static_humans
+            ccso_n_static_humans=env.ccso_n_static_humans,
+            robot_specs={'kinematics': env.kinematics, 'v_max': robot_vmax, 'wheels_distance': robot_wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
         )
         seed += 1
         return seed, metrics
     # Initialize metrics
-    metrics = {
-        "successes": 0, 
-        "collisions": 0, 
-        "timeouts": 0, 
-        "returns": jnp.empty((k,)),
-        "times_to_goal": jnp.empty((k,)),
-        "average_speed": jnp.empty((k,)),
-        "average_acceleration": jnp.empty((k,)),
-        "average_jerk": jnp.empty((k,)),
-        "average_angular_speed": jnp.empty((k,)),
-        "average_angular_acceleration": jnp.empty((k,)),
-        "average_angular_jerk": jnp.empty((k,)),
-        "min_distance": jnp.empty((k,)),
-        "space_compliance": jnp.empty((k,)),
-        "episodic_spl": jnp.empty((k,)),
-        "path_length": jnp.empty((k,)),
-        "scenario": jnp.empty((k,), dtype=int),
-    }
+    metrics = initialize_metrics_dict(k)
     # Define DWA configuration
     dwa_config = dwa.Config(
         max_speed=robot_vmax,
         min_speed=0.0,
-        max_yawrate=robot_wmax,
+        max_yawrate=2*robot_vmax/robot_wheels_distance,
         dt = env.robot_dt,
         max_accel=4,
         max_dyawrate=4,
@@ -847,22 +831,7 @@ def test_k_trials_dwa(
         random_seed, metrics = _fori_body(i, (random_seed, metrics, dwa_config))
     # Print results
     if print_avg_metrics:
-        print("RESULTS")
-        print(f"Success rate: {round(metrics['successes']/k,2):.2f}")
-        print(f"Collision rate: {round(metrics['collisions']/k,2):.2f}")
-        print(f"Timeout rate: {round(metrics['timeouts']/k,2):.2f}")
-        print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
-        print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
-        print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
-        print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
-        print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
-        print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
-        print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
-        print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
-        print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
-        print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
-        print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
-        print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
+        print_average_metrics(k, metrics)
     return metrics
 
 def test_k_custom_trials_dwa(
@@ -872,7 +841,7 @@ def test_k_custom_trials_dwa(
     time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
     custom_episodes:dict,
     robot_vmax:float=1.0,
-    robot_wmax:float=2*1.0/0.7,
+    robot_wheels_distance:float=0.7,
     personal_space:float=0.5,
     print_avg_metrics:bool=True
 ) -> tuple:
@@ -900,7 +869,8 @@ def test_k_custom_trials_dwa(
     for key, value in custom_episodes.items():
         assert key in ["full_state", "humans_goal", "robot_goals", "static_obstacles", "humans_radius", "humans_speed"], f"Invalid key {key} in custom_episodes."
         assert value.shape[0] == k, f"Invalid shape for {key} in custom_episodes. Expected shape ({k}, ...), got {value.shape}."
-    
+    assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "DWA can only be used with unicycle robots."
+
     def _fori_body(i:int, for_val:tuple):   
         # Construct point cloud functions
 
@@ -988,35 +958,18 @@ def test_k_custom_trials_dwa(
             personal_space=personal_space,
             robot_dt=env.robot_dt,
             robot_radius=env.robot_radius,
-            ccso_n_static_humans=env.ccso_n_static_humans
+            ccso_n_static_humans=env.ccso_n_static_humans,
+            robot_specs={'kinematics': env.kinematics, 'v_max': robot_vmax, 'wheels_distance': robot_wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
         )
         seed += 1
         return seed, metrics
     # Initialize metrics
-    metrics = {
-        "successes": 0, 
-        "collisions": 0, 
-        "timeouts": 0, 
-        "returns": jnp.empty((k,)),
-        "times_to_goal": jnp.empty((k,)),
-        "average_speed": jnp.empty((k,)),
-        "average_acceleration": jnp.empty((k,)),
-        "average_jerk": jnp.empty((k,)),
-        "average_angular_speed": jnp.empty((k,)),
-        "average_angular_acceleration": jnp.empty((k,)),
-        "average_angular_jerk": jnp.empty((k,)),
-        "min_distance": jnp.empty((k,)),
-        "space_compliance": jnp.empty((k,)),
-        "episodic_spl": jnp.empty((k,)),
-        "path_length": jnp.empty((k,)),
-        "scenario": jnp.empty((k,), dtype=int),
-        "waypoint_reached": jnp.empty((k,), dtype=int),
-    }
+    metrics = initialize_metrics_dict(k)
     # Define DWA configuration
     dwa_config = dwa.Config(
         max_speed=robot_vmax,
         min_speed=0.0,
-        max_yawrate=robot_wmax,
+        max_yawrate=2*robot_vmax/robot_wheels_distance,
         dt = env.robot_dt,
         max_accel=4,
         max_dyawrate=4,
@@ -1034,23 +987,315 @@ def test_k_custom_trials_dwa(
         random_seed, metrics = _fori_body(i, (random_seed, metrics, dwa_config))
     # Print results
     if print_avg_metrics:
-        print("RESULTS")
-        print(f"Success rate: {round(metrics['successes']/k,2):.2f}")
-        print(f"Collision rate: {round(metrics['collisions']/k,2):.2f}")
-        print(f"Timeout rate: {round(metrics['timeouts']/k,2):.2f}")
-        print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
-        print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
-        print(f"Average time to goal: {round(jnp.nanmean(metrics['times_to_goal']),2):.2f} s")
-        print(f"Average path length: {round(jnp.nanmean(metrics['path_length']),2):.2f} m")
-        print(f"Average speed: {round(jnp.nanmean(metrics['average_speed']),2):.2f} m/s")
-        print(f"Average acceleration: {round(jnp.nanmean(metrics['average_acceleration']),2):.2f} m/s^2")
-        print(f"Average jerk: {round(jnp.nanmean(metrics['average_jerk']),2):.2f} m/s^3")
-        print(f"Average space compliance: {round(jnp.nanmean(metrics['space_compliance']),2):.2f}")
-        print(f"Average minimum distance to humans: {round(jnp.nanmean(metrics['min_distance']),2):.2f} m")
-        print(f"Average waypoint reached: {round(jnp.nanmean(metrics['waypoint_reached']),2):.2f}")
-        print(f"Average angular speed: {round(jnp.nanmean(metrics['average_angular_speed']),2):.2f} rad/s")
-        print(f"Average angular acceleration: {round(jnp.nanmean(metrics['average_angular_acceleration']),2):.2f} rad/s^2")
-        print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
+        print_average_metrics(k, metrics)
+    return metrics
+
+def test_k_trials_sfm(
+    k: int,
+    random_seed: int, 
+    env: BaseEnv, 
+    time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
+    robot_vmax:float=1.0,
+    robot_wheels_distance:float=0.7,
+    personal_space:float=0.5,
+    print_avg_metrics:bool=True
+) -> tuple:
+    """
+    This function tests the SFM policy in a given environment for k trials and outputs a series of metrics.
+
+    args:
+    - k: int. The number of trials to execute.
+    - random_seed: int. The random seed to use for the execution.
+    - env: BaseEnv. The environment to test the policy in.
+    - time_limit: float. The maximum time limit for each trial. WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage.
+    - robot_vmax: float. The maximum speed of the robot.
+    - personal_space: float. A parameter used to compute space compliance.
+
+    output:
+    - metrics: dict. A dictionary containing the metrics of the tests.
+    """
+    
+    try:
+        from jsfm.sfm import single_update
+        from jhsfm.hsfm import get_linear_velocity
+        from jsfm.utils import get_standard_humans_parameters
+    except ImportError:
+        raise ImportError("JSFM or JHSFM package is not installed. Please install it to following instructions at https://github.com/TommasoVandermeer/social-jym/")
+
+    # assert isinstance(env, SocialNav), "The environment must be an instance of SocialNav."
+
+    @loop_tqdm(k)
+    @jit
+    def _fori_body(i:int, for_val:tuple):  
+        @jit
+        def _while_body(while_val:tuple):
+            # Retrieve data from the tuple
+            prev_state, state, obs, info, outcome, steps, all_actions, all_states = while_val
+            temp = jnp.copy(state)
+            ### COMPUTE ROBOT ACTION ###
+            if env.humans_policy == HUMAN_POLICIES.index('hsfm'):
+                # Setup humans parameters
+                parameters = get_standard_humans_parameters(env.n_humans+1)
+                parameters = parameters.at[-1,0].set(env.robot_radius) # Set robot radius
+                parameters = parameters.at[-1,2].set(robot_vmax) # Set robot max speed
+                parameters = parameters.at[:-1,0].set(info["humans_parameters"][:,0]) # Set humans radius
+                parameters = parameters.at[:-1,2].set(info["humans_parameters"][:,2]) # Set humans max_speed
+                # Convert HSFM state to SFM state
+                humans_lin_vel = vmap(get_linear_velocity, in_axes=(0, 0))(state[:-1,4], state[:-1,2:4])
+                feed_state = jnp.copy(state[:,:4])
+                feed_state = feed_state.at[:-1,2:4].set(humans_lin_vel)
+            elif env.humans_policy == HUMAN_POLICIES.index('sfm'):
+                # Setup humans parameters
+                parameters = jnp.vstack((info["humans_parameters"], jnp.array([env.robot_radius, 80., robot_vmax, *get_standard_humans_parameters(1)[0,3:]])))
+                # Setup robot state for SFM
+                humans_lin_vel = state[:-1,2:4]
+                feed_state = jnp.copy(state[:,:4])
+            elif env.humans_policy == HUMAN_POLICIES.index('orca'):
+                # Setup humans parameters
+                parameters = get_standard_humans_parameters(env.n_humans+1)
+                parameters = parameters.at[-1,0].set(env.robot_radius) # Set robot radius
+                parameters = parameters.at[-1,2].set(robot_vmax) # Set robot max speed
+                parameters = parameters.at[:-1,0].set(info["humans_parameters"][:,0]) # Set humans radius
+                parameters = parameters.at[:-1,2].set(info["humans_parameters"][:,2]) # Set humans max_speed
+                # Setup robot state for SFM
+                humans_lin_vel = state[:-1,2:4]
+                feed_state = jnp.copy(state[:,:4])
+            # Set tobot feed state
+            feed_state = feed_state.at[-1,2:4].set((state[-1,0:2]-prev_state[-1,0:2])/env.robot_dt)
+            # Step the robot in SFM environment (doing it with substeps to avoid instabilities)
+            @jit
+            def _substep(i, feed_state):
+                new_robot_state = single_update(
+                    -1,
+                    feed_state, 
+                    info["robot_goal"], 
+                    parameters,
+                    info["static_obstacles"][-1],
+                    env.humans_dt
+                )
+                feed_state = feed_state.at[:-1,0].set(feed_state[:-1,0] + humans_lin_vel[:,0] * env.humans_dt)
+                feed_state = feed_state.at[:-1,1].set(feed_state[:-1,1] + humans_lin_vel[:,1] * env.humans_dt)
+                feed_state = feed_state.at[-1].set(new_robot_state)
+                return feed_state
+            new_feed_state = lax.fori_loop(0, int(env.robot_dt/env.humans_dt), _substep, feed_state)
+            new_robot_state = new_feed_state[-1]
+            # Compute action
+            new_velocity = (new_robot_state[0:2] - state[-1,0:2]) / env.robot_dt
+            if env.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+                action = jnp.array([jnp.linalg.norm(new_velocity), wrap_angle(jnp.atan2(new_robot_state[3], new_robot_state[2]) - state[-1,4]) / env.robot_dt])
+            elif env.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+                action = new_robot_state[2:4]
+            ### STEP THE ENVIRONMENT ###
+            state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
+            ### Update prev_state
+            prev_state = jnp.copy(temp)
+            ### Save data
+            all_actions = all_actions.at[steps].set(action)
+            all_states = all_states.at[steps].set(state)
+            ### Update step counter
+            steps += 1
+            return prev_state, state, obs, info, outcome, steps, all_actions, all_states
+        
+        ## Retrieve data from the tuple
+        seed, metrics = for_val
+        reset_key = random.PRNGKey(seed)
+        ## Reset the environment
+        state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+        initial_robot_position = state[-1,:2]
+        ## Episode loop
+        all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+        all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+        while_val_init = (state, state, obs, info, init_outcome, 0, all_actions, all_states)
+        _, _, _, end_info, outcome, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[4]["nothing"] == True, _while_body, while_val_init)
+        ## Update metrics
+        metrics = compute_episode_metrics(
+            metrics=metrics,
+            episode_idx=i, 
+            initial_robot_position=initial_robot_position, 
+            all_states=all_states, 
+            all_actions=all_actions, 
+            outcome=outcome, 
+            episode_steps=episode_steps, 
+            end_info=end_info, 
+            max_steps=int(time_limit/env.robot_dt)+1, 
+            personal_space=personal_space,
+            robot_dt=env.robot_dt,
+            robot_radius=env.robot_radius,
+            ccso_n_static_humans=env.ccso_n_static_humans,
+            robot_specs={'kinematics': env.kinematics, 'v_max': robot_vmax, 'wheels_distance': robot_wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
+        )
+        seed += 1
+        return seed, metrics
+    
+    # Initialize metrics
+    metrics = initialize_metrics_dict(k)
+    # Execute k tests
+    if env.scenario == SCENARIOS.index("circular_crossing_with_static_obstacles"):
+        print(f"\nExecuting {k} tests with {env.n_humans - env.ccso_n_static_humans} dynamic humans and {env.ccso_n_static_humans} static humans...")
+    else:
+        print(f"\nExecuting {k} tests with {env.n_humans} humans...")
+    _, metrics = lax.fori_loop(0, k, _fori_body, (random_seed, metrics))
+    # Print results
+    if print_avg_metrics:
+        print_average_metrics(k, metrics)
+    return metrics
+
+def test_k_trials_hsfm(
+    k: int,
+    random_seed: int, 
+    env: BaseEnv, 
+    time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
+    robot_vmax:float=1.0,
+    robot_wheels_distance:float=0.7,
+    personal_space:float=0.5,
+    print_avg_metrics:bool=True
+) -> tuple:
+    """
+    This function tests the HSFM policy in a given environment for k trials and outputs a series of metrics.
+
+    args:
+    - k: int. The number of trials to execute.
+    - random_seed: int. The random seed to use for the execution.
+    - env: BaseEnv. The environment to test the policy in.
+    - time_limit: float. The maximum time limit for each trial. WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage.
+    - robot_vmax: float. The maximum speed of the robot.
+    - personal_space: float. A parameter used to compute space compliance.
+
+    output:
+    - metrics: dict. A dictionary containing the metrics of the tests.
+    """
+    
+    try:
+        from jhsfm.hsfm import single_update, get_linear_velocity
+        from jhsfm.utils import get_standard_humans_parameters
+    except ImportError:
+        raise ImportError("JHSFM package is not installed. Please install it to following instructions at https://github.com/TommasoVandermeer/social-jym/")
+
+    # assert isinstance(env, SocialNav), "The environment must be an instance of SocialNav."
+    assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "HSFM can only be used with unicycle robots."
+
+    @loop_tqdm(k)
+    @jit
+    def _fori_body(i:int, for_val:tuple):  
+        @jit
+        def _while_body(while_val:tuple):
+            # Retrieve data from the tuple
+            prev_state, state, obs, info, outcome, steps, all_actions, all_states = while_val
+            temp = jnp.copy(state)
+            ### COMPUTE ROBOT ACTION ###
+            if env.humans_policy == HUMAN_POLICIES.index('hsfm'):
+                # Setup humans parameters
+                parameters = jnp.vstack((info["humans_parameters"], jnp.array([env.robot_radius, 80., robot_vmax, *get_standard_humans_parameters(1)[0,3:]])))
+                # Setup robot state for HSFM
+                humans_lin_vel = vmap(get_linear_velocity, in_axes=(0, 0))(state[:-1,4], state[:-1,2:4])
+                feed_state = jnp.copy(state)
+            elif env.humans_policy == HUMAN_POLICIES.index('sfm') or env.humans_policy == HUMAN_POLICIES.index('orca'):
+                # Setup humans parameters
+                parameters = get_standard_humans_parameters(env.n_humans+1)
+                parameters = parameters.at[-1,0].set(env.robot_radius) # Set robot radius
+                parameters = parameters.at[-1,2].set(robot_vmax) # Set robot max speed
+                parameters = parameters.at[:-1,0].set(info["humans_parameters"][:,0]) # Set humans radius
+                parameters = parameters.at[:-1,2].set(info["humans_parameters"][:,2]) # Set humans max_speed
+                # Convert SFM/ORCA state to HSFM state
+                humans_lin_vel = state[:-1,2:4]
+                feed_state = jnp.copy(state)
+                humans_theta = jnp.arctan2(humans_lin_vel[:,1], humans_lin_vel[:,0])
+                previous_humans_lin_vel = prev_state[:-1,2:4]
+                previous_humans_theta = jnp.arctan2(previous_humans_lin_vel[:,1], previous_humans_lin_vel[:,0])
+                @jit
+                def _get_body_and_ang_velocity(lin_vel, theta, previous_theta):
+                    rotational_matrix = jnp.array([[jnp.cos(theta), jnp.sin(theta)], [-jnp.sin(theta), jnp.cos(theta)]])
+                    angular_velocity = wrap_angle(theta - previous_theta) / env.humans_dt
+                    return rotational_matrix @ lin_vel, angular_velocity
+                humans_body_vel, humans_angular_vel = vmap(_get_body_and_ang_velocity, in_axes=(0,0,0))(
+                    humans_lin_vel, 
+                    humans_theta, 
+                    previous_humans_theta
+                )
+                feed_state = feed_state.at[:-1,2:4].set(humans_body_vel)
+                feed_state = feed_state.at[:-1,4].set(humans_theta)
+                feed_state = feed_state.at[:-1,5].set(humans_angular_vel)
+            # Set robot feed state
+            linear_velocity = (state[-1,:2]-prev_state[-1,0:2])/env.robot_dt
+            robot_theta = state[-1,4] 
+            rotational_matrix = jnp.array([[jnp.cos(robot_theta), jnp.sin(robot_theta)], [-jnp.sin(robot_theta), jnp.cos(robot_theta)]])
+            body_velocity = rotational_matrix @ linear_velocity
+            feed_state = feed_state.at[-1,2:4].set(body_velocity)
+            angular_velocity = wrap_angle(robot_theta - prev_state[-1,4]) / env.robot_dt
+            feed_state = feed_state.at[-1,5].set(angular_velocity)
+            # Step the robot in HSFM environment (doing it with substeps to avoid instabilities)
+            @jit
+            def _substep(i, feed_state):
+                new_robot_state = single_update(
+                    -1,
+                    feed_state, 
+                    info["robot_goal"], 
+                    parameters,
+                    info["static_obstacles"][-1],
+                    env.humans_dt
+                )
+                feed_state = feed_state.at[:-1,0].set(feed_state[:-1,0] + humans_lin_vel[:,0] * env.humans_dt)
+                feed_state = feed_state.at[:-1,1].set(feed_state[:-1,1] + humans_lin_vel[:,1] * env.humans_dt)
+                feed_state = feed_state.at[-1].set(new_robot_state)
+                return feed_state
+            new_feed_state = lax.fori_loop(0, int(env.robot_dt/env.humans_dt), _substep, feed_state)
+            new_robot_state = new_feed_state[-1]
+            # Compute action
+            new_velocity = (new_robot_state[:2] - state[-1,:2]) / env.robot_dt
+            action = jnp.array([jnp.linalg.norm(new_velocity), wrap_angle(new_robot_state[4] - state[-1,4]) / env.robot_dt])
+            ### STEP THE ENVIRONMENT ###
+            state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
+            ### Update prev_state
+            prev_state = jnp.copy(temp)
+            ### Save data
+            all_actions = all_actions.at[steps].set(action)
+            all_states = all_states.at[steps].set(state)
+            ### Update step counter
+            steps += 1
+            return prev_state, state, obs, info, outcome, steps, all_actions, all_states
+        
+        ## Retrieve data from the tuple
+        seed, metrics = for_val
+        reset_key = random.PRNGKey(seed)
+        ## Reset the environment
+        state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+        initial_robot_position = state[-1,:2]
+        ## Episode loop
+        all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+        all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+        while_val_init = (state, state, obs, info, init_outcome, 0, all_actions, all_states)
+        _, _, _, end_info, outcome, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[4]["nothing"] == True, _while_body, while_val_init)
+        ## Update metrics
+        metrics = compute_episode_metrics(
+            metrics=metrics,
+            episode_idx=i, 
+            initial_robot_position=initial_robot_position, 
+            all_states=all_states, 
+            all_actions=all_actions, 
+            outcome=outcome, 
+            episode_steps=episode_steps, 
+            end_info=end_info, 
+            max_steps=int(time_limit/env.robot_dt)+1, 
+            personal_space=personal_space,
+            robot_dt=env.robot_dt,
+            robot_radius=env.robot_radius,
+            ccso_n_static_humans=env.ccso_n_static_humans,
+            robot_specs={'kinematics': env.kinematics, 'v_max': robot_vmax, 'wheels_distance': robot_wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
+        )
+        seed += 1
+        return seed, metrics
+    
+    # Initialize metrics
+    metrics = initialize_metrics_dict(k)
+    # Execute k tests
+    if env.scenario == SCENARIOS.index("circular_crossing_with_static_obstacles"):
+        print(f"\nExecuting {k} tests with {env.n_humans - env.ccso_n_static_humans} dynamic humans and {env.ccso_n_static_humans} static humans...")
+    else:
+        print(f"\nExecuting {k} tests with {env.n_humans} humans...")
+    _, metrics = lax.fori_loop(0, k, _fori_body, (random_seed, metrics))
+    # Print results
+    if print_avg_metrics:
+        print_average_metrics(k, metrics)
     return metrics
 
 def animate_trajectory(

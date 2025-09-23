@@ -9,7 +9,7 @@ import math
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.policies.sarl import SARL
-from socialjym.utils.aux_functions import load_crowdnav_policy, test_k_trials
+from socialjym.utils.aux_functions import load_crowdnav_policy, test_k_trials, initialize_metrics_dict
 
 ### Hyperparameters
 noise_sigma_percentage_levels = [0., 0.1, 0.2, 0.3]
@@ -33,26 +33,8 @@ vnet_params_dirs = [
     os.path.join(os.path.expanduser("~"),"Repos/social-jym/trained_policies/crowdnav_policies/sarl_5_hsfm_hs/rl_model.pth"),
 ]
 policy_labels = ["SARL-HS-ORCA","SARL-HS-SFM","SARL-HS-HSFM"]
-empty_trials_outcomes_array = jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels)))
-empty_trials_metrics_array = jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels),n_test_trials))
-all_metrics = {
-    "successes": empty_trials_outcomes_array, 
-    "collisions": empty_trials_outcomes_array, 
-    "timeouts": empty_trials_outcomes_array, 
-    "returns": empty_trials_metrics_array,
-    "times_to_goal": empty_trials_metrics_array,
-    "average_speed": empty_trials_metrics_array,
-    "average_acceleration": empty_trials_metrics_array,
-    "average_jerk": empty_trials_metrics_array,
-    "average_angular_speed": empty_trials_metrics_array,
-    "average_angular_acceleration": empty_trials_metrics_array,
-    "average_angular_jerk": empty_trials_metrics_array,
-    "min_distance": empty_trials_metrics_array,
-    "space_compliance": empty_trials_metrics_array,
-    "episodic_spl": empty_trials_metrics_array,
-    "path_length": empty_trials_metrics_array,
-    "scenario": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels),n_test_trials), dtype=jnp.int32), 
-}
+metrics_dims = (len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(noise_sigma_percentage_levels))
+all_metrics = initialize_metrics_dict(n_test_trials, metrics_dims)
 
 ### Test loop
 for i, vnet_params_dir in enumerate(vnet_params_dirs):
