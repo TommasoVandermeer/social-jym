@@ -86,8 +86,19 @@ from matplotlib import rc
 font = {'weight' : 'regular',
         'size'   : 17}
 rc('font', **font)
-figure, ax = plt.subplots(figsize=(10,10))
-figure.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.15)
+figure, ax = plt.subplots(figsize=(6,10))
+figure.subplots_adjust(left=0.17, right=0.97, top=0.97, bottom=0.1)
+# unsafe_actions = jnp.where(
+#     (
+#         (policy.action_space[:,0] > policy.v_max * 0.53333) | \
+#         ((policy.action_space[:,1] > 0) & (policy.action_space[:,1] > ((2 * 0.56 * (policy.v_max - policy.action_space[:,0] * 0.5333))/policy.wheels_distance))) | \
+#         ((policy.action_space[:,1] < 0) & (policy.action_space[:,1] < ((2 * (policy.action_space[:,0] * 0.5333 - policy.v_max))/policy.wheels_distance)))
+#     ), 
+#     True, 
+#     False
+# )
+# ax.scatter(policy.action_space[unsafe_actions,0], policy.action_space[unsafe_actions,1], zorder=2, label="Unsafe", color='red', s=60)
+# ax.scatter(policy.action_space[~unsafe_actions,0], policy.action_space[~unsafe_actions,1], zorder=2, label="Safe", color='green', s=60)
 ax.scatter(policy.action_space[:,0], policy.action_space[:,1], zorder=3, label="Sampled actions", color='blue', s=60)
 actions_space_bound = Polygon(
     jnp.array([[policy.v_max,0.],[0.,policy.v_max*2/policy.wheels_distance],[0.,-policy.v_max*2/policy.wheels_distance]]), 
@@ -96,14 +107,14 @@ actions_space_bound = Polygon(
     edgecolor='black',
     linewidth=2,
     zorder=1,
-    label="Action space bounds"
 )
 ax.add_patch(actions_space_bound)
 # ax.gca().set_aspect('equal', adjustable='box')
 # ax.set_title(f"Action space (V,w) - Wheelbase: {policy.wheels_distance/2}m - Vmax: {policy.v_max}m/s")
-ax.set_xlabel("$v_r$ $(m/s)$")
-ax.set_ylabel("$\omega_r$ $(r/s)$")
-ax.legend()
+ax.set_xlabel("$v$ $(m/s)$")
+ax.set_ylabel("$\omega$ $(rad/s)$", labelpad=-16)
+ax.legend(fontsize=27)
+ax.grid()
 plt.show()
 # figure.savefig(os.path.join(os.path.dirname(__file__),"unicycle_action_space.pdf"), format='pdf')
 # Plot (px,py,theta) for each action starting from (0,0,0) with analytical integration

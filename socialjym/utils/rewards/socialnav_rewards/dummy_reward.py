@@ -13,7 +13,7 @@ class DummyReward(BaseReward):
         time_limit: float=50.,
         kinematics: str='holonomic'
     ) -> None:
-        super().__init__(0.)
+        super().__init__(0.9)
         # Initialize reward parameters
         self.v_max = v_max
         self.type = "socialnav_dummyreward"
