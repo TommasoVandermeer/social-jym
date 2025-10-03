@@ -33,6 +33,8 @@ class SocialNav(BaseEnv):
             kinematics='holonomic',
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
+            grid_cell_size:float = 0.9, # Such parameter is suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT)
+            grid_min_size:float = 18. # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
         ) -> None:
         ## BaseEnv initialization
         super().__init__(
@@ -54,6 +56,8 @@ class SocialNav(BaseEnv):
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,
+            grid_cell_size=grid_cell_size,
+            grid_min_size=grid_min_size
         )
         ## Args validation
         if n_obstacles > 0:

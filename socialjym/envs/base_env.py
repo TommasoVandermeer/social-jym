@@ -19,14 +19,17 @@ SCENARIOS = [
     "circular_crossing_with_static_obstacles",
     "crowd_navigation",
     "corner_traffic",
-    "hybrid_scenario"] # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
+    "hybrid_scenario" # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
+] 
 HUMAN_POLICIES = [
     "orca",
     "sfm", 
-    "hsfm"]
+    "hsfm"
+]
 ROBOT_KINEMATICS = [
     "holonomic",
-    "unicycle"]
+    "unicycle"
+]
 EPSILON = 1e-5 # Small value to avoid math overflow
 
 @jit
@@ -68,6 +71,8 @@ class BaseEnv(ABC):
         kinematics:str,
         max_cc_delay:float,
         ccso_n_static_humans:int,
+        grid_cell_size:float,
+        grid_min_size:float,
     ) -> None:
         ## Args validation
         assert scenario in SCENARIOS or scenario is None, f"Invalid scenario. Choose one of {SCENARIOS}, or None for custom scenario."
@@ -109,6 +114,15 @@ class BaseEnv(ABC):
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
         self.max_cc_delay = max_cc_delay
         self.ccso_n_static_humans = ccso_n_static_humans
+        # Global planning parameters
+        self.grid_cell_size = grid_cell_size
+        self.grid_min_size = grid_min_size
+        self.moves = jnp.array([
+            [-1, 0],  # Up
+            [1, 0],   # Down
+            [0, -1],  # Left
+            [0, 1],   # Right
+        ])
 
     # --- Private methods ---
 
@@ -143,6 +157,7 @@ class BaseEnv(ABC):
 
     @partial(jit, static_argnames=("self"))
     def _ray_cast(self, angle:float, lidar_position:jnp.ndarray, human_positions:jnp.ndarray, human_radiuses:jnp.ndarray) -> float:
+        # TODO: add obstacles ray casting
         direction = jnp.array([jnp.cos(angle), jnp.sin(angle)])
         measurement = self._batch_human_ray_intersect(direction, human_positions, lidar_position, human_radiuses)
         return measurement
@@ -450,3 +465,101 @@ class BaseEnv(ABC):
         measurements = self._batch_ray_cast(angles, lidar_position, human_positions, human_radiuses)
         lidar_output = jnp.stack((measurements, angles), axis=-1)
         return lidar_output
+    
+    @partial(jit, static_argnames=("self"))
+    def build_grid_map_and_occupancy(self, state, info, epsilon=1e-5):
+        """
+        Builds a square grid map centered around the robot and computes the occupancy grid based on static obstacles.
+
+        parameters:
+        - state: Current state of the environment (robot + humans)
+        - info: Additional information from the environment
+
+        returns:
+        - grid_cells: Array of shape (n_x, n_y, 2) containing the (x, y) coordinates of each grid cell center. n_x and n_y depend on the fixed grid size defined by cell_size and min_grid_size.
+        - occupancy_grid: Boolean array of shape (n_x, n_y), where True indicates an occupied cell
+        - edges: Array of shape (n_cells, n_cells) representing the edges matrix for pathfinding
+        """
+        cell_size = self.grid_cell_size # Grid cell size (in meters)
+        min_grid_size = self.grid_min_size # Grid minimum size (in meters)
+        center = jnp.nanmean(jnp.vstack((jnp.reshape(info['static_obstacles'][-1], (self.n_obstacles * 2,-1)), state[-1,:2], info['robot_goal'])), axis=0)
+        dists_vector = jnp.concatenate([-jnp.arange(0, min_grid_size/2 + cell_size, cell_size)[::-1][:-1],jnp.arange(0, min_grid_size/2 + cell_size, cell_size)])
+        grid_center_x, grid_center_y = jnp.meshgrid(dists_vector + center[0], dists_vector + center[1])
+        n_x = grid_center_x.shape[0]
+        n_y = grid_center_y.shape[1]
+        grid_cells = jnp.array(jnp.vstack((grid_center_x.flatten(), grid_center_y.flatten())).T)
+        @jit
+        def _obstacle_intersects_cell(x1, y1, x2, y2, xmin, xmax, ymin, ymax):
+            @jit
+            def _not_nan_obs(val:tuple):
+                x1, y1, x2, y2, xmin, xmax, ymin, ymax = val
+                dx = x2 - x1
+                dy = y2 - y1
+                p = jnp.array([-dx, dx, -dy, dy])
+                q = jnp.array([x1 - xmin, xmax - x1, y1 - ymin, ymax - y1])
+                @jit
+                def loop_body(i, tup):
+                    t, p, q = tup
+                    t0, t1 = t
+                    t0, t1 = lax.switch(
+                        (jnp.sign(p[i])+1).astype(jnp.int32),
+                        [
+                            lambda t: lax.cond(q[i]/p[i] > t[1], lambda _: (2.,1.), lambda x: (jnp.max(jnp.array([x[0],q[i]/p[i]])), x[1]), t),  # p[i] < 0
+                            lambda t: lax.cond(q[i] < 0, lambda _: (2.,1.), lambda x: x, t),  # p[i] == 0
+                            lambda t: lax.cond(q[i]/p[i] < t[0], lambda _: (2.,1.), lambda x: (x[0], jnp.min(jnp.array([x[1],q[i]/p[i]]))), t),  # p[i] > 0
+                        ],
+                        (t0, t1),
+                    )
+                    # debug.print("t0: {x}, t1: {y}, switch_case: {z}", x=t0, y=t1, z=(jnp.sign(p[i])+1).astype(jnp.int32))
+                    return ((t0, t1), p ,q)
+                t, p, q = lax.fori_loop(
+                    0, 
+                    4,
+                    loop_body,
+                    ((0., 1.), p, q),
+                )
+                t0, t1 = t
+                inside_or_intersects = ~(t0 > t1)
+                return inside_or_intersects
+            @jit
+            def _nan_obs(val:tuple):
+                # If the obstacle is NaN, it means it doesn't exist, so it cannot intersect the cell
+                return False
+            return lax.cond(
+                jnp.any(jnp.isnan(jnp.array([x1, y1, x2, y2]))), 
+                _nan_obs,
+                _not_nan_obs, 
+                (x1, y1, x2, y2, xmin, xmax, ymin, ymax)
+            )
+        @jit
+        def _is_cell_occupied(x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax):
+            intersects = vmap(_obstacle_intersects_cell, in_axes=(0, 0, 0, 0, None, None, None, None))(x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax)
+            return jnp.any(intersects)
+        @jit
+        def _build_occupancy_vector(x1s, y1s, x2s, y2s, xmins, xmaxs, ymins, ymaxs):
+            """
+            Returns a boolean array of shape (n_cells,) indicating whether each cell is occupied (True) or free (False).
+
+            parameters:
+            - x1s, y1s, x2s, y2s: Arrays of shape (n_obstacles * n_segments_x_obstacles,) representing the endpoints of the obstacle segments
+            - xmins, xmaxs, ymins, ymaxs: Arrays of shape (n_cells,) representing the boundaries of each grid cell
+
+            returns:
+            - occupancy_vector: Boolean array of shape (n_cells,), where True indicates an occupied cell
+            """
+            return vmap(_is_cell_occupied, in_axes=(None, None, None, None, 0, 0, 0, 0))(x1s, y1s, x2s, y2s, xmins, xmaxs, ymins, ymaxs)
+        # Prepare obstacle segments
+        obstacles_reshaped = jnp.reshape(info['static_obstacles'][-1], (self.n_obstacles,-1))  # shape: (n_obstacles * 2, 2)
+        occupancy_vector = _build_occupancy_vector(
+            obstacles_reshaped[:,0],
+            obstacles_reshaped[:,1],
+            obstacles_reshaped[:,2],
+            obstacles_reshaped[:,3],
+            grid_cells[:,0] - cell_size/2 - epsilon,
+            grid_cells[:,0] + cell_size/2 + epsilon,
+            grid_cells[:,1] - cell_size/2 - epsilon,
+            grid_cells[:,1] + cell_size/2 + epsilon,
+        )
+        grid_cells = jnp.stack((grid_center_x, grid_center_y), axis=-1)
+        occupancy_grid = jnp.reshape(occupancy_vector, (n_x, n_y))
+        return grid_cells, occupancy_grid
