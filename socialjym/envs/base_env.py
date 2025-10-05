@@ -71,6 +71,7 @@ class BaseEnv(ABC):
         kinematics:str,
         max_cc_delay:float,
         ccso_n_static_humans:int,
+        grid_map_computation:bool,
         grid_cell_size:float,
         grid_min_size:float,
     ) -> None:
@@ -80,6 +81,8 @@ class BaseEnv(ABC):
             print("\nWARNING: Custom scenario is selected. Make sure to implement the 'reset_custom_episode' method in the derived class (not 'reset').\n")
         assert humans_policy in HUMAN_POLICIES, f"Invalid human policy. Choose one of {HUMAN_POLICIES}"
         assert kinematics in ROBOT_KINEMATICS, f"Invalid robot kinematics. Choose one of {ROBOT_KINEMATICS}"
+        if grid_map_computation:
+            assert grid_cell_size > 0, "There should be at least one obstacle (also padding obstacles) to enable grid map computation."
         ## Env initialization
         self.robot_radius = robot_radius
         self.humans_dt = humans_dt
@@ -115,6 +118,9 @@ class BaseEnv(ABC):
         self.max_cc_delay = max_cc_delay
         self.ccso_n_static_humans = ccso_n_static_humans
         # Global planning parameters
+        if grid_map_computation:
+            print("\nWARNING: Grid map computation is enabled. This will slow down the simulation, especially if many static obstacles are present.\n")
+        self.grid_map_computation = grid_map_computation
         self.grid_cell_size = grid_cell_size
         self.grid_min_size = grid_min_size
 
@@ -558,3 +564,19 @@ class BaseEnv(ABC):
         grid_cells = jnp.stack((grid_center_x, grid_center_y), axis=-1)
         occupancy_grid = jnp.reshape(occupancy_vector, (n_x, n_y))
         return grid_cells, occupancy_grid
+    
+    @partial(jit, static_argnames=("self"))
+    def get_grid_size(self):
+        """
+        Computes the size of the grid map based on the cell size and minimum grid size.
+
+        returns:
+        - n_x: Number of cells in the x direction
+        - n_y: Number of cells in the y direction
+        """
+        cell_size = self.grid_cell_size # Grid cell size (in meters)
+        min_grid_size = self.grid_min_size # Grid minimum size (in meters)
+        dists_vector = jnp.concatenate([-jnp.arange(0, min_grid_size/2 + cell_size, cell_size)[::-1][:-1],jnp.arange(0, min_grid_size/2 + cell_size, cell_size)])
+        n_x = dists_vector.shape[0]
+        n_y = dists_vector.shape[0]
+        return n_x, n_y

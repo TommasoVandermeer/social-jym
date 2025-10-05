@@ -14,6 +14,7 @@ from socialjym.envs.base_env import SCENARIOS
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.policies.sarl import SARL
+from socialjym.policies.sarl_star import SARLStar
 from socialjym.utils.aux_functions import \
     animate_trajectory, \
     initialize_metrics_dict, \
@@ -51,9 +52,19 @@ with open(os.path.join(os.path.dirname(__file__), 'best_dir_safe.pkl'), 'rb') as
 ### Initialize SARL policy
 sarl = SARL(reward_function, v_max=robot_vmax, dt=0.25, kinematics='unicycle', wheels_distance=robot_wheels_distance)
 sarl_params = load_socialjym_policy(os.path.join(os.path.dirname(__file__), 'best_sarl.pkl'))
+### Initialize SARL* policy
+dummy_env = SocialNav(
+    robot_radius=0.3,
+    n_humans=5,
+    robot_dt=0.25,
+    humans_dt=0.01,
+    scenario='hybrid_scenario',
+    reward_function=reward_function,
+)
+sarl_star = SARLStar(reward_function,  dummy_env.get_grid_size(), planner="A*", v_max=robot_vmax, dt=0.25, kinematics='unicycle', wheels_distance=robot_wheels_distance)
 
 ### Initialize output data structure
-policies = ['DIR-SAFE', 'DWA', 'SARL', 'SFM', 'HSFM']
+policies = ['DIR-SAFE', 'DWA', 'SARL', 'SFM', 'HSFM', 'SARL*']
 n_policies = len(policies)
 metrics_dims = (n_policies,len(n_humans),len(n_obstacles))
 all_metrics = initialize_metrics_dict(n_trials, dims=metrics_dims)
@@ -228,12 +239,16 @@ for i, nh in enumerate(n_humans):
         ## HSFM Tests
         print("\nHSFM Tests")
         metrics_hsfm = test_k_trials_hsfm(n_trials, random_seed, test_env, time_limit=50., robot_vmax=robot_vmax, robot_wheels_distance=robot_wheels_distance)
+        ## SARL Tests
+        print("\nSARL* Tests")
+        metrics_sarl_star = test_k_trials(n_trials, random_seed, test_env, sarl_star, sarl_params, time_limit=50.)
         ### Store results
         all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_dir_safe)
         all_metrics = tree_map(lambda x, y: x.at[1,i,j].set(y), all_metrics, metrics_dwa)
         all_metrics = tree_map(lambda x, y: x.at[2,i,j].set(y), all_metrics, metrics_sarl)
         all_metrics = tree_map(lambda x, y: x.at[3,i,j].set(y), all_metrics, metrics_sfm)
         all_metrics = tree_map(lambda x, y: x.at[4,i,j].set(y), all_metrics, metrics_hsfm)
+        all_metrics = tree_map(lambda x, y: x.at[5,i,j].set(y), all_metrics, metrics_sarl_star)
 
 ### Save results
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_results.pkl')):

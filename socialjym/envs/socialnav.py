@@ -33,6 +33,7 @@ class SocialNav(BaseEnv):
             kinematics='holonomic',
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
+            grid_map_computation:bool = False,
             grid_cell_size:float = 0.9, # Such parameter is suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT)
             grid_min_size:float = 18. # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
         ) -> None:
@@ -56,6 +57,7 @@ class SocialNav(BaseEnv):
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,
+            grid_map_computation=grid_map_computation,
             grid_cell_size=grid_cell_size,
             grid_min_size=grid_min_size
         )
@@ -280,6 +282,8 @@ class SocialNav(BaseEnv):
             ], 
             subkey
         )
+        if self.grid_map_computation: # Compute the grid map of static obstacles for global planning
+            info['grid_cells'], info['occupancy_grid'] = self.build_grid_map_and_occupancy(full_state, info)
         return full_state, key, info
 
     @partial(jit, static_argnames=("self"))

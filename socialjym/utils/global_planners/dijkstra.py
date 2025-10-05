@@ -29,7 +29,7 @@ class DijkstraPlanner(BaseGlobalPlanner):
         occupancy_grid:jnp.ndarray,
     ) -> tuple:
         n_rows, n_cols = grid_cells.shape[:2]
-        ## Find start and goal nodes
+        ## Find start and goal nodes - WARNING: make sure that start and goal are not in occupied cells
         start_node, _, start_cell_occupancy = self._query_grid_map(grid_cells, occupancy_grid, start)
         goal_node, _, goal_cell_occupancy = self._query_grid_map(grid_cells, occupancy_grid, goal)
         ## Initialize node data
