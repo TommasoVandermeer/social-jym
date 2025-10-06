@@ -146,7 +146,7 @@ class SARLStar(SARL):
         
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
-        # Run global planner to find next subgoal
+        ## Run global planner to find next subgoal
         path, path_length = self.planner.find_path(
             obs[-1,:2], 
             info['robot_goal'], 
@@ -158,9 +158,10 @@ class SARLStar(SARL):
             lambda: path[1], # Next waypoint in the path
             lambda: info['robot_goal'], # Already at goal cell
         )
-        # Compute safe actions
+        # debug.print("New subgoal: {x}, path length: {y}", x=info['robot_goal'], y=path_length)
+        ## Compute safe actions
         safe_actions = self._compute_safe_action_space(obs, info)
-        # Compute best action
+        ## Compute best action
         action, key, vnet_input = lax.cond(explore, _random_action, _forward_pass, (obs, info, vnet_params, safe_actions, key))
         return action, key, vnet_input
     

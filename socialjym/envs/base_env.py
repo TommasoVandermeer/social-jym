@@ -490,7 +490,7 @@ class BaseEnv(ABC):
         n_y = grid_center_y.shape[1]
         grid_cells = jnp.array(jnp.vstack((grid_center_x.flatten(), grid_center_y.flatten())).T)
         @jit
-        def _obstacle_intersects_cell(x1, y1, x2, y2, xmin, xmax, ymin, ymax):
+        def _edge_intersects_cell(x1, y1, x2, y2, xmin, xmax, ymin, ymax):
             @jit
             def _not_nan_obs(val:tuple):
                 x1, y1, x2, y2, xmin, xmax, ymin, ymax = val
@@ -533,29 +533,27 @@ class BaseEnv(ABC):
                 (x1, y1, x2, y2, xmin, xmax, ymin, ymax)
             )
         @jit
-        def _is_cell_occupied(x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax):
-            intersects = vmap(_obstacle_intersects_cell, in_axes=(0, 0, 0, 0, None, None, None, None))(x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax)
-            return jnp.any(intersects)
+        def _obstacle_intersects_cell(obstacle, xmin, xmax, ymin, ymax):
+            return jnp.any(vmap(_edge_intersects_cell, in_axes=(0,0,0,0,None,None,None,None))(obstacle[:,0,0], obstacle[:,0,1], obstacle[:,1,0], obstacle[:,1,1], xmin, xmax, ymin, ymax))
         @jit
-        def _build_occupancy_vector(x1s, y1s, x2s, y2s, xmins, xmaxs, ymins, ymaxs):
+        def _is_cell_occupied(obstacles, xmin, xmax, ymin, ymax):
+            return jnp.any(vmap(_obstacle_intersects_cell, in_axes=(0, None, None, None, None))(obstacles, xmin, xmax, ymin, ymax))
+        @jit
+        def _build_occupancy_vector(obstacles, xmins, xmaxs, ymins, ymaxs):
             """
             Returns a boolean array of shape (n_cells,) indicating whether each cell is occupied (True) or free (False).
 
             parameters:
-            - x1s, y1s, x2s, y2s: Arrays of shape (n_obstacles * n_segments_x_obstacles,) representing the endpoints of the obstacle segments
+            - obstacles: Array of shape (n_obstacles, n_edges, 2, 2) representing the line segments of the obstacles
             - xmins, xmaxs, ymins, ymaxs: Arrays of shape (n_cells,) representing the boundaries of each grid cell
 
             returns:
             - occupancy_vector: Boolean array of shape (n_cells,), where True indicates an occupied cell
             """
-            return vmap(_is_cell_occupied, in_axes=(None, None, None, None, 0, 0, 0, 0))(x1s, y1s, x2s, y2s, xmins, xmaxs, ymins, ymaxs)
+            return vmap(_is_cell_occupied, in_axes=(None, 0, 0, 0, 0))(obstacles, xmins, xmaxs, ymins, ymaxs)
         # Prepare obstacle segments
-        obstacles_reshaped = jnp.reshape(info['static_obstacles'][-1], (self.n_obstacles,-1))  # shape: (n_obstacles * 2, 2)
         occupancy_vector = _build_occupancy_vector(
-            obstacles_reshaped[:,0],
-            obstacles_reshaped[:,1],
-            obstacles_reshaped[:,2],
-            obstacles_reshaped[:,3],
+            info['static_obstacles'][-1],
             grid_cells[:,0] - cell_size/2 - epsilon,
             grid_cells[:,0] + cell_size/2 + epsilon,
             grid_cells[:,1] - cell_size/2 - epsilon,

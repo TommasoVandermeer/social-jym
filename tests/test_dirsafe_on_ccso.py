@@ -1,9 +1,7 @@
 import jax.numpy as jnp
-import numpy as np
 from matplotlib import pyplot as plt
 import matplotlib.colors as mcolors
-from functools import partial
-from jax import random, lax, jit, vmap
+from jax import random, lax, jit, debug
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
 import os
@@ -154,7 +152,7 @@ def test_on_ccso_with_n_agons(
             state, obs, info, outcome, steps, static_obstacles, all_actions, all_states = while_val
             # Overwrite obstacles if in "circular_crossing_with_static_obstacles" scenario
             aux_info = info.copy()
-            aux_info['static_obstacles'] = static_obstacles # Set obstacles as squares circumscribing static humans
+            aux_info['static_obstacles'] = static_obstacles[env.ccso_n_static_humans:] # Set obstacles as n-agons circumscribing static humans
             aux_obs = obs[env.ccso_n_static_humans:, :] # Remove static humans from observations (so they are not considered as humans by the policy, but only as obstacles)
             # Step the environment
             if policy_type == 0:
@@ -182,6 +180,10 @@ def test_on_ccso_with_n_agons(
         static_obstacles = jnp.array([policy.batch_compute_disk_circumscribing_n_agon(static_humans_positions, static_humans_radii, n_edges=10)])
         nan_obstacles = jnp.full((env.n_humans,) + static_obstacles.shape[1:], jnp.nan)
         static_obstacles = jnp.vstack((nan_obstacles, static_obstacles))
+        if policy.name == 'SARL*':
+            aux_info = info.copy()
+            aux_info['static_obstacles'] = static_obstacles
+            info['grid_cells'], info['occupancy_grid'] = env.build_grid_map_and_occupancy(state, aux_info)
         ## Episode loop
         all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
         all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
@@ -237,6 +239,21 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmar
                 'ccso_n_static_humans': no,
             }
             test_env = SocialNav(**test_env_params)
+            test_env_params_with_grid_map = {
+                'robot_radius': 0.3,
+                'n_humans': no + nh,
+                'n_obstacles': 1, # 1 obstacle needs to be present to enable grid map computation (It is a padding obstacle, NaN)
+                'robot_dt': 0.25,
+                'humans_dt': 0.01,
+                'robot_visible': True,
+                'scenario': 'circular_crossing_with_static_obstacles',
+                'humans_policy': 'hsfm',
+                'reward_function': reward_function,
+                'kinematics': 'unicycle',
+                'ccso_n_static_humans': no,
+                'grid_map_computation': True, # Enable grid map computation for global planning
+            }
+            test_env_with_grid_map = SocialNav(**test_env_params_with_grid_map)
             ## DIR-SAFE tests
             print("\nDIR-SAFE Tests")
             metrics_dir_safe = test_on_ccso_with_n_agons(n_trials, random_seed, test_env, dirsafe, dirsafe_params, time_limit=50.)
@@ -254,21 +271,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmar
             metrics_hsfm = test_k_trials_hsfm(n_trials, random_seed, test_env, time_limit=50., robot_vmax=robot_vmax, robot_wheels_distance=robot_wheels_distance)
             ## SARL Tests
             print("\nSARL* Tests")
-            test_env_params_with_grid_map = {
-                'robot_radius': 0.3,
-                'n_humans': no + nh,
-                'n_obstacles': 1, # 1 obstacle needs to be present to enable grid map computation (It is a padding obstacle, NaN)
-                'robot_dt': 0.25,
-                'humans_dt': 0.01,
-                'robot_visible': True,
-                'scenario': 'circular_crossing_with_static_obstacles',
-                'humans_policy': 'hsfm',
-                'reward_function': reward_function,
-                'kinematics': 'unicycle',
-                'ccso_n_static_humans': no,
-                'grid_map_computation': True, # Enable grid map computation for global planning
-            }
-            test_env_with_grid_map = SocialNav(**test_env_params_with_grid_map)
             metrics_sarl_star = test_on_ccso_with_n_agons(n_trials, random_seed, test_env_with_grid_map, sarl_star, sarl_params, time_limit=50.)
             ### Store results
             all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_dir_safe)
