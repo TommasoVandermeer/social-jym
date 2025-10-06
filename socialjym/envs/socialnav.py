@@ -971,7 +971,7 @@ class SocialNav(BaseEnv):
         - reset_key: random.PRNGKey used to reset the environment. Only used if reset_if_done is True.
         """
         ### Robot goal update (next waypoint, if present)
-        if self.scenario != -1: # Custom scenario, no automatic reset
+        if self.scenario != -1: # Custom scenario, no automatic goal update
             info["robot_goal"], info["robot_goal_index"] = lax.cond(
                 (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= self.robot_radius*3) & # Waypoint reached threshold is set to be higher
                 (info['robot_goal_index'] < len(self.robot_goals_per_scenario[info["current_scenario"]])-1) & # Check if current goal is not the last one

@@ -31,7 +31,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'perpendicular_traffic',
+    'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5,6,7], dtype=jnp.int32),
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
@@ -56,7 +56,8 @@ for i in range(n_episodes):
     print("Scenario: ", SCENARIOS[info['current_scenario']])
     grid_cells, occupancy_grid = env.build_grid_map_and_occupancy(state, info)
     # Initialize global planner
-    global_planner = AStarPlanner(jnp.array([grid_cells.shape[0], grid_cells.shape[1]])) # DijkstraPlanner(jnp.array([grid_cells.shape[0], grid_cells.shape[1]]))
+    global_planner = AStarPlanner(jnp.array([grid_cells.shape[0], grid_cells.shape[1]]))
+    # global_planner = DijkstraPlanner(jnp.array([grid_cells.shape[0], grid_cells.shape[1]]))
     # Query starting position of the robot, its goal and a point outside the grid
     outside_point = jnp.array([grid_cells[-1,-1,0] + 1., grid_cells[-1,-1,1] + 1.])
     robot_cell_idx, robot_cell_center, robot_cell_occupancy = global_planner._query_grid_map(grid_cells, occupancy_grid, state[-1,:2])
