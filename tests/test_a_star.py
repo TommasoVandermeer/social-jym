@@ -344,12 +344,14 @@ print(f"Path to goal: {path_to_goal.shape[0]-1} waypoints")
 
 ### Plotting
 # Plot obstacles and cell decomposition
-from matplotlib import rc
+from matplotlib import rc, rcParams
 font = {
     'weight' : 'regular',
     'size'   : 12
 }
 rc('font', **font)
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
 fig, ax = plt.subplots(figsize=(8, 8))
 fig2, ax2 = plt.subplots(figsize=(6, 4.2))
 fig2.subplots_adjust(right=0.99, left=0.12, top=0.99, bottom=0.14)

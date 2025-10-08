@@ -125,12 +125,14 @@ else:
 
 ### Plot results
 # Matplotlib font
-from matplotlib import rc
+from matplotlib import rc, rcParams
 font = {
     'weight' : 'regular',
     'size'   : 23
 }
 rc('font', **font)
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
 metrics = {
     "successes": {"label": "Success Rate", "episodic": False}, 
     "collisions": {"label": "Collision Rate", "episodic": False}, 

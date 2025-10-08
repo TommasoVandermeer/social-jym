@@ -134,10 +134,12 @@ min_approximated_vy = jnp.array([
 # plt.show()
 
 ### Plot the position displacements (\Delta x, \Delta y)
-from matplotlib import rc
+from matplotlib import rc, rcParams
 font = {'weight' : 'regular',
         'size'   : 38}
 rc('font', **font)
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
 figure, ax = plt.subplots(1, 2, figsize=(25.61, 13.61), gridspec_kw={'width_ratios': [2, 1]})
 figure.subplots_adjust(left=0.06, right=0.97, top=0.98, bottom=0.07, wspace=0.1)
 figure2, ax2 = plt.subplots(1,1,figsize=(11, 8))

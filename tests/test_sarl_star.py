@@ -13,7 +13,7 @@ from socialjym.policies.sarl_star import SARLStar
 from socialjym.utils.aux_functions import animate_trajectory, load_socialjym_policy
 
 # Hyperparameters
-random_seed = 1
+random_seed = 50
 n_episodes = 50
 kinematics = 'unicycle'
 reward_function = Reward2(
@@ -29,18 +29,18 @@ reward_function = Reward2(
 )
 env_params = {
     'robot_radius': 0.3,
-    'n_humans': 5,
+    'n_humans': 10,
     'n_obstacles': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'hybrid_scenario',
+    'scenario': 'circular_crossing_with_static_obstacles',
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5,6,7], dtype=jnp.int32),
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
     'grid_map_computation': True, # Enable grid map computation for global planning
-    # 'ccso_n_static_humans': 6,
+    'ccso_n_static_humans': 6,
 }
 
 # Initialize and reset environment
@@ -60,7 +60,7 @@ policy_params = load_socialjym_policy(os.path.join(os.path.dirname(__file__), 'b
 
 # Simulate some episodes
 for i in range(n_episodes):
-    policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
+    reset_key = random.PRNGKey(random_seed + i) # We don't care if we generate two identical keys, they operate differently
     episode_start_time = time.time()
     state, reset_key, obs, info, outcome = env.reset(reset_key)
     if info['current_scenario'] == SCENARIOS.index('circular_crossing_with_static_obstacles'):
@@ -99,9 +99,9 @@ for i in range(n_episodes):
             aux_info = info.copy()
             aux_info['static_obstacles'] = static_obstacles[env.ccso_n_static_humans:] # Set obstacles as n-agons circumscribing static humans
             aux_obs = obs[env.ccso_n_static_humans:, :] # Remove static humans from observations (so they are not considered as humans by the policy, but only as obstacles)
-            action, policy_key, _ = policy.act(policy_key, aux_obs, aux_info, policy_params, 0.)
+            action, _, _ = policy.act(random.PRNGKey(0), aux_obs, aux_info, policy_params, 0.)
         else:
-            action, policy_key, _ = policy.act(policy_key, obs, info, policy_params, 0.)
+            action, _, _ = policy.act(random.PRNGKey(0), obs, info, policy_params, 0.)
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
         # print(f"Return in steps [0,{info['step']}):", info["return"], f" - time : {info['time']}")
         all_states = jnp.vstack((all_states, jnp.array([state])))

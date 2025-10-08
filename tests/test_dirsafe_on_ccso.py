@@ -71,14 +71,12 @@ n_policies = len(policies)
 metrics_dims = (n_policies,len(n_humans),len(n_obstacles))
 all_metrics = initialize_metrics_dict(n_trials, dims=metrics_dims)
 
-# ### Visualize one episode
-# episode = 500
-# n_humans = 4
-# n_obstacles = 5
+# ### Visualize one DIR-SAFE episode
+# episode = 50
 # ## Initialize environment
 # test_env_params = {
 #     'robot_radius': 0.3,
-#     'n_humans': n_obstacles + n_humans,
+#     'n_humans': 10,
 #     'n_obstacles': 0, # n_obstacles is not used in this scenario
 #     'robot_dt': 0.25,
 #     'humans_dt': 0.01,
@@ -87,7 +85,7 @@ all_metrics = initialize_metrics_dict(n_trials, dims=metrics_dims)
 #     'humans_policy': 'hsfm',
 #     'reward_function': reward_function,
 #     'kinematics': 'unicycle',
-#     'ccso_n_static_humans': n_obstacles,
+#     'ccso_n_static_humans': 6,
 # }
 # test_env = SocialNav(**test_env_params)
 # ## Reset the environment
@@ -104,10 +102,10 @@ all_metrics = initialize_metrics_dict(n_trials, dims=metrics_dims)
 # while outcome['nothing']:
 #     # Overwrite obstacles if in "circular_crossing_with_static_obstacles" scenario
 #     aux_info = info.copy()
-#     aux_info['static_obstacles'] = static_obstacles # Set obstacles as squares circumscribing static humans
+#     aux_info['static_obstacles'] = static_obstacles[test_env.ccso_n_static_humans:] # Set obstacles as squares circumscribing static humans
 #     aux_obs = obs[test_env_params['ccso_n_static_humans']:, :] # Remove static humans from observations (so they are not considered as humans by the policy, but only as obstacles)
 #     # Step the environment
-#     action, _, _, _, _ = dirsafe.act(random.PRNGKey(0), aux_obs, aux_info, actor_params, sample=False)
+#     action, _, _, _, _ = dirsafe.act(random.PRNGKey(0), aux_obs, aux_info, dirsafe_params, sample=False)
 #     state, obs, info, _, outcome, _ = test_env.step(state,info,action,test=True)
 #     # Save the state
 #     all_states = jnp.vstack((all_states, jnp.array([state])))
@@ -286,3 +284,103 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmar
 else:
     with open(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_results.pkl'), 'rb') as f:
         all_metrics = pickle.load(f)
+
+### Plot results
+# Matplotlib font
+from matplotlib import rc, rcParams
+font = {
+    'weight' : 'regular',
+    'size'   : 18
+}
+rc('font', **font)
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
+metrics = {
+    "successes": {"label": "Success Rate", "episodic": False}, 
+    "collisions": {"label": "Collision Rate", "episodic": False}, 
+    "timeouts": {"label": "Timeout Rate", "episodic": False}, 
+    "returns": {"label": "Return ($\gamma = 0.9$)", "episodic": True},
+    "times_to_goal": {"label": "Time to goal ($s$)", "episodic": True},
+    "average_speed": {"label": "Lin. speed ($m/s$)", "episodic": True},
+    "average_acceleration": {"label": "Lin. accel. ($m/s^2$)", "episodic": True},
+    "average_jerk": {"label": "Lin. jerk ($m/s^3$)", "episodic": True},
+    "average_angular_speed": {"label": "Ang. speed ($rad/s$)", "episodic": True},
+    "average_angular_acceleration": {"label": "Ang. accel. ($rad/s^2$)", "episodic": True},
+    "average_angular_jerk": {"label": "Ang. jerk ($rad/s^3$)", "episodic": True},
+    "min_distance": {"label": "Min. dist. ($m$)", "episodic": True},
+    "space_compliance": {"label": "Space compliance", "episodic": True},
+    "episodic_spl": {"label": "Episodic SPL", "episodic": True},
+    "path_length": {"label": "Path length ($m$)", "episodic": True},
+    "feasible_actions_rate": {"label": "Action Feasibility Rate", "episodic": True},
+}
+metrics_to_plot = [
+    "successes",
+    "collisions",
+    "timeouts",
+    "feasible_actions_rate",
+    "times_to_goal", 
+    "path_length", 
+    "average_speed",
+    "average_acceleration", 
+    "average_jerk", 
+    "average_angular_speed", 
+    "average_angular_acceleration",
+    "average_angular_jerk",
+    "min_distance",
+    "episodic_spl", 
+    "space_compliance",
+    "returns"
+]
+colors = list(mcolors.TABLEAU_COLORS.values())
+
+## Plot results against number of humans (averaged over number of obstacles)
+nrows, ncols = 4, 4
+figure, ax = plt.subplots(nrows, ncols, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // ncols
+    j = m % ncols
+    ax[i,j].set(
+        xlabel='N° humans',
+        title=metrics[metric]['label'],
+    )
+    ax[i,j].grid(zorder=0)
+    ax[i,j].set_xticks(jnp.arange(len(n_humans)))
+    ax[i,j].set_xticklabels(n_humans)
+    for p, policy in enumerate(policies):
+        if metric in ['successes', 'collisions', 'timeouts','feasible_actions_rate','space_compliance']:
+            ax[i, j].set_ylim(-0.05, 1.05)
+        if metric in ['successes', 'collisions', 'timeouts']:
+            y_data = jnp.nanmean(all_metrics[metric][p, :, :], axis=1) / n_trials
+        else:
+            y_data = jnp.nanmean(all_metrics[metric][p, :, :, :], axis=(1,2))
+        ax[i, j].plot(jnp.arange(len(n_humans)), y_data, label=policies[p], color=colors[p], linewidth=2.5)
+h, l = ax[0,0].get_legend_handles_labels()
+figure.legend(h, l, loc='center right', title='Policy')
+figure.savefig(os.path.join(os.path.dirname(__file__), "dir_safe_benchmark_1.eps"), format='eps')
+
+## Plot results against number of obstacles (averaged over number of humans)
+nrows, ncols = 4, 4
+figure, ax = plt.subplots(nrows, ncols, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // ncols
+    j = m % ncols
+    ax[i,j].set(
+        xlabel='N° obstacles',
+        title=metrics[metric]['label'],
+    )
+    ax[i,j].grid(zorder=0)
+    ax[i,j].set_xticks(jnp.arange(len(n_obstacles)))
+    ax[i,j].set_xticklabels(n_obstacles)
+    for p, policy in enumerate(policies):
+        if metric in ['successes', 'collisions', 'timeouts','feasible_actions_rate','space_compliance']:
+            ax[i, j].set_ylim(-0.05, 1.05)
+        if metric in ['successes', 'collisions', 'timeouts']:
+            y_data = jnp.nanmean(all_metrics[metric][p, :, :], axis=0) / n_trials
+        else:
+            y_data = jnp.nanmean(all_metrics[metric][p, :, :, :], axis=(0,2))
+        ax[i, j].plot(jnp.arange(len(n_obstacles)), y_data, label=policies[p], color=colors[p], linewidth=2.5)
+h, l = ax[0,0].get_legend_handles_labels()
+figure.legend(h, l, loc='center right', title='Policy')
+figure.savefig(os.path.join(os.path.dirname(__file__), "dir_safe_benchmark_2.eps"), format='eps')
