@@ -15,6 +15,7 @@ class SARLStar(SARL):
             self, 
             reward_function:FunctionType, 
             grid_size:jnp.ndarray,
+            use_planner=True,
             planner="A*", # "A*" or "Dijkstra"
             v_max=1., 
             gamma=0.9, 
@@ -44,6 +45,7 @@ class SARLStar(SARL):
             # position_noise_sigma_angle = position_noise_sigma_angle,
             # velocity_noise_sigma_percentage = velocity_noise_sigma_percentage, # Standard deviation of the noise as a percentage of the (vx,vy) coordinates of humans' velocity in the robot frame
         )
+        self.use_planner = use_planner
         if planner == "A*":
             self.planner = AStarPlanner(grid_size)
         elif planner == "Dijkstra":
@@ -147,18 +149,19 @@ class SARLStar(SARL):
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
         ## Run global planner to find next subgoal
-        path, path_length = self.planner.find_path(
-            obs[-1,:2], 
-            info['robot_goal'], 
-            info['grid_cells'], 
-            info['occupancy_grid']
-        )
-        info['robot_goal'] = lax.cond(
-            path_length > 1,
-            lambda: path[1], # Next waypoint in the path
-            lambda: info['robot_goal'], # Already at goal cell
-        )
-        # debug.print("New subgoal: {x}, path length: {y}", x=info['robot_goal'], y=path_length)
+        if self.use_planner:
+            path, path_length = self.planner.find_path(
+                obs[-1,:2], 
+                info['robot_goal'], 
+                info['grid_cells'], 
+                info['occupancy_grid']
+            )
+            info['robot_goal'] = lax.cond(
+                path_length > 1,
+                lambda: path[1], # Next waypoint in the path
+                lambda: info['robot_goal'], # Already at goal cell
+            )
+            # debug.print("New subgoal: {x}, path length: {y}", x=info['robot_goal'], y=path_length)
         ## Compute safe actions
         safe_actions = self._compute_safe_action_space(obs, info)
         ## Compute best action

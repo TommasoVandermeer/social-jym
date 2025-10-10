@@ -278,11 +278,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmar
             all_metrics = tree_map(lambda x, y: x.at[4,i,j].set(y), all_metrics, metrics_hsfm)
             all_metrics = tree_map(lambda x, y: x.at[5,i,j].set(y), all_metrics, metrics_sarl_star)
     ### Save results
-        with open(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_results.pkl'), 'wb') as f:
-            pickle.dump(all_metrics, f)
+    with open(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_on_ccso_results.pkl'), 'wb') as f:
+        pickle.dump(all_metrics, f)
 ### Load results
 else:
-    with open(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_results.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_on_ccso_results.pkl'), 'rb') as f:
         all_metrics = pickle.load(f)
 
 ### Plot results
@@ -357,7 +357,7 @@ for m, metric in enumerate(metrics_to_plot):
         ax[i, j].plot(jnp.arange(len(n_humans)), y_data, label=policies[p], color=colors[p], linewidth=2.5)
 h, l = ax[0,0].get_legend_handles_labels()
 figure.legend(h, l, loc='center right', title='Policy')
-figure.savefig(os.path.join(os.path.dirname(__file__), "dir_safe_benchmark_1.eps"), format='eps')
+figure.savefig(os.path.join(os.path.dirname(__file__), "dir_safe_benchmark_on_ccso_1.eps"), format='eps')
 
 ## Plot results against number of obstacles (averaged over number of humans)
 nrows, ncols = 4, 4
@@ -383,4 +383,4 @@ for m, metric in enumerate(metrics_to_plot):
         ax[i, j].plot(jnp.arange(len(n_obstacles)), y_data, label=policies[p], color=colors[p], linewidth=2.5)
 h, l = ax[0,0].get_legend_handles_labels()
 figure.legend(h, l, loc='center right', title='Policy')
-figure.savefig(os.path.join(os.path.dirname(__file__), "dir_safe_benchmark_2.eps"), format='eps')
+figure.savefig(os.path.join(os.path.dirname(__file__), "dir_safe_benchmark_on_ccso_2.eps"), format='eps')

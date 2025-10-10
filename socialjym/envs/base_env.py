@@ -467,6 +467,22 @@ class BaseEnv(ABC):
         return lidar_output
     
     @partial(jit, static_argnames=("self"))
+    def get_grid_map_center(self, state, info):
+        """
+        Computes the center of the grid map based on the current state and info of the environment.
+
+        parameters:
+        - state: Current state of the environment (robot + humans)
+        - info: Additional information from the environment
+
+        returns:
+        - center: Array of shape (2,) containing the (x, y) coordinates of the grid map center
+        """
+        # center = jnp.nanmean(jnp.vstack((jnp.reshape(info['static_obstacles'][-1], (self.n_obstacles * 2,-1)), state[-1,:2], info['robot_goal'])), axis=0)
+        center = jnp.nanmean(jnp.vstack((jnp.reshape(self.static_obstacles_per_scenario[info['current_scenario']], (10,-1)), state[-1,:2], info['robot_goal'])), axis=0)
+        return center
+
+    @partial(jit, static_argnames=("self"))
     def build_grid_map_and_occupancy(self, state, info, epsilon=1e-5):
         """
         Builds a square grid map centered around the robot and computes the occupancy grid based on static obstacles.
@@ -482,8 +498,7 @@ class BaseEnv(ABC):
         """
         cell_size = self.grid_cell_size # Grid cell size (in meters)
         min_grid_size = self.grid_min_size # Grid minimum size (in meters)
-        # center = jnp.nanmean(jnp.vstack((jnp.reshape(info['static_obstacles'][-1], (self.n_obstacles * 2,-1)), state[-1,:2], info['robot_goal'])), axis=0)
-        center = jnp.nanmean(jnp.vstack((jnp.reshape(self.static_obstacles_per_scenario[info['current_scenario']], (10,-1)), state[-1,:2], info['robot_goal'])), axis=0)
+        center = self.get_grid_map_center(state, info)
         dists_vector = jnp.concatenate([-jnp.arange(0, min_grid_size/2 + cell_size, cell_size)[::-1][:-1],jnp.arange(0, min_grid_size/2 + cell_size, cell_size)])
         grid_center_x, grid_center_y = jnp.meshgrid(dists_vector + center[0], dists_vector + center[1])
         n_x = grid_center_x.shape[0]

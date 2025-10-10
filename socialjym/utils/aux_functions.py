@@ -393,7 +393,7 @@ def test_k_trials(
         imitation_learning = False
         actor_critic_policy = (policy.name == "SARL-PPO") or (policy.name == "DIRSAFE")
 
-    if policy.name == "SARL*":
+    if policy.name == "SARL*" and policy.use_planner:
         assert env.grid_map_computation, "SARL* policy requires the environment to compute the grid map."
 
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
