@@ -1,9 +1,7 @@
 import jax.numpy as jnp
 from matplotlib import pyplot as plt
 import matplotlib.colors as mcolors
-from jax import random, lax, jit, debug
 from jax.tree_util import tree_map
-from jax_tqdm import loop_tqdm
 import os
 import pickle
 import warnings
@@ -77,7 +75,7 @@ metrics_dims = (n_policies,len(n_humans),len(n_obstacles))
 all_metrics = initialize_metrics_dict(n_trials, dims=metrics_dims)
 
 ### Execute tests
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_results.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_benchmark_on_pat_results.pkl')):
     for i, nh in enumerate(n_humans):
         for j, no in enumerate(n_obstacles):
             ## Initialize environment

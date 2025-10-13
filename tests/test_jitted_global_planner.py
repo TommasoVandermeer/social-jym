@@ -11,6 +11,7 @@ from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.utils.global_planners.dijkstra import DijkstraPlanner
 from socialjym.utils.global_planners.a_star import AStarPlanner
 from socialjym.utils.aux_functions import animate_trajectory
+from socialjym.utils.cell_decompositions.grid import decompose
 
 # Hyperparameters
 random_seed = 1
@@ -55,6 +56,38 @@ for i in range(n_episodes):
     ## Grid map building and visualization
     print("Scenario: ", SCENARIOS[info['current_scenario']])
     grid_cells, occupancy_grid = env.build_grid_map_and_occupancy(state, info)
+
+    # cells, edges, grid_info = decompose(
+    #     cell_size=env.grid_cell_size,
+    #     min_grid_size=env.grid_min_size,
+    #     state=state,
+    #     info=info,
+    #     obstacle_points=jnp.reshape(env.static_obstacles_per_scenario[info['current_scenario']], (10,-1)),
+    # )
+    # # Plot free cells
+    # figure, ax = plt.subplots()
+    # for i, cell in enumerate(cells):
+    #     cell_size = jnp.array([env.grid_cell_size, env.grid_cell_size])
+    #     cell_center = cell
+    #     x, y = i // grid_cells.shape[0], i % grid_cells.shape[1]
+    #     facecolor = 'red' if grid_info['grid_occupancy'][x,y] else 'none'
+    #     rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor=facecolor, edgecolor='black', linewidth=0.5, alpha=0.5, zorder=1)
+    #     ax.add_patch(rect)
+    # # Plot adjacency edges
+    # for edge in jnp.argwhere(edges < jnp.inf):
+    #     from_cell = cells[edge[0]]
+    #     to_cell = cells[edge[1]]
+    #     ax.plot([from_cell[0], to_cell[0]], [from_cell[1], to_cell[1]], color='blue', linewidth=0.5, zorder=5)
+    # ax.set_xlim(grid_cells[0,0,0] - env.grid_cell_size, grid_cells[-1,-1,0] + env.grid_cell_size)
+    # ax.set_ylim(grid_cells[0,0,1] - env.grid_cell_size, grid_cells[-1,-1,1] + env.grid_cell_size)
+    # ax.set_aspect('equal', adjustable='box')
+    # # Plot obstacles
+    # if info['static_obstacles'][-1].shape[1] > 1: # Polygon obstacles
+    #     for o in info['static_obstacles'][-1]: plt.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+    # else: # One segment obstacles
+    #     for o in info['static_obstacles'][-1]: plt.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+    # plt.show()
+
     # Initialize global planner
     global_planner = AStarPlanner(jnp.array([grid_cells.shape[0], grid_cells.shape[1]]))
     # global_planner = DijkstraPlanner(jnp.array([grid_cells.shape[0], grid_cells.shape[1]]))

@@ -8,7 +8,6 @@ import optax
 from socialjym.envs.base_env import ROBOT_KINEMATICS
 from socialjym.utils.distributions.base_distribution import DISTRIBUTIONS
 from socialjym.utils.distributions.gaussian import Gaussian
-from socialjym.utils.distributions.dirichlet_bernoulli import DirichletBernoulli
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from .sarl import SARL
 from .sarl import value_network as critic_network
@@ -66,9 +65,6 @@ class Actor(hk.Module):
         if self.distr_id == DISTRIBUTIONS.index('gaussian'):
             self.distr = Gaussian()
             n_outputs = 2
-        elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
-            self.distr = DirichletBernoulli(v_max, wheels_distance, EPSILON)
-            n_outputs = 4
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
             self.distr = Dirichlet(EPSILON)
             self.dirichlet_vertices = jnp.array([[0,2*self.vmax/self.wheels_distance],[0,-2*self.vmax/self.wheels_distance],[self.vmax,0]])
@@ -124,13 +120,6 @@ class Actor(hk.Module):
             means = lower_bounds + (jnp.tanh(means) + 1) / 2 * (upper_bounds - lower_bounds)
             logsigmas = hk.get_parameter("logsigmas", shape=[2], init=hk.initializers.Constant(0.))
             distribution = {"means": means, "logsigmas": logsigmas}
-        elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
-            alpha1, alpha2, alpha3, p = self.output_layer(mlp4_output)
-            ## Compute dirchlet-bernoulli distribution parameters
-            alphas = jnp.array([alpha1, alpha2, alpha3])
-            alphas = nn.softplus(alphas) + 1 # alphas between [1,inf)
-            p = (nn.tanh(p) + 1) / 2 # p ranges from 0 to 1 this way
-            distribution = {"alphas": alphas, "p": p}
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
             alphas = self.output_layer(mlp4_output)
             ## Compute dirchlet distribution parameters
@@ -172,8 +161,6 @@ class SARLPPO(SARL):
         self.normalize_and_clip_obs = normalize_and_clip_obs
         if self.distr_id == DISTRIBUTIONS.index('gaussian'):
             self.distr = Gaussian()
-        elif self.distr_id == DISTRIBUTIONS.index('dirichlet-bernoulli'):
-            self.distr = DirichletBernoulli(self.v_max, self.wheels_distance, EPSILON)
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
             self.distr = Dirichlet(EPSILON)
             self.dirichlet_vertices = jnp.array([[0,2*self.v_max/self.wheels_distance],[0,-2*self.v_max/self.wheels_distance],[self.v_max,0]])
