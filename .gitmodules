@@ -4,3 +4,6 @@
 [submodule "JSFM"]
 	path = JSFM
 	url = git@github.com:TommasoVandermeer/JSFM.git
+[submodule "JORCA"]
+	path = JORCA
+	url = git@github.com:TommasoVandermeer/JORCA.git

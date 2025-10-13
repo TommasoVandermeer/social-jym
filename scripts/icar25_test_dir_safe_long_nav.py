@@ -12,7 +12,7 @@ import pandas as pd
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.dir_safe import DIRSAFE
-from socialjym.utils.aux_functions import test_k_custom_trials, test_k_custom_trials_dwa, plot_state
+from socialjym.utils.aux_functions import test_k_custom_trials, test_k_custom_trials_dwa, plot_state, initialize_metrics_dict
 
 ### Hyperparameters
 random_seed = 0 
@@ -443,26 +443,7 @@ with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
     actor_params = pickle.load(f)['actor_params']
 
 ### Initialize output data structure
-empty_trials_metrics_array = jnp.zeros((n_trials))
-all_metrics = {
-    "successes": jnp.zeros((1,), dtype=jnp.int32), 
-    "collisions": jnp.zeros((1,), dtype=jnp.int32),
-    "timeouts": jnp.zeros((1,), dtype=jnp.int32), 
-    "returns": empty_trials_metrics_array,
-    "times_to_goal": empty_trials_metrics_array,
-    "average_speed": empty_trials_metrics_array,
-    "average_acceleration": empty_trials_metrics_array,
-    "average_jerk": empty_trials_metrics_array,
-    "average_angular_speed": empty_trials_metrics_array,
-    "average_angular_acceleration": empty_trials_metrics_array,
-    "average_angular_jerk": empty_trials_metrics_array,
-    "min_distance": empty_trials_metrics_array,
-    "space_compliance": empty_trials_metrics_array,
-    "episodic_spl": empty_trials_metrics_array,
-    "path_length": empty_trials_metrics_array,
-    "scenario": jnp.zeros((n_trials), dtype=jnp.int32),
-    "waypoint_reached": empty_trials_metrics_array,
-}
+all_metrics = initialize_metrics_dict(n_trials)
 all_metrics_dwa = all_metrics.copy()
 
 ### Test policies
@@ -524,7 +505,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),f"dwa_tests_long_na
         test_env, 
         reward_function.time_limit,
         robot_vmax=policy.v_max,
-        robot_wmax=2*policy.v_max/policy.wheels_distance, 
+        robot_wheels_distance=policy.wheels_distance, 
         custom_episodes=custom_episodes,
     )
     all_metrics_dwa = tree_map(lambda x, y: x.at[:].set(y), all_metrics_dwa, metrics_dwa)
@@ -540,12 +521,14 @@ else:
 
 ### Plot results
 # Matplotlib font
-from matplotlib import rc
+from matplotlib import rc, rcParams
 font = {
     'weight' : 'regular',
     'size'   : 23
 }
 rc('font', **font)
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
 metrics = {
     "successes": {"label": "Success Rate", "episodic": False}, 
     "collisions": {"label": "Collision Rate", "episodic": False}, 

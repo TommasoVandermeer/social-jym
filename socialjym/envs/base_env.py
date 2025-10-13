@@ -5,8 +5,10 @@ import jax.numpy as jnp
 
 from jhsfm.hsfm import step as hsfm_humans_step
 from jsfm.sfm import step as sfm_humans_step
+from jorca.orca import step as orca_humans_step
 from jhsfm.utils import get_standard_humans_parameters as hsfm_get_standard_humans_parameters
 from jsfm.utils import get_standard_humans_parameters as sfm_get_standard_humans_parameters
+from jorca.utils import get_standard_humans_parameters as orca_get_standard_humans_parameters
 
 SCENARIOS = [
     "circular_crossing", 
@@ -17,14 +19,17 @@ SCENARIOS = [
     "circular_crossing_with_static_obstacles",
     "crowd_navigation",
     "corner_traffic",
-    "hybrid_scenario"] # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
+    "hybrid_scenario" # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
+] 
 HUMAN_POLICIES = [
-    "orca", # TODO: Implement JORCA (Jax based ORCA)
+    "orca",
     "sfm", 
-    "hsfm"]
+    "hsfm"
+]
 ROBOT_KINEMATICS = [
     "holonomic",
-    "unicycle"]
+    "unicycle"
+]
 EPSILON = 1e-5 # Small value to avoid math overflow
 
 @jit
@@ -66,6 +71,9 @@ class BaseEnv(ABC):
         kinematics:str,
         max_cc_delay:float,
         ccso_n_static_humans:int,
+        grid_map_computation:bool,
+        grid_cell_size:float,
+        grid_min_size:float,
     ) -> None:
         ## Args validation
         assert scenario in SCENARIOS or scenario is None, f"Invalid scenario. Choose one of {SCENARIOS}, or None for custom scenario."
@@ -73,6 +81,8 @@ class BaseEnv(ABC):
             print("\nWARNING: Custom scenario is selected. Make sure to implement the 'reset_custom_episode' method in the derived class (not 'reset').\n")
         assert humans_policy in HUMAN_POLICIES, f"Invalid human policy. Choose one of {HUMAN_POLICIES}"
         assert kinematics in ROBOT_KINEMATICS, f"Invalid robot kinematics. Choose one of {ROBOT_KINEMATICS}"
+        if grid_map_computation:
+            assert grid_cell_size > 0, "There should be at least one obstacle (also padding obstacles) to enable grid map computation."
         ## Env initialization
         self.robot_radius = robot_radius
         self.humans_dt = humans_dt
@@ -90,7 +100,11 @@ class BaseEnv(ABC):
             self.humans_step = sfm_humans_step
             self.get_standard_humans_parameters = sfm_get_standard_humans_parameters
         elif humans_policy == 'orca':
-            raise NotImplementedError("ORCA policy is not implemented yet.")
+            self.humans_step = orca_humans_step
+            self.get_standard_humans_parameters = orca_get_standard_humans_parameters
+            assert self.n_obstacles == 0, "ORCA human model does not support avoidance of static obstacles yet.\n"
+            print("\nWARNING: ORCA human model (JORCA library) might still be buggy.")
+            print("WARNING: ORCA human model is not properly optimized (JORCA library), RL training could be seriously slowed down. It is recommended to use it only for evaluation purposes.\n")
         self.robot_visible = robot_visible
         self.circle_radius = circle_radius
         self.traffic_height = traffic_height
@@ -103,6 +117,12 @@ class BaseEnv(ABC):
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
         self.max_cc_delay = max_cc_delay
         self.ccso_n_static_humans = ccso_n_static_humans
+        # Global planning parameters
+        if grid_map_computation:
+            print("\nWARNING: Grid map computation is enabled. This will slow down the simulation, especially if many static obstacles are present.\n")
+        self.grid_map_computation = grid_map_computation
+        self.grid_cell_size = grid_cell_size
+        self.grid_min_size = grid_min_size
 
     # --- Private methods ---
 
@@ -137,6 +157,7 @@ class BaseEnv(ABC):
 
     @partial(jit, static_argnames=("self"))
     def _ray_cast(self, angle:float, lidar_position:jnp.ndarray, human_positions:jnp.ndarray, human_radiuses:jnp.ndarray) -> float:
+        # TODO: add obstacles ray casting
         direction = jnp.array([jnp.cos(angle), jnp.sin(angle)])
         measurement = self._batch_human_ray_intersect(direction, human_positions, lidar_position, human_radiuses)
         return measurement
@@ -312,7 +333,8 @@ class BaseEnv(ABC):
         - new_state ((n_humans+1,6): jnp.ndarray containing the new state of the environment.
         """
         goals = jnp.vstack((info["humans_goal"], info["robot_goal"]))
-        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, 80., *self.get_standard_humans_parameters(1)[0,2:]])))
+        second_parameter = 80. if self.humans_policy == HUMAN_POLICIES.index("hsfm") or self.humans_policy == HUMAN_POLICIES.index("sfm") else 5.  # Mass if HSFM or SFM, time horizon if ORCA
+        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, second_parameter, *self.get_standard_humans_parameters(1)[0,2:]])))
         static_obstacles = info["static_obstacles"]
         ## Humans update
         if self.humans_policy == HUMAN_POLICIES.index("hsfm"):
@@ -379,7 +401,8 @@ class BaseEnv(ABC):
         - new_state ((n_humans+1,6) or (n_humans+1,4)): jnp.ndarray containing the new state of the environment.
         """
         goals = jnp.vstack((info["humans_goal"], info["robot_goal"]))
-        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, 80., *self.get_standard_humans_parameters(1)[0,2:-1], 0.1]))) # Add safety space of 0.1 to robot
+        second_parameter = 80. if self.humans_policy == HUMAN_POLICIES.index("hsfm") or self.humans_policy == HUMAN_POLICIES.index("sfm") else 5. # Mass if HSFM or SFM, time horizon if ORCA
+        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, second_parameter, *self.get_standard_humans_parameters(1)[0,2:-1], 0.1]))) # Add safety space of 0.1 to robot
         static_obstacles = info["static_obstacles"]
         if self.robot_visible:
             new_state = self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)
@@ -442,3 +465,131 @@ class BaseEnv(ABC):
         measurements = self._batch_ray_cast(angles, lidar_position, human_positions, human_radiuses)
         lidar_output = jnp.stack((measurements, angles), axis=-1)
         return lidar_output
+    
+    @partial(jit, static_argnames=("self"))
+    def get_grid_map_center(self, state, info):
+        """
+        Computes the center of the grid map based on the current state and info of the environment.
+
+        parameters:
+        - state: Current state of the environment (robot + humans)
+        - info: Additional information from the environment
+
+        returns:
+        - center: Array of shape (2,) containing the (x, y) coordinates of the grid map center
+        """
+        # center = jnp.nanmean(jnp.vstack((jnp.reshape(info['static_obstacles'][-1], (self.n_obstacles * 2,-1)), state[-1,:2], info['robot_goal'])), axis=0)
+        center = jnp.nanmean(jnp.vstack((jnp.reshape(self.static_obstacles_per_scenario[info['current_scenario']], (10,-1)), state[-1,:2], info['robot_goal'])), axis=0)
+        return center
+
+    @partial(jit, static_argnames=("self"))
+    def build_grid_map_and_occupancy(self, state, info, epsilon=1e-5):
+        """
+        Builds a square grid map centered around the robot and computes the occupancy grid based on static obstacles.
+
+        parameters:
+        - state: Current state of the environment (robot + humans)
+        - info: Additional information from the environment
+
+        returns:
+        - grid_cells: Array of shape (n_x, n_y, 2) containing the (x, y) coordinates of each grid cell center. n_x and n_y depend on the fixed grid size defined by cell_size and min_grid_size.
+        - occupancy_grid: Boolean array of shape (n_x, n_y), where True indicates an occupied cell
+        - edges: Array of shape (n_cells, n_cells) representing the edges matrix for pathfinding
+        """
+        cell_size = self.grid_cell_size # Grid cell size (in meters)
+        min_grid_size = self.grid_min_size # Grid minimum size (in meters)
+        center = self.get_grid_map_center(state, info)
+        dists_vector = jnp.concatenate([-jnp.arange(0, min_grid_size/2 + cell_size, cell_size)[::-1][:-1],jnp.arange(0, min_grid_size/2 + cell_size, cell_size)])
+        grid_center_x, grid_center_y = jnp.meshgrid(dists_vector + center[0], dists_vector + center[1])
+        n_x = grid_center_x.shape[0]
+        n_y = grid_center_y.shape[1]
+        grid_cells = jnp.array(jnp.vstack((grid_center_x.flatten(), grid_center_y.flatten())).T)
+        @jit
+        def _edge_intersects_cell(x1, y1, x2, y2, xmin, xmax, ymin, ymax):
+            @jit
+            def _not_nan_obs(val:tuple):
+                x1, y1, x2, y2, xmin, xmax, ymin, ymax = val
+                dx = x2 - x1
+                dy = y2 - y1
+                p = jnp.array([-dx, dx, -dy, dy])
+                q = jnp.array([x1 - xmin, xmax - x1, y1 - ymin, ymax - y1])
+                @jit
+                def loop_body(i, tup):
+                    t, p, q = tup
+                    t0, t1 = t
+                    t0, t1 = lax.switch(
+                        (jnp.sign(p[i])+1).astype(jnp.int32),
+                        [
+                            lambda t: lax.cond(q[i]/p[i] > t[1], lambda _: (2.,1.), lambda x: (jnp.max(jnp.array([x[0],q[i]/p[i]])), x[1]), t),  # p[i] < 0
+                            lambda t: lax.cond(q[i] < 0, lambda _: (2.,1.), lambda x: x, t),  # p[i] == 0
+                            lambda t: lax.cond(q[i]/p[i] < t[0], lambda _: (2.,1.), lambda x: (x[0], jnp.min(jnp.array([x[1],q[i]/p[i]]))), t),  # p[i] > 0
+                        ],
+                        (t0, t1),
+                    )
+                    # debug.print("t0: {x}, t1: {y}, switch_case: {z}", x=t0, y=t1, z=(jnp.sign(p[i])+1).astype(jnp.int32))
+                    return ((t0, t1), p ,q)
+                t, p, q = lax.fori_loop(
+                    0, 
+                    4,
+                    loop_body,
+                    ((0., 1.), p, q),
+                )
+                t0, t1 = t
+                inside_or_intersects = ~(t0 > t1)
+                return inside_or_intersects
+            @jit
+            def _nan_obs(val:tuple):
+                # If the obstacle is NaN, it means it doesn't exist, so it cannot intersect the cell
+                return False
+            return lax.cond(
+                jnp.any(jnp.isnan(jnp.array([x1, y1, x2, y2]))), 
+                _nan_obs,
+                _not_nan_obs, 
+                (x1, y1, x2, y2, xmin, xmax, ymin, ymax)
+            )
+        @jit
+        def _obstacle_intersects_cell(obstacle, xmin, xmax, ymin, ymax):
+            return jnp.any(vmap(_edge_intersects_cell, in_axes=(0,0,0,0,None,None,None,None))(obstacle[:,0,0], obstacle[:,0,1], obstacle[:,1,0], obstacle[:,1,1], xmin, xmax, ymin, ymax))
+        @jit
+        def _is_cell_occupied(obstacles, xmin, xmax, ymin, ymax):
+            return jnp.any(vmap(_obstacle_intersects_cell, in_axes=(0, None, None, None, None))(obstacles, xmin, xmax, ymin, ymax))
+        @jit
+        def _build_occupancy_vector(obstacles, xmins, xmaxs, ymins, ymaxs):
+            """
+            Returns a boolean array of shape (n_cells,) indicating whether each cell is occupied (True) or free (False).
+
+            parameters:
+            - obstacles: Array of shape (n_obstacles, n_edges, 2, 2) representing the line segments of the obstacles
+            - xmins, xmaxs, ymins, ymaxs: Arrays of shape (n_cells,) representing the boundaries of each grid cell
+
+            returns:
+            - occupancy_vector: Boolean array of shape (n_cells,), where True indicates an occupied cell
+            """
+            return vmap(_is_cell_occupied, in_axes=(None, 0, 0, 0, 0))(obstacles, xmins, xmaxs, ymins, ymaxs)
+        # Prepare obstacle segments
+        occupancy_vector = _build_occupancy_vector(
+            info['static_obstacles'][-1],
+            grid_cells[:,0] - cell_size/2 - epsilon,
+            grid_cells[:,0] + cell_size/2 + epsilon,
+            grid_cells[:,1] - cell_size/2 - epsilon,
+            grid_cells[:,1] + cell_size/2 + epsilon,
+        )
+        grid_cells = jnp.stack((grid_center_x, grid_center_y), axis=-1)
+        occupancy_grid = jnp.reshape(occupancy_vector, (n_x, n_y))
+        return grid_cells, occupancy_grid
+    
+    @partial(jit, static_argnames=("self"))
+    def get_grid_size(self):
+        """
+        Computes the size of the grid map based on the cell size and minimum grid size.
+
+        returns:
+        - n_x: Number of cells in the x direction
+        - n_y: Number of cells in the y direction
+        """
+        cell_size = self.grid_cell_size # Grid cell size (in meters)
+        min_grid_size = self.grid_min_size # Grid minimum size (in meters)
+        dists_vector = jnp.concatenate([-jnp.arange(0, min_grid_size/2 + cell_size, cell_size)[::-1][:-1],jnp.arange(0, min_grid_size/2 + cell_size, cell_size)])
+        n_x = dists_vector.shape[0]
+        n_y = dists_vector.shape[0]
+        return n_x, n_y

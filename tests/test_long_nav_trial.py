@@ -33,10 +33,47 @@ reward_function = Reward2(
 with open(os.path.join(os.path.dirname(__file__), f'custom_episodes_{n_humans}_humans.pkl'), 'rb') as f:
     custom_episodes = pickle.load(f)
 
+### Enlarge obstacles
+def enlarge_obstacles(obstacles, enlargement_size):
+    """
+    For each obstacle (single segment), enlarge it to a rectangle (four segments) with the given enlargement size.
+    Returns a new array of obstacles, each as a rectangle (4 segments).
+    """
+    enlarged = []
+    for obs in obstacles:
+        # obs shape: (1, 2, 2) -> one segment, two endpoints, two coordinates
+        p1 = obs[0, 0]
+        p2 = obs[0, 1]
+        # Direction vector
+        d = p2 - p1
+        d_norm = d / (jnp.linalg.norm(d) + 1e-8)
+        # Perpendicular vector
+        perp = jnp.array([-d_norm[1], d_norm[0]])
+        # Parallel vector
+        parallel = d_norm
+        # Offset points (enlarge in both perpendicular and parallel directions)
+        p1a = p1 + perp * enlargement_size / 2 - parallel * enlargement_size / 2
+        p1b = p1 - perp * enlargement_size / 2 - parallel * enlargement_size / 2
+        p2a = p2 + perp * enlargement_size / 2 + parallel * enlargement_size / 2
+        p2b = p2 - perp * enlargement_size / 2 + parallel * enlargement_size / 2
+        # Rectangle segments: [p1a-p2a], [p2a-p2b], [p2b-p1b], [p1b-p1a]
+        rect = jnp.array([
+            [p1a, p2a],
+            [p2a, p2b],
+            [p2b, p1b],
+            [p1b, p1a]
+        ])
+        enlarged.append(rect[None, ...])  # shape (1, 4, 2, 2)
+    return jnp.concatenate(enlarged, axis=0)
+obstacles = custom_episodes["static_obstacles"][trial,-1]  # Get the last timestep obstacles
+enlarged_obstacles = obstacles #enlarge_obstacles(obstacles, enlargement_size=0.2)
+n_agents = len(custom_episodes["static_obstacles"][trial])
+stacked_obstacles = jnp.stack([enlarged_obstacles for _ in range(n_agents)], axis=0)  # shape: (n_agents, n_obstacles, 4, 2, 2)
+
 ### Visualize initial configuration
-colors = list(mcolors.TABLEAU_COLORS.values()) + list(mcolors.TABLEAU_COLORS.values()) + list(mcolors.TABLEAU_COLORS.values())
-xlims = [jnp.nanmin(custom_episodes["static_obstacles"][trial][-1][:,:,:,0]), jnp.nanmax(custom_episodes["static_obstacles"][trial][-1][:,:,:,0])]
-ylims = [jnp.nanmin(custom_episodes["static_obstacles"][trial][-1][:,:,:,1]), jnp.nanmax(custom_episodes["static_obstacles"][trial][-1][:,:,:,1])]
+colors = list(mcolors.TABLEAU_COLORS.values()) * 10
+xlims = [jnp.nanmin(stacked_obstacles[-1][:,:,:,0]), jnp.nanmax(stacked_obstacles[-1][:,:,:,0])]
+ylims = [jnp.nanmin(stacked_obstacles[-1][:,:,:,1]), jnp.nanmax(stacked_obstacles[-1][:,:,:,1])]
 figure, ax = plt.subplots(1,1)
 plot_state(
     ax, 
@@ -50,7 +87,7 @@ plot_state(
     xlims=xlims,
     ylims=ylims,
 )
-for o in custom_episodes["static_obstacles"][trial][-1]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+for o in obstacles: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
 ax.scatter(custom_episodes['humans_goal'][trial, :, 0], custom_episodes['humans_goal'][trial, :, 1], marker="*", color=colors[:n_humans], zorder=2)
 ax.set_aspect('equal')
 plt.show()
@@ -59,7 +96,7 @@ plt.show()
 test_env_params = {
     'robot_radius': 0.3,
     'n_humans': n_humans,
-    'n_obstacles': len(custom_episodes['static_obstacles'][trial,0]),
+    'n_obstacles': len(stacked_obstacles[0]),
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
@@ -84,7 +121,7 @@ if policy == 'dir-safe':
             "full_state": custom_episodes["full_state"][trial],
             "robot_goal": custom_episodes["robot_goals"][trial,0],
             "humans_goal": custom_episodes["humans_goal"][trial],
-            "static_obstacles": custom_episodes["static_obstacles"][trial],
+            "static_obstacles": stacked_obstacles,
             "scenario": -1,
             "humans_radius": custom_episodes["humans_radius"][trial],
             "humans_speed": custom_episodes["humans_speed"][trial],
@@ -93,6 +130,7 @@ if policy == 'dir-safe':
     ## Run the episode
     all_states = jnp.array([state])
     all_robot_goals = jnp.array([info['robot_goal']])
+    all_action_space_params = []
     while outcome['nothing']:
         print(f"Current robot goal index: {info['robot_goal_index']}, time: {info['time']:.2f}s")
         # Update robot goal
@@ -122,11 +160,32 @@ if policy == 'dir-safe':
             info["humans_goal"],
         )
         # Step the environment
-        action, _, _, _, _ = policy.act(random.PRNGKey(0), obs, info, actor_params, sample=False)
+        action, _, _, _, distr = policy.act(random.PRNGKey(0), obs, info, actor_params, sample=False)
+        action_space_params = [distr["vertices"][2,0]/policy.v_max,distr["vertices"][0,1]/(2*policy.v_max/policy.wheels_distance), distr["vertices"][1,1]/(-2*policy.v_max/policy.wheels_distance)]
         state, obs, info, _, outcome, _ = test_env.step(state,info,action,test=True)
         # Save the state
         all_states = jnp.vstack((all_states, jnp.array([state])))
         all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
+        all_action_space_params.append(action_space_params)
+    ### Animate trajectory
+    animate_trajectory(
+        all_states, 
+        info['humans_parameters'][:,0], 
+        test_env.robot_radius, 
+        test_env_params['humans_policy'],
+        all_robot_goals,
+        None, # Custom scenario
+        robot_dt=test_env_params['robot_dt'],
+        static_obstacles=obstacles, # Obstacles are repeated for each agent, index -1 is enough
+        kinematics='unicycle',
+        action_space_params=np.array(all_action_space_params),
+        action_space_aside=True,
+        vmax=1.,
+        wheels_distance=policy.wheels_distance,
+        figsize=(12, 6.6),
+        save=False,
+        save_path=os.path.join(os.path.dirname(__file__),f'icar25_astar_local_planner.mp4')
+    )
 elif policy == 'dwa':
     try:
         import dwa
@@ -155,7 +214,7 @@ elif policy == 'dwa':
             "full_state": custom_episodes["full_state"][trial],
             "robot_goal": custom_episodes["robot_goals"][trial,0],
             "humans_goal": custom_episodes["humans_goal"][trial],
-            "static_obstacles": custom_episodes["static_obstacles"][trial],
+            "static_obstacles": stacked_obstacles,
             "scenario": -1,
             "humans_radius": custom_episodes["humans_radius"][trial],
             "humans_speed": custom_episodes["humans_speed"][trial],
@@ -203,21 +262,20 @@ elif policy == 'dwa':
         # Save the state
         all_states = jnp.vstack((all_states, jnp.array([state])))
         all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
+    ### Animate trajectory
+    animate_trajectory(
+        all_states, 
+        info['humans_parameters'][:,0], 
+        test_env.robot_radius, 
+        test_env_params['humans_policy'],
+        all_robot_goals,
+        None, # Custom scenario
+        robot_dt=test_env_params['robot_dt'],
+        static_obstacles=stacked_obstacles[0],
+        kinematics='unicycle',
+        vmax=1.,
+        wheels_distance=0.7,
+        figsize= (11, 6.6),
+    )
 else:
     raise ValueError(f'Policy {policy} not available.')
-
-### Animate trajectory
-animate_trajectory(
-    all_states, 
-    info['humans_parameters'][:,0], 
-    test_env.robot_radius, 
-    test_env_params['humans_policy'],
-    all_robot_goals,
-    None, # Custom scenario
-    robot_dt=test_env_params['robot_dt'],
-    static_obstacles=custom_episodes['static_obstacles'][trial,0],
-    kinematics='unicycle',
-    vmax=1.,
-    wheels_distance=0.7,
-    figsize= (11, 6.6),
-)

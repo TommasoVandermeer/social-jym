@@ -9,7 +9,7 @@ import math
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.policies.sarl import SARL
-from socialjym.utils.aux_functions import load_crowdnav_policy, test_k_trials
+from socialjym.utils.aux_functions import load_crowdnav_policy, test_k_trials, initialize_metrics_dict
 
 ### Hyperparameters
 test_environments = ["hsfm"] #["sfm", "hsfm"]
@@ -33,26 +33,8 @@ vnet_params_dirs = [
 ]
 policy_labels = ["SARL-CC-HSFM","SARL-CCSO-HSFM"]
 test_scenarios_labels = ["CC","CCSO"]
-empty_trials_outcomes_array = jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(test_n_humans)))
-empty_trials_metrics_array = jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(test_n_humans),n_test_trials))
-all_metrics = {
-    "successes": empty_trials_outcomes_array,
-    "collisions": empty_trials_outcomes_array,
-    "timeouts": empty_trials_outcomes_array,
-    "returns": empty_trials_metrics_array,
-    "times_to_goal": empty_trials_metrics_array,
-    "average_speed": empty_trials_metrics_array,
-    "average_acceleration": empty_trials_metrics_array,
-    "average_jerk": empty_trials_metrics_array,
-    "average_angular_speed": empty_trials_metrics_array,
-    "average_angular_acceleration": empty_trials_metrics_array,
-    "average_angular_jerk": empty_trials_metrics_array,
-    "min_distance": empty_trials_metrics_array,
-    "space_compliance": empty_trials_metrics_array,
-    "episodic_spl": empty_trials_metrics_array,
-    "path_length": empty_trials_metrics_array,
-    "scenario": jnp.zeros((len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(test_n_humans),n_test_trials), dtype=jnp.int32),
-}
+metrics_dict = (len(vnet_params_dirs),len(test_environments),len(test_scenarios),len(test_n_humans))
+all_metrics = initialize_metrics_dict(n_test_trials, metrics_dict)
 
 # ### Test loop
 # for i, vnet_params_dir in enumerate(vnet_params_dirs):

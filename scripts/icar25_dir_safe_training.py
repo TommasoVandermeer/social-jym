@@ -9,7 +9,7 @@ import pickle
 import math
 
 from socialjym.envs.socialnav import SocialNav
-from socialjym.utils.aux_functions import test_k_trials
+from socialjym.utils.aux_functions import test_k_trials, initialize_metrics_dict
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.utils.rollouts.act_cri_rollouts import actor_critic_il_rollout
@@ -139,26 +139,8 @@ il_out = actor_critic_il_rollout(**il_rollout_params)
 
 ## Execute tests to evaluate return after IL
 # Initialize the dictionary to store the metrics
-outcomes_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests),))
-other_metrics_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials))
-metrics_after_il = {
-    "successes": outcomes_arrays, 
-    "collisions": outcomes_arrays, 
-    "timeouts": outcomes_arrays, 
-    "returns": other_metrics_arrays,
-    "times_to_goal": other_metrics_arrays,
-    "average_speed": other_metrics_arrays,
-    "average_acceleration": other_metrics_arrays,
-    "average_jerk": other_metrics_arrays,
-    "average_angular_speed": other_metrics_arrays,
-    "average_angular_acceleration": other_metrics_arrays,
-    "average_angular_jerk": other_metrics_arrays,
-    "min_distance": other_metrics_arrays,
-    "space_compliance": other_metrics_arrays,
-    "episodic_spl": other_metrics_arrays,
-    "path_length": other_metrics_arrays,
-    "scenario": jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials), dtype=jnp.int32),
-}
+metrics_dims = (len(test_robot_visibility), len(n_humans_for_tests),)
+metrics_after_il = initialize_metrics_dict(n_trials, metrics_dims)
 for v, visibility in enumerate(test_robot_visibility):
     print(f"\n##############\nROBOT {'VISIBLE' if visibility else 'NOT VISIBLE'}")
     for test, n_humans in enumerate(n_humans_for_tests):
@@ -430,26 +412,8 @@ figure.savefig(os.path.join(os.path.dirname(__file__),"rl_training_plots.eps"), 
 
 ## Execute tests to evaluate metrics after RL 
 # Initialize the dictionary to store the metrics
-outcomes_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests),))
-other_metrics_arrays = jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials))
-metrics_after_rl = {
-    "successes": outcomes_arrays, 
-    "collisions": outcomes_arrays, 
-    "timeouts": outcomes_arrays, 
-    "returns": other_metrics_arrays,
-    "times_to_goal": other_metrics_arrays,
-    "average_speed": other_metrics_arrays,
-    "average_acceleration": other_metrics_arrays,
-    "average_jerk": other_metrics_arrays,
-    "average_angular_speed": other_metrics_arrays,
-    "average_angular_acceleration": other_metrics_arrays,
-    "average_angular_jerk": other_metrics_arrays,
-    "min_distance": other_metrics_arrays,
-    "space_compliance": other_metrics_arrays,
-    "episodic_spl": other_metrics_arrays,
-    "path_length": other_metrics_arrays,
-    "scenario": jnp.zeros((len(test_robot_visibility), len(n_humans_for_tests), n_trials), dtype=jnp.int32),
-}
+metrics_dims = (len(test_robot_visibility), len(n_humans_for_tests),)
+metrics_after_rl = initialize_metrics_dict(n_trials, metrics_dims)
 for v, visibility in enumerate(test_robot_visibility):
     print(f"\n##############\nROBOT {'VISIBLE' if visibility else 'NOT VISIBLE'}")
     for test, n_humans in enumerate(n_humans_for_tests):

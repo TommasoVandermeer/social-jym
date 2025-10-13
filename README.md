@@ -18,5 +18,6 @@ Install the submodules and the main package.
 ```
 pip install -e social-jym/JHSFM
 pip install -e social-jym/JSFM
+pip install -e social-jym/JORCA
 pip install -e social-jym
 ```

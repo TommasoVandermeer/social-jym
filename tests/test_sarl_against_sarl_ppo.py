@@ -8,7 +8,7 @@ import pickle
 import math
 
 from socialjym.envs.socialnav import SocialNav
-from socialjym.utils.aux_functions import test_k_trials
+from socialjym.utils.aux_functions import test_k_trials, initialize_metrics_dict
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.sarl import SARL
@@ -42,26 +42,8 @@ policies = [sarl, sarl_ppo]
 policies_params = [sarl_params, sarl_ppo_params]
 
 # Initialize output dictionary
-outcomes_arrays = jnp.zeros((len(policies), len(n_humans_for_tests),))
-other_metrics_arrays = jnp.zeros((len(policies), len(n_humans_for_tests), n_trials))
-metrics_sarl_vs_sarl_ppo = {
-    "successes": outcomes_arrays, 
-    "collisions": outcomes_arrays, 
-    "timeouts": outcomes_arrays, 
-    "returns": other_metrics_arrays,
-    "times_to_goal": other_metrics_arrays,
-    "average_speed": other_metrics_arrays,
-    "average_acceleration": other_metrics_arrays,
-    "average_jerk": other_metrics_arrays,
-    "average_angular_speed": other_metrics_arrays,
-    "average_angular_acceleration": other_metrics_arrays,
-    "average_angular_jerk": other_metrics_arrays,
-    "min_distance": other_metrics_arrays,
-    "space_compliance": other_metrics_arrays,
-    "episodic_spl": other_metrics_arrays,
-    "path_length": other_metrics_arrays,
-    "scenario": jnp.zeros((len(policies), len(n_humans_for_tests), n_trials), dtype=jnp.int32),
-}
+metrics_dims = (len(policies), len(n_humans_for_tests),)
+metrics_sarl_vs_sarl_ppo = initialize_metrics_dict(n_trials, metrics_dims)
 
 # Test loop
 for p in range(len(policies)):

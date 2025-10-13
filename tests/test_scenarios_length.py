@@ -10,7 +10,7 @@ import pandas as pd
 
 from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.base_env import SCENARIOS
-from socialjym.utils.aux_functions import animate_trajectory, plot_state, plot_trajectory, load_socialjym_policy, test_k_trials
+from socialjym.utils.aux_functions import animate_trajectory, plot_state, plot_trajectory, load_socialjym_policy, test_k_trials, initialize_metrics_dict
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
@@ -28,23 +28,8 @@ traffic_length = 14.
 crowding_square_side = 14.
 max_cc_delay = 5.
 
-all_metrics = {
-    "successes": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests))),
-    "collisions": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests))), 
-    "timeouts": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests))), 
-    "returns": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "times_to_goal": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "average_speed": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "average_acceleration": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "average_jerk": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "average_angular_speed": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "average_angular_acceleration": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "average_angular_jerk": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "min_distance": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "space_compliance": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "episodic_spl": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes)),
-    "path_length": jnp.empty((len(SCENARIOS)-1,len(n_humans_tests),n_episodes))
-}
+metrics_dims = (len(SCENARIOS)-1,len(n_humans_tests))
+all_metrics = initialize_metrics_dict(n_episodes, metrics_dims)
 
 # Initialize reward function
 reward_function = Reward1(kinematics='unicycle')
