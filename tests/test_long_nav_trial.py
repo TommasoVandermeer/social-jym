@@ -12,9 +12,9 @@ from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.utils.aux_functions import animate_trajectory, interpolate_humans_boundaries, interpolate_obstacle_segments, plot_state
 
 ### Hyperparameters
-policy = 'dwa' # 'dir-safe' or 'dwa'
-trial = 15 # 23
-n_humans = 20
+policy = 'dir-safe' # 'dir-safe' or 'dwa'
+trial = 18 # 1
+n_humans = 30
 time_limit = 100.
 reward_function = Reward2(
     time_limit=time_limit,
