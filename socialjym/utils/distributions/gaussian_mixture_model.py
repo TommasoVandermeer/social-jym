@@ -68,11 +68,7 @@ class GMM(BaseDistribution):
 
     @partial(jit, static_argnames=("self"))
     def batch_neglogp(self, distribution:dict, actions:jnp.ndarray):
-        """
-        Compute the negative log pdf value of a batch of actions and distirbutions.
-        Vectorized over distributions and actions!!!
-        """
-        return vmap(GMM.neglogp, in_axes=(None, 0, 0))(self, distribution, actions)
+        return vmap(GMM.neglogp, in_axes=(None, None, 0))(self, distribution, actions)
 
     @partial(jit, static_argnames=("self"))
     def logp(self, distribution:dict, action:jnp.ndarray):
