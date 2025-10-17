@@ -18,7 +18,7 @@ from socialjym.utils.aux_functions import plot_lidar_measurements
 random_seed = 0
 n_steps = 100_000  # Number of labeled examples to train Lidar to GMM network
 grid_resolution = 10  # Number of grid cells per dimension
-n_loss_samples = 1000  # Number of samples to estimate the loss
+n_loss_samples = 100  # Number of samples to estimate the loss
 learning_rate = 1e-3
 batch_size = 200
 n_epochs = 10
@@ -152,7 +152,7 @@ def simulate_n_steps(env, n_steps):
     )
     return data
 
-### GENRATE DATASET
+### GENERATE DATASET
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_dataset.pkl')):
     if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_humans_state_dataset.pkl')):
         # Generate raw data
@@ -213,49 +213,91 @@ else:
     # plt.show()
 
 ### DEFINE NEURAL NETWORK
-mlp_params = {
-    "activation": nn.relu,
-    "activate_final": False,
-    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+cnn1_params = {
+    "output_channels": 32,
+    "kernel_shape": 10,
+    "stride": 1,
+    "rate": 1,
+    "padding": "SAME",
+    # "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    # "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+}
+cnn2_params = {
+    "output_channels": 64,
+    "kernel_shape": 5,
+    "stride": 1,
+    "rate": 1,
+    "padding": "SAME",
+    # "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    # "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+}
+cnn3_params = {
+    "output_channels": 128,
+    "kernel_shape": 5,
+    "stride": 1,
+    "rate": 1,
+    "padding": "SAME",
+    # "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    # "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
 }
 class LidarNetwork(hk.Module):
-    def __init__(
-            self,
-            grid_cell_positions:jnp.ndarray,
-            lidar_num_rays:int,
-            mlp_params:dict=mlp_params,
-        ) -> None:
-        super().__init__()  
-        self.gmm_means = grid_cell_positions  # Fixed means
+    def __init__(self, grid_cell_positions: jnp.ndarray, lidar_num_rays: int, n_heads=4, d_model=128):
+        super().__init__()
+        self.gmm_means = grid_cell_positions
         self.n_gmm_cells = grid_cell_positions.shape[0]
-        self.n_inputs = lidar_num_rays  # Each ray has distance
-        self.n_outputs = self.n_gmm_cells * 3  # 3 outputs per GMM cell (var_x, var_y, weight)
-        self.mlp = hk.nets.MLP(
-            **mlp_params, 
-            output_sizes=[self.n_inputs * 5, self.n_inputs * 3, self.n_inputs * 3, self.n_outputs], 
-            name="mlp"
+        self.n_inputs = lidar_num_rays
+        self.n_outputs = self.n_gmm_cells * 3
+        self.d_model = d_model
+        self.n_heads = n_heads
+
+        # CNN feature extractor
+        self.cnn1 = hk.Conv1D(output_channels=64, kernel_shape=9, stride=1, padding="SAME")
+        self.cnn2 = hk.Conv1D(output_channels=128, kernel_shape=5, stride=1, padding="SAME")
+        self.cnn3 = hk.Conv1D(output_channels=d_model, kernel_shape=3, stride=1, padding="SAME")
+
+        # Self-attention across beams (captures angular relationships)
+        self.self_attn = hk.MultiHeadAttention(
+            num_heads=n_heads, key_size=d_model // n_heads, w_init_scale=1.0, model_size=d_model
         )
 
-    def __call__(
-            self, 
-            x: jnp.ndarray
-        ) -> jnp.ndarray:
-        """
-        Maps Lidar scan to GMM parameters
-        """
-        mlp_output = self.mlp(x)
-        ### Separate outputs
-        x_vars = nn.softplus(mlp_output[:, :self.n_gmm_cells]) + 1e-3  # Variance in x
-        y_vars = nn.softplus(mlp_output[:, self.n_gmm_cells:2*self.n_gmm_cells]) + 1e-3  # Variance in y
-        weights = nn.softmax(mlp_output[:, 2*self.n_gmm_cells:], axis=-1)  # Weights
-        ### Construct GMM parameters
-        distr = {
-            "means": jnp.tile(self.gmm_means, (x.shape[0], 1, 1)),  # Fixed means
-            "variances": jnp.stack((x_vars, y_vars), axis=-1),  # Shape (batch_size, n_gmm_cells, 2)
-            "weights": weights,  # Shape (batch_size, n_gmm_cells)
+        # Cross-attention: each GMM cell attends to LiDAR beams
+        self.cross_attn = hk.MultiHeadAttention(
+            num_heads=n_heads, key_size=d_model // n_heads, w_init_scale=1.0, model_size=d_model
+        )
+
+        self.final_mlp = hk.nets.MLP([256, self.n_outputs])
+
+    def __call__(self, x: jnp.ndarray) -> dict:
+        # Input x: (batch_size, n_rays)
+        x = x[..., None]  # (B, n_rays, 1)
+        x = nn.relu(self.cnn1(x))
+        x = nn.relu(self.cnn2(x))
+        x = nn.relu(self.cnn3(x))  # (B, n_rays, d_model)
+
+        # Self-attention over beams (angular smoothing)
+        x = self.self_attn(query=x, key=x, value=x)
+        
+        # Create learnable GMM-cell embeddings
+        cell_embed = hk.get_parameter("cell_embeddings", shape=(self.n_gmm_cells, self.d_model),
+                                      init=hk.initializers.RandomNormal(0.02))
+        cell_embed = jnp.broadcast_to(cell_embed, (x.shape[0], *cell_embed.shape))  # (B, n_cells, d_model)
+
+        # Cross-attention: cells query the LiDAR feature map
+        cell_features = self.cross_attn(query=cell_embed, key=x, value=x)  # (B, n_cells, d_model)
+
+        # Flatten and decode to GMM parameters
+        flat = jnp.reshape(cell_features, (x.shape[0], -1))
+        out = self.final_mlp(flat)
+
+        x_vars = nn.softplus(out[:, :self.n_gmm_cells]) + 1e-3
+        y_vars = nn.softplus(out[:, self.n_gmm_cells:2*self.n_gmm_cells]) + 1e-3
+        weights = nn.softmax(out[:, 2*self.n_gmm_cells:], axis=-1)
+
+        return {
+            "means": jnp.tile(self.gmm_means, (x.shape[0], 1, 1)),
+            "variances": jnp.stack((x_vars, y_vars), axis=-1),
+            "weights": weights,
         }
-        return distr
 @hk.transform
 def lidar_to_gmm_network(x):
     net = LidarNetwork(grid_cells, lidar_num_rays)
@@ -270,33 +312,33 @@ def count_params(params):
 n_params = count_params(params)
 print(f"# Lidar network parameters: {n_params}")
 
-# ### TEST INITIAL NETWORK
-# # Forward pass
-# output_distr = network.apply(
-#     params, 
-#     None, 
-#     sample_input, 
-# )
-# print("Output means shape:", output_distr["means"].shape)
-# print("Output variances shape:", output_distr["variances"].shape)
-# print("Output weights shape:", output_distr["weights"].shape)
-# distr = {k: jnp.squeeze(v) for k, v in output_distr.items()}
-# # Plot output distribution
-# n_test_samples = 10_000
-# test_samples = gmm.batch_sample(distr, random.split(random.PRNGKey(0), n_test_samples))
-# test_p = gmm.batch_p(distr, test_samples)
-# fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-# ax.set_xlim(-7, 7)
-# ax.set_ylim(-7, 7)
-# ax.scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=5, alpha=0.5)
-# ax.set_title("Random LiDAR network Output")
-# ax.set_xlabel("X")
-# ax.set_ylabel("Y")
-# for cell_center in grid_cells:
-#     rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
-#     ax.add_patch(rect)
-# ax.set_aspect('equal', adjustable='box')
-# plt.show()
+### TEST INITIAL NETWORK
+# Forward pass
+output_distr = network.apply(
+    params, 
+    None, 
+    sample_input, 
+)
+print("Output means shape:", output_distr["means"].shape)
+print("Output variances shape:", output_distr["variances"].shape)
+print("Output weights shape:", output_distr["weights"].shape)
+distr = {k: jnp.squeeze(v) for k, v in output_distr.items()}
+# Plot output distribution
+n_test_samples = 10_000
+test_samples = gmm.batch_sample(distr, random.split(random.PRNGKey(0), n_test_samples))
+test_p = gmm.batch_p(distr, test_samples)
+fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+ax.set_xlim(-7, 7)
+ax.set_ylim(-7, 7)
+ax.scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=5, alpha=0.5)
+ax.set_title("Random LiDAR network Output")
+ax.set_xlabel("X")
+ax.set_ylabel("Y")
+for cell_center in grid_cells:
+    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
+    ax.add_patch(rect)
+ax.set_aspect('equal', adjustable='box')
+plt.show()
 
 ### DEFINE LOSS FUNCTION, UPDATE FUNCTIONS, AND OPTIMIZER
 @partial(jit, static_argnames=("n_samples"))
@@ -364,7 +406,7 @@ optimizer = optax.sgd(learning_rate=learning_rate, momentum=0.9)
 optimizer_state = optimizer.init(params)
 
 ### TRAINING LOOP
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_network_params.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_cnn_network_params.pkl')):
     @loop_tqdm(n_epochs, desc="Training Lidar->GMM network")
     @jit 
     def _epoch_loop(
@@ -414,7 +456,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_network_par
         (dataset, params, optimizer_state, jnp.zeros((n_epochs, int(n_steps // batch_size))))
     )
     # Save trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'lidar_network_params.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'lidar_cnn_network_params.pkl'), 'wb') as f:
         pickle.dump(params, f)
     # Plot training loss
     avg_losses = jnp.mean(losses, axis=1)
@@ -423,14 +465,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_network_par
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
     ax.set_title("Lidar to GMM Network Training Loss")
-    fig.savefig(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_training_loss.eps'), format='eps')
+    fig.savefig(os.path.join(os.path.dirname(__file__), 'lidar_cnn_network_training_loss.eps'), format='eps')
 else:
     # Load trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'lidar_network_params.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'lidar_cnn_network_params.pkl'), 'rb') as f:
         params = pickle.load(f)
     ## DEBUG: Visualize a target GMM vs network inferred GMM
     n_samples = 10_000
-    n_distribution = 54
+    n_distribution = 24
     distr = {
         "means": dataset["distributions"]["means"][n_distribution],
         "variances": dataset["distributions"]["variances"][n_distribution],
