@@ -8,6 +8,7 @@ import pickle
 import haiku as hk
 import optax
 from functools import partial
+import time
 
 from socialjym.utils.distributions.gaussian_mixture_model import GMM
 from socialjym.envs.socialnav import SocialNav
@@ -22,6 +23,7 @@ n_loss_samples = 100  # Number of samples to estimate the loss
 learning_rate = 1e-3
 batch_size = 200
 n_epochs = 10
+n_iterations_fit_gmm = 20
 # Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -365,10 +367,16 @@ def _compute_loss_and_gradients(
             # Compute the prediction
             prediction = network.apply(current_params, None, jnp.expand_dims(input, axis=0))
             prediction = {k: jnp.squeeze(v) for k, v in prediction.items()}
-            # Compute the loss
+            # Sample from target distribution
             target = {k: jnp.squeeze(v) for k, v in target.items()}
             target_samples = gmm.batch_sample(target, random.split(sample_key, n_samples))
-            return jnp.mean(gmm.batch_neglogp(prediction, target_samples))
+            # Compute the Negative Log-Likelihood (NLL) loss
+            neglogp_prediction_distr = gmm.batch_neglogp(prediction, target_samples)
+            nll_loss = jnp.mean(neglogp_prediction_distr)
+            # Compute the KL divergence loss (from target to prediction)
+            logp_target_distr = gmm.batch_logp(target, target_samples)
+            kl_loss = jnp.mean(logp_target_distr + neglogp_prediction_distr)
+            return nll_loss + kl_loss
         
         return jnp.mean(_loss_function(
                 current_params,
@@ -470,56 +478,139 @@ else:
     # Load trained parameters
     with open(os.path.join(os.path.dirname(__file__), 'lidar_cnn_network_params.pkl'), 'rb') as f:
         params = pickle.load(f)
-    ## DEBUG: Visualize a target GMM vs network inferred GMM
-    n_samples = 10_000
-    n_distribution = 24
+
+### BENCHMARKING: Visualize target vs predicted GMM vs Lidar Fit2GMM
+example = 24 # Choose an example to visualize between 0 and n_steps-1
+n_samples = 10_000
+target_distr = {
+    "means": dataset["distributions"]["means"][example],
+    "variances": dataset["distributions"]["variances"][example],
+    "weights": dataset["distributions"]["weights"][example],
+}
+## Sample from target GMM
+target_samples = gmm.batch_sample(target_distr, random.split(random.PRNGKey(random_seed), n_samples))
+target_p = gmm.batch_p(target_distr, target_samples)
+## Sample from predicted GMM
+input = jnp.expand_dims(raw_data["lidar_measurements"][example,:,0], axis=0)
+predicted_distr = network.apply(
+    params, 
+    None,
+    input
+)
+predicted_distr = {k: jnp.squeeze(v) for k, v in predicted_distr.items()}
+start_time = time.time()
+for _ in range(10): _ = network.apply(params, None, input)
+predict_time = time.time() - start_time
+predicted_samples = gmm.batch_sample(predicted_distr, random.split(random.PRNGKey(random_seed), n_samples))
+predicted_p = gmm.batch_p(predicted_distr, predicted_samples)
+## Fit LiDAR measurements to GMM with Expected Maximization algorithm
+# Convert LiDAR measurements to Cartesian coordinates
+lidar_measurements = raw_data["lidar_measurements"][example,:,0]
+lidar_angles = raw_data["lidar_measurements"][example,:,1]
+points = vmap(lambda r, a: jnp.array([r * jnp.cos(a), r * jnp.sin(a)]))(lidar_measurements, lidar_angles)
+points = points[lidar_measurements < env.lidar_max_dist]  
+@partial(jit, static_argnames=("n_iterations_fit_gmm"))
+def fit_gmm_to_points(points:jnp.ndarray, grid_cells:jnp.ndarray, n_iterations_fit_gmm:int=10, epsilon:float=1e-5) -> dict:
+    """
+    Fit a Gaussian Mixture Model (GMM) to the given points with the EM algorithm using the specified grid cells as fixed means.
+
+    params:
+    - points: jnp.ndarray of shape (n_points, n_dimensions), the data points to fit the GMM to.
+    - grid_cells: jnp.ndarray of shape (n_components, n_dimensions), the fixed means of the GMM components.
+    - n_iterations_fit_gmm: int, the number of EM iterations to perform.
+    - epsilon: float, a small value to prevent division by zero.
+
+    returns:
+    - distr: dict, the fitted GMM parameters with keys "means", "variances", and "weights".
+
+    """
+    # Initialize
     distr = {
-        "means": dataset["distributions"]["means"][n_distribution],
-        "variances": dataset["distributions"]["variances"][n_distribution],
-        "weights": dataset["distributions"]["weights"][n_distribution],
+        "means": grid_cells,
+        "variances": jnp.ones((grid_cells.shape[0], 2)) * 0.2,
+        "weights": jnp.ones((grid_cells.shape[0],)) / grid_cells.shape[0],
     }
-    samples = gmm.batch_sample(distr, random.split(random.PRNGKey(random_seed), n_samples))
-    p = gmm.batch_p(distr, samples)
-    fig, ax = plt.subplots(1, 2, figsize=(16, 8))
-    # Plot target GMM
-    ax[0].set_xlim(-7, 7)
-    ax[0].set_ylim(-7, 7)
-    for pos, rad, vel in zip(raw_data["humans_positions"][n_distribution], raw_data["humans_radii"][n_distribution], raw_data["humans_velocities"][n_distribution]):
-        circle = plt.Circle(pos, rad, color='red', alpha=1, zorder=10)
-        ax[0].add_artist(circle)
-        ax[0].arrow(pos[0], pos[1], vel[0], vel[1], head_width=0.2, head_length=0.2, fc='red', ec='red', zorder=11)
-    ax[0].scatter(samples[:, 0], samples[:, 1], c=p, cmap='viridis', s=5, alpha=0.5)
-    ax[0].set_title("Target GMM Top View")
-    ax[0].set_xlabel("X")
-    ax[0].set_ylabel("Y")
-    for cell_center in grid_cells:
-        rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
-        ax[0].add_patch(rect)
-    plot_lidar_measurements(ax[0], raw_data["lidar_measurements"][n_distribution], raw_data["robot_positions"][n_distribution], 0.3)
-    ax[0].set_aspect('equal', adjustable='box')
-    # Plot network inferred GMM
-    input = jnp.expand_dims(raw_data["lidar_measurements"][n_distribution,:,0], axis=0)
-    distr = network.apply(
-        params, 
-        None,
-        input
-    )
-    distr = {k: jnp.squeeze(v) for k, v in distr.items()}
-    samples = gmm.batch_sample(distr, random.split(random.PRNGKey(random_seed), n_samples))
-    p = gmm.batch_p(distr, samples)
-    ax[1].set_xlim(-7, 7)
-    ax[1].set_ylim(-7, 7)
-    for pos, rad, vel in zip(raw_data["humans_positions"][n_distribution], raw_data["humans_radii"][n_distribution], raw_data["humans_velocities"][n_distribution]):
-        circle = plt.Circle(pos, rad, color='red', alpha=1, zorder=10)
-        ax[1].add_artist(circle)
-        ax[1].arrow(pos[0], pos[1], vel[0], vel[1], head_width=0.2, head_length=0.2, fc='red', ec='red', zorder=11)
-    ax[1].scatter(samples[:, 0], samples[:, 1], c=p, cmap='viridis', s=5, alpha=0.5)
-    ax[1].set_title("Predicted GMM Top View")
-    ax[1].set_xlabel("X")
-    ax[1].set_ylabel("Y")
-    for cell_center in grid_cells:
-        rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
-        ax[1].add_patch(rect)
-    plot_lidar_measurements(ax[1], raw_data["lidar_measurements"][n_distribution], raw_data["robot_positions"][n_distribution], 0.3)
-    ax[1].set_aspect('equal', adjustable='box')
-    plt.show()
+    # EM loop
+    def em_step(carry, _):
+        distr = carry
+        # E-step: compute responsibilities
+        weighted_ps = gmm.batch_samples_batch_p_single_component(distr, points) * jnp.expand_dims(distr["weights"], axis=0)  # Shape (n_points, n_components)
+        responsibilities = weighted_ps / (jnp.sum(weighted_ps, axis=1, keepdims=True) + epsilon)  # Shape (n_points, n_components)
+        # debug.print("Responsibilities sum axis 1 (should be 1): {x}", x=jnp.sum(responsibilities, axis=1))
+        # M-step: update parameters
+        @jit
+        def compute_variance(k, responsabilities_per_k):
+            diff = points - grid_cells[k] # Shape (n_points, n_dimensions)
+            weighted_diff_squared = responsabilities_per_k[:, None] * (diff ** 2) # Shape (n_points, n_dimensions)
+            variance_k = jnp.sum(weighted_diff_squared, axis=0) / (jnp.sum(responsabilities_per_k) + epsilon)
+            return variance_k  
+        variances = vmap(compute_variance, in_axes=(0, 1))(jnp.arange(grid_cells.shape[0]), responsibilities) # Shape (n_components, n_dimensions)
+        weights = jnp.sum(responsibilities, axis=0) / jnp.sum(responsibilities)  # Shape (n_components,)
+        updated_distr = {
+            "means": grid_cells,  # Keep means fixed to grid cells
+            "variances": variances + epsilon,
+            "weights": weights,
+        }
+        return updated_distr, None
+    distr, _ = lax.scan(em_step, distr, None, length=n_iterations_fit_gmm)
+    return distr
+fitted_distr = fit_gmm_to_points(points, grid_cells, n_iterations_fit_gmm=n_iterations_fit_gmm)
+start_time = time.time()
+for _ in range(10): _ = fit_gmm_to_points(points, grid_cells, n_iterations_fit_gmm=n_iterations_fit_gmm)
+fit_time = time.time() - start_time
+fitted_samples = gmm.batch_sample(fitted_distr, random.split(random.PRNGKey(random_seed), n_samples))
+fitted_p = gmm.batch_p(fitted_distr, fitted_samples)
+## Plotting
+fig, ax = plt.subplots(1, 3, figsize=(24, 8))
+fig.subplots_adjust(right=0.99, left=0.03, wspace=0.1)
+# Plot target GMM
+ax[0].set_xlim(-7, 7)
+ax[0].set_ylim(-7, 7)
+for pos, rad, vel in zip(raw_data["humans_positions"][example], raw_data["humans_radii"][example], raw_data["humans_velocities"][example]):
+    circle = plt.Circle(pos, rad, color='red', alpha=1, zorder=10)
+    ax[0].add_artist(circle)
+    ax[0].arrow(pos[0], pos[1], vel[0], vel[1], head_width=0.2, head_length=0.2, fc='red', ec='red', zorder=11)
+ax[0].scatter(target_samples[:, 0], target_samples[:, 1], c=target_p, cmap='viridis', s=5, alpha=0.5)
+ax[0].set_title("Target GMM")
+ax[0].set_xlabel("X")
+ax[0].set_ylabel("Y")
+for cell_center in grid_cells:
+    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
+    ax[0].add_patch(rect)
+plot_lidar_measurements(ax[0], raw_data["lidar_measurements"][example], raw_data["robot_positions"][example], 0.3)
+ax[0].set_aspect('equal', adjustable='box')
+# Plot predicted GMM
+ax[1].set_xlim(-7, 7)
+ax[1].set_ylim(-7, 7)
+for pos, rad, vel in zip(raw_data["humans_positions"][example], raw_data["humans_radii"][example], raw_data["humans_velocities"][example]):
+    circle = plt.Circle(pos, rad, color='red', alpha=1, zorder=10)
+    ax[1].add_artist(circle)
+    ax[1].arrow(pos[0], pos[1], vel[0], vel[1], head_width=0.2, head_length=0.2, fc='red', ec='red', zorder=11)
+ax[1].scatter(predicted_samples[:, 0], predicted_samples[:, 1], c=predicted_p, cmap='viridis', s=5, alpha=0.5)
+ax[1].set_title(f"Predicted GMM - Time: {predict_time/10:.6f}s")
+ax[1].set_xlabel("X")
+ax[1].set_ylabel("Y")
+for cell_center in grid_cells:
+    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
+    ax[1].add_patch(rect)
+plot_lidar_measurements(ax[1], raw_data["lidar_measurements"][example], raw_data["robot_positions"][example], 0.3)
+ax[1].set_aspect('equal', adjustable='box')
+# Plot fitted GMM
+ax[2].set_xlim(-7, 7)
+ax[2].set_ylim(-7, 7)
+for pos, rad, vel in zip(raw_data["humans_positions"][example], raw_data["humans_radii"][example], raw_data["humans_velocities"][example]):
+    circle = plt.Circle(pos, rad, color='red', alpha=1, zorder=10)
+    ax[2].add_artist(circle)
+    ax[2].arrow(pos[0], pos[1], vel[0], vel[1], head_width=0.2, head_length=0.2, fc='red', ec='red', zorder=11)
+ax[2].scatter(fitted_samples[:, 0], fitted_samples[:, 1], c=fitted_p, cmap='viridis', s=5, alpha=0.5)
+ax[2].scatter(points[:,0], points[:,1], c='brown', s=15, label='LiDAR Points', zorder=12)
+ax[2].set_title(f"Fitted GMM (EM - {n_iterations_fit_gmm} iterations) - Time: {fit_time/10:.6f}s")
+ax[2].set_xlabel("X")
+ax[2].set_ylabel("Y")
+for cell_center in grid_cells:
+    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
+    ax[2].add_patch(rect)
+plot_lidar_measurements(ax[2], raw_data["lidar_measurements"][example], raw_data["robot_positions"][example], 0.3)
+ax[2].set_aspect('equal', adjustable='box')
+plt.show()
+
