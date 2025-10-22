@@ -67,24 +67,24 @@ class GMM(BaseDistribution):
         return -logsumexp(logps)
 
     @partial(jit, static_argnames=("self"))
-    def batch_neglogp(self, distribution:dict, actions:jnp.ndarray):
-        return vmap(GMM.neglogp, in_axes=(None, None, 0))(self, distribution, actions)
+    def batch_neglogp(self, distribution:dict, samples:jnp.ndarray):
+        return vmap(GMM.neglogp, in_axes=(None, None, 0))(self, distribution, samples)
 
     @partial(jit, static_argnames=("self"))
-    def logp(self, distribution:dict, action:jnp.ndarray):
-        return -self.neglogp(distribution, action)
+    def logp(self, distribution:dict, sample:jnp.ndarray):
+        return -self.neglogp(distribution, sample)
 
     @partial(jit, static_argnames=("self"))
-    def batch_logp(self, distribution:dict, actions:jnp.ndarray):
-        return vmap(GMM.logp, in_axes=(None, None, 0))(self, distribution, actions)
+    def batch_logp(self, distribution:dict, samples:jnp.ndarray):
+        return vmap(GMM.logp, in_axes=(None, None, 0))(self, distribution, samples)
 
     @partial(jit, static_argnames=("self"))
-    def p(self, distribution:dict, action:jnp.ndarray):
-        return jnp.exp(self.logp(distribution, action))
+    def p(self, distribution:dict, sample:jnp.ndarray):
+        return jnp.exp(self.logp(distribution, sample))
 
     @partial(jit, static_argnames=("self"))
-    def batch_p(self, distribution:dict, actions:jnp.ndarray):
-        return vmap(GMM.p, in_axes=(None, None, 0))(self, distribution, actions)
+    def batch_p(self, distribution:dict, samples:jnp.ndarray):
+        return vmap(GMM.p, in_axes=(None, None, 0))(self, distribution, samples)
     
     @partial(jit, static_argnames=("self"))
     def neglogp_single_component(self, distribution:dict, sample:jnp.ndarray, component_idx:int):
