@@ -76,6 +76,7 @@ class LaserNav(BaseEnv):
             state[-1,4], # Lidar yaw angle (robot orientation)
             state[1:-1, :2], # Human positions
             info['humans_parameters'][:,0], # Human radii
+            info['static_obstacles'][-1], # Static obstacles of the robot (visible by the robot)
         )
         # Compute the observation
         obs = jnp.array([
