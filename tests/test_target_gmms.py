@@ -1,4 +1,4 @@
-from jax import random, jit, vmap, lax
+from jax import random, jit, vmap, lax, debug
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, FFMpegWriter
@@ -8,6 +8,7 @@ import pickle
 
 from jhsfm.hsfm import vectorized_compute_obstacle_closest_point
 from socialjym.utils.distributions.gaussian_mixture_model import GMM
+from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
 from socialjym.utils.aux_functions import animate_trajectory
@@ -17,7 +18,7 @@ from socialjym.policies.dir_safe import DIRSAFE
 random_seed = 0
 grid_resolution = 10  # Number of grid cells per dimension
 n_samples_per_dim = 50 # Number of GMM sample points per dimension to show in the animation
-save = True # Whether to save the animation as a .mp4 file
+save = False # Whether to save the animation as a .mp4 file
 ## Environment
 robot_radius = 0.3
 robot_dt = 0.25
@@ -26,7 +27,7 @@ robot_visible = True
 kinematics = "unicycle"
 scenario = "perpendicular_traffic"
 n_humans = 5
-n_obstacles = 3
+n_obstacles = 5
 humans_policy = 'hsfm'
 env_params = {
             'robot_radius': 0.3,
@@ -154,7 +155,86 @@ robot_centric_static_obstacles = batch_roto_translate_obstacles(
     data['robot_orientations'],
 )
 
+### Assess object visibility (static and dynamic obstacles) from robot perspective and mask out invisible ones (on a per-frame basis)
+@jit
+def per_frame_object_visibility(humans_positions, humans_radii, static_obstacles, epsilon=1e-6):
+    """
+    Assess which humans and static obstacles are visible from the robot's perspective.
+
+    params:
+    - humans_positions: (n_humans, 2) array of humans positions in robot-centric frame
+    - humans_radii: (n_humans,) array of humans radii
+    - static_obstacles: (n_obstacles, 2, 2) array of static obstacle segments in robot-centric frame
+
+    returns:
+    - visible_humans_mask: (n_humans,) boolean array indicating which humans are visible
+    - visible_static_obstacles_mask: (n_obstacles,n_segments) boolean array indicating which static obstacle segments are visible
+    """
+    # TODO: Solve bug: humans are marked visible even when occluded by obstacles sometimes
+
+    ### Compute ordered array of all object endpoint angles
+    ## Humans
+    humans_versors = humans_positions / jnp.linalg.norm(humans_positions, axis=1, keepdims=True)  # Shape: (n_humans, 2)
+    left_versors = humans_versors @ jnp.array([[0, 1], [-1, 0]])  # Rotate by +90 degrees
+    right_versors = humans_versors @ jnp.array([[0, -1], [1, 0]])  # Rotate by -90 degrees
+    humans_left_edge_points = humans_positions + humans_radii[:, None] * (left_versors)  # Shape: (n_humans, 2)
+    humans_right_edge_points = humans_positions + humans_radii[:, None] * right_versors  # Shape: (n_humans, 2)
+    humans_left_angles = vmap(wrap_angle)(jnp.arctan2(humans_left_edge_points[:,1], humans_left_edge_points[:,0]) - epsilon) # Shape: (n_humans,)
+    humans_right_angles = vmap(wrap_angle)(jnp.arctan2(humans_right_edge_points[:,1], humans_right_edge_points[:,0]) + epsilon) # Shape: (n_humans,)
+    humans_edge_angles = jnp.concatenate((humans_left_angles, humans_right_angles))  # Shape: (2*n_humans,)
+    ## Obstacles
+    obstacle_segments = static_obstacles.reshape((n_obstacles*env.static_obstacles_per_scenario.shape[2], 2, 2))  # Shape: (n_obstacles*n_segments, 2, 2)
+    obstacle_first_edge_points = obstacle_segments[:,0,:]  # Shape: (n_obstacles*n_segments, 2)
+    obstacle_second_edge_points = obstacle_segments[:,1,:]  # Shape: (n_obstacles*n_segments, 2)
+    obstacle_first_edge_angles = vmap(wrap_angle)(jnp.arctan2(obstacle_first_edge_points[:,1], obstacle_first_edge_points[:,0]))  # Shape: (n_obstacles*n_segments,)
+    obstacle_second_edge_angles = vmap(wrap_angle)(jnp.arctan2(obstacle_second_edge_points[:,1], obstacle_second_edge_points[:,0]))  # Shape: (n_obstacles*n_segments,)
+    obstacle_first_edge_angles, obstacle_second_edge_angles = vmap(lambda a1, a2: lax.cond(
+            a2 < a1,
+            lambda x: (x[0] - epsilon, x[1] + epsilon),
+            lambda x: (x[0] + epsilon, x[1] - epsilon),
+            (a1, a2)
+        ))(obstacle_first_edge_angles, obstacle_second_edge_angles)
+    obstacle_edge_angles = jnp.append(obstacle_first_edge_angles, obstacle_second_edge_angles)  # Shape: (2*n_obstacles*n_segments,)
+    ## Merge and sort all edge angles
+    all_edge_angles = jnp.concatenate((humans_edge_angles, obstacle_edge_angles))  # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
+    sorted_all_edge_angles = jnp.sort(all_edge_angles)
+    # Wrap around for midpoint computation
+    sorted_all_edge_angles = jnp.append(sorted_all_edge_angles, sorted_all_edge_angles[0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1,)
+    ### Compute midpoint angles between consecutive object endpoints
+    midpoint_angles = vmap(wrap_angle)((sorted_all_edge_angles[:-1] + sorted_all_edge_angles[1:]) / 2) # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
+    all_angles = jnp.concatenate((all_edge_angles, midpoint_angles)) # Shape: (4*n_humans + 4*n_obstacles*n_segments,)
+    ### Ray-cast all computed angles and assess visibility of all objects
+    distances, human_collision_idxs, obstacle_collision_idxs = env.batch_ray_cast(
+        all_angles,
+        jnp.array([0., 0.]),
+        humans_positions,
+        humans_radii,
+        static_obstacles
+    )
+    humans_visibility_mask = vmap(lambda idx: jnp.any(human_collision_idxs == idx))(jnp.arange(n_humans))  # Shape: (n_humans,)
+    @jit
+    def segment_visibility(obstacle_idx, segment_idx, obstacle_collision_idxs):
+        return jnp.any(jnp.all(obstacle_collision_idxs == jnp.array([obstacle_idx, segment_idx]), axis=1))
+    @jit
+    def obstacle_segments_visibility(obstacle_idx, segment_idxs, obstacle_collision_idxs):
+        return vmap(segment_visibility, in_axes=(None, 0, None))(obstacle_idx, segment_idxs, obstacle_collision_idxs)
+    obstacles_visibility_mask = vmap(obstacle_segments_visibility, in_axes=(0, None, None))(
+        jnp.arange(n_obstacles), 
+        jnp.arange(env.static_obstacles_per_scenario.shape[2]), 
+        obstacle_collision_idxs
+    ) # Shape: (n_obstacles, n_segments)
+    return humans_visibility_mask, obstacles_visibility_mask, all_angles, distances
+@jit
+def batch_object_visibility(batch_humans_positions, humans_radii, batch_static_obstacles):
+    return vmap(per_frame_object_visibility, in_axes=(0, None, 0))(batch_humans_positions, humans_radii, batch_static_obstacles)
+visible_humans_mask, visible_obstacles_mask, visibility_angles, visibility_distances = batch_object_visibility(
+    robot_centric_humans_positions,
+    data['humans_radii'],
+    robot_centric_static_obstacles,
+)
+
 ### Fit GMMs to humans positions at each timestep
+# TODO: avoid considering invisible humans in the GMM fitting
 @jit
 def fit_gmm_to_humans_positions(humans_position, humans_radii, grid_cells, scaling=0.01):
     humans_covariances = vmap(lambda r: (1 / r)**2 * jnp.eye(2))(humans_radii) * scaling
@@ -200,12 +280,13 @@ def fit_gmm_to_humans_positions(humans_position, humans_radii, grid_cells, scali
     }
     return fitted_distribution
 @jit
-def batch_fit_gmm_to_humans_positions(batch_humans_position, humans_radii, grid_cells, scaling=0.01):
-    return vmap(fit_gmm_to_humans_positions, in_axes=(0, None, None, None))(batch_humans_position, humans_radii, grid_cells, scaling)
+def batch_fit_gmm_to_humans_positions(batch_humans_positions, humans_radii, grid_cells, scaling=0.01):
+    return vmap(fit_gmm_to_humans_positions, in_axes=(0, None, None, None))(batch_humans_positions, humans_radii, grid_cells, scaling)
 dynamic_gmms = batch_fit_gmm_to_humans_positions(robot_centric_humans_positions, data["humans_radii"], grid_cells)
 dynamic_ps = vmap(gmm.batch_p, in_axes=(0, None))(dynamic_gmms, gmm_sample_points)
 
 ### Fit GMMs to static obstacles at each timestep
+# TODO: avoid considering invisible obstacles in the GMM fitting
 @jit
 def fit_gmm_to_obstacles(obstacles, grid_cells, scaling=0.01):
     # Compute closest points to each grid cell
@@ -328,10 +409,22 @@ def animate(frame):
         for o in robot_centric_static_obstacles[frame]: axs[0].fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
     else: # One segment obstacles
         for o in robot_centric_static_obstacles[frame]: axs[0].plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+    # Plot visibility rays
+    for angle, distance in zip(visibility_angles[frame], visibility_distances[frame]):
+        axs[0].plot(
+            [0, distance * jnp.cos(angle)],
+            [0, distance * jnp.sin(angle)],
+            color='blue',
+            linewidth=0.5,
+            alpha=0.3,
+            zorder=0,
+        )
     ## AXS[1] - Plot dynamic obstacles GMM
     # Plot humans positions
     for h in range(len(robot_centric_humans_positions[frame])):
-        circle = plt.Circle((robot_centric_humans_positions[frame][h,0], robot_centric_humans_positions[frame][h,1]), data['humans_radii'][h], color="red", fill=True, zorder=11, alpha=0.3)
+        color = "red" if visible_humans_mask[frame][h] else "grey"
+        alpha = 0.5 if visible_humans_mask[frame][h] else 0.2
+        circle = plt.Circle((robot_centric_humans_positions[frame][h,0], robot_centric_humans_positions[frame][h,1]), data['humans_radii'][h], color=color, fill=True, zorder=11, alpha=alpha)
         axs[1].add_patch(circle)
     # Plot color-coded GMM samples
     axs[1].scatter(
@@ -343,10 +436,12 @@ def animate(frame):
         zorder=10,
     )
     ## AXS[2] - Plot static obstacles GMM
-    if robot_centric_static_obstacles[frame].shape[1] > 1: # Polygon obstacles
-        for o in robot_centric_static_obstacles[frame]: axs[2].fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=11, alpha=0.3)
-    else: # One segment obstacles
-        for o in robot_centric_static_obstacles[frame]: axs[2].plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=11, alpha=0.3)
+    for i, o in enumerate(robot_centric_static_obstacles[frame]): 
+        for j, s in enumerate(o):
+            color = 'black' if visible_obstacles_mask[frame][i,j] else 'grey'
+            linestyle = 'solid' if visible_obstacles_mask[frame][i,j] else 'dashed'
+            alpha = 0.5 if visible_obstacles_mask[frame][i,j] else 0.2
+            axs[2].plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
     # Plot color-coded GMM samples
     axs[2].scatter(
         gmm_sample_points[:,0], 

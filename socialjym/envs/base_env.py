@@ -153,18 +153,70 @@ class BaseEnv(ABC):
     
     @partial(jit, static_argnames=("self"))
     def _batch_human_ray_intersect(self, direction:jnp.ndarray, human_positions:jnp.ndarray, lidar_position:jnp.ndarray, human_radiuses:float) -> jnp.ndarray:
-        return jnp.min(vmap(BaseEnv._human_ray_intersect, in_axes=(None,None,0,None,0))(self, direction, human_positions, lidar_position, human_radiuses))
+        humans_distances = vmap(BaseEnv._human_ray_intersect, in_axes=(None,None,0,None,0))(self, direction, human_positions, lidar_position, human_radiuses)
+        shortest_distance_index = jnp.argmin(humans_distances)
+        return humans_distances[shortest_distance_index], shortest_distance_index
 
     @partial(jit, static_argnames=("self"))
-    def _ray_cast(self, angle:float, lidar_position:jnp.ndarray, human_positions:jnp.ndarray, human_radiuses:jnp.ndarray) -> float:
-        # TODO: add obstacles ray casting
+    def _segment_ray_intersect(self, p1:jnp.ndarray, p2:jnp.ndarray, lidar_position:jnp.ndarray, direction:jnp.ndarray) -> float:
+        @jit
+        def _is_nan(_):
+            return self.lidar_max_dist
+        @jit
+        def _not_nan(data):
+            p1, p2, lidar_position, direction = data
+            v1 = lidar_position - p1
+            v2 = p2 - p1
+            v3 = jnp.array([-direction[1], direction[0]])
+            dot = jnp.dot(v2, v3)
+            t1 = jnp.cross(v2, v1) / dot
+            t2 = jnp.dot(v1, v3) / dot
+            distance = lax.cond(
+                (dot != 0) & (t1 >= 0) & (t2 >= 0) & (t2 <= 1),
+                lambda x: jnp.linalg.norm(direction * t1),
+                lambda x: self.lidar_max_dist,
+                None)
+            return distance
+        return lax.cond(
+            jnp.any(jnp.isnan(jnp.array([p1, p2]))),
+            _is_nan,
+            _not_nan,
+            (p1, p2, lidar_position, direction)
+        )
+    
+    @partial(jit, static_argnames=("self"))
+    def _obstacle_ray_intersect(self, direction:jnp.ndarray, obstacle:jnp.ndarray, lidar_position:jnp.ndarray) -> float:
+        distances = vmap(BaseEnv._segment_ray_intersect, in_axes=(None,0,0,None,None))(self, obstacle[:,0,:], obstacle[:,1,:], lidar_position, direction)
+        shortest_distance_index = jnp.argmin(distances)
+        return distances[shortest_distance_index], shortest_distance_index
+
+    @partial(jit, static_argnames=("self"))
+    def _batch_obstacle_ray_intersect(self, direction:jnp.ndarray, obstacles:jnp.ndarray, lidar_position:jnp.ndarray) -> float:
+        distances, collision_idxs = vmap(BaseEnv._obstacle_ray_intersect, in_axes=(None,None,0,None))(self, direction, obstacles, lidar_position)
+        shortest_distance_index = jnp.argmin(distances)
+        return distances[shortest_distance_index], jnp.array([shortest_distance_index, collision_idxs[shortest_distance_index]])
+
+    @partial(jit, static_argnames=("self"))
+    def _ray_cast(self, angle:float, lidar_position:jnp.ndarray, human_positions:jnp.ndarray, human_radiuses:jnp.ndarray, static_obstacles:jnp.ndarray) -> float:
         direction = jnp.array([jnp.cos(angle), jnp.sin(angle)])
-        measurement = self._batch_human_ray_intersect(direction, human_positions, lidar_position, human_radiuses)
-        return measurement
-
-    @partial(jit, static_argnames=("self"))
-    def _batch_ray_cast(self, angles:float, lidar_position:jnp.ndarray, human_positions:jnp.ndarray, human_radiuses:jnp.ndarray) -> jnp.ndarray:
-        return vmap(BaseEnv._ray_cast, in_axes=(None,0,None,None,None))(self, angles, lidar_position, human_positions, human_radiuses)
+        measurement1, human_collision_idx = self._batch_human_ray_intersect(direction, human_positions, lidar_position, human_radiuses)
+        measurement2, obstacles_collision_idx = self._batch_obstacle_ray_intersect(direction, static_obstacles, lidar_position)
+        min_dist = jnp.min(jnp.array([measurement1, measurement2]))
+        is_human_collision = (min_dist == measurement1)
+        # Compute final collision index
+        human_collision_idx = lax.cond(
+            is_human_collision,
+            lambda x: x,
+            lambda _: jnp.array(-1, dtype=jnp.int32),
+            human_collision_idx,
+        )
+        obstacle_collision_idx = lax.cond(
+            is_human_collision,
+            lambda _: jnp.array([-1, -1], dtype=jnp.int32),
+            lambda x: x,
+            obstacles_collision_idx,
+        )
+        return min_dist, human_collision_idx, obstacle_collision_idx
 
     @partial(jit, static_argnames=("self"))
     def _scenario_based_state_post_update(self, state:jnp.ndarray, info:dict):
@@ -439,6 +491,25 @@ class BaseEnv(ABC):
             if not callable(value):
                 params[key] = value
         return params
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_ray_cast(self, angles:float, lidar_position:jnp.ndarray, human_positions:jnp.ndarray, human_radiuses:jnp.ndarray, static_obstacles:jnp.ndarray) -> jnp.ndarray:
+        """
+        This function performs a batch ray cast for the given angles and lidar position.
+
+        args:
+        - angles (num_rays,): jnp.ndarray containing the angles of the rays.
+        - lidar_position (2,): jnp.ndarray containing the x and y coordinates of the lidar.
+        - human_positions (self.n_humans,2): jnp.ndarray containing the x and y coordinates of the humans.
+        - human_radiuses (self.n_humans,): jnp.ndarray containing the radius of the humans.
+        - static_obstacles (self.n_obstacles, m, 2, 2): jnp.ndarray containing the static obstacles as line segments (m is the number of segments per obstacle).
+
+        output:
+        - measurements (num_rays,): jnp.ndarray containing the distances of the rays.
+        - human_collision_idxs (num_rays,): jnp.ndarray containing the indexes of the humans collided by the rays (-1 if no collision).
+        - obstacle_collision_idxs (num_rays,2): jnp.ndarray containing the indexes of the obstacles and segments collided by the rays (-1 if no collision).
+        """
+        return vmap(BaseEnv._ray_cast, in_axes=(None,0,None,None,None,None))(self, angles, lidar_position, human_positions, human_radiuses, static_obstacles)
 
     @partial(jit, static_argnames=("self"))
     def get_lidar_measurements(
@@ -446,23 +517,26 @@ class BaseEnv(ABC):
         lidar_position:jnp.ndarray, 
         lidar_yaw:float,  
         human_positions:jnp.ndarray, 
-        human_radiuses:jnp.ndarray
+        human_radiuses:jnp.ndarray,
+        static_obstacles:jnp.ndarray
     ) -> jnp.ndarray:
         """
         Given the current state of the environment, the robot orientation and the additional information about the environment,
-        this function computes the lidar measurements of the robot.
+        this function computes the lidar measurements of the robot. The lidar measurements are given as a set of distances and angles (in the global frame) for each ray.
 
         args:
         - lidar_position (2,): jnp.ndarray containing the x and y coordinates of the lidar.
         - lidar_yaw (1,): float containing the orientation of the lidar.
         - human_positions (self.n_humans,2): jnp.ndarray containing the x and y coordinates of the humans.
         - human_radiuses (self.n_humans,): jnp.ndarray containing the radius of the humans.
+        - static_obstacles (self.n_obstacles, m, 2, 2): jnp.ndarray containing the static obstacles as line segments (m is the number of segments per obstacle).
 
         output:
-        - lidar_output (self.lidar_num_rays,2): jnp.ndarray containing the lidar measurements of the robot and the angle for each ray.
+        - lidar_output (self.lidar_num_rays,2): jnp.ndarray containing the lidar measurements of the robot and the angle (IN THE GLOBAL FRAME) for each ray.
+          WARNING: the angles are in the global frame, not in the robot frame.
         """
         angles = jnp.linspace(lidar_yaw - self.lidar_angular_range/2, lidar_yaw + self.lidar_angular_range/2, self.lidar_num_rays)
-        measurements = self._batch_ray_cast(angles, lidar_position, human_positions, human_radiuses)
+        measurements, _, _ = self.batch_ray_cast(angles, lidar_position, human_positions, human_radiuses, static_obstacles)
         lidar_output = jnp.stack((measurements, angles), axis=-1)
         return lidar_output
     
