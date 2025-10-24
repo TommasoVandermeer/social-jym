@@ -2,7 +2,7 @@ from jax import lax, jit, vmap, debug
 import jax.numpy as jnp
 from functools import partial
 
-from socialjym.utils.cell_decompositions.utils import get_grid_map_center, is_cell_occupied
+from socialjym.utils.cell_decompositions.utils import get_grid_map_center, is_cell_occupied, edge_intersects_cell
 
 def decompose(min_cell_size, map_size, map_center, obstacles):
     """
@@ -70,18 +70,38 @@ def decompose(min_cell_size, map_size, map_center, obstacles):
     # Compute edges matrix
     @jit
     def _are_adjacent(cell1, cell2, eps=1e-5):
-        center1, size1 = cell1[:2], cell1[2:]
-        center2, size2 = cell2[:2], cell2[2:]
-        half_size1 = size1 / 2.
-        half_size2 = size2 / 2.
-        dx = jnp.abs(center1[0] - center2[0])
-        dy = jnp.abs(center1[1] - center2[1])
-        adjacent_x = (dy + eps < (half_size1[1] + half_size2[1])) & jnp.allclose(dx, half_size1[0] + half_size2[0])
-        adjacent_y = (dx + eps < (half_size1[0] + half_size2[0])) & jnp.allclose(dy, half_size1[1] + half_size2[1])
+        ### Place edge only on adjacent cells
+        # center1, size1 = cell1[:2], cell1[2:]
+        # center2, size2 = cell2[:2], cell2[2:]
+        # half_size1 = size1 / 2.
+        # half_size2 = size2 / 2.
+        # dx = jnp.abs(center1[0] - center2[0])
+        # dy = jnp.abs(center1[1] - center2[1])
+        # adjacent_x = (dy + eps < (half_size1[1] + half_size2[1])) & jnp.allclose(dx, half_size1[0] + half_size2[0])
+        # adjacent_y = (dx + eps < (half_size1[0] + half_size2[0])) & jnp.allclose(dy, half_size1[1] + half_size2[1])
+        # return lax.cond(
+        #     ~jnp.array_equal(cell1, cell2) & (adjacent_x | adjacent_y),
+        #     lambda _: jnp.sqrt(dx**2 + dy**2),
+        #     lambda _: jnp.inf,
+        #     None
+        # )
+        ### Place edge between all cells whose centers connection does not cross occupied cells
+        center1, _ = cell1[:2], cell1[2:]
+        center2, _ = cell2[:2], cell2[2:]
+        is_intersecting = jnp.any(vmap(edge_intersects_cell, in_axes=(None, None, None, None, 0,0,0,0))(
+            center1[0], 
+            center1[1], 
+            center2[0], 
+            center2[1],
+            occupied_cells[:,0] - occupied_cells[:,2]/2.,
+            occupied_cells[:,0] + occupied_cells[:,2]/2.,
+            occupied_cells[:,1] - occupied_cells[:,3]/2.,
+            occupied_cells[:,1] + occupied_cells[:,3]/2.,
+        ))
         return lax.cond(
-            ~jnp.array_equal(cell1, cell2) & (adjacent_x | adjacent_y),
-            lambda _: jnp.sqrt(dx**2 + dy**2),
-            lambda _: 0.,
+            ~jnp.array_equal(cell1, cell2) & (~is_intersecting),
+            lambda _: jnp.linalg.norm(center1 - center2),
+            lambda _: jnp.inf,
             None
         )
     @jit

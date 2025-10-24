@@ -9,7 +9,7 @@ from socialjym.utils.cell_decompositions.quadtree import decompose
 from socialjym.utils.cell_decompositions.utils import get_grid_map_center
 
 ### Parameters
-scenario = 'robot_crowding'
+scenario = 'circular_crossing'
 
 ### Build quadtree map 
 env_params = {
@@ -66,6 +66,6 @@ for cell in occupied_cells:
 # Plot adjacency edges
 for x, from_cell in enumerate(free_cells):
     for y, to_cell in enumerate(free_cells):
-        if edges[x, y] > 0:
+        if edges[x, y] < jnp.inf:
             plt.plot([from_cell[0], to_cell[0]], [from_cell[1], to_cell[1]], color='blue', linewidth=0.5, zorder=5)
 plt.show()
