@@ -8,7 +8,6 @@ import pickle
 
 from jhsfm.hsfm import vectorized_compute_obstacle_closest_point
 from socialjym.utils.distributions.gaussian_mixture_model import GMM
-from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
 from socialjym.utils.aux_functions import animate_trajectory
@@ -18,6 +17,7 @@ from socialjym.policies.dir_safe import DIRSAFE
 random_seed = 0
 grid_resolution = 10  # Number of grid cells per dimension
 n_samples_per_dim = 50 # Number of GMM sample points per dimension to show in the animation
+p_visualization_threshold = 0.01 # Probability density threshold for visualization in GMM plots
 save = False # Whether to save the animation as a .mp4 file
 ## Environment
 robot_radius = 0.3
@@ -157,7 +157,7 @@ robot_centric_static_obstacles = batch_roto_translate_obstacles(
 
 ### Assess object visibility (static and dynamic obstacles) from robot perspective and mask out invisible ones (on a per-frame basis)
 @jit
-def per_frame_object_visibility(humans_positions, humans_radii, static_obstacles, epsilon=1e-6):
+def per_frame_object_visibility(humans_positions, humans_radii, static_obstacles, epsilon=1e-5):
     """
     Assess which humans and static obstacles are visible from the robot's perspective.
 
@@ -176,24 +176,20 @@ def per_frame_object_visibility(humans_positions, humans_radii, static_obstacles
     ## Humans
     humans_versors = humans_positions / jnp.linalg.norm(humans_positions, axis=1, keepdims=True)  # Shape: (n_humans, 2)
     left_versors = humans_versors @ jnp.array([[0, 1], [-1, 0]])  # Rotate by +90 degrees
-    right_versors = humans_versors @ jnp.array([[0, -1], [1, 0]])  # Rotate by -90 degrees
-    humans_left_edge_points = humans_positions + humans_radii[:, None] * (left_versors)  # Shape: (n_humans, 2)
-    humans_right_edge_points = humans_positions + humans_radii[:, None] * right_versors  # Shape: (n_humans, 2)
-    humans_left_angles = vmap(wrap_angle)(jnp.arctan2(humans_left_edge_points[:,1], humans_left_edge_points[:,0]) - epsilon) # Shape: (n_humans,)
-    humans_right_angles = vmap(wrap_angle)(jnp.arctan2(humans_right_edge_points[:,1], humans_right_edge_points[:,0]) + epsilon) # Shape: (n_humans,)
+    humans_left_edge_points = humans_positions + (humans_radii[:, None] - epsilon) * left_versors  # Shape: (n_humans, 2)
+    humans_right_edge_points = humans_positions - (humans_radii[:, None] - epsilon) * left_versors  # Shape: (n_humans, 2)
+    humans_left_angles = jnp.arctan2(humans_left_edge_points[:,1], humans_left_edge_points[:,0]) # Shape: (n_humans,)
+    humans_right_angles = jnp.arctan2(humans_right_edge_points[:,1], humans_right_edge_points[:,0]) # Shape: (n_humans,)
     humans_edge_angles = jnp.concatenate((humans_left_angles, humans_right_angles))  # Shape: (2*n_humans,)
     ## Obstacles
     obstacle_segments = static_obstacles.reshape((n_obstacles*env.static_obstacles_per_scenario.shape[2], 2, 2))  # Shape: (n_obstacles*n_segments, 2, 2)
     obstacle_first_edge_points = obstacle_segments[:,0,:]  # Shape: (n_obstacles*n_segments, 2)
     obstacle_second_edge_points = obstacle_segments[:,1,:]  # Shape: (n_obstacles*n_segments, 2)
-    obstacle_first_edge_angles = vmap(wrap_angle)(jnp.arctan2(obstacle_first_edge_points[:,1], obstacle_first_edge_points[:,0]))  # Shape: (n_obstacles*n_segments,)
-    obstacle_second_edge_angles = vmap(wrap_angle)(jnp.arctan2(obstacle_second_edge_points[:,1], obstacle_second_edge_points[:,0]))  # Shape: (n_obstacles*n_segments,)
-    obstacle_first_edge_angles, obstacle_second_edge_angles = vmap(lambda a1, a2: lax.cond(
-            a2 < a1,
-            lambda x: (x[0] - epsilon, x[1] + epsilon),
-            lambda x: (x[0] + epsilon, x[1] - epsilon),
-            (a1, a2)
-        ))(obstacle_first_edge_angles, obstacle_second_edge_angles)
+    first_to_second_versors = obstacle_second_edge_points - obstacle_first_edge_points / jnp.linalg.norm(obstacle_second_edge_points - obstacle_first_edge_points, axis=1, keepdims=True)  # Shape: (n_obstacles*n_segments, 2)
+    obstacle_first_edge_points = obstacle_first_edge_points + (epsilon * first_to_second_versors)  # Shape: (n_obstacles*n_segments, 2)
+    obstacle_second_edge_points = obstacle_second_edge_points - (epsilon * first_to_second_versors)  # Shape: (n_obstacles*n_segments, 2)
+    obstacle_first_edge_angles = jnp.arctan2(obstacle_first_edge_points[:,1], obstacle_first_edge_points[:,0])  # Shape: (n_obstacles*n_segments,)
+    obstacle_second_edge_angles = jnp.arctan2(obstacle_second_edge_points[:,1], obstacle_second_edge_points[:,0])  # Shape: (n_obstacles*n_segments,)
     obstacle_edge_angles = jnp.append(obstacle_first_edge_angles, obstacle_second_edge_angles)  # Shape: (2*n_obstacles*n_segments,)
     ## Merge and sort all edge angles
     all_edge_angles = jnp.concatenate((humans_edge_angles, obstacle_edge_angles))  # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
@@ -201,9 +197,12 @@ def per_frame_object_visibility(humans_positions, humans_radii, static_obstacles
     # Wrap around for midpoint computation
     sorted_all_edge_angles = jnp.append(sorted_all_edge_angles, sorted_all_edge_angles[0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1,)
     ### Compute midpoint angles between consecutive object endpoints
-    midpoint_angles = vmap(wrap_angle)((sorted_all_edge_angles[:-1] + sorted_all_edge_angles[1:]) / 2) # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
+    sorted_all_verors = jnp.array([jnp.cos(sorted_all_edge_angles), jnp.sin(sorted_all_edge_angles)]).T  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1, 2)
+    midpoint_verors = (sorted_all_verors[:-1] + sorted_all_verors[1:])  # Shape: (2*n_humans + 2*n_obstacles*n_segments, 2)
+    midpoint_verors = midpoint_verors / jnp.linalg.norm(midpoint_verors, axis=1, keepdims=True)  # Normalize
+    midpoint_angles = jnp.arctan2(midpoint_verors[:,1], midpoint_verors[:,0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
     all_angles = jnp.concatenate((all_edge_angles, midpoint_angles)) # Shape: (4*n_humans + 4*n_obstacles*n_segments,)
-    ### Ray-cast all computed angles and assess visibility of all objects
+    ### Ray-cast all computed angles and assess visibility of all objects (human_collision_idxs shape: (n_rays,), obstacle_collision_idxs shape: (n_rays, 2))
     distances, human_collision_idxs, obstacle_collision_idxs = env.batch_ray_cast(
         all_angles,
         jnp.array([0., 0.]),
@@ -234,13 +233,12 @@ visible_humans_mask, visible_obstacles_mask, visibility_angles, visibility_dista
 )
 
 ### Fit GMMs to humans positions at each timestep
-# TODO: avoid considering invisible humans in the GMM fitting
 @jit
-def fit_gmm_to_humans_positions(humans_position, humans_radii, grid_cells, scaling=0.01):
+def fit_gmm_to_humans_positions(humans_position, humans_visibility, humans_radii, grid_cells, scaling=0.01):
     humans_covariances = vmap(lambda r: (1 / r)**2 * jnp.eye(2))(humans_radii) * scaling
     # Compute the target per-cell weights for each grid cell
     @jit
-    def softweight_human_cell(human_pos, human_radius, human_cov, cell):
+    def softweight_human_cell(human_pos, human_visibility, human_radius, human_cov, cell):
         """Compute the soft weight of a human for a grid cell based on a Gaussian distribution."""
         diff = cell - human_pos
         diff = lax.cond(
@@ -251,44 +249,62 @@ def fit_gmm_to_humans_positions(humans_position, humans_radii, grid_cells, scali
         )
         exponent = -0.5 * jnp.dot(diff, jnp.linalg.solve(human_cov, diff))
         norm_const = jnp.sqrt((2 * jnp.pi) ** len(human_pos) * jnp.linalg.det(human_cov))
-        return jnp.exp(exponent) / norm_const
-    softweight_human_cells = jit(vmap(softweight_human_cell, in_axes=(None, None, None, 0)))
-    batch_softweight_human_cells = jit(vmap(softweight_human_cells, in_axes=(0, 0, 0, None)))
-    humans_weights_per_cell = batch_softweight_human_cells(humans_position, humans_radii, humans_covariances, grid_cells)
+        softweight = lax.cond(
+            human_visibility,
+            lambda _: jnp.exp(exponent) / norm_const,
+            lambda _: 0.0,
+            operand=None
+        )
+        return softweight
+    softweight_human_cells = jit(vmap(softweight_human_cell, in_axes=(None, None, None, None, 0)))
+    batch_softweight_human_cells = jit(vmap(softweight_human_cells, in_axes=(0, 0, 0, 0, None)))
+    humans_weights_per_cell = batch_softweight_human_cells(humans_position, humans_visibility, humans_radii, humans_covariances, grid_cells)
     cell_weights = jnp.sum(humans_weights_per_cell, axis=0)
     norm_cell_weights = cell_weights / (jnp.sum(cell_weights) + 1e-8)
     # Compute the target per-cell covariance
     norm_humans_weights_per_cell = humans_weights_per_cell / (jnp.sum(humans_weights_per_cell, axis=1, keepdims=True) + 1e-8)
     @jit
-    def human_weighted_covariance(human_pos, human_cov, cell, weight):
+    def human_weighted_variance(human_pos, human_visibility, human_cov, cell, weight):
         diff = cell - human_pos
         outer_prod = jnp.outer(diff, diff)
-        return jnp.diag(weight * (human_cov + outer_prod))
-    batch_human_weighted_covariances = jit(vmap(human_weighted_covariance, in_axes=(0, 0, None, 0)))
-    batch_cells_human_weighted_covariances = jit(vmap(lambda hp, hc, gc, hw: jnp.sum(batch_human_weighted_covariances(hp, hc, gc, hw), axis=0), in_axes=(None, None, 0, 0)))
-    human_weighted_covariances_per_cell = batch_cells_human_weighted_covariances(
-        humans_position, 
-        humans_covariances, 
-        grid_cells, 
+        weighted_variance = lax.cond(
+            human_visibility,
+            lambda _: jnp.diag(weight * (human_cov + outer_prod)),
+            lambda _: jnp.zeros((2,)),
+            operand=None
+        )
+        return weighted_variance
+    batch_human_weighted_variances = jit(vmap(human_weighted_variance, in_axes=(0, 0, 0, None, 0)))
+    batch_cells_human_weighted_variances = jit(vmap(lambda hp, hv, hc, gc, hw: jnp.sum(batch_human_weighted_variances(hp, hv, hc, gc, hw), axis=0), in_axes=(None, None, None, 0, 0)))
+    human_weighted_variances_per_cell = batch_cells_human_weighted_variances(
+        humans_position,
+        humans_visibility,
+        humans_covariances,
+        grid_cells,
         norm_humans_weights_per_cell.T
     )
     # Initialize fitted distribution
     fitted_distribution = {
         "means": grid_cells,
-        "variances": human_weighted_covariances_per_cell,
+        "variances": human_weighted_variances_per_cell,
         "weights": norm_cell_weights,
     }
     return fitted_distribution
 @jit
-def batch_fit_gmm_to_humans_positions(batch_humans_positions, humans_radii, grid_cells, scaling=0.01):
-    return vmap(fit_gmm_to_humans_positions, in_axes=(0, None, None, None))(batch_humans_positions, humans_radii, grid_cells, scaling)
-dynamic_gmms = batch_fit_gmm_to_humans_positions(robot_centric_humans_positions, data["humans_radii"], grid_cells)
+def batch_fit_gmm_to_humans_positions(batch_humans_positions, batch_humans_visibility, humans_radii, grid_cells, scaling=0.01):
+    return vmap(fit_gmm_to_humans_positions, in_axes=(0, 0, None, None, None))(batch_humans_positions, batch_humans_visibility, humans_radii, grid_cells, scaling)
+dynamic_gmms = batch_fit_gmm_to_humans_positions(robot_centric_humans_positions, visible_humans_mask, data["humans_radii"], grid_cells)
 dynamic_ps = vmap(gmm.batch_p, in_axes=(0, None))(dynamic_gmms, gmm_sample_points)
 
 ### Fit GMMs to static obstacles at each timestep
-# TODO: avoid considering invisible obstacles in the GMM fitting
 @jit
-def fit_gmm_to_obstacles(obstacles, grid_cells, scaling=0.01):
+def fit_gmm_to_obstacles(obstacles, obstacles_visibility, grid_cells, scaling=0.01):
+    # Substitute invisible edges with nan to avoid computing closest points on them
+    obstacles = jnp.where(
+        ~obstacles_visibility[:,:,None,None],
+        jnp.nan,
+        obstacles
+    )
     # Compute closest points to each grid cell
     closest_points = jit(vmap(vectorized_compute_obstacle_closest_point, in_axes=(0, None)))( # Shape: (n_grid_cells, n_obstacles, 2)
         grid_cells,
@@ -298,17 +314,26 @@ def fit_gmm_to_obstacles(obstacles, grid_cells, scaling=0.01):
     @jit
     def softweight_obstacle_cell(obstacle_pos, cell):
         """Compute the soft weight of an obstacle for a grid cell based on a Gaussian distribution."""
-        diff = cell - obstacle_pos
-        diff = lax.cond(
-            jnp.linalg.norm(diff) > 0.3,
-            lambda d: d - 0.3 * d / jnp.linalg.norm(d),
-            lambda d: jnp.zeros_like(d),
-            diff
+        @jit
+        def _not_nan(x):
+            obstacle_pos, cell = x
+            diff = cell - obstacle_pos
+            diff = lax.cond(
+                jnp.linalg.norm(diff) > 0.3,
+                lambda d: d - 0.3 * d / jnp.linalg.norm(d),
+                lambda d: jnp.zeros_like(d),
+                diff
+            )
+            obstacle_cov = jnp.eye(2) * scaling
+            exponent = -0.5 * jnp.dot(diff, jnp.linalg.solve(obstacle_cov, diff))
+            norm_const = jnp.sqrt((2 * jnp.pi) ** len(obstacle_pos) * jnp.linalg.det(obstacle_cov))
+            return jnp.exp(exponent) / norm_const
+        return lax.cond(
+            jnp.any(jnp.isnan(obstacle_pos)),
+            lambda _: 0.0,
+            _not_nan,
+            operand=(obstacle_pos, cell)
         )
-        obstacle_cov = jnp.eye(2) * scaling
-        exponent = -0.5 * jnp.dot(diff, jnp.linalg.solve(obstacle_cov, diff))
-        norm_const = jnp.sqrt((2 * jnp.pi) ** len(obstacle_pos) * jnp.linalg.det(obstacle_cov))
-        return jnp.exp(exponent) / norm_const
     softweight_obstacle_cells = jit(vmap(softweight_obstacle_cell, in_axes=(0, 0)))
     batch_softweight_obstacle_cells = jit(vmap(softweight_obstacle_cells, in_axes=(1, None)))
     obstacles_weights_per_cell = batch_softweight_obstacle_cells(
@@ -320,28 +345,37 @@ def fit_gmm_to_obstacles(obstacles, grid_cells, scaling=0.01):
     # Compute the target per-cell covariance
     norm_obstacles_weights_per_cell = obstacles_weights_per_cell / (jnp.sum(obstacles_weights_per_cell, axis=1, keepdims=True) + 1e-8)
     @jit
-    def obstacles_weighted_covariance(obstacle_pos, cell, weight):
-        diff = cell - obstacle_pos
-        obstacle_cov = jnp.eye(2) * scaling
-        outer_prod = jnp.outer(diff, diff)
-        return jnp.diag(weight * (obstacle_cov + outer_prod))
-    batch_obstacles_weighted_covariances = jit(vmap(obstacles_weighted_covariance, in_axes=(0, None, 0)))
-    batch_cells_obstacles_weighted_covariances = jit(vmap(lambda op, gc, ow: jnp.sum(batch_obstacles_weighted_covariances(op, gc, ow), axis=0), in_axes=(0, 0, 0)))
-    obstacles_weighted_covariances_per_cell = batch_cells_obstacles_weighted_covariances(
-        closest_points, 
-        grid_cells, 
+    def obstacles_weighted_variance(obstacle_pos, cell, weight):
+        @jit
+        def _not_nan(x):
+            obstacle_pos, cell, weight = x
+            diff = cell - obstacle_pos
+            obstacle_cov = jnp.eye(2) * scaling
+            outer_prod = jnp.outer(diff, diff)
+            return jnp.diag(weight * (obstacle_cov + outer_prod))
+        return lax.cond(
+            jnp.any(jnp.isnan(obstacle_pos)),
+            lambda _: jnp.zeros((2,)),
+            _not_nan,
+            operand=(obstacle_pos, cell, weight)
+        )
+    batch_obstacles_weighted_variances = jit(vmap(obstacles_weighted_variance, in_axes=(0, None, 0)))
+    batch_cells_obstacles_weighted_variances = jit(vmap(lambda op, gc, ow: jnp.sum(batch_obstacles_weighted_variances(op, gc, ow), axis=0), in_axes=(0, 0, 0)))
+    obstacles_weighted_variances_per_cell = batch_cells_obstacles_weighted_variances(
+        closest_points,
+        grid_cells,
         norm_obstacles_weights_per_cell.T
     )
     # Initialize fitted distribution
     fitted_distribution = {
         "means": grid_cells,
-        "variances": obstacles_weighted_covariances_per_cell,
+        "variances": obstacles_weighted_variances_per_cell,
         "weights": norm_cell_weights,
     }
     return fitted_distribution
-def batch_fit_gmm_to_obstacles(batch_obstacles, grid_cells, scaling=0.01):
-    return vmap(fit_gmm_to_obstacles, in_axes=(0, None, None))(batch_obstacles, grid_cells, scaling)
-static_gmms = batch_fit_gmm_to_obstacles(robot_centric_static_obstacles, grid_cells)
+def batch_fit_gmm_to_obstacles(batch_obstacles, batch_obstacle_visibility, grid_cells, scaling=0.01):
+    return vmap(fit_gmm_to_obstacles, in_axes=(0, 0, None, None))(batch_obstacles, batch_obstacle_visibility, grid_cells, scaling)
+static_gmms = batch_fit_gmm_to_obstacles(robot_centric_static_obstacles, visible_obstacles_mask, grid_cells)
 static_ps = vmap(gmm.batch_p, in_axes=(0, None))(static_gmms, gmm_sample_points)
 
 ### Animation with 3 views: robot-centred simulation view (with grid, humans, obstacles), dynamic obstacles GMM view, static obstacles GMM view
@@ -368,13 +402,14 @@ scenarios_titles = [
 # Fit GMM to dynamic obstacles (humans) positions
 fig, axs = plt.subplots(1, 3, figsize=(19.21,11.22))
 fig.suptitle(f"{scenarios_titles[info['current_scenario']]}\n{n_humans} {humans_policy}-driven humans - {n_obstacles} obstacles", fontsize=35)
-fig.subplots_adjust(right=0.99, left=0.04, top=0.85, bottom=0.05, wspace=0.13)
+fig.subplots_adjust(right=0.99, left=0.04, top=0.85, bottom=0.15, wspace=0.)
 ax_titles = ["Robot-centric simulation", "Dynamic obstacles GMM", "Static obstacles GMM"]
 for i, ax in enumerate(axs):
     ax.set_title(ax_titles[i])
     ax.set(xlim=[-7,7],ylim=[-7,7])
     ax.set_xlabel('X')
-    ax.set_ylabel('Y', labelpad=-13)
+    if i == 0: ax.set_ylabel('Y', labelpad=-13)
+    else: ax.set_yticks([], labels=[])
     ax.set_aspect('equal', adjustable='box')
 def animate(frame):
     # Reset axes
@@ -383,7 +418,8 @@ def animate(frame):
         ax.set_title(ax_titles[i])
         ax.set(xlim=[-7,7],ylim=[-7,7])
         ax.set_xlabel('X')
-        ax.set_ylabel('Y', labelpad=-13)
+        if i == 0: ax.set_ylabel('Y', labelpad=-13)
+        else: ax.set_yticks([], labels=[])
         ax.set_aspect('equal', adjustable='box')
         for cell_center in grid_cells:
             rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
@@ -419,38 +455,57 @@ def animate(frame):
             alpha=0.3,
             zorder=0,
         )
+    # Legend
+    robot_legend = plt.Line2D([0], [0], marker='o', color='w', label='Robot', markerfacecolor='red', markeredgecolor='black', markersize=15)
+    human_legend = plt.Line2D([0], [0], marker='o', color='w', label='Humans', markerfacecolor='white', markeredgecolor='black', markersize=15)
+    goal_legend = plt.Line2D([0], [0], marker='*', color='w', label='Goal', markerfacecolor='red', markeredgecolor='red', markersize=10)
+    obstacle_legend = plt.Line2D([0], [0], color='black', lw=2, label='Obstacles')
+    visibility_lines_legend = plt.Line2D([0], [0], color='blue', lw=1, label='Visibility rays')
+    axs[0].legend(handles=[robot_legend, human_legend, goal_legend, obstacle_legend, visibility_lines_legend], loc='upper center', bbox_to_anchor=(0.5, -0.125), fontsize=15)
     ## AXS[1] - Plot dynamic obstacles GMM
     # Plot humans positions
     for h in range(len(robot_centric_humans_positions[frame])):
         color = "red" if visible_humans_mask[frame][h] else "grey"
-        alpha = 0.5 if visible_humans_mask[frame][h] else 0.2
+        alpha = 0.5 if visible_humans_mask[frame][h] else 0.3
         circle = plt.Circle((robot_centric_humans_positions[frame][h,0], robot_centric_humans_positions[frame][h,1]), data['humans_radii'][h], color=color, fill=True, zorder=11, alpha=alpha)
         axs[1].add_patch(circle)
     # Plot color-coded GMM samples
+    points_high_p = gmm_sample_points[dynamic_ps[frame] > p_visualization_threshold]
+    corresponding_colors = dynamic_ps[frame][dynamic_ps[frame] > p_visualization_threshold]
     axs[1].scatter(
-        gmm_sample_points[:,0], 
-        gmm_sample_points[:,1],
+        points_high_p[:,0], 
+        points_high_p[:,1],
         s=8,
-        c=dynamic_ps[frame],
+        c=corresponding_colors,
         cmap='viridis',
         zorder=10,
     )
+    # Legend
+    visible_human_legend = plt.Line2D([0], [0], marker='o', color='w', label='Visible humans', markerfacecolor='red', markeredgecolor='red', markersize=15, alpha=0.5)
+    invisible_human_legend = plt.Line2D([0], [0], marker='o', color='w', label='Invisible humans', markerfacecolor='grey', markeredgecolor='grey', markersize=15, alpha=0.3)
+    axs[1].legend(handles=[visible_human_legend, invisible_human_legend], loc='upper center', bbox_to_anchor=(0.5, -0.125), fontsize=15)
     ## AXS[2] - Plot static obstacles GMM
     for i, o in enumerate(robot_centric_static_obstacles[frame]): 
         for j, s in enumerate(o):
             color = 'black' if visible_obstacles_mask[frame][i,j] else 'grey'
             linestyle = 'solid' if visible_obstacles_mask[frame][i,j] else 'dashed'
-            alpha = 0.5 if visible_obstacles_mask[frame][i,j] else 0.2
+            alpha = 0.5 if visible_obstacles_mask[frame][i,j] else 0.3
             axs[2].plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
     # Plot color-coded GMM samples
+    points_high_p = gmm_sample_points[static_ps[frame] > p_visualization_threshold]
+    corresponding_colors = static_ps[frame][static_ps[frame] > p_visualization_threshold]
     axs[2].scatter(
-        gmm_sample_points[:,0], 
-        gmm_sample_points[:,1],
+        points_high_p[:,0], 
+        points_high_p[:,1],
         s=8,
-        c=static_ps[frame],
+        c=corresponding_colors,
         cmap='viridis',
         zorder=10,
     )
+    # Legend
+    visible_obstacle_legend = plt.Line2D([0], [0], color='black', lw=2, label='Visible obstacles', alpha=0.5)
+    invisible_obstacle_legend = plt.Line2D([0], [0], color='grey', lw=2, label='Invisible obstacles', alpha=0.3, linestyle='dashed')
+    axs[2].legend(handles=[visible_obstacle_legend, invisible_obstacle_legend], loc='upper center', bbox_to_anchor=(0.5, -0.125), fontsize=15)
 anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(all_states))
 if save:
     save_path = os.path.join(os.path.dirname(__file__), f'target_gmms_{scenario}_{n_humans}humans_{n_obstacles}obstacles.mp4')
