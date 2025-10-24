@@ -133,7 +133,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'path_to_goal.pkl'
         ax.add_patch(rect)
     for x, from_cell in enumerate(free_cells):
         for y, to_cell in enumerate(free_cells):
-            if edges[x, y] > 0:
+            if edges[x, y] < jnp.inf:
                 plt.plot([from_cell[0], to_cell[0]], [from_cell[1], to_cell[1]], color='blue', linewidth=0.5, zorder=5)
     ax.set
     plt.show()
