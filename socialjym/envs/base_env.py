@@ -202,21 +202,30 @@ class BaseEnv(ABC):
         measurement1, human_collision_idx = self._batch_human_ray_intersect(direction, human_positions, lidar_position, human_radiuses)
         measurement2, obstacles_collision_idx = self._batch_obstacle_ray_intersect(direction, static_obstacles, lidar_position)
         min_dist = jnp.min(jnp.array([measurement1, measurement2]))
-        is_human_collision = (min_dist == measurement1)
         # Compute final collision index
-        human_collision_idx = lax.cond(
-            is_human_collision,
-            lambda x: x,
-            lambda _: jnp.array(-1, dtype=jnp.int32),
-            human_collision_idx,
+        @jit
+        def _collided(x):
+            min_dist, measurement1, human_collision_idx, obstacles_collision_idx = x
+            is_human_collision = (min_dist == measurement1)
+            human_collision_idx = lax.cond(
+                is_human_collision,
+                lambda x: x,
+                lambda _: jnp.array(-1, dtype=jnp.int32),
+                human_collision_idx,
+            )
+            obstacle_collision_idx = lax.cond(
+                is_human_collision,
+                lambda _: jnp.array([-1, -1], dtype=jnp.int32),
+                lambda x: x,
+                obstacles_collision_idx,
+            )
+            return min_dist, human_collision_idx, obstacle_collision_idx
+        return lax.cond(
+            min_dist < self.lidar_max_dist,
+            _collided,
+            lambda x: (x[0], jnp.array(-1, dtype=jnp.int32), jnp.array([-1, -1], dtype=jnp.int32)),
+            (min_dist, measurement1, human_collision_idx, obstacles_collision_idx)
         )
-        obstacle_collision_idx = lax.cond(
-            is_human_collision,
-            lambda _: jnp.array([-1, -1], dtype=jnp.int32),
-            lambda x: x,
-            obstacles_collision_idx,
-        )
-        return min_dist, human_collision_idx, obstacle_collision_idx
 
     @partial(jit, static_argnames=("self"))
     def _scenario_based_state_post_update(self, state:jnp.ndarray, info:dict):

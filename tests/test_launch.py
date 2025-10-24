@@ -34,6 +34,7 @@ env_params = {
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
+    'lidar_num_rays': 180,
 }
 
 # Initialize and reset environment
