@@ -234,65 +234,36 @@ visible_humans_mask, visible_obstacles_mask, visibility_angles, visibility_dista
 
 ### Fit GMMs to humans positions at each timestep
 @jit
-def fit_gmm_to_humans_positions(humans_position, humans_visibility, humans_radii, grid_cells, scaling=0.01):
-    humans_covariances = vmap(lambda r: (1 / r)**2 * jnp.eye(2))(humans_radii) * scaling
-    # Compute the target per-cell weights for each grid cell
+def fit_gmm_to_humans_positions(humans_position, humans_visibility, humans_radii, grid_cells, tau=0.2):
     @jit
-    def softweight_human_cell(human_pos, human_visibility, human_radius, human_cov, cell):
-        """Compute the soft weight of a human for a grid cell based on a Gaussian distribution."""
-        diff = cell - human_pos
-        diff = lax.cond(
-            jnp.linalg.norm(diff) > human_radius,
-            lambda d: d - human_radius * d / jnp.linalg.norm(d),
-            lambda d: jnp.zeros_like(d),
-            diff
-        )
-        exponent = -0.5 * jnp.dot(diff, jnp.linalg.solve(human_cov, diff))
-        norm_const = jnp.sqrt((2 * jnp.pi) ** len(human_pos) * jnp.linalg.det(human_cov))
-        softweight = lax.cond(
+    def softweight_human_cell(human_pos, human_visibility, human_radius, cell):
+        @jit
+        def _human_visible(data):
+            human_pos, human_radius, cell = data
+            dist = jnp.linalg.norm(cell - human_pos) - human_radius
+            dist = lax.cond(dist < 0,lambda _: 0.0,lambda d: d,dist)
+            return jnp.exp(-dist**2/(2*tau**2))
+        return lax.cond(
             human_visibility,
-            lambda _: jnp.exp(exponent) / norm_const,
+            _human_visible,
             lambda _: 0.0,
-            operand=None
+            operand=(human_pos, human_radius, cell)
         )
-        return softweight
-    softweight_human_cells = jit(vmap(softweight_human_cell, in_axes=(None, None, None, None, 0)))
-    batch_softweight_human_cells = jit(vmap(softweight_human_cells, in_axes=(0, 0, 0, 0, None)))
-    humans_weights_per_cell = batch_softweight_human_cells(humans_position, humans_visibility, humans_radii, humans_covariances, grid_cells)
-    cell_weights = jnp.sum(humans_weights_per_cell, axis=0)
-    norm_cell_weights = cell_weights / (jnp.sum(cell_weights) + 1e-8)
-    # Compute the target per-cell covariance
-    norm_humans_weights_per_cell = humans_weights_per_cell / (jnp.sum(humans_weights_per_cell, axis=1, keepdims=True) + 1e-8)
-    @jit
-    def human_weighted_variance(human_pos, human_visibility, human_cov, cell, weight):
-        diff = cell - human_pos
-        outer_prod = jnp.outer(diff, diff)
-        weighted_variance = lax.cond(
-            human_visibility,
-            lambda _: jnp.diag(weight * (human_cov + outer_prod)),
-            lambda _: jnp.zeros((2,)),
-            operand=None
-        )
-        return weighted_variance
-    batch_human_weighted_variances = jit(vmap(human_weighted_variance, in_axes=(0, 0, 0, None, 0)))
-    batch_cells_human_weighted_variances = jit(vmap(lambda hp, hv, hc, gc, hw: jnp.sum(batch_human_weighted_variances(hp, hv, hc, gc, hw), axis=0), in_axes=(None, None, None, 0, 0)))
-    human_weighted_variances_per_cell = batch_cells_human_weighted_variances(
-        humans_position,
-        humans_visibility,
-        humans_covariances,
-        grid_cells,
-        norm_humans_weights_per_cell.T
-    )
-    # Initialize fitted distribution
+    softweight_human_cells = jit(vmap(softweight_human_cell, in_axes=(None, None, None, 0)))
+    batch_softweight_human_cells = jit(vmap(softweight_human_cells, in_axes=(0, 0, 0, None)))
+    humans_weights_per_cell = batch_softweight_human_cells(humans_position, humans_visibility, humans_radii, grid_cells) # Shape: (n_humans, n_grid_cells, 2)
+    weights_per_cell = jnp.sum(humans_weights_per_cell, axis=0)
+    norm_cell_weights = weights_per_cell / (jnp.sum(weights_per_cell) + 1e-8)
+    variances_per_cell = jnp.sum(humans_weights_per_cell * humans_radii[:, None]**2, axis=0) / (weights_per_cell + 1e-8) + 1e-8
     fitted_distribution = {
         "means": grid_cells,
-        "variances": human_weighted_variances_per_cell,
+        "variances": jnp.stack((variances_per_cell, variances_per_cell), axis=1),
         "weights": norm_cell_weights,
     }
     return fitted_distribution
 @jit
-def batch_fit_gmm_to_humans_positions(batch_humans_positions, batch_humans_visibility, humans_radii, grid_cells, scaling=0.01):
-    return vmap(fit_gmm_to_humans_positions, in_axes=(0, 0, None, None, None))(batch_humans_positions, batch_humans_visibility, humans_radii, grid_cells, scaling)
+def batch_fit_gmm_to_humans_positions(batch_humans_positions, batch_humans_visibility, humans_radii, grid_cells, tau=0.2):
+    return vmap(fit_gmm_to_humans_positions, in_axes=(0, 0, None, None, None))(batch_humans_positions, batch_humans_visibility, humans_radii, grid_cells, tau)
 dynamic_gmms = batch_fit_gmm_to_humans_positions(robot_centric_humans_positions, visible_humans_mask, data["humans_radii"], grid_cells)
 dynamic_ps = vmap(gmm.batch_p, in_axes=(0, None))(dynamic_gmms, gmm_sample_points)
 
