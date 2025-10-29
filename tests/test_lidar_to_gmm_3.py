@@ -77,12 +77,13 @@ def simulate_n_steps(env, n_steps):
     @jit
     def _simulate_steps_with_lidar(i:int, for_val:tuple):
         ## Retrieve data from the tuple
-        data, state, obs, info, reset_key = for_val
+        data, state, obs, info, outcome, reset_key = for_val
         ## Compute robot action
         action, _, _, _, _ = policy.act(random.PRNGKey(0), obs, info, actor_params, sample=False)
         ## Get lidar measurements and save output data
         lidar_measurements = env.get_lidar_measurements(obs[-1,:2], obs[-1,5], obs[:-1,:2], info["humans_parameters"][:,0], info["static_obstacles"][-1])
         step_out_data = {
+            "episode_starts": ~outcome["nothing"],
             "lidar_measurements": lidar_measurements,
             "humans_positions": obs[:-1,:2],
             "humans_velocities": obs[:-1,2:4],
@@ -96,7 +97,7 @@ def simulate_n_steps(env, n_steps):
         }
         data = tree_map(lambda x, y: x.at[i].set(y), data, step_out_data)
         ## Simulate one step
-        final_state, final_obs, final_info, _, _, final_reset_key = env.step(
+        final_state, final_obs, final_info, _, final_outcome, final_reset_key = env.step(
             state,
             info,
             action, 
@@ -104,11 +105,12 @@ def simulate_n_steps(env, n_steps):
             reset_if_done=True,
             reset_key=reset_key
         )
-        return data, final_state, final_obs, final_info, final_reset_key
+        return data, final_state, final_obs, final_info, final_outcome, final_reset_key
     # Initialize first episode
-    state, reset_key, obs, info, _ = env.reset(random.PRNGKey(random_seed))
+    state, reset_key, obs, info, outcome = env.reset(random.PRNGKey(random_seed))
     # Initialize setting data
     data = {
+        "episode_starts": jnp.zeros((n_steps,), dtype=bool),
         "lidar_measurements": jnp.zeros((n_steps,lidar_num_rays,2)),
         "humans_positions": jnp.zeros((n_steps,n_humans,2)),
         "humans_velocities": jnp.zeros((n_steps,n_humans,2)),
@@ -121,12 +123,13 @@ def simulate_n_steps(env, n_steps):
         "static_obstacles": jnp.zeros((n_steps,n_obstacles,1,2,2)),
     }
     # Step loop
-    data, _, _, _, _ = lax.fori_loop(
+    data, _, _, _, _, _ = lax.fori_loop(
         0,
         n_steps,
         _simulate_steps_with_lidar,
-        (data, state, obs, info, reset_key)
+        (data, state, obs, info, outcome, reset_key)
     )
+    data["episode_starts"] = data["episode_starts"].at[0].set(True)  # First step is always episode start
     return data
 
 ### GENERATE DATASET
@@ -145,6 +148,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samp
     ## GENERATE ROBOT-CENTERED DATASET
     if not os.path.exists(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl')):
         dataset = {
+            "episode_starts": raw_data["episode_starts"],
             "rc_lidar_measurements": jnp.zeros((n_steps, lidar_num_rays, 2)),
             "rc_humans_positions": jnp.zeros((n_steps, n_humans, 2)),
             "rc_humans_orientations": jnp.zeros((n_steps, n_humans)),
@@ -393,6 +397,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samp
         # Save robot-centered dataset
         with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'wb') as f:
             pickle.dump(dataset, f)
+        data = dataset
     else:
         # Load robot-centered dataset
         with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
@@ -413,11 +418,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samp
         robot_positions:jnp.ndarray, 
         robot_orientations:jnp.ndarray,
     ) -> jnp.ndarray:
-        # Retrieve stacked data
-        lidars = lax.dynamic_slice_in_dim(rc_lidar_measurements, i - n_stack + 1, n_stack, 0)  # Shape: (n_stack, lidar_num_rays, 2)
-        positions = lax.dynamic_slice_in_dim(robot_positions, i - n_stack + 1, n_stack, 0)  # Shape: (n_stack, 2)
-        orientations = lax.dynamic_slice_in_dim(robot_orientations, i - n_stack + 1, n_stack, 0)  # Shape: (n_stack,)
-        actions = lax.dynamic_slice_in_dim(robot_actions, i - n_stack + 1, n_stack, 0)  # Shape: (n_stack, 2)
+        lidars = lax.dynamic_slice_in_dim(rc_lidar_measurements, i - n_stack + 1, n_stack, axis=0)  # Shape: (n_stack, lidar_num_rays, 2)
+        positions = lax.dynamic_slice_in_dim(robot_positions, i - n_stack + 1, n_stack, axis=0)  # Shape: (n_stack, 2)
+        orientations = lax.dynamic_slice_in_dim(robot_orientations, i - n_stack + 1, n_stack, axis=0)  # Shape: (n_stack,)
+        actions = lax.dynamic_slice_in_dim(robot_actions, i - n_stack + 1, n_stack, axis=0)  # Shape: (n_stack, 2)
         actions = actions.at[-1,:].set(jnp.zeros((2,))) # Last action is zero (we want to predict next action)
         # Align temporal LiDAR scans to i-th robot frame
         ref_position = robot_positions[i]
@@ -429,7 +433,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samp
             ys = lidar_scan[:,0] * jnp.sin(lidar_scan[:,1] + orientation) + position[1]
             points_world = jnp.stack((xs, ys), axis=-1)  # Shape: (lidar_num_rays, 2)
             # Roto-translate points to robot frame
-            c, s = jnp.cos(-ref_orientation), jnp.sin(-ref_orientation)
+            c, s = jnp.cos(ref_orientation), jnp.sin(ref_orientation)
             R = jnp.array([
                 [c, -s],
                 [s,  c]
@@ -447,26 +451,97 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samp
         return jnp.concatenate([point_cloud, actions], axis=-1) # Shape: (n_stack, 2 * lidar_num_rays + 2)
     @jit
     def build_inputs(
-        rc_lidar_measurements:jnp.ndarray, 
-        robot_actions:jnp.ndarray, 
-        robot_positions:jnp.ndarray, 
-        robot_orientations:jnp.ndarray,
+        idxs:jnp.ndarray,
+        padded_rc_lidar_measurements:jnp.ndarray, 
+        padded_robot_actions:jnp.ndarray, 
+        padded_robot_positions:jnp.ndarray, 
+        padded_robot_orientations:jnp.ndarray,
     ) -> jnp.ndarray:
         return vmap(build_input_i, in_axes=(0, None, None, None, None))(
-            jnp.arange(n_steps), 
-            rc_lidar_measurements, 
-            robot_actions, 
-            robot_positions, 
-            robot_orientations
+            idxs, 
+            padded_rc_lidar_measurements, 
+            padded_robot_actions, 
+            padded_robot_positions, 
+            padded_robot_orientations
         )
-    dataset["inputs"] = build_inputs(
-        data["rc_lidar_measurements"],
-        data["robot_actions"],
-        data["robot_positions"],
-        data["robot_orientations"],
-    )
-    # TODO: Debug input computation
-
+    num_episodes = jnp.sum(data["episode_starts"])
+    start_idxs = jnp.append(jnp.where(data["episode_starts"], size=num_episodes)[0], n_steps)
+    for i in range(num_episodes):
+        length = start_idxs[i+1] - start_idxs[i]
+        dataset["inputs"] = dataset["inputs"].at[start_idxs[i]:start_idxs[i+1]].set(
+            build_inputs(
+                jnp.arange(n_stack-1, length+n_stack-1),
+                jnp.concatenate((jnp.tile(data["rc_lidar_measurements"][start_idxs[i],:,:], (n_stack-1, 1, 1)), data["rc_lidar_measurements"][start_idxs[i]:start_idxs[i+1]]), axis=0),
+                jnp.concatenate((jnp.tile(jnp.zeros((2,)), (n_stack-1, 1)), data["robot_actions"][start_idxs[i]:start_idxs[i+1]]), axis=0),
+                jnp.concatenate((jnp.tile(data["robot_positions"][start_idxs[i],:], (n_stack-1, 1)), data["robot_positions"][start_idxs[i]:start_idxs[i+1]]), axis=0),
+                jnp.concatenate((jnp.tile(data["robot_orientations"][start_idxs[i]], (n_stack-1,)), data["robot_orientations"][start_idxs[i]:start_idxs[i+1]]), axis=0),
+            )
+        )
+    ## DEBUG: Inspect inputs
+    from matplotlib import rc, rcParams
+    from matplotlib.animation import FuncAnimation
+    rc('font', weight='regular', size=20)
+    rcParams['pdf.fonttype'] = 42
+    rcParams['ps.fonttype'] = 42
+    # Plot robot-centric simulation
+    fig, ax = plt.subplots(figsize=(8,8))
+    ax_lim = visibility_threshold+2
+    def animate(frame):
+        ax.clear()
+        ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y', labelpad=-13)
+        ax.set_aspect('equal', adjustable='box')
+        # Plot grid
+        for cell_center in grid_cells:
+            rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+            ax.add_patch(rect)
+        # Plot visibility grid threshold
+        rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+        ax.add_patch(rect)
+        # Plot humans
+        for h in range(len(data["rc_humans_positions"][frame])):
+            color = "green" if data["humans_visibility"][frame][h] else "grey"
+            alpha = 1 if data["humans_visibility"][frame][h] else 0.3
+            if humans_policy == 'hsfm':
+                head = plt.Circle((data["rc_humans_positions"][frame][h,0] + jnp.cos(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h], data["rc_humans_positions"][frame][h,1] + jnp.sin(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                ax.add_patch(head)
+            circle = plt.Circle((data["rc_humans_positions"][frame][h,0], data["rc_humans_positions"][frame][h,1]), data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            ax.add_patch(circle)
+        # Plot static obstacles
+        for i, o in enumerate(data["rc_obstacles"][frame]):
+            for j, s in enumerate(o):
+                color = 'black' if data["obstacles_visibility"][frame][i,j] else 'grey'
+                linestyle = 'solid' if data["obstacles_visibility"][frame][i,j] else 'dashed'
+                alpha = 1 if data["obstacles_visibility"][frame][i,j] else 0.3
+                ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
+        # Plot lidar scans
+        point_clouds = dataset["inputs"][frame][:, :-2].reshape((n_stack, lidar_num_rays, 2))
+        for i, cloud in enumerate(point_clouds):
+            # color/alpha fade with i (smaller i -> more faded)
+            t = i / (n_stack - 1)  # 0..1
+            ax.scatter(
+                cloud[:,0],
+                cloud[:,1],
+                c=0.3 + 0.7 * jnp.ones((lidar_num_rays,)) * t,
+                cmap='Reds',
+                vmin=0.0,
+                vmax=1.0,
+                alpha=0.3 + 0.7 * t,
+                zorder=20 + i,
+            )
+    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+    anim.paused = False
+    def toggle_pause(self, *args, **kwargs):
+        if anim.paused: anim.resume()
+        else: anim.pause()
+        anim.paused = not anim.paused
+    fig.canvas.mpl_connect('button_press_event', toggle_pause)
+    plt.show()
+    # Build target samples
+    # TODO: Implement this part
+    # Build next target samples
+    # TODO: Implement this partò
     # Save dataset
     # with open(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samples_dataset.pkl'), 'wb') as f:
     #     pickle.dump(dataset, f)
