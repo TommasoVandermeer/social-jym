@@ -24,10 +24,10 @@ grid_resolution = 11  # Number of grid cells per dimension
 grid_limit = 4  # Distance limit of the grid in each dimension (from -limit to +limit)
 visibility_threshold_from_grid = 0.5  # Distance from grid limit to consider an object inside the grid
 n_loss_samples = 1000  # Number of samples to estimate the loss
+prediction_horizon = 2  # Number of steps ahead to predict next GMM (in seconds it is prediction_horizon * robot_dt)
 learning_rate = 1e-3
 batch_size = 200
-n_epochs = 10
-n_iterations_fit_gmm = 20
+n_epochs = 20
 # Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -64,6 +64,7 @@ with open(os.path.join(os.path.dirname(__file__), 'best_dir_safe.pkl'), 'rb') as
     actor_params = pickle.load(f)['actor_params']
 # Build local grid over which the GMM is defined
 visibility_threshold = visibility_threshold_from_grid + grid_limit
+ax_lim = visibility_threshold+2
 size = (grid_limit * 2 / grid_resolution)
 cell_size = jnp.array([size, size])
 grid_edges = jnp.linspace(-grid_limit, grid_limit, grid_resolution + 1, endpoint=True)
@@ -71,6 +72,10 @@ dists = grid_edges[:-1] + size / 2  # Cell center distances
 grid_cell_coords = jnp.meshgrid(dists, dists)
 grid_cells = jnp.array(jnp.vstack((grid_cell_coords[0].flatten(), grid_cell_coords[1].flatten())).T)
 gmm = GMM(n_dimensions=grid_cells.shape[1], n_components=grid_cells.shape[0])
+
+### Parameters validation
+assert n_loss_samples % (n_humans + n_obstacles) == 0, "n_loss_samples must be divisible by (n_humans + n_obstacles)"
+assert (n_loss_samples / (n_humans + n_obstacles)) % env.static_obstacles_per_scenario.shape[2] == 0, "n_loss_samples per obstacle must be divisible by number of segments per obstacle" 
 
 def simulate_n_steps(env, n_steps):
     @loop_tqdm(n_steps, desc="Simulating steps")
@@ -133,7 +138,7 @@ def simulate_n_steps(env, n_steps):
     return data
 
 ### GENERATE DATASET
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samples_dataset.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl')):
     ## GENERATE RAW DATASET
     if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl')):
         # Generate raw data
@@ -338,9 +343,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samp
         rcParams['ps.fonttype'] = 42
         # Plot robot-centric simulation
         fig, ax = plt.subplots(figsize=(8,8))
-        ax_lim = visibility_threshold+2
         def animate(frame):
             ax.clear()
+            ax.set_title('Robot-Centric Frame Inspection')
             ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
             ax.set_xlabel('X')
             ax.set_ylabel('Y', labelpad=-13)
@@ -406,8 +411,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samp
     # Initialize final dataset
     dataset = {
         "inputs": jnp.zeros((n_steps, n_stack, 2 * lidar_num_rays + 2)),  # Network input: n_stack * [2 * lidar_rays + action]
-        "target_samples": jnp.zeros((n_steps, n_loss_samples, 2)),
-        "next_target_samples": jnp.zeros((n_steps, n_loss_samples, 2))
+        "target_samples": jnp.full((n_steps, n_loss_samples, 2), jnp.nan), # Network target: samples from the rc humans and obstacles positions
+        "next_target_samples": jnp.full((n_steps, n_loss_samples, 2), jnp.nan), # Network target: samples from the next step rc humans and obstacles positions
     }
     # Build inputs
     @jit
@@ -485,9 +490,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samp
     rcParams['ps.fonttype'] = 42
     # Plot robot-centric simulation
     fig, ax = plt.subplots(figsize=(8,8))
-    ax_lim = visibility_threshold+2
     def animate(frame):
         ax.clear()
+        ax.set_title('Network Inputs Inspection')
         ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
         ax.set_xlabel('X')
         ax.set_ylabel('Y', labelpad=-13)
@@ -539,17 +544,563 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samp
     fig.canvas.mpl_connect('button_press_event', toggle_pause)
     plt.show()
     # Build target samples
-    # TODO: Implement this part
+    @partial(jit, static_argnames=['n_samples', 'n_humans', 'n_obstacles'])
+    def build_frame_target_samples(
+        humans_positions:jnp.ndarray,
+        humans_radii:jnp.ndarray,
+        humans_visibility:jnp.ndarray,
+        static_obstacles:jnp.ndarray,
+        obstacles_visibility:jnp.ndarray,
+        key:random.PRNGKey,
+        n_samples:int=n_loss_samples,
+        n_humans:int=n_humans,
+        n_obstacles:int=n_obstacles,
+    ) -> jnp.ndarray:
+        # TODO: Remove nan samples 
+        ### Mask invisible humans and obstacles with NaNs
+        humans = jnp.where(
+            humans_visibility[:, None],
+            jnp.concatenate((humans_positions, humans_radii[:, None]), axis=-1),
+            jnp.array([jnp.nan, jnp.nan, jnp.nan])
+        )  # Shape: (n_humans, 3)
+        obstacles = jnp.where(
+            obstacles_visibility[:,:, None, None],
+            static_obstacles,
+            jnp.array([[jnp.nan, jnp.nan], [jnp.nan, jnp.nan]])
+        )  # Shape: (n_obstacles, 1, 2, 2)
+        ### Split n_samples evenly with respect to n_humans + n_obstacles
+        total_objects = n_humans + n_obstacles
+        samples_per_object = n_samples // total_objects
+        # Humans samples
+        @partial(jit, static_argnames=['n_hum_samples'])
+        def sample_from_human(human: jnp.ndarray, key: random.PRNGKey, n_hum_samples: int) -> jnp.ndarray:
+            @jit
+            def _not_nan_human(human):
+                position, radius = human[0:2], human[2]
+                angle_key, radius_key = random.split(key)
+                angles = random.uniform(angle_key, (n_hum_samples,), minval=0.0, maxval=2*jnp.pi)
+                rs = radius * jnp.sqrt(random.uniform(radius_key, (n_hum_samples,)))
+                xs = position[0] + rs * jnp.cos(angles)
+                ys = position[1] + rs * jnp.sin(angles)
+                return jnp.stack((xs, ys), axis=-1)  # Shape: (n_hum_samples, 2)
+
+            return lax.cond(
+                jnp.any(jnp.isnan(human)),
+                lambda _: jnp.full((n_hum_samples, 2), jnp.nan),
+                _not_nan_human,
+                human
+            )
+        humans_key, obstacles_key = random.split(key)
+        humans_keys = random.split(humans_key, n_humans)
+        humans_samples = vmap(sample_from_human, in_axes=(0, 0, None))(humans, humans_keys, samples_per_object)  # Shape: (n_humans, samples_per_object, 2)
+        humans_samples = humans_samples.reshape((n_humans * samples_per_object, 2))
+        # Obstacles samples
+        @partial(jit, static_argnames=['n_obs_samples'])
+        def sample_from_obstacle(obstacle: jnp.ndarray, key: random.PRNGKey, n_obs_samples: int) -> jnp.ndarray:
+            n_seg_samples = n_obs_samples // obstacle.shape[0]
+            @jit
+            def _segment_samples(segment):
+                @jit
+                def _not_nan_segment(segment):
+                    p1, p2 = segment[0], segment[1]
+                    # Sample uniformly on the segment
+                    ts = random.uniform(key, (n_seg_samples,), minval=0.0, maxval=1.0)
+                    xs = p1[0] + ts * (p2[0] - p1[0])
+                    ys = p1[1] + ts * (p2[1] - p1[1])
+                    return jnp.stack((xs, ys), axis=-1)  # Shape: (n_samples, 2)
+                return lax.cond(
+                    jnp.any(jnp.isnan(segment)),
+                    lambda _: jnp.full((n_seg_samples, 2), jnp.nan),
+                    _not_nan_segment,
+                    segment
+                )
+            return jnp.concatenate(vmap(_segment_samples, in_axes=(0,))(obstacle), axis=0)  # Shape: (n_obs_samples, 2)
+        obstacles_keys = random.split(obstacles_key, n_obstacles)
+        obstacles_samples = vmap(sample_from_obstacle, in_axes=(0, 0, None))(obstacles, obstacles_keys, samples_per_object)  # Shape: (n_obstacles, samples_per_object, 2)
+        obstacles_samples = obstacles_samples.reshape((n_obstacles * samples_per_object, 2))
+        # Combine humans and obstacles samples
+        samples = jnp.concatenate((humans_samples, obstacles_samples), axis=0)  # Shape: (n_samples, 2)
+        # Randomly fill nan samples with already sampled points
+        nan_mask = jnp.isnan(samples).any(axis=1)
+        total_nans = jnp.sum(nan_mask)
+        aux_samples = jnp.nan_to_num(samples, nan=jnp.inf)  # Temporary replace NaNs with large negative number for sorting
+        idxs = jnp.argsort(aux_samples, axis=0)
+        samples = samples[idxs[:,0]]  # Sort samples so that NaNs are at the end
+        keys = random.split(key, n_samples)
+        @jit
+        def fill_nan_samples(idx:int, total_nans:int, samples: jnp.ndarray, key: random.PRNGKey) -> jnp.ndarray:
+            return lax.cond(
+                idx < n_samples - total_nans,
+                lambda data: data[1][idx],
+                lambda data: data[1][random.randint(key, (), 0, n_samples - total_nans)],
+                (total_nans, samples, key)
+            )
+        return lax.cond(
+            total_nans < n_samples,
+            lambda _: vmap(fill_nan_samples, in_axes=(0, None, None, 0))(
+                    jnp.arange(n_samples),
+                    total_nans,
+                    samples,
+                    keys
+                ),
+            lambda _: samples,
+            None
+        )
+    dataset["target_samples"] = vmap(build_frame_target_samples, in_axes=(0, 0, 0, 0, 0, 0))(
+        data["rc_humans_positions"],
+        data["humans_radii"],
+        data["humans_visibility"],
+        data["rc_obstacles"],
+        data["obstacles_visibility"],
+        random.split(random.PRNGKey(random_seed), n_steps),
+    )
+    ## DEBUG: Inspect targets
+    from matplotlib import rc, rcParams
+    from matplotlib.animation import FuncAnimation
+    rc('font', weight='regular', size=20)
+    rcParams['pdf.fonttype'] = 42
+    rcParams['ps.fonttype'] = 42
+    # Plot robot-centric simulation
+    fig, ax = plt.subplots(figsize=(8,8))
+    def animate(frame):
+        ax.clear()
+        ax.set_title('Target Samples Inspection')
+        ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y', labelpad=-13)
+        ax.set_aspect('equal', adjustable='box')
+        # Plot grid
+        for cell_center in grid_cells:
+            rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+            ax.add_patch(rect)
+        # Plot visibility grid threshold
+        rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+        ax.add_patch(rect)
+        # Plot humans
+        for h in range(len(data["rc_humans_positions"][frame])):
+            color = "green" if data["humans_visibility"][frame][h] else "grey"
+            alpha = 1 if data["humans_visibility"][frame][h] else 0.3
+            if humans_policy == 'hsfm':
+                head = plt.Circle((data["rc_humans_positions"][frame][h,0] + jnp.cos(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h], data["rc_humans_positions"][frame][h,1] + jnp.sin(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                ax.add_patch(head)
+            circle = plt.Circle((data["rc_humans_positions"][frame][h,0], data["rc_humans_positions"][frame][h,1]), data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            ax.add_patch(circle)
+        # Plot static obstacles
+        for i, o in enumerate(data["rc_obstacles"][frame]):
+            for j, s in enumerate(o):
+                color = 'black' if data["obstacles_visibility"][frame][i,j] else 'grey'
+                linestyle = 'solid' if data["obstacles_visibility"][frame][i,j] else 'dashed'
+                alpha = 1 if data["obstacles_visibility"][frame][i,j] else 0.3
+                ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
+        # Plot target samples
+        ax.scatter(
+            dataset["target_samples"][frame][:,0],
+            dataset["target_samples"][frame][:,1],
+            c='blue',
+            s=5,
+            alpha=0.5,
+            zorder=20,
+        )
+    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+    anim.paused = False
+    def toggle_pause(self, *args, **kwargs):
+        if anim.paused: anim.resume()
+        else: anim.pause()
+        anim.paused = not anim.paused
+    fig.canvas.mpl_connect('button_press_event', toggle_pause)
+    plt.show()
     # Build next target samples
-    # TODO: Implement this partò
+    dataset["next_target_samples"] = vmap(build_frame_target_samples, in_axes=(0, 0, 0, 0, 0, 0))(
+        data["rc_humans_positions"] + data["rc_humans_velocities"] * (robot_dt * prediction_horizon),
+        data["humans_radii"],
+        data["humans_visibility"],
+        data["rc_obstacles"],
+        data["obstacles_visibility"],
+        random.split(random.PRNGKey(random_seed), n_steps),
+    )
+    ## DEBUG: Inspect next targets
+    from matplotlib import rc, rcParams
+    from matplotlib.animation import FuncAnimation
+    rc('font', weight='regular', size=20)
+    rcParams['pdf.fonttype'] = 42
+    rcParams['ps.fonttype'] = 42
+    # Plot robot-centric simulation
+    fig, ax = plt.subplots(figsize=(8,8))
+    ax_lim = visibility_threshold+2
+    def animate(frame):
+        ax.clear()
+        ax.set_title('Next Target Samples Inspection')
+        ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y', labelpad=-13)
+        ax.set_aspect('equal', adjustable='box')
+        # Plot grid
+        for cell_center in grid_cells:
+            rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+            ax.add_patch(rect)
+        # Plot visibility grid threshold
+        rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+        ax.add_patch(rect)
+        # Plot humans
+        for h in range(len(data["rc_humans_positions"][frame])):
+            color = "green" if data["humans_visibility"][frame][h] else "grey"
+            alpha = 1 if data["humans_visibility"][frame][h] else 0.3
+            if humans_policy == 'hsfm':
+                head = plt.Circle((data["rc_humans_positions"][frame][h,0] + jnp.cos(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h], data["rc_humans_positions"][frame][h,1] + jnp.sin(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                ax.add_patch(head)
+            circle = plt.Circle((data["rc_humans_positions"][frame][h,0], data["rc_humans_positions"][frame][h,1]), data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            ax.add_patch(circle)
+        # Plot human velocities
+        for h in range(len(data["rc_humans_positions"][frame])):
+            color = "green" if data["humans_visibility"][frame][h] else "grey"
+            alpha = 1 if data["humans_visibility"][frame][h] else 0.3
+            if data["humans_visibility"][frame][h]:
+                ax.arrow(
+                    data["rc_humans_positions"][frame][h,0],
+                    data["rc_humans_positions"][frame][h,1],
+                    data["rc_humans_velocities"][frame][h,0],
+                    data["rc_humans_velocities"][frame][h,1],
+                    head_width=0.15,
+                    head_length=0.15,
+                    fc=color,
+                    ec=color,
+                    alpha=alpha,
+                    zorder=30,
+                )
+        # Plot static obstacles
+        for i, o in enumerate(data["rc_obstacles"][frame]):
+            for j, s in enumerate(o):
+                color = 'black' if data["obstacles_visibility"][frame][i,j] else 'grey'
+                linestyle = 'solid' if data["obstacles_visibility"][frame][i,j] else 'dashed'
+                alpha = 1 if data["obstacles_visibility"][frame][i,j] else 0.3
+                ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
+        # Plot target samples
+        ax.scatter(
+            dataset["next_target_samples"][frame][:,0],
+            dataset["next_target_samples"][frame][:,1],
+            c='blue',
+            s=5,
+            alpha=0.5,
+            zorder=20,
+        )
+    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+    anim.paused = False
+    def toggle_pause(self, *args, **kwargs):
+        if anim.paused: anim.resume()
+        else: anim.pause()
+        anim.paused = not anim.paused
+    fig.canvas.mpl_connect('button_press_event', toggle_pause)
+    plt.show()
     # Save dataset
-    # with open(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samples_dataset.pkl'), 'wb') as f:
-    #     pickle.dump(dataset, f)
+    with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'wb') as f:
+        pickle.dump(dataset, f)
 else:
     # Load datasets
     with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'rb') as f:
         raw_data = pickle.load(f)
     with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
         robot_centric_data = pickle.load(f)
-    with open(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_samples_dataset.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'rb') as f:
         dataset = pickle.load(f)
+
+### DEFINE NEURAL NETWORK
+mlp_params = {
+    "activation": nn.relu,
+    "activate_final": False,
+    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+}
+class LidarNetwork(hk.Module):
+    def __init__(
+            self,
+            grid_cell_positions:jnp.ndarray,
+            lidar_num_rays:int,
+            n_stack:int,
+            mlp_params:dict=mlp_params,
+        ) -> None:
+        super().__init__()  
+        self.gmm_means = grid_cell_positions  # Fixed means
+        self.n_gmm_cells = grid_cell_positions.shape[0]
+        self.lidar_rays = lidar_num_rays
+        self.n_stack = n_stack
+        self.n_inputs = n_stack * (2 * lidar_num_rays + 2)
+        self.n_outputs = self.n_gmm_cells * 3 * 2  # 3 outputs per GMM cell (var_x, var_y, weight) times  2 GMMs (current and next)
+        self.mlp = hk.nets.MLP(
+            **mlp_params, 
+            output_sizes=[self.n_inputs * 3, self.n_inputs, self.n_inputs // 2, self.n_outputs], 
+            name="mlp"
+        )
+
+    def __call__(
+            self, 
+            x: jnp.ndarray
+        ) -> jnp.ndarray:
+        """
+        Maps Lidar scan to GMM parameters
+        """
+        mlp_output = self.mlp(x)
+        ### Separate outputs
+        x_vars = nn.softplus(mlp_output[:, :self.n_gmm_cells]) + 1e-3  # Variance in x
+        y_vars = nn.softplus(mlp_output[:, self.n_gmm_cells:2*self.n_gmm_cells]) + 1e-3  # Variance in y
+        weights = nn.softmax(mlp_output[:, 2*self.n_gmm_cells:3*self.n_gmm_cells], axis=-1)  # Weights
+        next_x_vars = nn.softplus(mlp_output[:, 3*self.n_gmm_cells:4*self.n_gmm_cells]) + 1e-3  # Next variance in x
+        next_y_vars = nn.softplus(mlp_output[:, 4*self.n_gmm_cells:5*self.n_gmm_cells]) + 1e-3  # Next variance in y
+        next_weights = nn.softmax(mlp_output[:, 5*self.n_gmm_cells:], axis=-1)  # Next weights
+        ### Construct current GMM parameters
+        distr = {
+            "means": jnp.tile(self.gmm_means, (x.shape[0], 1, 1)),  # Fixed means
+            "variances": jnp.stack((x_vars, y_vars), axis=-1),  # Shape (batch_size, n_gmm_cells, 2)
+            "weights": weights,  # Shape (batch_size, n_gmm_cells)
+        }
+        ### Construct next GMM parameters
+        next_distr = {
+            "means": jnp.tile(self.gmm_means, (x.shape[0], 1, 1)),  # Fixed means
+            "variances": jnp.stack((next_x_vars, next_y_vars), axis=-1),  # Shape (batch_size, n_gmm_cells, 2)
+            "weights": next_weights,  # Shape (batch_size, n_gmm_cells)
+        }
+        return distr, next_distr
+@hk.transform
+def lidar_to_gmm_network(x):
+    net = LidarNetwork(grid_cells, lidar_num_rays, n_stack)
+    return net(x)
+# Initialize network
+sample_input = jnp.zeros((1, n_stack * (2 * lidar_num_rays + 2)))
+network = lidar_to_gmm_network
+params = network.init(random.PRNGKey(random_seed), sample_input)
+# Count network parameters
+def count_params(params):
+    return sum(jnp.prod(jnp.array(p.shape)) for layer in params.values() for p in layer.values())
+n_params = count_params(params)
+print(f"# Lidar network parameters: {n_params}")
+# Compute test samples to visualize GMMs
+s = jnp.linspace(-grid_limit, grid_limit, num=60, endpoint=True)
+test_samples_x, test_samples_y = jnp.meshgrid(s, s)
+test_samples = jnp.stack((test_samples_x.flatten(), test_samples_y.flatten()), axis=-1)
+
+# ### TEST INITIAL NETWORK
+# # Forward pass
+# output_distr, output_next_distr = network.apply(
+#     params, 
+#     None, 
+#     sample_input, 
+# )
+# distr = {k: jnp.squeeze(v) for k, v in output_distr.items()}
+# next_distr = {k: jnp.squeeze(v) for k, v in output_next_distr.items()}
+# fig, ax = plt.subplots(1, 2, figsize=(16, 8))
+# # Plot output current distribution
+# test_p = gmm.batch_p(distr, test_samples)
+# ax[0].set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+# ax[0].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7)
+# ax[0].set_title("Random LiDAR network Output")
+# ax[0].set_xlabel("X")
+# ax[0].set_ylabel("Y")
+# for cell_center in grid_cells:
+#     rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
+#     ax[0].add_patch(rect)
+# ax[0].set_aspect('equal', adjustable='box')
+# # Plot output next distribution
+# test_p = gmm.batch_p(next_distr, test_samples)
+# ax[1].set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+# ax[1].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7)
+# ax[1].set_title("Random LiDAR network Next Output")
+# ax[1].set_xlabel("X")
+# ax[1].set_ylabel("Y")
+# for cell_center in grid_cells:
+#     rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
+#     ax[1].add_patch(rect)
+# ax[1].set_aspect('equal', adjustable='box')
+# plt.show()
+
+### DEFINE LOSS FUNCTION, UPDATE FUNCTIONS, AND OPTIMIZER
+@jit
+def _compute_loss_and_gradients(
+    current_params:dict,  
+    experiences:dict[str:jnp.ndarray],
+    # Experiences: {"inputs":jnp.ndarray, "target_samples":jnp.ndarray, "next_target_samples":jnp.ndarray}
+) -> tuple:
+    @jit
+    def _batch_loss_function(
+        current_params:dict,
+        inputs:jnp.ndarray,
+        targets:jnp.ndarray,  
+        next_targets:jnp.ndarray,
+        ) -> jnp.ndarray:
+        
+        @partial(vmap, in_axes=(None, 0, 0, 0))
+        def _loss_function(
+            current_params:dict,
+            input:jnp.ndarray,
+            target:jnp.ndarray,
+            next_target:jnp.ndarray
+            ) -> jnp.ndarray:
+            # Compute the prediction
+            input = jnp.reshape(input, (1, n_stack * (2 * lidar_num_rays + 2)))
+            prediction, next_prediction = network.apply(current_params, None, input)
+            prediction = {k: jnp.squeeze(v) for k, v in prediction.items()}
+            next_prediction = {k: jnp.squeeze(v) for k, v in next_prediction.items()}
+            # Compute the loss
+            loss1 = jnp.mean(gmm.batch_neglogp(prediction, target))
+            loss2 = jnp.mean(gmm.batch_neglogp(next_prediction, next_target))
+            loss = 0.5 * loss1 + 0.5 * loss2
+            return loss
+        
+        return jnp.mean(_loss_function(
+                current_params,
+                inputs,
+                targets,
+                next_targets
+            ))
+
+    inputs = experiences["inputs"]
+    targets = experiences["target_samples"]
+    next_targets = experiences["next_target_samples"]
+    # Compute the loss and gradients
+    loss, grads = value_and_grad(_batch_loss_function)(
+        current_params, 
+        inputs,
+        targets,
+        next_targets
+    )
+    return loss, grads
+@partial(jit, static_argnames=("optimizer"))
+def update(
+    current_params:dict, 
+    optimizer:optax.GradientTransformation, 
+    optimizer_state: jnp.ndarray,
+    experiences:dict[str:jnp.ndarray],
+    # Experiences: {"inputs":jnp.ndarray, "target_samples":jnp.ndarray, "next_target_samples":jnp.ndarray}
+) -> tuple:
+    # Compute loss and gradients
+    loss, grads = _compute_loss_and_gradients(current_params, experiences)
+    # Compute parameter updates
+    updates, optimizer_state = optimizer.update(grads, optimizer_state)
+    # Apply updates
+    updated_params = optax.apply_updates(current_params, updates)
+    return updated_params, optimizer_state, loss
+# Initialize optimizer and its state
+optimizer = optax.sgd(learning_rate=learning_rate, momentum=0.9)
+optimizer_state = optimizer.init(params)
+
+### TRAINING LOOP
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')):
+    ## DEBUG: Inspect training data
+    full_nan_experiences = jnp.logical_and(jnp.isnan(dataset["target_samples"]).all(axis=(1,2)),jnp.isnan(dataset["next_target_samples"]).all(axis=(1,2)))
+    print(f"# Number of full NaN experiences in training dataset: {jnp.sum(full_nan_experiences)} / {n_steps}")
+    # Filter out full NaN experiences from training dataset
+    dataset = tree_map(lambda x: x[~full_nan_experiences], dataset)
+    n_data = dataset["inputs"].shape[0]
+    print(f"# Training dataset size after filtering: {dataset['inputs'].shape[0]} experiences")
+    @loop_tqdm(n_epochs, desc="Training Lidar->GMM network")
+    @jit 
+    def _epoch_loop(
+        i:int,
+        epoch_for_val:tuple,
+    ) -> tuple:
+        dataset, params, optimizer_state, losses = epoch_for_val
+        # Shuffle dataset at the beginning of the epoch
+        shuffle_key = random.PRNGKey(random_seed + i)
+        indexes = jnp.arange(n_data)
+        shuffled_indexes = random.permutation(shuffle_key, indexes)
+        epoch_data = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(shuffled_indexes, dataset)
+        # Batch loop
+        @jit
+        def _batch_loop(
+            j:int,
+            batch_for_val:tuple
+        ) -> tuple:
+            epoch_data, params, optimizer_state, losses = batch_for_val
+            # Retrieve batch experiences
+            indexes = (jnp.arange(batch_size) + j * batch_size).astype(jnp.int32)
+            batch = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, epoch_data)
+            # Update parameters
+            params, optimizer_state, loss = update(
+                params, 
+                optimizer, 
+                optimizer_state,
+                batch,
+            )
+            # Save loss
+            losses = losses.at[i,j].set(loss)
+            return epoch_data, params, optimizer_state, losses
+        n_batches = n_data // batch_size
+        _, params, optimizer_state, losses = lax.fori_loop(
+            0,
+            n_batches,
+            _batch_loop,
+            (epoch_data, params, optimizer_state, losses)
+        )
+        return dataset, params, optimizer_state, losses
+    # Epoch loop
+    _, params, optimizer_state, losses = lax.fori_loop(
+        0,
+        n_epochs,
+        _epoch_loop,
+        (dataset, params, optimizer_state, jnp.zeros((n_epochs, int(n_data // batch_size))))
+    )
+    # Save trained parameters
+    with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'wb') as f:
+        pickle.dump(params, f)
+    # Plot training loss
+    avg_losses = jnp.mean(losses, axis=1)
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    ax.plot(jnp.arange(n_epochs), avg_losses, label="Training Loss")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_title("Lidar to GMM Network Training Loss")
+    fig.savefig(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_training_loss.eps'), format='eps')
+else:
+    # Load trained parameters
+    with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'rb') as f:
+        params = pickle.load(f)
+
+### TEST TRAINED NETWORK
+example_idx = 57
+# Forward pass
+output_distr, output_next_distr = network.apply(
+    params, 
+    None, 
+    jnp.reshape(dataset["inputs"][example_idx], (1, n_stack * (2 * lidar_num_rays + 2))), 
+)
+distr = {k: jnp.squeeze(v) for k, v in output_distr.items()}
+next_distr = {k: jnp.squeeze(v) for k, v in output_next_distr.items()}
+fig, ax = plt.subplots(1, 2, figsize=(16, 8))
+# Plot output current distribution
+test_p = gmm.batch_p(distr, test_samples)
+ax[0].set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+ax[0].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7, zorder=50)
+ax[0].set_title("Trained LiDAR network Output")
+ax[0].set_xlabel("X")
+ax[0].set_ylabel("Y")
+# Plot visibility grid threshold
+rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+ax[0].add_patch(rect)
+for h in range(len(robot_centric_data["rc_humans_positions"][example_idx])):
+    color = "green" if robot_centric_data["humans_visibility"][example_idx][h] else "grey"
+    alpha = 0.6 if robot_centric_data["humans_visibility"][example_idx][h] else 0.3
+    if humans_policy == 'hsfm':
+        head = plt.Circle((robot_centric_data["rc_humans_positions"][example_idx][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][example_idx][h]) * robot_centric_data['humans_radii'][example_idx][h], robot_centric_data["rc_humans_positions"][example_idx][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][example_idx][h]) * robot_centric_data['humans_radii'][example_idx][h]), 0.1, color='black', alpha=alpha, zorder=1)
+        ax[0].add_patch(head)
+    circle = plt.Circle((robot_centric_data["rc_humans_positions"][example_idx][h,0], robot_centric_data["rc_humans_positions"][example_idx][h,1]), robot_centric_data['humans_radii'][example_idx][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+    ax[0].add_patch(circle)
+for i, o in enumerate(robot_centric_data["rc_obstacles"][example_idx]):
+    for j, s in enumerate(o):
+        color = 'black' if robot_centric_data["obstacles_visibility"][example_idx][i,j] else 'grey'
+        linestyle = 'solid' if robot_centric_data["obstacles_visibility"][example_idx][i,j] else 'dashed'
+        alpha = 0.6 if robot_centric_data["obstacles_visibility"][example_idx][i,j] else 0.3
+        ax[0].plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
+for cell_center in grid_cells:
+    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
+    ax[0].add_patch(rect)
+ax[0].set_aspect('equal', adjustable='box')
+# Plot output next distribution
+test_p = gmm.batch_p(next_distr, test_samples)
+ax[1].set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+ax[1].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7, zorder=50)
+ax[1].set_title("Trained LiDAR network Next Output")
+ax[1].set_xlabel("X")
+ax[1].set_ylabel("Y")
+for cell_center in grid_cells:
+    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
+    ax[1].add_patch(rect)
+ax[1].set_aspect('equal', adjustable='box')
+plt.show()
