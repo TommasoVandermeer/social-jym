@@ -1053,54 +1053,79 @@ else:
     with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'rb') as f:
         params = pickle.load(f)
 
-### TEST TRAINED NETWORK
-example_idx = 57
-# Forward pass
-output_distr, output_next_distr = network.apply(
-    params, 
-    None, 
-    jnp.reshape(dataset["inputs"][example_idx], (1, n_stack * (2 * lidar_num_rays + 2))), 
-)
-distr = {k: jnp.squeeze(v) for k, v in output_distr.items()}
-next_distr = {k: jnp.squeeze(v) for k, v in output_next_distr.items()}
-fig, ax = plt.subplots(1, 2, figsize=(16, 8))
-# Plot output current distribution
-test_p = gmm.batch_p(distr, test_samples)
-ax[0].set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
-ax[0].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7, zorder=50)
-ax[0].set_title("Trained LiDAR network Output")
-ax[0].set_xlabel("X")
-ax[0].set_ylabel("Y")
-# Plot visibility grid threshold
-rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
-ax[0].add_patch(rect)
-for h in range(len(robot_centric_data["rc_humans_positions"][example_idx])):
-    color = "green" if robot_centric_data["humans_visibility"][example_idx][h] else "grey"
-    alpha = 0.6 if robot_centric_data["humans_visibility"][example_idx][h] else 0.3
-    if humans_policy == 'hsfm':
-        head = plt.Circle((robot_centric_data["rc_humans_positions"][example_idx][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][example_idx][h]) * robot_centric_data['humans_radii'][example_idx][h], robot_centric_data["rc_humans_positions"][example_idx][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][example_idx][h]) * robot_centric_data['humans_radii'][example_idx][h]), 0.1, color='black', alpha=alpha, zorder=1)
-        ax[0].add_patch(head)
-    circle = plt.Circle((robot_centric_data["rc_humans_positions"][example_idx][h,0], robot_centric_data["rc_humans_positions"][example_idx][h,1]), robot_centric_data['humans_radii'][example_idx][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-    ax[0].add_patch(circle)
-for i, o in enumerate(robot_centric_data["rc_obstacles"][example_idx]):
-    for j, s in enumerate(o):
-        color = 'black' if robot_centric_data["obstacles_visibility"][example_idx][i,j] else 'grey'
-        linestyle = 'solid' if robot_centric_data["obstacles_visibility"][example_idx][i,j] else 'dashed'
-        alpha = 0.6 if robot_centric_data["obstacles_visibility"][example_idx][i,j] else 0.3
-        ax[0].plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
-for cell_center in grid_cells:
-    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
-    ax[0].add_patch(rect)
-ax[0].set_aspect('equal', adjustable='box')
-# Plot output next distribution
-test_p = gmm.batch_p(next_distr, test_samples)
-ax[1].set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
-ax[1].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7, zorder=50)
-ax[1].set_title("Trained LiDAR network Next Output")
-ax[1].set_xlabel("X")
-ax[1].set_ylabel("Y")
-for cell_center in grid_cells:
-    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
-    ax[1].add_patch(rect)
-ax[1].set_aspect('equal', adjustable='box')
+### CHECK TRAINED NETWORK PREDICTIONS
+from matplotlib import rc, rcParams
+from matplotlib.animation import FuncAnimation
+rc('font', weight='regular', size=20)
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
+fig, axs = plt.subplots(1,2,figsize=(16,8))
+def animate(frame):
+    for ax in axs:
+        ax.clear()
+        ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y', labelpad=-13)
+        ax.set_aspect('equal', adjustable='box')
+        # Plot grid
+        for cell_center in grid_cells:
+            rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+            ax.add_patch(rect)
+        # Plot visibility grid threshold
+        rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+        ax.add_patch(rect)
+        # Plot humans
+        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
+            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
+            alpha = 0.6 if robot_centric_data["humans_visibility"][frame][h] else 0.3
+            if humans_policy == 'hsfm':
+                head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                ax.add_patch(head)
+            circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            ax.add_patch(circle)
+        # Plot human velocities
+        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
+            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
+            alpha = 0.6 if robot_centric_data["humans_visibility"][frame][h] else 0.3
+            if robot_centric_data["humans_visibility"][frame][h]:
+                ax.arrow(
+                    robot_centric_data["rc_humans_positions"][frame][h,0],
+                    robot_centric_data["rc_humans_positions"][frame][h,1],
+                    robot_centric_data["rc_humans_velocities"][frame][h,0],
+                    robot_centric_data["rc_humans_velocities"][frame][h,1],
+                    head_width=0.15,
+                    head_length=0.15,
+                    fc=color,
+                    ec=color,
+                    alpha=alpha,
+                    zorder=30,
+                )
+        # Plot static obstacles
+        for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
+            for j, s in enumerate(o):
+                color = 'black' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'grey'
+                linestyle = 'solid' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'dashed'
+                alpha = 0.6 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
+                ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
+    # Plot predicted GMM samples
+    output_distr, output_next_distr = network.apply(
+        params, 
+        None, 
+        jnp.reshape(dataset["inputs"][frame], (1, n_stack * (2 * lidar_num_rays + 2))), 
+    )
+    distr = {k: jnp.squeeze(v) for k, v in output_distr.items()}
+    next_distr = {k: jnp.squeeze(v) for k, v in output_next_distr.items()}
+    test_p = gmm.batch_p(distr, test_samples)
+    axs[0].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7, zorder=50)
+    axs[0].set_title("Current Predicted GMM")
+    next_test_p = gmm.batch_p(next_distr, test_samples)
+    axs[1].scatter(test_samples[:, 0], test_samples[:, 1], c=next_test_p, cmap='viridis', s=7, zorder=50)
+    axs[1].set_title("Next Predicted GMM")
+anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+anim.paused = False
+def toggle_pause(self, *args, **kwargs):
+    if anim.paused: anim.resume()
+    else: anim.pause()
+    anim.paused = not anim.paused
+fig.canvas.mpl_connect('button_press_event', toggle_pause)
 plt.show()
