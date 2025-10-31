@@ -29,7 +29,7 @@ gmm = GMM(n_dimensions=grid_cells.shape[1], n_components=grid_cells.shape[0])
 # random_weights = softmax(random_weights)
 # distribution = {
 #     "means": grid_cells,
-#     "variances": random.uniform(random.PRNGKey(random_seed), shape=(len(grid_cells), len(grid_cells[0])), minval=0., maxval=.01),
+#     "logvariances": random.uniform(random.PRNGKey(random_seed), shape=(len(grid_cells), len(grid_cells[0])), minval=-100, maxval=10),
 #     "weights": random_weights,
 # }
 # gmm = GMM(n_dimensions=len(distribution["means"][0]), n_components=len(distribution["means"]))
@@ -89,7 +89,7 @@ def fit_gmm_to_humans_positions(humans_position, humans_radii, grid_cells, scali
     # Initialize fitted distribution
     fitted_distribution = {
         "means": grid_cells,
-        "variances": human_weighted_covariances_per_cell,
+        "logvariances": jnp.log(human_weighted_covariances_per_cell),
         "weights": norm_cell_weights,
     }
     return fitted_distribution

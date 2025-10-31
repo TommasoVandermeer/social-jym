@@ -25,7 +25,7 @@ robot_dt = 0.25
 robot_vmax = 1.0
 robot_visible = True
 kinematics = "unicycle"
-scenario = "corner_traffic"
+scenario = "circular_crossing"
 n_humans = 5
 n_obstacles = 5
 humans_policy = 'hsfm'
@@ -257,7 +257,7 @@ def fit_gmm_to_humans_positions(humans_position, humans_visibility, humans_radii
     variances_per_cell = jnp.sum(humans_weights_per_cell * humans_radii[:, None]**2, axis=0) / (weights_per_cell + 1e-8) + 1e-8
     fitted_distribution = {
         "means": grid_cells,
-        "variances": jnp.stack((variances_per_cell, variances_per_cell), axis=1),
+        "logsigmas": jnp.stack((jnp.log(variances_per_cell), jnp.log(variances_per_cell)), axis=1),
         "weights": norm_cell_weights,
     }
     return fitted_distribution
@@ -269,7 +269,7 @@ dynamic_ps = vmap(gmm.batch_p, in_axes=(0, None))(dynamic_gmms, gmm_sample_point
 
 ### Fit GMMs to static obstacles at each timestep
 @jit
-def fit_gmm_to_obstacles(obstacles, obstacles_visibility, grid_cells, scaling=0.01):
+def fit_gmm_to_obstacles(obstacles, obstacles_visibility, grid_cells, scaling=0.15):
     # Substitute invisible edges with nan to avoid computing closest points on them
     obstacles = jnp.where(
         ~obstacles_visibility[:,:,None,None],
@@ -340,7 +340,7 @@ def fit_gmm_to_obstacles(obstacles, obstacles_visibility, grid_cells, scaling=0.
     # Initialize fitted distribution
     fitted_distribution = {
         "means": grid_cells,
-        "variances": obstacles_weighted_variances_per_cell,
+        "logsigmas": jnp.log(obstacles_weighted_variances_per_cell),
         "weights": norm_cell_weights,
     }
     return fitted_distribution
