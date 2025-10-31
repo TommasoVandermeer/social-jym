@@ -98,7 +98,7 @@ def fit_gmm_to_humans_positions(humans_position, humans_radii, grid_cells, scali
     # Initialize fitted distribution
     fitted_distribution = {
         "means": grid_cells,
-        "variances": human_weighted_covariances_per_cell,
+        "logvariances": jnp.log(human_weighted_covariances_per_cell),
         "weights": norm_cell_weights,
     }
     return fitted_distribution
@@ -171,7 +171,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_data
         "lidar_measurements": raw_data["lidar_measurements"],
         "distributions": {
             "means": jnp.zeros((n_steps, grid_cells.shape[0], grid_cells.shape[1])),
-            "variances": jnp.zeros((n_steps, grid_cells.shape[0], grid_cells.shape[1])),
+            "logvariances": jnp.zeros((n_steps, grid_cells.shape[0], grid_cells.shape[1])),
             "weights": jnp.zeros((n_steps, grid_cells.shape[0])),
         }
     }
@@ -191,7 +191,7 @@ else:
     # n_distribution = 25
     # distr = {
     #     "means": dataset["distributions"]["means"][n_distribution],
-    #     "variances": dataset["distributions"]["variances"][n_distribution],
+    #     "logvariances": dataset["distributions"]["logvariances"][n_distribution],
     #     "weights": dataset["distributions"]["weights"][n_distribution],
     # }
     # samples = gmm.batch_sample(distr, random.split(random.PRNGKey(random_seed), n_samples))
@@ -272,7 +272,7 @@ class LidarNetwork(hk.Module):
         Args:
             lidar_scan: (B, n_rays)
         Returns:
-            dict with means, variances, weights
+            dict with means, logvariances, weights
         """
         B = lidar_scan.shape[0]
 
@@ -301,15 +301,15 @@ class LidarNetwork(hk.Module):
         log_sigma_y = dec[..., 1]
         raw_weight = dec[..., 2]
 
-        sigmas = jnp.stack(
-            [nn.softplus(log_sigma_x) + 1e-3, nn.softplus(log_sigma_y) + 1e-3],
+        logvariances = jnp.stack(
+            [log_sigma_x, log_sigma_y],
             axis=-1,
         )  # (B, n_cells, 2)
         weights = nn.softmax(raw_weight, axis=-1)  # (B, n_cells)
 
         return {
             "means": jnp.broadcast_to(self.gmm_means[None, :, :], (B, self.n_cells, 2)),
-            "variances": sigmas,
+            "logvariances": logvariances,
             "weights": weights,
         }
 @hk.transform
@@ -334,7 +334,7 @@ print(f"# Lidar network parameters: {n_params}")
 #     sample_input, 
 # )
 # print("Output means shape:", output_distr["means"].shape)
-# print("Output variances shape:", output_distr["variances"].shape)
+# print("Output logvariances shape:", output_distr["logvariances"].shape)
 # print("Output weights shape:", output_distr["weights"].shape)
 # distr = {k: jnp.squeeze(v) for k, v in output_distr.items()}
 # # Plot output distribution
@@ -359,7 +359,7 @@ print(f"# Lidar network parameters: {n_params}")
 def _compute_loss_and_gradients(
     current_params:dict,  
     experiences:dict[str:jnp.ndarray],
-    # Experiences: {"inputs":jnp.ndarray, "targets":{"means":jnp.ndarray, "variances":jnp.ndarray, "weights":jnp.ndarray}}
+    # Experiences: {"inputs":jnp.ndarray, "targets":{"means":jnp.ndarray, "logvariances":jnp.ndarray, "weights":jnp.ndarray}}
     sample_key: random.PRNGKey,
     n_samples:int=n_loss_samples,
 ) -> tuple:
@@ -413,7 +413,7 @@ def update(
     optimizer:optax.GradientTransformation, 
     optimizer_state: jnp.ndarray,
     experiences:dict[str:jnp.ndarray],
-    # Experiences: {"lidar_measurements":jnp.ndarray, "distributions":{"means":jnp.ndarray, "variances":jnp.ndarray, "weights":jnp.ndarray}}
+    # Experiences: {"lidar_measurements":jnp.ndarray, "distributions":{"means":jnp.ndarray, "logvariances":jnp.ndarray, "weights":jnp.ndarray}}
     sample_key:random.PRNGKey,
 ) -> tuple:
     # Use only LiDAR distances as input
@@ -500,7 +500,7 @@ example = 24 # Choose an example to visualize between 0 and n_steps-1
 n_samples = 1_000
 target_distr = {
     "means": dataset["distributions"]["means"][example],
-    "variances": dataset["distributions"]["variances"][example],
+    "logvariances": dataset["distributions"]["logvariances"][example],
     "weights": dataset["distributions"]["weights"][example],
 }
 ## Sample from target GMM
@@ -537,13 +537,13 @@ def fit_gmm_to_points(points:jnp.ndarray, grid_cells:jnp.ndarray, n_iterations_f
     - epsilon: float, a small value to prevent division by zero.
 
     returns:
-    - distr: dict, the fitted GMM parameters with keys "means", "variances", and "weights".
+    - distr: dict, the fitted GMM parameters with keys "means", "logvariances", and "weights".
 
     """
     # Initialize
     distr = {
         "means": grid_cells,
-        "variances": jnp.ones((grid_cells.shape[0], 2)) * 0.2,
+        "logvariances": jnp.ones((grid_cells.shape[0], 2)) * 0.2,
         "weights": jnp.ones((grid_cells.shape[0],)) / grid_cells.shape[0],
     }
     # EM loop
@@ -560,11 +560,11 @@ def fit_gmm_to_points(points:jnp.ndarray, grid_cells:jnp.ndarray, n_iterations_f
             weighted_diff_squared = responsabilities_per_k[:, None] * (diff ** 2) # Shape (n_points, n_dimensions)
             variance_k = jnp.sum(weighted_diff_squared, axis=0) / (jnp.sum(responsabilities_per_k) + epsilon)
             return variance_k  
-        variances = vmap(compute_variance, in_axes=(0, 1))(jnp.arange(grid_cells.shape[0]), responsibilities) # Shape (n_components, n_dimensions)
+        sigmas = vmap(compute_variance, in_axes=(0, 1))(jnp.arange(grid_cells.shape[0]), responsibilities) # Shape (n_components, n_dimensions)
         weights = jnp.sum(responsibilities, axis=0) / jnp.sum(responsibilities)  # Shape (n_components,)
         updated_distr = {
             "means": grid_cells,  # Keep means fixed to grid cells
-            "variances": variances + epsilon,
+            "logvariances": jnp.log(sigmas + epsilon),
             "weights": weights,
         }
         return updated_distr, None
@@ -612,13 +612,13 @@ if os.path.exists(os.path.join(os.path.dirname(__file__), 'lidar_network_params.
             """
             mlp_output = self.mlp(x)
             ### Separate outputs
-            x_vars = nn.softplus(mlp_output[:, :self.n_gmm_cells]) + 1e-3  # Variance in x
-            y_vars = nn.softplus(mlp_output[:, self.n_gmm_cells:2*self.n_gmm_cells]) + 1e-3  # Variance in y
+            x_log_vars = mlp_output[:, :self.n_gmm_cells]  # log variance in x
+            y_log_vars = mlp_output[:, self.n_gmm_cells:2*self.n_gmm_cells]  # log variance in y
             weights = nn.softmax(mlp_output[:, 2*self.n_gmm_cells:], axis=-1)  # Weights
             ### Construct GMM parameters
             distr = {
                 "means": jnp.tile(self.gmm_means, (x.shape[0], 1, 1)),  # Fixed means
-                "variances": jnp.stack((x_vars, y_vars), axis=-1),  # Shape (batch_size, n_gmm_cells, 2)
+                "logvariances": jnp.stack((x_log_vars, y_log_vars), axis=-1),  # Shape (batch_size, n_gmm_cells, 2)
                 "weights": weights,  # Shape (batch_size, n_gmm_cells)
             }
             return distr

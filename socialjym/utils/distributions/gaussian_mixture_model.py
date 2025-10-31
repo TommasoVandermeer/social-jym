@@ -9,14 +9,14 @@ class GMM(BaseDistribution):
     def __init__(self, n_dimensions:int, n_components:int, epsilon=1e-6) -> None:
         """
         This is a Gaussian Mixture Model (GMM). When calling any method of this class, the distribution
-        dict must contain the following keys: ["means", "variances", "weights"].
-        WARNING: Variances must be positive. They are the diagonal of the covariance matrices.
+        dict must contain the following keys: ["means", "logvariances", "weights"].
+        WARNING: logvariances are the log of the diagonal of the covariance matrices.
         WARNING: Weights must be positive and sum to 1.
 
         parameters:
         - n_dimensions: Number of dimensions of each Gaussian component
         - n_components: Number of Gaussian components in the mixture
-        - epsilon: Small value to add to variances for numerical stability
+        - epsilon: Small value to add to variance for numerical stability
         """
         self.name="GMM"
         self.n_dimensions = n_dimensions
@@ -40,11 +40,11 @@ class GMM(BaseDistribution):
     @partial(jit, static_argnames=("self"))
     def sample(self, distribution:dict, key:random.PRNGKey):
         means = distribution["means"]
-        variances = jnp.exp(distribution["variances"])
+        variance = jnp.exp(distribution["logvariances"])
         weights = distribution["weights"]
         key1, key2 = random.split(key)
         component = random.categorical(key1, jnp.log(weights))
-        return means[component] + lax.sqrt(variances[component]) * random.normal(key2, shape=(self.n_dimensions,))
+        return means[component] + lax.sqrt(variance[component]) * random.normal(key2, shape=(self.n_dimensions,))
 
     @partial(jit, static_argnames=("self"))
     def batch_sample(self, distribution:dict, keys:jnp.ndarray):
@@ -53,7 +53,7 @@ class GMM(BaseDistribution):
     @partial(jit, static_argnames=("self"))
     def neglogp(self, distribution:dict, sample:jnp.ndarray):
         means = distribution["means"]  # shape: (n_components, n_dimensions)
-        variances = jnp.exp(distribution["variances"])  # shape: (n_components, n_dimensions)
+        variance = jnp.exp(distribution["logvariances"])  # shape: (n_components, n_dimensions)
         weights = distribution["weights"]  # shape: (n_components,)
         @jit
         def _component_logp(mean, variance, weight):
@@ -63,7 +63,7 @@ class GMM(BaseDistribution):
             log_prob += jnp.log(weight + self.epsilon)
             return log_prob
 
-        logps = vmap(_component_logp)(means, variances, weights)
+        logps = vmap(_component_logp)(means, variance, weights)
         return -logsumexp(logps)
 
     @partial(jit, static_argnames=("self"))
@@ -89,7 +89,7 @@ class GMM(BaseDistribution):
     @partial(jit, static_argnames=("self"))
     def neglogp_single_component(self, distribution:dict, sample:jnp.ndarray, component_idx:int):
         mean = distribution["means"][component_idx]
-        variance = jnp.exp(distribution["variances"][component_idx])
+        variance = jnp.exp(distribution["logvariances"][component_idx])
         log_prob = -0.5 * jnp.sum(jnp.log(2 * jnp.pi * variance + self.epsilon))
         log_prob += -0.5 * jnp.sum((sample - mean) ** 2 / (variance + self.epsilon))
         return -log_prob
