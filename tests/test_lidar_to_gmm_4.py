@@ -19,15 +19,15 @@ from socialjym.utils.aux_functions import plot_lidar_measurements
 ### Parameters
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
-n_steps = 10_000  # Number of labeled examples to train Lidar to GMM network
-n_gaussian_mixture_components = 30  # Number of GMM components
+n_steps = 100_000  # Number of labeled examples to train Lidar to GMM network
+n_gaussian_mixture_components = 15  # Number of GMM components
 box_limits = jnp.array([[-2,4], [-3,3]])  # Grid limits in meters [[x_min,x_max],[y_min,y_max]]
 visibility_threshold_from_grid = 0.5  # Distance from grid limit to consider an object inside the grid
 n_loss_samples = 1000  # Number of samples to estimate the loss
 prediction_horizon = 4  # Number of steps ahead to predict next GMM (in seconds it is prediction_horizon * robot_dt)
 learning_rate = 1e-3
 batch_size = 200
-n_epochs = 20
+n_epochs = 600
 # Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -828,7 +828,7 @@ class LidarNetwork(hk.Module):
         self.n_outputs = self.n_components * 5 * 2  # 5 outputs per GMM cell (mean_x, mean_y, var_x, var_y, weight) times  2 GMMs (current and next)
         self.mlp = hk.nets.MLP(
             **mlp_params, 
-            output_sizes=[self.n_inputs * 3, self.n_outputs, self.n_outputs, self.n_outputs], 
+            output_sizes=[self.n_inputs * 3, self.n_inputs * 2, self.n_outputs * 2, self.n_outputs], 
             name="mlp"
         )
 

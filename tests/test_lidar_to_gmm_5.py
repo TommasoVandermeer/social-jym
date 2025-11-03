@@ -11,23 +11,24 @@ from functools import partial
 import time
 
 from socialjym.policies.dir_safe import DIRSAFE
-from socialjym.utils.distributions.gaussian_mixture_model import GMM
+from socialjym.utils.distributions.gaussian_mixture_model import BivariateGMM
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
 from socialjym.utils.aux_functions import plot_lidar_measurements
 
+save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
-n_steps = 10_000  # Number of labeled examples to train Lidar to GMM network
-grid_resolution = 11  # Number of grid cells per dimension
-grid_limit = 4  # Distance limit of the grid in each dimension (from -limit to +limit)
+n_steps = 100_000  # Number of labeled examples to train Lidar to GMM network
+n_gaussian_mixture_components = 10  # Number of GMM components
+box_limits = jnp.array([[-2,4], [-3,3]])  # Grid limits in meters [[x_min,x_max],[y_min,y_max]]
 visibility_threshold_from_grid = 0.5  # Distance from grid limit to consider an object inside the grid
 n_loss_samples = 1000  # Number of samples to estimate the loss
-prediction_horizon = 2  # Number of steps ahead to predict next GMM (in seconds it is prediction_horizon * robot_dt)
+prediction_horizon = 4  # Number of steps ahead to predict next GMM (in seconds it is prediction_horizon * robot_dt)
 learning_rate = 1e-3
 batch_size = 200
-n_epochs = 20
+n_epochs = 600
 # Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -63,15 +64,15 @@ policy = DIRSAFE(env.reward_function, v_max=robot_vmax, dt=env_params['robot_dt'
 with open(os.path.join(os.path.dirname(__file__), 'best_dir_safe.pkl'), 'rb') as f:
     actor_params = pickle.load(f)['actor_params']
 # Build local grid over which the GMM is defined
-visibility_threshold = visibility_threshold_from_grid + grid_limit
-ax_lim = visibility_threshold+2
-size = (grid_limit * 2 / grid_resolution)
-cell_size = jnp.array([size, size])
-grid_edges = jnp.linspace(-grid_limit, grid_limit, grid_resolution + 1, endpoint=True)
-dists = grid_edges[:-1] + size / 2  # Cell center distances
-grid_cell_coords = jnp.meshgrid(dists, dists)
-grid_cells = jnp.array(jnp.vstack((grid_cell_coords[0].flatten(), grid_cell_coords[1].flatten())).T)
-gmm = GMM(n_dimensions=grid_cells.shape[1], n_components=grid_cells.shape[0])
+visibility_thresholds = jnp.array([
+    [box_limits[0,0] - visibility_threshold_from_grid, box_limits[0,1] + visibility_threshold_from_grid],
+    [box_limits[1,0] - visibility_threshold_from_grid, box_limits[1,1] + visibility_threshold_from_grid]
+])
+ax_lims = jnp.array([
+    [visibility_thresholds[0,0]-2, visibility_thresholds[0,1]+2],
+    [visibility_thresholds[1,0]-2, visibility_thresholds[1,1]+2]
+])
+gmm = BivariateGMM(n_components=n_gaussian_mixture_components)
 
 ### Parameters validation
 assert n_loss_samples % (n_humans + n_obstacles) == 0, "n_loss_samples must be divisible by (n_humans + n_obstacles)"
@@ -138,21 +139,21 @@ def simulate_n_steps(env, n_steps):
     return data
 
 ### GENERATE DATASET
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset_2.pkl')):
     ## GENERATE RAW DATASET
-    if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl')):
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset_2.pkl')):
         # Generate raw data
         raw_data = simulate_n_steps(env, n_steps)
         # Save raw data dataset
-        with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'wb') as f:
+        with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset_2.pkl'), 'wb') as f:
             pickle.dump(raw_data, f)
     else:
         # Load raw data dataset
-        with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset_2.pkl'), 'rb') as f:
             raw_data = pickle.load(f)
     ## GENERATE ROBOT-CENTERED DATASET
-    if not os.path.exists(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl')):
-        dataset = {
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset_2.pkl')):
+        robot_centric_data = {
             "episode_starts": raw_data["episode_starts"],
             "rc_lidar_measurements": jnp.zeros((n_steps, lidar_num_rays, 2)),
             "rc_humans_positions": jnp.zeros((n_steps, n_humans, 2)),
@@ -168,8 +169,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
             "obstacles_visibility": jnp.zeros((n_steps, n_obstacles, 1)),
         }
         # Compute robot-centered LiDAR measurements
-        dataset["rc_lidar_measurements"] = dataset["rc_lidar_measurements"].at[:,:,0].set(raw_data["lidar_measurements"][:,:,0])  # Ranges remain the same
-        dataset["rc_lidar_measurements"] = dataset["rc_lidar_measurements"].at[:,:,1].set(raw_data["lidar_measurements"][:,:,1] - raw_data["robot_orientations"][:,None])  # Angles are rotated to be in the robot frame
+        robot_centric_data["rc_lidar_measurements"] = robot_centric_data["rc_lidar_measurements"].at[:,:,0].set(raw_data["lidar_measurements"][:,:,0])  # Ranges remain the same
+        robot_centric_data["rc_lidar_measurements"] = robot_centric_data["rc_lidar_measurements"].at[:,:,1].set(raw_data["lidar_measurements"][:,:,1] - raw_data["robot_orientations"][:,None])  # Angles are rotated to be in the robot frame
         # Compute robot-centered humans positions
         @jit
         def roto_translate_pose_and_vel(position, orientation, velocity, ref_position, ref_orientation):
@@ -188,7 +189,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         @jit
         def batch_roto_translate_poses_and_vels(positions, orientations, velocities, ref_positions, ref_orientations):
             return vmap(roto_translate_poses_and_vels, in_axes=(0, 0, 0, 0, 0))(positions, orientations, velocities, ref_positions, ref_orientations)
-        dataset["rc_humans_positions"], dataset["rc_humans_orientations"], dataset["rc_humans_velocities"] = batch_roto_translate_poses_and_vels(
+        robot_centric_data["rc_humans_positions"], robot_centric_data["rc_humans_orientations"], robot_centric_data["rc_humans_velocities"] = batch_roto_translate_poses_and_vels(
             raw_data['humans_positions'],
             raw_data['humans_orientations'],
             raw_data['humans_velocities'],
@@ -199,7 +200,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         @jit
         def batch_roto_translate_goals(goals, ref_positions, ref_orientations):
             return vmap(roto_translate_pose_and_vel, in_axes=(0, None, None, 0, 0))(goals, jnp.array([0.]), jnp.array([0.,0.]), ref_positions, ref_orientations)[0]
-        dataset["rc_robot_goals"] = batch_roto_translate_goals(
+        robot_centric_data["rc_robot_goals"] = batch_roto_translate_goals(
             raw_data["robot_goals"],
             raw_data['robot_positions'],
             raw_data['robot_orientations'],
@@ -221,7 +222,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         @jit
         def batch_roto_translate_obstacles(obstacles, ref_positions, ref_orientations):
             return vmap(roto_translate_obstacles, in_axes=(0, 0, 0))(obstacles, ref_positions, ref_orientations)
-        dataset["rc_obstacles"] = batch_roto_translate_obstacles(
+        robot_centric_data["rc_obstacles"] = batch_roto_translate_obstacles(
             raw_data['static_obstacles'],
             raw_data['robot_positions'],
             raw_data['robot_orientations'],
@@ -297,10 +298,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         @jit
         def batch_object_visibility(batch_humans_positions, humans_radii, batch_static_obstacles):
             return vmap(_object_visibility, in_axes=(0, 0, 0))(batch_humans_positions, humans_radii, batch_static_obstacles)
-        dataset["humans_visibility"], dataset["obstacles_visibility"] = batch_object_visibility(
-            dataset['rc_humans_positions'],
-            dataset['humans_radii'],
-            dataset['rc_obstacles'],
+        robot_centric_data["humans_visibility"], robot_centric_data["obstacles_visibility"] = batch_object_visibility(
+            robot_centric_data['rc_humans_positions'],
+            robot_centric_data['humans_radii'],
+            robot_centric_data['rc_obstacles'],
         )
         # Assert if humans and obstacles are closer than visibility_threshold_from_grid to the robot
         @jit
@@ -308,7 +309,12 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
             # Humans
             @jit
             def is_human_inside_grid(position, radius):
-                return jnp.all(jnp.abs(position) < (visibility_threshold + radius))
+                return (
+                    (position[0] >= visibility_thresholds[0,0] - radius) &
+                    (position[0] <= visibility_thresholds[0,1] + radius) &
+                    (position[1] >= visibility_thresholds[1,0] - radius) &
+                    (position[1] <= visibility_thresholds[1,1] + radius)
+                )
             humans_inside_mask = vmap(is_human_inside_grid, in_axes=(0,0))(humans_positions, humans_radii)
             # Obstacles
             @jit
@@ -318,10 +324,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
                     obstacles[:,:,0,1], 
                     obstacles[:,:,1,0], 
                     obstacles[:,:,1,1], 
-                    -visibility_threshold, 
-                    visibility_threshold, 
-                    -visibility_threshold, 
-                    visibility_threshold,
+                    visibility_thresholds[0,0], 
+                    visibility_thresholds[0,1], 
+                    visibility_thresholds[1,0], 
+                    visibility_thresholds[1,1],
                 )[0]
             obstacles_inside_mask = batch_obstacles_is_inside_grid(static_obstacles)
             return humans_inside_mask, obstacles_inside_mask
@@ -329,15 +335,15 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         def batch_object_is_inside_grid(batch_humans_positions, humans_radii, batch_static_obstacles):
             return vmap(_object_is_inside_grid, in_axes=(0, 0, 0))(batch_humans_positions, humans_radii, batch_static_obstacles)
         humans_inside_mask, obstacles_inside_mask = batch_object_is_inside_grid(
-            dataset['rc_humans_positions'],
-            dataset['humans_radii'],
-            dataset['rc_obstacles'],
+            robot_centric_data['rc_humans_positions'],
+            robot_centric_data['humans_radii'],
+            robot_centric_data['rc_obstacles'],
         )
-        dataset["humans_visibility"] = dataset["humans_visibility"] & humans_inside_mask
-        dataset["obstacles_visibility"] = dataset["obstacles_visibility"] & obstacles_inside_mask
+        robot_centric_data["humans_visibility"] = robot_centric_data["humans_visibility"] & humans_inside_mask
+        robot_centric_data["obstacles_visibility"] = robot_centric_data["obstacles_visibility"] & obstacles_inside_mask
         ## DEBUG: Plot frames stream for visual inspection
         from matplotlib import rc, rcParams
-        from matplotlib.animation import FuncAnimation
+        from matplotlib.animation import FuncAnimation, FFMpegWriter
         rc('font', weight='regular', size=20)
         rcParams['pdf.fonttype'] = 42
         rcParams['ps.fonttype'] = 42
@@ -346,27 +352,26 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         def animate(frame):
             ax.clear()
             ax.set_title('Robot-Centric Frame Inspection')
-            ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+            ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
             ax.set_xlabel('X')
             ax.set_ylabel('Y', labelpad=-13)
             ax.set_aspect('equal', adjustable='box')
-            # Plot grid
-            for cell_center in grid_cells:
-                rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-                ax.add_patch(rect)
-            # Plot visibility grid threshold
-            rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+            # Plot box limits
+            rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+            ax.add_patch(rect)
+            # Plot visibility threshold
+            rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
             ax.add_patch(rect)
             # Plot robot goal
-            ax.scatter(dataset["rc_robot_goals"][frame,0], dataset["rc_robot_goals"][frame,1], marker="*", color="red", zorder=2)
+            ax.scatter(robot_centric_data["rc_robot_goals"][frame,0], robot_centric_data["rc_robot_goals"][frame,1], marker="*", color="red", zorder=2)
             # Plot humans
-            for h in range(len(dataset["rc_humans_positions"][frame])):
-                color = "green" if dataset["humans_visibility"][frame][h] else "grey"
-                alpha = 1 if dataset["humans_visibility"][frame][h] else 0.3
+            for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
+                color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
+                alpha = 1 if robot_centric_data["humans_visibility"][frame][h] else 0.3
                 if humans_policy == 'hsfm':
-                    head = plt.Circle((dataset["rc_humans_positions"][frame][h,0] + jnp.cos(dataset["rc_humans_orientations"][frame][h]) * dataset['humans_radii'][frame][h], dataset["rc_humans_positions"][frame][h,1] + jnp.sin(dataset["rc_humans_orientations"][frame][h]) * dataset['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                    head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
                     ax.add_patch(head)
-                circle = plt.Circle((dataset["rc_humans_positions"][frame][h,0], dataset["rc_humans_positions"][frame][h,1]), dataset['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
                 ax.add_patch(circle)
             # Plot robot
             if kinematics == 'unicycle':
@@ -375,14 +380,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
             circle = plt.Circle((0.,0.), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
             ax.add_patch(circle)
             # Plot static obstacles
-            for i, o in enumerate(dataset["rc_obstacles"][frame]):
+            for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
                 for j, s in enumerate(o):
-                    color = 'black' if dataset["obstacles_visibility"][frame][i,j] else 'grey'
-                    linestyle = 'solid' if dataset["obstacles_visibility"][frame][i,j] else 'dashed'
-                    alpha = 1 if dataset["obstacles_visibility"][frame][i,j] else 0.3
+                    color = 'black' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'grey'
+                    linestyle = 'solid' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'dashed'
+                    alpha = 1 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
                     ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
             # Plot lidar scans
-            for distance, angle in dataset["rc_lidar_measurements"][frame]:
+            for distance, angle in robot_centric_data["rc_lidar_measurements"][frame]:
                 ax.plot(
                     [0, distance * jnp.cos(angle)],
                     [0, distance * jnp.sin(angle)],
@@ -392,6 +397,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
                     zorder=0,
                 )
         anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+        if save_videos:
+            save_path = os.path.join(os.path.dirname(__file__), f'robot_centric_simulation.mp4')
+            writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
+            anim.save(save_path, writer=writer_video, dpi=300)
         anim.paused = False
         def toggle_pause(self, *args, **kwargs):
             if anim.paused: anim.resume()
@@ -399,14 +408,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
             anim.paused = not anim.paused
         fig.canvas.mpl_connect('button_press_event', toggle_pause)
         plt.show()
-        # Save robot-centered dataset
-        with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'wb') as f:
-            pickle.dump(dataset, f)
-        data = dataset
+        # Save robot-centered robot_centric_data
+        with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset_2.pkl'), 'wb') as f:
+            pickle.dump(robot_centric_data, f)
     else:
         # Load robot-centered dataset
-        with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
-            data = pickle.load(f)
+        with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset_2.pkl'), 'rb') as f:
+            robot_centric_data = pickle.load(f)
     ### GENERATE LIDAR TO GMM SAMPLES DATASET
     # Initialize final dataset
     dataset = {
@@ -469,22 +477,22 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
             padded_robot_positions, 
             padded_robot_orientations
         )
-    num_episodes = jnp.sum(data["episode_starts"])
-    start_idxs = jnp.append(jnp.where(data["episode_starts"], size=num_episodes)[0], n_steps)
+    num_episodes = jnp.sum(robot_centric_data["episode_starts"])
+    start_idxs = jnp.append(jnp.where(robot_centric_data["episode_starts"], size=num_episodes)[0], n_steps)
     for i in range(num_episodes):
         length = start_idxs[i+1] - start_idxs[i]
         dataset["inputs"] = dataset["inputs"].at[start_idxs[i]:start_idxs[i+1]].set(
             build_inputs(
                 jnp.arange(n_stack-1, length+n_stack-1),
-                jnp.concatenate((jnp.tile(data["rc_lidar_measurements"][start_idxs[i],:,:], (n_stack-1, 1, 1)), data["rc_lidar_measurements"][start_idxs[i]:start_idxs[i+1]]), axis=0),
-                jnp.concatenate((jnp.tile(jnp.zeros((2,)), (n_stack-1, 1)), data["robot_actions"][start_idxs[i]:start_idxs[i+1]]), axis=0),
-                jnp.concatenate((jnp.tile(data["robot_positions"][start_idxs[i],:], (n_stack-1, 1)), data["robot_positions"][start_idxs[i]:start_idxs[i+1]]), axis=0),
-                jnp.concatenate((jnp.tile(data["robot_orientations"][start_idxs[i]], (n_stack-1,)), data["robot_orientations"][start_idxs[i]:start_idxs[i+1]]), axis=0),
+                jnp.concatenate((jnp.tile(robot_centric_data["rc_lidar_measurements"][start_idxs[i],:,:], (n_stack-1, 1, 1)), robot_centric_data["rc_lidar_measurements"][start_idxs[i]:start_idxs[i+1]]), axis=0),
+                jnp.concatenate((jnp.tile(jnp.zeros((2,)), (n_stack-1, 1)), robot_centric_data["robot_actions"][start_idxs[i]:start_idxs[i+1]]), axis=0),
+                jnp.concatenate((jnp.tile(robot_centric_data["robot_positions"][start_idxs[i],:], (n_stack-1, 1)), robot_centric_data["robot_positions"][start_idxs[i]:start_idxs[i+1]]), axis=0),
+                jnp.concatenate((jnp.tile(robot_centric_data["robot_orientations"][start_idxs[i]], (n_stack-1,)), robot_centric_data["robot_orientations"][start_idxs[i]:start_idxs[i+1]]), axis=0),
             )
         )
     ## DEBUG: Inspect inputs
     from matplotlib import rc, rcParams
-    from matplotlib.animation import FuncAnimation
+    from matplotlib.animation import FuncAnimation, FFMpegWriter
     rc('font', weight='regular', size=20)
     rcParams['pdf.fonttype'] = 42
     rcParams['ps.fonttype'] = 42
@@ -493,32 +501,31 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
     def animate(frame):
         ax.clear()
         ax.set_title('Network Inputs Inspection')
-        ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+        ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
         ax.set_xlabel('X')
         ax.set_ylabel('Y', labelpad=-13)
         ax.set_aspect('equal', adjustable='box')
-        # Plot grid
-        for cell_center in grid_cells:
-            rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-            ax.add_patch(rect)
-        # Plot visibility grid threshold
-        rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+        # Plot box limits
+        rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+        ax.add_patch(rect)
+        # Plot visibility threshold
+        rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
         ax.add_patch(rect)
         # Plot humans
-        for h in range(len(data["rc_humans_positions"][frame])):
-            color = "green" if data["humans_visibility"][frame][h] else "grey"
-            alpha = 1 if data["humans_visibility"][frame][h] else 0.3
+        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
+            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
+            alpha = 1 if robot_centric_data["humans_visibility"][frame][h] else 0.3
             if humans_policy == 'hsfm':
-                head = plt.Circle((data["rc_humans_positions"][frame][h,0] + jnp.cos(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h], data["rc_humans_positions"][frame][h,1] + jnp.sin(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
                 ax.add_patch(head)
-            circle = plt.Circle((data["rc_humans_positions"][frame][h,0], data["rc_humans_positions"][frame][h,1]), data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
             ax.add_patch(circle)
         # Plot static obstacles
-        for i, o in enumerate(data["rc_obstacles"][frame]):
+        for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
             for j, s in enumerate(o):
-                color = 'black' if data["obstacles_visibility"][frame][i,j] else 'grey'
-                linestyle = 'solid' if data["obstacles_visibility"][frame][i,j] else 'dashed'
-                alpha = 1 if data["obstacles_visibility"][frame][i,j] else 0.3
+                color = 'black' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'grey'
+                linestyle = 'solid' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'dashed'
+                alpha = 1 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
                 ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
         # Plot lidar scans
         point_clouds = dataset["inputs"][frame][:, :-2].reshape((n_stack, lidar_num_rays, 2))
@@ -536,6 +543,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
                 zorder=20 + i,
             )
     anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+    if save_videos:
+        save_path = os.path.join(os.path.dirname(__file__), f'network_inputs.mp4')
+        writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
+        anim.save(save_path, writer=writer_video, dpi=300)
     anim.paused = False
     def toggle_pause(self, *args, **kwargs):
         if anim.paused: anim.resume()
@@ -631,8 +642,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         def fill_nan_samples(idx:int, total_nans:int, samples: jnp.ndarray, key: random.PRNGKey) -> jnp.ndarray:
             return lax.cond(
                 idx < n_samples - total_nans,
-                lambda data: data[1][idx],
-                lambda data: data[1][random.randint(key, (), 0, n_samples - total_nans)],
+                lambda robot_centric_data: robot_centric_data[1][idx],
+                lambda robot_centric_data: robot_centric_data[1][random.randint(key, (), 0, n_samples - total_nans)],
                 (total_nans, samples, key)
             )
         return lax.cond(
@@ -647,16 +658,16 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
             None
         )
     dataset["target_samples"] = vmap(build_frame_target_samples, in_axes=(0, 0, 0, 0, 0, 0))(
-        data["rc_humans_positions"],
-        data["humans_radii"],
-        data["humans_visibility"],
-        data["rc_obstacles"],
-        data["obstacles_visibility"],
+        robot_centric_data["rc_humans_positions"],
+        robot_centric_data["humans_radii"],
+        robot_centric_data["humans_visibility"],
+        robot_centric_data["rc_obstacles"],
+        robot_centric_data["obstacles_visibility"],
         random.split(random.PRNGKey(random_seed), n_steps),
     )
     ## DEBUG: Inspect targets
     from matplotlib import rc, rcParams
-    from matplotlib.animation import FuncAnimation
+    from matplotlib.animation import FuncAnimation, FFMpegWriter
     rc('font', weight='regular', size=20)
     rcParams['pdf.fonttype'] = 42
     rcParams['ps.fonttype'] = 42
@@ -665,32 +676,31 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
     def animate(frame):
         ax.clear()
         ax.set_title('Target Samples Inspection')
-        ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+        ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
         ax.set_xlabel('X')
         ax.set_ylabel('Y', labelpad=-13)
         ax.set_aspect('equal', adjustable='box')
-        # Plot grid
-        for cell_center in grid_cells:
-            rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-            ax.add_patch(rect)
-        # Plot visibility grid threshold
-        rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+        # Plot box limits
+        rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+        ax.add_patch(rect)
+        # Plot visibility threshold
+        rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
         ax.add_patch(rect)
         # Plot humans
-        for h in range(len(data["rc_humans_positions"][frame])):
-            color = "green" if data["humans_visibility"][frame][h] else "grey"
-            alpha = 1 if data["humans_visibility"][frame][h] else 0.3
+        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
+            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
+            alpha = 1 if robot_centric_data["humans_visibility"][frame][h] else 0.3
             if humans_policy == 'hsfm':
-                head = plt.Circle((data["rc_humans_positions"][frame][h,0] + jnp.cos(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h], data["rc_humans_positions"][frame][h,1] + jnp.sin(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
                 ax.add_patch(head)
-            circle = plt.Circle((data["rc_humans_positions"][frame][h,0], data["rc_humans_positions"][frame][h,1]), data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
             ax.add_patch(circle)
         # Plot static obstacles
-        for i, o in enumerate(data["rc_obstacles"][frame]):
+        for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
             for j, s in enumerate(o):
-                color = 'black' if data["obstacles_visibility"][frame][i,j] else 'grey'
-                linestyle = 'solid' if data["obstacles_visibility"][frame][i,j] else 'dashed'
-                alpha = 1 if data["obstacles_visibility"][frame][i,j] else 0.3
+                color = 'black' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'grey'
+                linestyle = 'solid' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'dashed'
+                alpha = 1 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
                 ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
         # Plot target samples
         ax.scatter(
@@ -702,6 +712,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
             zorder=20,
         )
     anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+    if save_videos:
+        save_path = os.path.join(os.path.dirname(__file__), f'target_samples.mp4')
+        writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
+        anim.save(save_path, writer=writer_video, dpi=300)
     anim.paused = False
     def toggle_pause(self, *args, **kwargs):
         if anim.paused: anim.resume()
@@ -711,55 +725,53 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
     plt.show()
     # Build next target samples
     dataset["next_target_samples"] = vmap(build_frame_target_samples, in_axes=(0, 0, 0, 0, 0, 0))(
-        data["rc_humans_positions"] + data["rc_humans_velocities"] * (robot_dt * prediction_horizon),
-        data["humans_radii"],
-        data["humans_visibility"],
-        data["rc_obstacles"],
-        data["obstacles_visibility"],
+        robot_centric_data["rc_humans_positions"] + robot_centric_data["rc_humans_velocities"] * (robot_dt * prediction_horizon),
+        robot_centric_data["humans_radii"],
+        robot_centric_data["humans_visibility"],
+        robot_centric_data["rc_obstacles"],
+        robot_centric_data["obstacles_visibility"],
         random.split(random.PRNGKey(random_seed), n_steps),
     )
     ## DEBUG: Inspect next targets
     from matplotlib import rc, rcParams
-    from matplotlib.animation import FuncAnimation
+    from matplotlib.animation import FuncAnimation, FFMpegWriter
     rc('font', weight='regular', size=20)
     rcParams['pdf.fonttype'] = 42
     rcParams['ps.fonttype'] = 42
     # Plot robot-centric simulation
     fig, ax = plt.subplots(figsize=(8,8))
-    ax_lim = visibility_threshold+2
     def animate(frame):
         ax.clear()
         ax.set_title('Next Target Samples Inspection')
-        ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+        ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
         ax.set_xlabel('X')
         ax.set_ylabel('Y', labelpad=-13)
         ax.set_aspect('equal', adjustable='box')
-        # Plot grid
-        for cell_center in grid_cells:
-            rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-            ax.add_patch(rect)
-        # Plot visibility grid threshold
-        rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+        # Plot box limits
+        rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+        ax.add_patch(rect)
+        # Plot visibility threshold
+        rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
         ax.add_patch(rect)
         # Plot humans
-        for h in range(len(data["rc_humans_positions"][frame])):
-            color = "green" if data["humans_visibility"][frame][h] else "grey"
-            alpha = 1 if data["humans_visibility"][frame][h] else 0.3
+        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
+            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
+            alpha = 1 if robot_centric_data["humans_visibility"][frame][h] else 0.3
             if humans_policy == 'hsfm':
-                head = plt.Circle((data["rc_humans_positions"][frame][h,0] + jnp.cos(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h], data["rc_humans_positions"][frame][h,1] + jnp.sin(data["rc_humans_orientations"][frame][h]) * data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
                 ax.add_patch(head)
-            circle = plt.Circle((data["rc_humans_positions"][frame][h,0], data["rc_humans_positions"][frame][h,1]), data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
             ax.add_patch(circle)
         # Plot human velocities
-        for h in range(len(data["rc_humans_positions"][frame])):
-            color = "green" if data["humans_visibility"][frame][h] else "grey"
-            alpha = 1 if data["humans_visibility"][frame][h] else 0.3
-            if data["humans_visibility"][frame][h]:
+        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
+            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
+            alpha = 1 if robot_centric_data["humans_visibility"][frame][h] else 0.3
+            if robot_centric_data["humans_visibility"][frame][h]:
                 ax.arrow(
-                    data["rc_humans_positions"][frame][h,0],
-                    data["rc_humans_positions"][frame][h,1],
-                    data["rc_humans_velocities"][frame][h,0],
-                    data["rc_humans_velocities"][frame][h,1],
+                    robot_centric_data["rc_humans_positions"][frame][h,0],
+                    robot_centric_data["rc_humans_positions"][frame][h,1],
+                    robot_centric_data["rc_humans_velocities"][frame][h,0],
+                    robot_centric_data["rc_humans_velocities"][frame][h,1],
                     head_width=0.15,
                     head_length=0.15,
                     fc=color,
@@ -768,11 +780,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
                     zorder=30,
                 )
         # Plot static obstacles
-        for i, o in enumerate(data["rc_obstacles"][frame]):
+        for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
             for j, s in enumerate(o):
-                color = 'black' if data["obstacles_visibility"][frame][i,j] else 'grey'
-                linestyle = 'solid' if data["obstacles_visibility"][frame][i,j] else 'dashed'
-                alpha = 1 if data["obstacles_visibility"][frame][i,j] else 0.3
+                color = 'black' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'grey'
+                linestyle = 'solid' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'dashed'
+                alpha = 1 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
                 ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
         # Plot target samples
         ax.scatter(
@@ -784,6 +796,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
             zorder=20,
         )
     anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+    if save_videos:
+        save_path = os.path.join(os.path.dirname(__file__), f'next_target_samples.mp4')
+        writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
+        anim.save(save_path, writer=writer_video, dpi=300)
     anim.paused = False
     def toggle_pause(self, *args, **kwargs):
         if anim.paused: anim.resume()
@@ -792,15 +808,15 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
     fig.canvas.mpl_connect('button_press_event', toggle_pause)
     plt.show()
     # Save dataset
-    with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset_2.pkl'), 'wb') as f:
         pickle.dump(dataset, f)
 else:
     # Load datasets
-    with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset_2.pkl'), 'rb') as f:
         raw_data = pickle.load(f)
-    with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset_2.pkl'), 'rb') as f:
         robot_centric_data = pickle.load(f)
-    with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset_2.pkl'), 'rb') as f:
         dataset = pickle.load(f)
 
 ### DEFINE NEURAL NETWORK
@@ -813,21 +829,22 @@ mlp_params = {
 class LidarNetwork(hk.Module):
     def __init__(
             self,
-            grid_cell_positions:jnp.ndarray,
+            box_limits:jnp.ndarray,
+            n_gaussian_mixture_components:int,
             lidar_num_rays:int,
             n_stack:int,
             mlp_params:dict=mlp_params,
         ) -> None:
-        super().__init__()  
-        self.gmm_means = grid_cell_positions  # Fixed means
-        self.n_gmm_cells = grid_cell_positions.shape[0]
+        super().__init__() 
+        self.box_limits = box_limits 
+        self.n_components = n_gaussian_mixture_components
         self.lidar_rays = lidar_num_rays
         self.n_stack = n_stack
         self.n_inputs = n_stack * (2 * lidar_num_rays + 2)
-        self.n_outputs = self.n_gmm_cells * 3 * 2  # 3 outputs per GMM cell (var_x, var_y, weight) times  2 GMMs (current and next)
+        self.n_outputs = self.n_components * 6 * 2  # 6 outputs per GMM cell (mean_x, mean_y, sigma_x, sigma_y, correlation, weight) times  2 GMMs (current and next)
         self.mlp = hk.nets.MLP(
             **mlp_params, 
-            output_sizes=[self.n_inputs * 3, self.n_inputs, self.n_inputs // 2, self.n_outputs], 
+            output_sizes=[self.n_inputs * 3, self.n_inputs * 2, self.n_outputs * 2, self.n_outputs], 
             name="mlp"
         )
 
@@ -840,28 +857,41 @@ class LidarNetwork(hk.Module):
         """
         mlp_output = self.mlp(x)
         ### Separate outputs
-        x_log_vars = mlp_output[:, :self.n_gmm_cells]  # log variance in x
-        y_log_vars = mlp_output[:, self.n_gmm_cells:2*self.n_gmm_cells]  # log variance in y
-        weights = nn.softmax(mlp_output[:, 2*self.n_gmm_cells:3*self.n_gmm_cells], axis=-1)  # Weights
-        next_x_log_vars = mlp_output[:, 3*self.n_gmm_cells:4*self.n_gmm_cells]  # Next log variance in x
-        next_y_log_vars = mlp_output[:, 4*self.n_gmm_cells:5*self.n_gmm_cells]  # Next log variance in y
-        next_weights = nn.softmax(mlp_output[:, 5*self.n_gmm_cells:], axis=-1)  # Next weights
+        # TODO: Bound means to be inside grid limits
+        x_means = nn.tanh(mlp_output[:, :self.n_components])
+        x_means = ((x_means + 1) / 2) * (self.box_limits[0, 1] - self.box_limits[0, 0]) + self.box_limits[0, 0]  # Scale to box limits
+        y_means = nn.tanh(mlp_output[:, self.n_components:2*self.n_components])
+        y_means = ((y_means + 1) / 2) * (self.box_limits[1, 1] - self.box_limits[1, 0]) + self.box_limits[1, 0]  # Scale to box limits
+        x_log_sigmas = mlp_output[:, 2*self.n_components:3*self.n_components]  # Std in x
+        y_log_sigmas = mlp_output[:, 3*self.n_components:4*self.n_components]  # Std in y
+        correlations = nn.tanh(mlp_output[:, 4*self.n_components:5*self.n_components])  # Correlations
+        weights = nn.softmax(mlp_output[:, 5*self.n_components:6*self.n_components], axis=-1)  # Weights
+        next_x_means = nn.tanh(mlp_output[:, 6*self.n_components:7*self.n_components])
+        next_x_means = ((next_x_means + 1) / 2) * (self.box_limits[0, 1] - self.box_limits[0, 0]) + self.box_limits[0, 0]  # Scale to box limits
+        next_y_means = nn.tanh(mlp_output[:, 7*self.n_components:8*self.n_components])
+        next_y_means = ((next_y_means + 1) / 2) * (self.box_limits[1, 1] - self.box_limits[1, 0]) + self.box_limits[1, 0]  # Scale to box limits
+        next_x_log_sigmas = mlp_output[:, 8*self.n_components:9*self.n_components] # Next std in x
+        next_y_log_sigmas = mlp_output[:, 9*self.n_components:10*self.n_components] # Next std in y
+        next_correlations = nn.tanh(mlp_output[:, 10*self.n_components:11*self.n_components])  # Correlations
+        next_weights = nn.softmax(mlp_output[:, 11*self.n_components:], axis=-1)  # Next weights
         ### Construct current GMM parameters
         distr = {
-            "means": jnp.tile(self.gmm_means, (x.shape[0], 1, 1)),  # Fixed means
-            "logvariances": jnp.stack((x_log_vars, y_log_vars), axis=-1),  # Shape (batch_size, n_gmm_cells, 2)
-            "weights": weights,  # Shape (batch_size, n_gmm_cells)
+            "means": jnp.stack((x_means, y_means), axis=-1), # Shape (batch_size, n_components, n_dimensions)
+            "logsigmas": jnp.stack((x_log_sigmas, y_log_sigmas), axis=-1), # Shape (batch_size, n_components, n_dimensions)
+            "correlations": correlations,  # Shape (batch_size, n_components)
+            "weights": weights,  # Shape (batch_size, n_components)
         }
         ### Construct next GMM parameters
         next_distr = {
-            "means": jnp.tile(self.gmm_means, (x.shape[0], 1, 1)),  # Fixed means
-            "logvariances": jnp.stack((next_x_log_vars, next_y_log_vars), axis=-1),  # Shape (batch_size, n_gmm_cells, 2)
-            "weights": next_weights,  # Shape (batch_size, n_gmm_cells)
+            "means": jnp.stack((next_x_means, next_y_means), axis=-1), # Shape (batch_size, n_components, n_dimensions)
+            "logsigmas": jnp.stack((next_x_log_sigmas, next_y_log_sigmas), axis=-1), # Shape (batch_size, n_components, n_dimensions)
+            "correlations": next_correlations,  # Shape (batch_size, n_components)
+            "weights": next_weights,  # Shape (batch_size, n_components)
         }
         return distr, next_distr
 @hk.transform
 def lidar_to_gmm_network(x):
-    net = LidarNetwork(grid_cells, lidar_num_rays, n_stack)
+    net = LidarNetwork(box_limits, n_gaussian_mixture_components, lidar_num_rays, n_stack)
     return net(x)
 # Initialize network
 sample_input = jnp.zeros((1, n_stack * (2 * lidar_num_rays + 2)))
@@ -873,43 +903,42 @@ def count_params(params):
 n_params = count_params(params)
 print(f"# Lidar network parameters: {n_params}")
 # Compute test samples to visualize GMMs
-s = jnp.linspace(-grid_limit, grid_limit, num=60, endpoint=True)
-test_samples_x, test_samples_y = jnp.meshgrid(s, s)
+sx = jnp.linspace(box_limits[0, 0], box_limits[0, 1], num=60, endpoint=True)
+sy = jnp.linspace(box_limits[1, 0], box_limits[1, 1], num=60, endpoint=True)
+test_samples_x, test_samples_y = jnp.meshgrid(sx, sy)
 test_samples = jnp.stack((test_samples_x.flatten(), test_samples_y.flatten()), axis=-1)
 
-# ### TEST INITIAL NETWORK
-# # Forward pass
-# output_distr, output_next_distr = network.apply(
-#     params, 
-#     None, 
-#     sample_input, 
-# )
-# distr = {k: jnp.squeeze(v) for k, v in output_distr.items()}
-# next_distr = {k: jnp.squeeze(v) for k, v in output_next_distr.items()}
-# fig, ax = plt.subplots(1, 2, figsize=(16, 8))
-# # Plot output current distribution
-# test_p = gmm.batch_p(distr, test_samples)
-# ax[0].set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
-# ax[0].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7)
-# ax[0].set_title("Random LiDAR network Output")
-# ax[0].set_xlabel("X")
-# ax[0].set_ylabel("Y")
-# for cell_center in grid_cells:
-#     rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
-#     ax[0].add_patch(rect)
-# ax[0].set_aspect('equal', adjustable='box')
-# # Plot output next distribution
-# test_p = gmm.batch_p(next_distr, test_samples)
-# ax[1].set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
-# ax[1].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7)
-# ax[1].set_title("Random LiDAR network Next Output")
-# ax[1].set_xlabel("X")
-# ax[1].set_ylabel("Y")
-# for cell_center in grid_cells:
-#     rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
-#     ax[1].add_patch(rect)
-# ax[1].set_aspect('equal', adjustable='box')
-# plt.show()
+### TEST INITIAL NETWORK
+# Forward pass
+output_distr, output_next_distr = network.apply(
+    params, 
+    None, 
+    sample_input, 
+)
+distr = {k: jnp.squeeze(v) for k, v in output_distr.items()}
+next_distr = {k: jnp.squeeze(v) for k, v in output_next_distr.items()}
+fig, ax = plt.subplots(1, 2, figsize=(16, 8))
+# Plot output current distribution
+test_p = gmm.batch_p(distr, test_samples)
+ax[0].set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
+ax[0].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7)
+ax[0].set_title("Random LiDAR network Output")
+ax[0].set_xlabel("X")
+ax[0].set_ylabel("Y")
+rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+ax[0].add_patch(rect)
+ax[0].set_aspect('equal', adjustable='box')
+# Plot output next distribution
+test_p = gmm.batch_p(next_distr, test_samples)
+ax[1].set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
+ax[1].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7)
+ax[1].set_title("Random LiDAR network Next Output")
+ax[1].set_xlabel("X")
+ax[1].set_ylabel("Y")
+rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+ax[1].add_patch(rect)
+ax[1].set_aspect('equal', adjustable='box')
+plt.show()
 
 ### DEFINE LOSS FUNCTION, UPDATE FUNCTIONS, AND OPTIMIZER
 @jit
@@ -941,8 +970,15 @@ def _compute_loss_and_gradients(
             # Compute the loss
             loss1 = jnp.mean(gmm.batch_neglogp(prediction, target))
             loss2 = jnp.mean(gmm.batch_neglogp(next_prediction, next_target))
-            loss = 0.5 * loss1 + 0.5 * loss2
-            return loss
+            nll_loss = 0.5 * loss1 + 0.5 * loss2
+            # Weights entropy regularization
+            weights = prediction["weights"]
+            next_weights = next_prediction["weights"]
+            eloss1 = -jnp.sum(weights * jnp.log(weights + 1e-8))
+            eloss2 = -jnp.sum(next_weights * jnp.log(next_weights + 1e-8))
+            entropy_loss = 1e-3 * (eloss1 + eloss2)
+            # debug.print("nll_loss: {x} - entropy_loss: {y}", x=nll_loss, y=entropy_loss)
+            return nll_loss + entropy_loss
         
         return jnp.mean(_loss_function(
                 current_params,
@@ -982,7 +1018,7 @@ optimizer = optax.sgd(learning_rate=learning_rate, momentum=0.9)
 optimizer_state = optimizer.init(params)
 
 ### TRAINING LOOP
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network_3.pkl')):
     ## DEBUG: Inspect training data
     full_nan_experiences = jnp.logical_and(jnp.isnan(dataset["target_samples"]).all(axis=(1,2)),jnp.isnan(dataset["next_target_samples"]).all(axis=(1,2)))
     print(f"# Number of full NaN experiences in training dataset: {jnp.sum(full_nan_experiences)} / {n_steps}")
@@ -1038,7 +1074,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
         (dataset, params, optimizer_state, jnp.zeros((n_epochs, int(n_data // batch_size))))
     )
     # Save trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'gmm_network_3.pkl'), 'wb') as f:
         pickle.dump(params, f)
     # Plot training loss
     avg_losses = jnp.mean(losses, axis=1)
@@ -1050,12 +1086,12 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
     fig.savefig(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_training_loss.eps'), format='eps')
 else:
     # Load trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'gmm_network_3.pkl'), 'rb') as f:
         params = pickle.load(f)
 
 ### CHECK TRAINED NETWORK PREDICTIONS
 from matplotlib import rc, rcParams
-from matplotlib.animation import FuncAnimation
+from matplotlib.animation import FuncAnimation, FFMpegWriter
 rc('font', weight='regular', size=20)
 rcParams['pdf.fonttype'] = 42
 rcParams['ps.fonttype'] = 42
@@ -1064,16 +1100,15 @@ fig, axs = plt.subplots(1,2,figsize=(16,8))
 def animate(frame):
     for ax in axs:
         ax.clear()
-        ax.set(xlim=[-ax_lim, ax_lim], ylim=[-ax_lim, ax_lim])
+        ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
         ax.set_xlabel('X')
         ax.set_ylabel('Y', labelpad=-13)
         ax.set_aspect('equal', adjustable='box')
-        # Plot grid
-        for cell_center in grid_cells:
-            rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-            ax.add_patch(rect)
-        # Plot visibility grid threshold
-        rect = plt.Rectangle((-visibility_threshold,-visibility_threshold), visibility_threshold * 2, visibility_threshold * 2, edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+        # Plot box limits
+        rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+        ax.add_patch(rect)
+        # Plot visibility threshold
+        rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
         ax.add_patch(rect)
         # Plot humans
         for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
@@ -1116,17 +1151,25 @@ def animate(frame):
     )
     distr = {k: jnp.squeeze(v) for k, v in output_distr.items()}
     next_distr = {k: jnp.squeeze(v) for k, v in output_next_distr.items()}
+    # print(f"Distribution covariance (frame {frame}): {gmm.covariances(distr)}")
+    # print(f"Next distribution covariance (frame {frame}): {gmm.covariances(next_distr)}")
     test_p = gmm.batch_p(distr, test_samples)
     points_high_p = test_samples[test_p > p_visualization_threshold]
     corresponding_colors = test_p[test_p > p_visualization_threshold]
+    axs[0].scatter(distr["means"][:,0], distr["means"][:,1], c='red', s=10, marker='x', zorder=100)
     axs[0].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
     axs[0].set_title("Current Predicted GMM")
     next_test_p = gmm.batch_p(next_distr, test_samples)
     points_high_p = test_samples[next_test_p > p_visualization_threshold]
     corresponding_colors = next_test_p[next_test_p > p_visualization_threshold]
+    axs[1].scatter(next_distr["means"][:,0], next_distr["means"][:,1], c='red', s=10, marker='x', zorder=100)
     axs[1].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
     axs[1].set_title("Next Predicted GMM")
 anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+if save_videos:
+    save_path = os.path.join(os.path.dirname(__file__), f'trained_network.mp4')
+    writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
+    anim.save(save_path, writer=writer_video, dpi=300)
 anim.paused = False
 def toggle_pause(self, *args, **kwargs):
     if anim.paused: anim.resume()

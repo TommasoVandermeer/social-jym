@@ -257,7 +257,7 @@ def fit_gmm_to_humans_positions(humans_position, humans_visibility, humans_radii
     variances_per_cell = jnp.sum(humans_weights_per_cell * humans_radii[:, None]**2, axis=0) / (weights_per_cell + 1e-8) + 1e-8
     fitted_distribution = {
         "means": grid_cells,
-        "logsigmas": jnp.stack((jnp.log(variances_per_cell), jnp.log(variances_per_cell)), axis=1),
+        "logvariances": jnp.stack((jnp.log(variances_per_cell), jnp.log(variances_per_cell)), axis=1),
         "weights": norm_cell_weights,
     }
     return fitted_distribution
@@ -340,7 +340,7 @@ def fit_gmm_to_obstacles(obstacles, obstacles_visibility, grid_cells, scaling=0.
     # Initialize fitted distribution
     fitted_distribution = {
         "means": grid_cells,
-        "logsigmas": jnp.log(obstacles_weighted_variances_per_cell),
+        "logvariances": jnp.log(obstacles_weighted_variances_per_cell),
         "weights": norm_cell_weights,
     }
     return fitted_distribution
