@@ -223,3 +223,19 @@ class BivariateGMM(BaseDistribution):
     @partial(jit, static_argnames=("self"))
     def batch_p(self, distribution:dict, samples:jnp.ndarray):
         return vmap(BivariateGMM.p, in_axes=(None, None, 0))(self, distribution, samples)
+    
+    @partial(jit, static_argnames=("self"))
+    def contrastivelogp(self, distribution:dict, sample:jnp.ndarray, is_positive:bool):
+        """
+        Compute the contrastive log-probability of a sample: neglogp if positive, logp if negative.
+        """
+        return lax.cond(
+            is_positive,
+            lambda _: self.neglogp(distribution, sample),
+            lambda _: self.logp(distribution, sample), # jnp.max(jnp.array([self.logp(distribution, sample)-tau, 0.])),
+            operand=None
+        )
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_contrastivelogp(self, distribution:dict, samples:jnp.ndarray, is_positives:jnp.ndarray):
+        return vmap(BivariateGMM.contrastivelogp, in_axes=(None, None, 0, 0))(self, distribution, samples, is_positives)
