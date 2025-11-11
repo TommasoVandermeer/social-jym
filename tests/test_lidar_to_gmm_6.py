@@ -1377,3 +1377,109 @@ def toggle_pause(self, *args, **kwargs):
     anim.paused = not anim.paused
 fig.canvas.mpl_connect('button_press_event', toggle_pause)
 plt.show()
+
+
+### NOT ROBO-CENTRIC ANIMATION
+# TODO: Not fully implemented yet
+from matplotlib import rc, rcParams
+from matplotlib.animation import FuncAnimation, FFMpegWriter
+rc('font', weight='regular', size=20)
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
+p_visualization_threshold = 0.01
+fig, axs = plt.subplots(1,3,figsize=(24,8))
+fig.subplots_adjust(left=0.05, right=0.99, wspace=0.13)
+def animate(frame):
+    for ax in axs:
+        ax.clear()
+        ax.set(xlim=[-10,10], ylim=[-10,10])
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y', labelpad=-13)
+        ax.set_aspect('equal', adjustable='box')
+        # Plot box limits
+        # rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+        # ax.add_patch(rect)
+        # Plot visibility threshold
+        # rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
+        # ax.add_patch(rect)
+        # Plot humans
+        for h in range(len(raw_data["humans_positions"][frame])):
+            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
+            alpha = 0.6 if robot_centric_data["humans_visibility"][frame][h] else 0.3
+            if humans_policy == 'hsfm':
+                head = plt.Circle((raw_data["humans_positions"][frame][h,0] + jnp.cos(raw_data["humans_orientations"][frame][h]) * raw_data['humans_radii'][frame][h], raw_data["humans_positions"][frame][h,1] + jnp.sin(raw_data["humans_orientations"][frame][h]) * raw_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                ax.add_patch(head)
+            circle = plt.Circle((raw_data["humans_positions"][frame][h,0], raw_data["humans_positions"][frame][h,1]), raw_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            ax.add_patch(circle)
+        # Plot human velocities
+        for h in range(len(raw_data["humans_positions"][frame])):
+            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
+            alpha = 0.6 if robot_centric_data["humans_visibility"][frame][h] else 0.3
+            if robot_centric_data["humans_visibility"][frame][h]:
+                ax.arrow(
+                    raw_data["humans_positions"][frame][h,0],
+                    raw_data["humans_positions"][frame][h,1],
+                    raw_data["humans_velocities"][frame][h,0],
+                    raw_data["humans_velocities"][frame][h,1],
+                    head_width=0.15,
+                    head_length=0.15,
+                    fc=color,
+                    ec=color,
+                    alpha=alpha,
+                    zorder=30,
+                )
+        # Plot robot
+        if kinematics == 'unicycle':
+            head = plt.Circle((robot_radius, 0.), 0.1, color='black', zorder=1)
+            ax.add_patch(head)
+        circle = plt.Circle((0.,0.), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+        ax.add_patch(circle)
+        # Plot static obstacles
+        for i, o in enumerate(raw_data["static_obstacles"][frame]):
+            for j, s in enumerate(o):
+                color = 'black' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'grey'
+                linestyle = 'solid' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'dashed'
+                alpha = 0.6 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
+                ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
+    # Plot predicted GMM samples
+    obs_distr, hum_distr, next_hum_distr = network.apply(
+        params, 
+        None, 
+        jnp.reshape(dataset["inputs"][frame], (1, n_stack * (2 * lidar_num_rays + 2))), 
+    )
+    obs_distr = {k: jnp.squeeze(v) for k, v in obs_distr.items()}
+    hum_distr = {k: jnp.squeeze(v) for k, v in hum_distr.items()}
+    next_hum_distr = {k: jnp.squeeze(v) for k, v in next_hum_distr.items()}
+    # print(f"Obstacles distribution covariance (frame {frame}): {gmm.covariances(obs_distr)}")
+    # print(f"Humans distribution covariance (frame {frame}): {gmm.covariances(hum_distr)}")
+    # print(f"Next humans distribution covariance (frame {frame}): {gmm.covariances(next_hum_distr)}")
+    test_p = gmm.batch_p(obs_distr, test_samples)
+    points_high_p = test_samples[test_p > p_visualization_threshold]
+    corresponding_colors = test_p[test_p > p_visualization_threshold]
+    axs[0].scatter(obs_distr["means"][:,0], obs_distr["means"][:,1], c='red', s=10, marker='x', zorder=100)
+    axs[0].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+    axs[0].set_title("Obstacles Predicted GMM")
+    test_p = gmm.batch_p(hum_distr, test_samples)
+    points_high_p = test_samples[test_p > p_visualization_threshold]
+    corresponding_colors = test_p[test_p > p_visualization_threshold]
+    axs[1].scatter(hum_distr["means"][:,0], hum_distr["means"][:,1], c='red', s=10, marker='x', zorder=100)
+    axs[1].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+    axs[1].set_title("Humans Predicted GMM")
+    test_p = gmm.batch_p(next_hum_distr, test_samples)
+    points_high_p = test_samples[test_p > p_visualization_threshold]
+    corresponding_colors = test_p[test_p > p_visualization_threshold]
+    axs[2].scatter(next_hum_distr["means"][:,0], next_hum_distr["means"][:,1], c='red', s=10, marker='x', zorder=100)
+    axs[2].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+    axs[2].set_title("Next Humans Predicted GMM")
+anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+if save_videos:
+    save_path = os.path.join(os.path.dirname(__file__), f'trained_network.mp4')
+    writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
+    anim.save(save_path, writer=writer_video, dpi=300)
+anim.paused = False
+def toggle_pause(self, *args, **kwargs):
+    if anim.paused: anim.resume()
+    else: anim.pause()
+    anim.paused = not anim.paused
+fig.canvas.mpl_connect('button_press_event', toggle_pause)
+plt.show()
