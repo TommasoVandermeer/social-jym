@@ -10,6 +10,16 @@ from socialjym.utils.global_planners.base_global_planner import GLOBAL_PLANNERS
 from socialjym.utils.global_planners.a_star import AStarPlanner
 from socialjym.utils.global_planners.dijkstra import DijkstraPlanner
 
+# IMPLEMENTATION OF SARL*
+# @inproceedings{li2019sarl,
+#   title={SARL: Deep reinforcement learning based human-aware navigation for mobile robot in indoor environments},
+#   author={Li, Keyu and Xu, Yangxin and Wang, Jiankun and Meng, Max Q-H},
+#   booktitle={2019 IEEE International Conference on Robotics and Biomimetics (ROBIO)},
+#   pages={688--694},
+#   year={2019},
+#   organization={IEEE}
+# }
+
 class SARLStar(SARL):
     def __init__(
             self, 
