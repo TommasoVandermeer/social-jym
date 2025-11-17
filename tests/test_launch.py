@@ -29,7 +29,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'perpendicular_traffic',
+    'scenario': 'corner_traffic',
     'hybrid_scenario_subset': jnp.array([0,1], dtype=jnp.int32),
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
@@ -60,16 +60,16 @@ for i in range(n_episodes):
     state, reset_key, obs, info, outcome = env.reset(reset_key)
     lidar_measurements = env.get_lidar_measurements(obs[-1,:2], jnp.atan2(*jnp.flip(obs[-1,2:4])), obs[:-1,:2], info["humans_parameters"][:,0], info['static_obstacles'][-1])
 
-    info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.1) # Set humans' safety space to 0.1
+    # info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.1) # Set humans' safety space to 0.1
 
     all_states = np.array([state])
     all_lidar_measurements = np.array([lidar_measurements])
     while outcome["nothing"]:
 
-        # action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
-        # state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
+        action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
+        state, obs, info, reward, outcome, _ = env.step(state,info,jnp.array([0.,0.]),test=True)
 
-        state, obs, info, reward, outcome = env.imitation_learning_step(state,info)
+        # state, obs, info, reward, outcome = env.imitation_learning_step(state,info)
 
         print(f"Return in steps [0,{info['step']}):", info["return"], f" - time : {info['time']}")
         lidar_measurements = env.get_lidar_measurements(obs[-1,:2], obs[-1,5], obs[:-1,:2], info["humans_parameters"][:,0], info['static_obstacles'][-1])
@@ -99,7 +99,8 @@ for i in range(n_episodes):
         static_obstacles=info['static_obstacles'][-1],
         robot_dt=env_params['robot_dt'],
         lidar_measurements=all_lidar_measurements,
-        kinematics=kinematics)
+        kinematics=kinematics,
+        )
 # Print simulation times
 print(f"Average time per episode: {round(np.mean(episode_simulation_times),2)} seconds")
 print(f"Total time for {n_episodes} episodes: {round(np.sum(episode_simulation_times),2)} seconds")

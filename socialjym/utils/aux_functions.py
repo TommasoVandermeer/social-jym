@@ -1341,7 +1341,7 @@ def animate_trajectory(
         ax = axes[0]
     else:
         fig, ax = plt.subplots(figsize=figsize, dpi=300)
-        fig.subplots_adjust(right=0.78, top=0.90, bottom=0.05)
+        fig.subplots_adjust(right=0.78, top=0.90, bottom=0.15)
     ax.set_aspect('equal', adjustable='box')
     ax.set(xlim=[-10,10],ylim=[-10,10])
     ax.set_xlabel('X')
