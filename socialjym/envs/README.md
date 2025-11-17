@@ -11,7 +11,7 @@ Methods to run multiple instances of the same environments in parallel are inclu
 
 ## SocialNav
 <img src="../../.media/cc.gif" alt="SocialNav Circular Crossing" width="350"/> <br>
-SocialNav is a high-level environment in which it is assumed that the robot has a perfect knowledge of the state (position and velocities of humans, poisition of static obstacles). Humans are modeled as disks of a certain radius and can move with any human motion model. Static obstacles are modeled as polygons or single segments.
+SocialNav is a high-level environment in which it is assumed that the robot has a perfect knowledge of the world state (position and velocities of humans, poisition of static obstacles). Humans are modeled as disks of a certain radius and can move with any human motion model available. Static obstacles are modeled as polygons or single segments.
 
 ## LaserNav
 LaserNav is an environment in which the robot percieves the world with a 2D LiDAR sensor with predefined parameters. Here also legs dynamics are implemented for humans and the LiDAR rays are casted to collide with these, rather than with disks (to make it more realistic). Static obstacles are modeled as polygons or sigle segments.
