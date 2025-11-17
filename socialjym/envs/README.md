@@ -10,7 +10,7 @@ Methods to run multiple instances of the same environments in parallel are inclu
 -  <b>batch_reset</b>(reset_keys): resets all the environments in parallel.
 
 ## SocialNav
-<img src="../../.media/cc.gif" alt="SocialNav Circular Crossing" width="350"/> <br>
+<img src="../../.media/socialnav.gif" alt="SocialNav Circular Crossing" width="350"/> <br>
 SocialNav is a high-level environment in which it is assumed that the robot has a perfect knowledge of the world state (position and velocities of humans, poisition of static obstacles). Humans are modeled as disks of a certain radius and can move with any human motion model available. Static obstacles are modeled as polygons or single segments.
 
 ## LaserNav
