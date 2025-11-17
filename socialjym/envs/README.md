@@ -4,9 +4,14 @@ This module contatins the available Gym-stile RL environments for <b>social navi
 -  <b>reset</b>(reset_key): resets the environment based on the env scenario to its initial state using reset_key for stochasticity.
 -  <b>_get_obs</b>(state, info, action): computes the robot observation given the current state and the last action taken by the robot.
 
+### Vectorized environments
+Methods to run multiple instances of the same environments in parallel are included:
+-  <b>batch_step</b>(states, infos, actions, reset_if_done, reset_keys): steps all the environments in parallel.
+-  <b>batch_reset</b>(reset_keys): resets all the environments in parallel.
+
 ## SocialNav
 <img src="../../.media/cc.gif" alt="SocialNav Circular Crossing" width="350"/> <br>
-SocialNav is a high-level environment in which it is assumed that the robot has a perfect knowledge of the state (position and velocities of humans, poisition of static obstacles). Humans are modeled as disks of a certain radius and can move with any human motion model. Static obstacles are modeled as polygons or sigle segments.
+SocialNav is a high-level environment in which it is assumed that the robot has a perfect knowledge of the state (position and velocities of humans, poisition of static obstacles). Humans are modeled as disks of a certain radius and can move with any human motion model. Static obstacles are modeled as polygons or single segments.
 
 ## LaserNav
-LaserNav is an environment in which the robot percieves the world with a 1D LiDAR sensor with predefined parameters. Here also legs dynamics are implemented for humans and the LiDAR rays are casted to collide with these, rather than with disks (to make it more realistic). Static obstacles are modeled as polygons or sigle segments.
+LaserNav is an environment in which the robot percieves the world with a 2D LiDAR sensor with predefined parameters. Here also legs dynamics are implemented for humans and the LiDAR rays are casted to collide with these, rather than with disks (to make it more realistic). Static obstacles are modeled as polygons or sigle segments.
