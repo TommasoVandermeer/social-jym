@@ -41,7 +41,7 @@ class Actor(hk.Module):
             **kwargs:dict,
         ) -> jnp.ndarray:
         """
-        Computes the value of the state given the input x of shape (# of humans, length of reparametrized state)
+        Computes the action given the re-parametrized state x.
         """
         ## Get kwargs
         random_key = kwargs.get("random_key", random.PRNGKey(0))
