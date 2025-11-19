@@ -6,8 +6,9 @@ from jax import jit
 
 DISTRIBUTIONS = [
     "gaussian",
-    "dirichlet-bernoulli",
+    "GMM",
     "dirichlet",
+    "BivariateGMM",
 ]
 
 class BaseDistribution(ABC):
