@@ -59,6 +59,10 @@ def is_multiple(number:float, dividend:float, tolerance:float=1e-7) -> bool:
     return jnp.any(jnp.array([abs(mod) <= tolerance,abs(dividend - mod) <= tolerance]))
 
 class BaseEnv(ABC):
+    """
+    Base class for social navigation environments.
+    Defines all the scenarios, ray casting, hidden reset and info initialization.
+    """
     def __init__(
         self,
         robot_radius:float, 

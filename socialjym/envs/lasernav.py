@@ -8,7 +8,13 @@ from .base_env import BaseEnv, SCENARIOS, ROBOT_KINEMATICS
 class LaserNav(BaseEnv):
     """
     A simple OpenAI gym-like environment based on JAX to train mobile robots for social navigation tasks 
-    through RL using a 2D LiDAR as sensor.
+    through RL. 
+    The robot senses the environment through a 2D LiDAR. 
+    Humans move according the Headed Social Force Model (HSFM).
+    Humans legs dynamics are also simulated.
+    LiDAR rays collide with humans legs and static obstacles.
+
+    Suitable for policies: JESSI
     """
     def __init__(
             self, 
@@ -36,17 +42,7 @@ class LaserNav(BaseEnv):
             grid_cell_size:float = 0.9, # Such parameter is suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT)
             grid_min_size:float = 18. # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
         ) -> None:
-        """
-        A simple OpenAI gym-like environment based on JAX to train mobile robots for social navigation tasks 
-        through RL. 
-        The robot senses the environment through a 2D LiDAR. 
-        Humans move according the Headed Social Force Model (HSFM).
-        Humans legs dynamics are also simulated.
-        LiDAR rays collide with humans legs and static obstacles.
-
-        Suitable for policies: JESSI
-        """
-        ## SocialNav env initialization
+        ## BaseEnv initialization
         super().__init__(
             robot_radius=robot_radius,
             robot_dt=robot_dt,
@@ -160,7 +156,7 @@ class LaserNav(BaseEnv):
     def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment, and the robot's action,
-        this function computes the observation of the current state.
+        this function computes the observation of the current state (which is a stack of the last n_stack observations).
 
         args:
         - state: current state of the environment.
