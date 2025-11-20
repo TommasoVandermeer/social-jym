@@ -1056,6 +1056,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
                 optimizer_state,
                 batch,
             )
+            # debug.print("Epoch {x}, Batch {y}, Loss: {l}", x=i, y=j, l=loss)
             # Save loss
             losses = losses.at[i,j].set(loss)
             return epoch_data, params, optimizer_state, losses
