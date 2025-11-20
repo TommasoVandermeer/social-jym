@@ -29,7 +29,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'corner_traffic',
+    'scenario': 'circular_crossing',
     'hybrid_scenario_subset': jnp.array([0,1], dtype=jnp.int32),
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
@@ -67,7 +67,7 @@ for i in range(n_episodes):
     while outcome["nothing"]:
 
         action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
-        state, obs, info, reward, outcome, _ = env.step(state,info,jnp.array([0.,0.]),test=True)
+        state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
 
         # state, obs, info, reward, outcome = env.imitation_learning_step(state,info)
 

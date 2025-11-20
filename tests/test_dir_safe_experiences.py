@@ -6,7 +6,7 @@ from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.lines import Line2D
 
-with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset_2.pkl'), 'rb') as file:
+with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'rb') as file:
     raw_data = pickle.load(file)
 
 # data = {

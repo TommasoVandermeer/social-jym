@@ -50,10 +50,19 @@ def wrap_angle(theta:float) -> float:
         theta)
     return wrapped_theta
 
+@jit
+def is_multiple(number:float, dividend:float, tolerance:float=1e-7) -> bool:
+    """
+    Checks if a number (also a float) is a multiple of another number within a given tolerance error.
+    """
+    mod = number % dividend
+    return jnp.any(jnp.array([abs(mod) <= tolerance,abs(dividend - mod) <= tolerance]))
+
 class BaseEnv(ABC):
     def __init__(
         self,
         robot_radius:float, 
+        robot_dt:float,
         humans_dt:float, 
         scenario:str, 
         n_humans:int, 
@@ -83,7 +92,14 @@ class BaseEnv(ABC):
         assert kinematics in ROBOT_KINEMATICS, f"Invalid robot kinematics. Choose one of {ROBOT_KINEMATICS}"
         if grid_map_computation:
             assert grid_cell_size > 0, "There should be at least one obstacle (also padding obstacles) to enable grid map computation."
+        if n_obstacles > 0:
+            print(f"\nWARNING: Obstacles have been added to the environment, but collision detection is not implemented yet (only with humans).\nThe robot must be able to avoid them by design.\n")
+        assert humans_dt <= robot_dt, "The humans' time step must be less or equal than the robot's time step."
+        assert is_multiple(robot_dt, humans_dt), "The robot's time step must be a multiple of the humans' time step."
+        if scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or (scenario == SCENARIOS.index('hybrid_scenario') and SCENARIOS.index('circular_crossing_with_static_obstacles') in hybrid_scenario_subset):
+            assert n_humans > ccso_n_static_humans, "The number of static humans must be less than the total number of humans."
         ## Env initialization
+        self.robot_dt = robot_dt
         self.robot_radius = robot_radius
         self.humans_dt = humans_dt
         if scenario is None:
@@ -123,16 +139,786 @@ class BaseEnv(ABC):
         self.grid_map_computation = grid_map_computation
         self.grid_cell_size = grid_cell_size
         self.grid_min_size = grid_min_size
+        ## Static obstacles initialization
+        self.static_obstacles_per_scenario = jnp.array([
+            [ # Circular crossing
+                [[[0.75, -2*self.circle_radius/3],[2, -2*self.circle_radius/3+1.5*self.circle_radius/7]]],
+                [[[-0.75, -2*self.circle_radius/3+2*self.circle_radius/7],[-2, -2*self.circle_radius/3+3.5*self.circle_radius/7]]],
+                [[[0.75, -2*self.circle_radius/3+4*self.circle_radius/7],[2, -2*self.circle_radius/3+5.5*self.circle_radius/7]]],
+                [[[-0.75, -2*self.circle_radius/3+6*self.circle_radius/7],[-2, -2*self.circle_radius/3+7.5*self.circle_radius/7]]],
+                [[[0.75, -2*self.circle_radius/3+8*self.circle_radius/7],[2, -2*self.circle_radius/3+9.5*self.circle_radius/7]]],
+            ], 
+            [ # Parallel traffic
+                [[[-self.traffic_length/2-1, self.traffic_height/2 + 0.3],[self.traffic_length/2-0.5, self.traffic_height/2 + 0.3]]],
+                [[[-self.traffic_length/2-1, -(self.traffic_height/2 + 0.3)],[self.traffic_length/2-0.5, -(self.traffic_height/2 + 0.3)]]],
+                [[[-1.,0],[1.,0.]]],
+                [[[-self.traffic_length/4-0.5,self.traffic_height/4],[-self.traffic_length/4+0.5,self.traffic_height/4]]],
+                [[[self.traffic_length/4-0.5,self.traffic_height/4],[self.traffic_length/4+0.5,self.traffic_height/4]]],
+            ], 
+            [ # Perpendicular traffic
+                [[[-self.traffic_length/8, self.traffic_length/2 +1],[-self.traffic_length/8, self.traffic_height/2+0.5]]],
+                [[[self.traffic_length/8, self.traffic_length/2 +1],[self.traffic_length/8, self.traffic_height/2+0.5]]],
+                [[[-1.,0],[1.,0.]]],
+                [[[0., -self.traffic_height/2-0.5],[0., -self.traffic_height/2-2]]],
+                [[[-0.5,-self.traffic_length/2+0.6],[0.5,-self.traffic_length/2+0.6]]],
+            ], 
+            [ # Robot crowding
+                [[[-1.,0],[1.,0.]]],
+                [[[self.crowding_square_side/4, 1],[self.crowding_square_side/4-1, -1]]],
+                [[[-self.crowding_square_side/4, -1],[-self.crowding_square_side/4-1, 1]]],
+                [[[-self.crowding_square_side/2, 2],[-self.crowding_square_side/2-1, 0.5]]],
+                [[[-self.crowding_square_side/2, -2],[-self.crowding_square_side/2-1, -0.5]]],
+            ], 
+            [ # Delayed circular crossing
+                [[[1.5*self.circle_radius/7 * jnp.cos(2*jnp.pi/5), 1.5*self.circle_radius/7 * jnp.sin(2*jnp.pi/5)],[3.5*self.circle_radius/7*jnp.cos(2*jnp.pi/5), 3.5*self.circle_radius/7*jnp.sin(2*jnp.pi/5)]]],
+                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*2), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*2)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*2), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*2)]]],
+                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*3), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*3)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*3), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*3)]]],
+                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*4), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*4)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*4), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*4)]]],
+                [[[1.5*self.circle_radius/7 * jnp.cos((2*jnp.pi/5)*5), 1.5*self.circle_radius/7 * jnp.sin((2*jnp.pi/5)*5)],[3.5*self.circle_radius/7*jnp.cos((2*jnp.pi/5)*5), 3.5*self.circle_radius/7*jnp.sin((2*jnp.pi/5)*5)]]],
+            ], 
+            [ # Circular crossing with static obstacles (this scenario is already challenging enough, so we do not add more static obstacles)
+                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+            ], 
+            [ # Crowd navigation
+                [[[-self.circle_radius/2, -self.circle_radius/2],[-self.circle_radius/2+1, -self.circle_radius/2+1]]],
+                [[[0., -self.circle_radius/2-1],[0., -self.circle_radius/2+2]]],
+                [[[0., self.circle_radius/2-1],[0., self.circle_radius/2+2]]],
+                [[[self.circle_radius/2, self.circle_radius/2],[self.circle_radius/2-1, self.circle_radius/2-1]]],
+                [[[-0.5, self.circle_radius-1],[0.5, self.circle_radius-1]]],
+            ],
+            [ # Corner traffic
+                [[[self.traffic_length/2-self.traffic_height/2-0.3, 0.],[self.traffic_length/2-self.traffic_height/2-0.3, self.traffic_length/2-self.traffic_height/2-0.3]]],
+                [[[self.traffic_length/2+self.traffic_height/2+0.3, 0.],[self.traffic_length/2+self.traffic_height/2+0.3, self.traffic_length/2+self.traffic_height/2+0.3]]],
+                [[[self.traffic_length/2-0.25,self.traffic_length/2+0.25],[self.traffic_length/2+0.25,self.traffic_length/2-0.25]]],
+                [[[0.,self.traffic_length/2-self.traffic_height/2-0.3],[self.traffic_length/2-self.traffic_height/2-0.3, self.traffic_length/2-self.traffic_height/2-0.3]]],
+                [[[0.,self.traffic_length/2+self.traffic_height/2+0.3],[self.traffic_length/2+self.traffic_height/2+0.3, self.traffic_length/2+self.traffic_height/2+0.3]]],
+            ],
+        ])
+        if n_obstacles > 5:
+            assert self.scenario == -1, "Standard scenarios with more than 5 obstacles are not supported yet. Only with custom scenarios."
+        ## Robot goals initialization
+        self.robot_goals_per_scenario = jnp.array([
+            [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Circular crossing
+            [[self.traffic_length/2-1, 0.],[jnp.nan, jnp.nan]], # Parallel traffic
+            [[0., -self.traffic_length/2],[jnp.nan, jnp.nan]], # Perpendicular traffic
+            [[-self.crowding_square_side/2-1, 0.],[jnp.nan, jnp.nan]], # Robot crowding
+            [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Delayed circular crossing
+            [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Circular crossing with static obstacles
+            [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Crowd navigation
+            [[self.traffic_length/2-self.traffic_height/4, self.traffic_length/2-self.traffic_height/4],[self.traffic_length/2, 1.]], # Corner traffic
+        ])
 
-    # --- Private methods ---
+    # --- Abstract methods --- #
 
     @abstractmethod
     def _get_obs(self, state):
         pass
 
     @abstractmethod
-    def _reset(self, key):
+    def reset(self, key):
         pass
+
+    @abstractmethod
+    def step(self, env_state, action):
+        pass
+
+    # --- Private methods --- #
+
+    @partial(jit, static_argnames=("self"))
+    def _reset(self, key:random.PRNGKey) -> tuple[jnp.ndarray, random.PRNGKey, dict]:
+        key, subkey = random.split(key)
+        if self.scenario == SCENARIOS.index('hybrid_scenario'):
+            # Randomly choose a scenario between all then ones included in the hybrid_scenario subset
+            randint = random.randint(subkey, shape=(), minval=0, maxval=len(self.hybrid_scenario_subset))
+            scenario = self.hybrid_scenario_subset[randint]
+            key, subkey = random.split(key)
+        else:
+            scenario = self.scenario
+        full_state, info = lax.switch(
+            scenario, 
+            [
+                self._generate_circular_crossing_episode, 
+                self._generate_parallel_traffic_episode,
+                self._generate_perpendicular_traffic_episode,
+                self._generate_robot_crowding_episode,
+                self._generate_delayed_circular_crossing_episode,
+                self._generate_circular_crossing_with_static_obstacles_episode,
+                self._generate_crowd_navigation_episode,
+                self._generate_corner_traffic_episode,
+            ], 
+            subkey
+        )
+        if self.grid_map_computation: # Compute the grid map of static obstacles for global planning
+            info['grid_cells'], info['occupancy_grid'] = self.build_grid_map_and_occupancy(full_state, info)
+        return full_state, key, info
+
+    @partial(jit, static_argnames=("self"))
+    def _init_info(
+        self,
+        full_state:jnp.ndarray,
+        humans_goal:jnp.ndarray,
+        robot_goal:jnp.ndarray,
+        humans_parameters:jnp.ndarray,
+        static_obstacles:jnp.ndarray,
+        current_scenario:int,
+        humans_delay:jnp.ndarray,
+    ) -> dict:
+        """
+        Initializes the info dictionary with the given parameters.
+
+        args:
+        - full_state: initial state of the environment. (UNUSED HERE)
+        - humans_goal: array of humans' goals.
+        - robot_goal: array of robot's goal.
+        - humans_parameters: array of humans' parameters.
+        - static_obstacles: array of static obstacles.
+        - current_scenario: current scenario index.
+        - humans_delay: array of humans' delays.
+
+        output:
+        - info: dictionary containing the initialized values.
+        """
+        return {
+            "humans_goal": humans_goal, 
+            "robot_goal": robot_goal, 
+            "robot_goal_index": 0, # If robot has a waypoint list, this is the index of the next waypoint to reach
+            "humans_parameters": humans_parameters, 
+            "static_obstacles": static_obstacles, 
+            "time": 0.,
+            "current_scenario": current_scenario,
+            "humans_delay": humans_delay,
+            "step": 0,
+            "return": 0.,
+        }
+
+    @partial(jit, static_argnames=("self"))
+    def _init_obstacles(self, key:random.PRNGKey, scenario:int) -> jnp.ndarray:
+        if self.n_obstacles == 0:
+            return jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan)
+        else:
+            obstacles = self.static_obstacles_per_scenario[scenario]
+            perm = random.permutation(key, obstacles.shape[0])
+            shuffled_obstacles = obstacles[perm]
+            picked_obstacles = shuffled_obstacles[:self.n_obstacles]
+            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
+            return jnp.repeat(jnp.array([picked_obstacles]), self.n_humans+1, axis=0)
+
+    @partial(jit, static_argnames=("self"))
+    def _init_robot_goal(self, scenario:int) -> jnp.ndarray:
+        """
+        Initializes the robot's goal based on the current scenario.
+
+        args:
+        - scenario: current scenario index.
+
+        output:
+        - robot_goal: array containing the robot's goal.
+        """
+        return self.robot_goals_per_scenario[scenario][0]
+    
+    @partial(jit, static_argnames=("self"))
+    def _generate_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.zeros((self.n_humans+1, 2))
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([0, -self.circle_radius]))
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, key, valid = while_val
+                key, subkey = random.split(key)
+                new_angle = random.uniform(subkey, shape=(1,), minval=0, maxval=2*jnp.pi)
+                disturbance = random.uniform(subkey, shape=(1,), minval=-0.1, maxval=0.5)
+                new_point = jnp.squeeze((self.circle_radius + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None)
+                return (disturbed_points, key, valid)
+            disturbed_points, key = for_val
+            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            return (disturbed_points, key)
+    
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
+        goal_angles = jnp.arctan2(-disturbed_points[:,1], -disturbed_points[:,0])
+
+        # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], goal_angles[:-1]))
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
+        # Robot
+        full_state = full_state.at[-1].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:4], jnp.pi/2, *full_state[self.n_humans,5:]]))
+
+        # Assign the humans' and robot goals
+        humans_goal = self.circle_radius * jnp.array([jnp.cos(goal_angles[:-1]), jnp.sin(goal_angles[:-1])]).T
+        robot_goal = self._init_robot_goal(SCENARIOS.index('circular_crossing'))
+
+        # Obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('circular_crossing'))
+        # Info
+        info = self._init_info(
+            full_state,
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('circular_crossing'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
+        return full_state, info
+    
+    @partial(jit, static_argnames=("self"))
+    def _generate_delayed_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        key, subkey = random.split(key)
+        full_state, info = self._generate_circular_crossing_episode(key)
+        possible_delays = jnp.arange(0., self.max_cc_delay + self.robot_dt, self.robot_dt)
+        info["humans_delay"] = info["humans_delay"].at[:].set(random.choice(subkey, possible_delays, shape=(self.n_humans,)))
+        info["current_scenario"] = SCENARIOS.index('delayed_circular_crossing')
+        info["static_obstacles"] = self._init_obstacles(key, SCENARIOS.index('delayed_circular_crossing'))
+        info["robot_goal"] = self._init_robot_goal(SCENARIOS.index('delayed_circular_crossing'))
+        # The next waypoint of humans is set to be its initial position
+        info["humans_goal"] = info["humans_goal"].at[:].set(-info["humans_goal"])
+        return full_state, info
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_parallel_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.traffic_length/2 + 1, 0.])) # Conform with Social-Navigation-PyEnvs
+        # disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.traffic_length/2, 0.]))
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, key, valid = while_val
+                key, subkey = random.split(key)
+                normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1)
+                new_point = jnp.array([-self.traffic_length/2 + 1 + normalized_point[0] * self.traffic_length, -self.traffic_height/2 + normalized_point[1] * self.traffic_height])
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None)
+                return (disturbed_points, key, valid)
+            disturbed_points, key = for_val
+            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            return disturbed_points, key
+    
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
+
+        # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.ones((self.n_humans,)) * jnp.pi))
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
+        # Robot
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
+
+        # Assign the humans' and robot goals
+        humans_goal = lax.fori_loop(
+            0, 
+            self.n_humans, 
+            lambda i, humans_goal: humans_goal.at[i].set(jnp.array([-self.traffic_length/2-3, disturbed_points[i,1]])),
+            humans_goal)
+        robot_goal = self._init_robot_goal(SCENARIOS.index('parallel_traffic'))
+
+        # Obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('parallel_traffic'))
+        # Info
+        info = self._init_info(
+            full_state,
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('parallel_traffic'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
+        return full_state, info
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_perpendicular_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([0, self.traffic_length/2]))
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, key, valid = while_val
+                key, subkey = random.split(key)
+                normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1)
+                new_point = jnp.array([-self.traffic_length/2 + 1 + normalized_point[0] * self.traffic_length, -self.traffic_height/2 + normalized_point[1] * self.traffic_height])
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None)
+                return (disturbed_points, key, valid)
+            disturbed_points, key = for_val
+            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            return disturbed_points, key
+    
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
+
+        # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.ones((self.n_humans,)) * jnp.pi))
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
+        # Robot
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:4], -jnp.pi/2, *full_state[self.n_humans,5:]]))
+
+        # Assign the humans' and robot goals
+        humans_goal = lax.fori_loop(
+            0, 
+            self.n_humans, 
+            lambda i, humans_goal: humans_goal.at[i].set(jnp.array([-self.traffic_length/2-3, disturbed_points[i,1]])),
+            humans_goal)
+        robot_goal = self._init_robot_goal(SCENARIOS.index('perpendicular_traffic'))
+
+        # Obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('perpendicular_traffic'))
+        # Info
+        info = self._init_info(
+            full_state,
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('perpendicular_traffic'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
+        return full_state, info
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_robot_crowding_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.ones((self.n_humans+2, 2)) * -1000
+        disturbed_points = disturbed_points.at[-2].set(jnp.array([self.crowding_square_side/2-1, 0.]))
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.crowding_square_side/2-1, 0.])) # This is needed to make sure the robot has space to reach its goal
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, key, valid = while_val
+                key, subkey = random.split(key)
+                normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1)
+                new_point = jnp.array([-self.crowding_square_side/2 + normalized_point[0] * self.crowding_square_side, -self.crowding_square_side/2 + normalized_point[1] * self.crowding_square_side])
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + jnp.max(humans_parameters[:, -1]) + 0.1 + self.robot_radius)))
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None)
+                return (disturbed_points, key, valid)
+            disturbed_points, key = for_val
+            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            return disturbed_points, key
+    
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
+
+        # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-2], jnp.ones((self.n_humans,)) * jnp.pi))
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-2], jnp.zeros((self.n_humans,))))
+        # Robot
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-2], *full_state[self.n_humans,2:4], jnp.pi, *full_state[self.n_humans,5:]]))
+
+        # Assign the humans' and robot goals
+        humans_goal = lax.fori_loop(
+            0, 
+            self.n_humans, 
+            lambda i, humans_goal: humans_goal.at[i].set(disturbed_points[i]),
+            humans_goal)
+        robot_goal = self._init_robot_goal(SCENARIOS.index('robot_crowding'))
+
+        # Obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('robot_crowding'))
+        # Info
+        info = self._init_info(
+            full_state,
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('robot_crowding'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
+        return full_state, info
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_circular_crossing_with_static_obstacles_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        inner_circle_radius = self.circle_radius - 3.
+
+        # Assign radius and max velocity to static obstacles
+        @jit
+        def _overwrite_radius_and_vel(
+                parameters:jnp.ndarray, 
+                idx:int, 
+                radius:float, 
+                max_vel:float, 
+                key:random.PRNGKey
+            ) -> jnp.ndarray:
+            parameters = lax.cond(
+                idx < (self.ccso_n_static_humans),
+                lambda _: parameters.at[0:3].set(jnp.array([
+                    jnp.squeeze(radius + random.uniform(key, shape=(1,), minval=-0.2, maxval=0.2)),
+                    parameters[1], 
+                    max_vel
+                ])),
+                lambda _: parameters,
+                None
+            )
+            return parameters
+        key, subkey = random.split(key)
+        subkeys = random.split(subkey, num=self.n_humans)
+        humans_parameters = vmap(_overwrite_radius_and_vel, in_axes=(0, 0, None, None, 0))(
+            humans_parameters, 
+            jnp.arange(self.n_humans), 
+            1., 
+            0., 
+            subkeys)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.zeros((self.n_humans+1, 2))
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([0, -self.circle_radius]))
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, key, valid, inner_circle_radius = while_val
+                key, subkey = random.split(key)
+                new_angle = lax.cond(
+                    i < (self.ccso_n_static_humans),
+                    lambda _: (jnp.pi / (int(self.ccso_n_static_humans) + 1e-5)) * (-0.5 + 2 * i + random.uniform(subkey, shape=(1,), minval=-0.25, maxval=0.25)),
+                    lambda _: random.uniform(subkey, shape=(1,), minval=0, maxval=2*jnp.pi),  # 2 * jnp.pi * (i - self.ccso_n_static_humans) / (self.n_humans - self.ccso_n_static_humans) + random.uniform(subkey, shape=(1,), minval=-0.05, maxval=0.05),
+                    None
+                )
+                key, subkey = random.split(key)
+                disturbance = lax.cond(
+                    i < (self.ccso_n_static_humans),
+                    lambda _: random.uniform(subkey, shape=(2,), minval=-0.1, maxval=0.1),
+                    lambda _: random.uniform(subkey, shape=(2,), minval=-0.35, maxval=0.35),
+                    None
+                )
+                new_point = lax.cond(
+                    i < (self.ccso_n_static_humans),
+                    lambda _: inner_circle_radius * jnp.squeeze(jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)])) + disturbance,
+                    lambda _: self.circle_radius * jnp.squeeze(jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)])) + disturbance,
+                    None
+                )
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1) - (jnp.append(humans_parameters[:, 0], self.robot_radius) + humans_parameters[i, 0] + 0.2)
+                valid = jnp.all(differences >= 0)
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None
+                )
+                return (disturbed_points, key, valid, inner_circle_radius)
+            disturbed_points, key, inner_circle_radius = for_val
+            disturbed_points, key, _, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False, inner_circle_radius))
+            return (disturbed_points, key, inner_circle_radius)
+    
+        disturbed_points, key, _ = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key, inner_circle_radius))
+        goal_angles = jnp.arctan2(-disturbed_points[:,1], -disturbed_points[:,0])
+
+        # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], goal_angles[:-1]))
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
+        # Robot
+        full_state = full_state.at[-1].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:4], jnp.pi/2, *full_state[self.n_humans,5:]]))
+
+        # Assign the humans' and robot goals
+        @jit
+        def _set_humans_goal(idx:int, goal_angle:float, point:jnp.ndarray) -> jnp.ndarray:
+            goal = lax.cond(
+                idx < (self.ccso_n_static_humans),
+                lambda _: point,
+                lambda _: self.circle_radius * jnp.array([jnp.cos(goal_angle), jnp.sin(goal_angle)]).T,
+                None
+            )
+            return goal
+        humans_goal = vmap(_set_humans_goal, in_axes=(0, 0, 0))(
+            jnp.arange(self.n_humans), 
+            goal_angles[:-1], 
+            disturbed_points[:-1]
+        )
+        robot_goal = self._init_robot_goal(SCENARIOS.index('circular_crossing_with_static_obstacles'))
+
+        # Obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('circular_crossing_with_static_obstacles'))
+        # Info
+        info = self._init_info(
+            full_state,
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('circular_crossing_with_static_obstacles'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
+        return full_state, info
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_crowd_navigation_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        positions = jnp.ones((self.n_humans+1, 2)) * -1000
+        positions = positions.at[-1].set(jnp.array([0, -self.circle_radius]))
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                points, key, valid = while_val
+                key, subkey = random.split(key)
+                new_angle = random.uniform(subkey, shape=(1,), minval=0, maxval=2*jnp.pi)
+                key, subkey = random.split(key)
+                new_distance = random.uniform(subkey, shape=(1,), minval=0., maxval=self.circle_radius)
+                new_point = jnp.squeeze(new_distance * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+                differences = jnp.linalg.norm(points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]))))
+                points = lax.cond(
+                    valid,
+                    lambda _: points.at[i].set(new_point),
+                    lambda _: points,
+                    operand=None)
+                return (points, key, valid)
+            points, key = for_val
+            points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (points, key, False))
+            return (points, key)
+        positions, key = lax.fori_loop(0, self.n_humans, _fori_body, (positions, key))
+        
+        @jit 
+        def _goal_comp(position:jnp.ndarray, subkey:random.PRNGKey) -> jnp.ndarray:
+            position_angle = jnp.atan2(position[1], position[0])
+            new_angle = wrap_angle(random.uniform(subkey, shape=(), minval=position_angle-jnp.pi/4, maxval=position_angle+jnp.pi/4))
+            new_distance = random.uniform(subkey, shape=(1,), minval=0., maxval=self.circle_radius)
+            return jnp.squeeze(new_distance * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+        key, subkey = random.split(key)
+        subkeys = random.split(subkey, num=self.n_humans)
+        human_goals = vmap(_goal_comp, in_axes=(0,0))(
+            positions[:-1], 
+            subkeys,
+        )
+        goal_angles = jnp.arctan2(human_goals[:,1], human_goals[:,0])
+
+        # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(positions[:-1], goal_angles))
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(positions[:-1], jnp.zeros((self.n_humans,))))
+        # Robot
+        full_state = full_state.at[-1].set(jnp.array([0., -self.circle_radius, *full_state[self.n_humans,2:4], jnp.pi/2, *full_state[self.n_humans,5:]]))
+
+        # Assign the humans' and robot goals
+        humans_goal = self.circle_radius * jnp.array([jnp.cos(goal_angles), jnp.sin(goal_angles)]).T
+        robot_goal = self._init_robot_goal(SCENARIOS.index('crowd_navigation'))
+
+        # Obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('crowd_navigation'))
+        # Info
+        info = self._init_info(
+            full_state,
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('crowd_navigation'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
+        return full_state, info
+    
+    @partial(jit, static_argnames=("self"))
+    def _generate_corner_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([1., self.traffic_length/2])) # Conform with Social-Navigation-PyEnvs
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, key, valid = while_val
+                key, subkey = random.split(key)
+                normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1) - 0.5
+                new_point = jnp.array([self.traffic_length/2 + normalized_point[0] * self.traffic_height, self.traffic_length/4 + normalized_point[1] * (self.traffic_length/2 - 1)])
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None)
+                return (disturbed_points, key, valid)
+            disturbed_points, key = for_val
+            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            return disturbed_points, key
+    
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
+
+        # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.ones((self.n_humans,)) * jnp.pi/2))
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
+        # Robot
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
+
+        # Assign the humans' and robot goals
+        humans_goal = lax.fori_loop(
+            0, 
+            self.n_humans, 
+            lambda i, humans_goal: humans_goal.at[i].set(jnp.array([disturbed_points[i,0],disturbed_points[i,0]])),
+            humans_goal)
+        robot_goal = self._init_robot_goal(SCENARIOS.index('corner_traffic'))
+
+        # Obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('corner_traffic'))
+        # Info
+        info = self._init_info(
+            full_state,
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=SCENARIOS.index('corner_traffic'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
+        return full_state, info
 
     @partial(jit, static_argnames=("self"))
     def _human_ray_intersect(self, direction:jnp.ndarray, human_position:jnp.ndarray, lidar_position:jnp.ndarray, human_radius:float) -> float:
@@ -475,18 +1261,6 @@ class BaseEnv(ABC):
         return (new_state, new_info)
 
     # --- Public methods ---
-
-    @abstractmethod
-    def reset(self, key):
-        pass
-
-    @abstractmethod
-    def reset_custom_episode(self, key, episode):
-        pass
-
-    @abstractmethod
-    def step(self, env_state, action):
-        pass
 
     def get_parameters(self):
         """

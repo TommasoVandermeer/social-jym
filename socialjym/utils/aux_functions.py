@@ -22,14 +22,6 @@ def linear_decay(start:float, end:float, current_iteration:int, decay_rate:float
     return value
 
 @jit
-def is_multiple(number:float, dividend:float, tolerance:float=1e-7) -> bool:
-    """
-    Checks if a number (also a float) is a multiple of another number within a given tolerance error.
-    """
-    mod = number % dividend
-    return jnp.any(jnp.array([abs(mod) <= tolerance,abs(dividend - mod) <= tolerance]))
-
-@jit
 def point_to_line_distance(point:jnp.ndarray, line_start:jnp.ndarray, line_end:jnp.ndarray) -> float:
     """
     Computes the distance between a point and a line defined by two points.
