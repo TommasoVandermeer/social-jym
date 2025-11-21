@@ -29,12 +29,10 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'circular_crossing',
-    'hybrid_scenario_subset': jnp.array([0,1], dtype=jnp.int32),
+    'scenario': 'hybrid_scenario',
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
     'kinematics': kinematics,
-    'lidar_num_rays': 180,
 }
 
 # Initialize and reset environment
@@ -49,7 +47,6 @@ initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((env_
 state, _, _, info, _ = env.reset(random.key(0))
 _, obs, _, _, _, _ = env.step(state,info,jnp.zeros((2,)))
 _ = env.imitation_learning_step(state,info)
-_ = env.get_lidar_measurements(obs[-1,:2], jnp.atan2(*jnp.flip(obs[-1,2:4])), obs[:-1,:2], info["humans_parameters"][:,0], info['static_obstacles'][-1])
 _ = policy.act(random.key(0), obs, info, initial_vnet_params, 0.1)
 
 # Simulate some episodes
@@ -58,12 +55,10 @@ for i in range(n_episodes):
     policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
     episode_start_time = time.time()
     state, reset_key, obs, info, outcome = env.reset(reset_key)
-    lidar_measurements = env.get_lidar_measurements(obs[-1,:2], jnp.atan2(*jnp.flip(obs[-1,2:4])), obs[:-1,:2], info["humans_parameters"][:,0], info['static_obstacles'][-1])
 
     # info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.1) # Set humans' safety space to 0.1
 
     all_states = np.array([state])
-    all_lidar_measurements = np.array([lidar_measurements])
     while outcome["nothing"]:
 
         action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
@@ -72,22 +67,11 @@ for i in range(n_episodes):
         # state, obs, info, reward, outcome = env.imitation_learning_step(state,info)
 
         print(f"Return in steps [0,{info['step']}):", info["return"], f" - time : {info['time']}")
-        lidar_measurements = env.get_lidar_measurements(obs[-1,:2], obs[-1,5], obs[:-1,:2], info["humans_parameters"][:,0], info['static_obstacles'][-1])
-        all_lidar_measurements = np.vstack((all_lidar_measurements, [lidar_measurements]))
         all_states = np.vstack((all_states, [state]))
+    print(f"Episode {i} ended - outcome: {outcome}, total return: {info['return']}, steps: {info['step']}, time: {info['time']}")
     episode_simulation_times[i] = round(time.time() - episode_start_time,2)
     all_states = device_get(all_states) # Transfer data from GPU to CPU for plotting
-    all_lidar_measurements = device_get(all_lidar_measurements) # Transfer data from GPU to CPU for plotting
     print(f"Episode {i} ended - Execution time {episode_simulation_times[i]} seconds - Plotting trajectory...")
-    # ## Plot episode trajectory
-    # figure, ax = plt.subplots(figsize=(10,10))
-    # ax.axis('equal')
-    # plot_trajectory(ax, all_states, info['humans_goal'], info['robot_goal'])
-    # for k in range(0,len(all_states),int(3/env_params['robot_dt'])):
-    #     plot_state(ax, k*env_params['robot_dt'], all_states[k], env_params['humans_policy'], info['current_scenario'], info["humans_parameters"][:,0], env.robot_radius, kinematics=kinematics)
-    # # plot last state
-    # plot_state(ax, (len(all_states)-1)*env_params['robot_dt'], all_states[len(all_states)-1], env_params['humans_policy'], env_params['scenario'], info["humans_parameters"][:,0], env.robot_radius, kinematics=kinematics)
-    # plt.show()
     ## Animate trajectory
     animate_trajectory(
         all_states, 
@@ -98,7 +82,6 @@ for i in range(n_episodes):
         info['current_scenario'],
         static_obstacles=info['static_obstacles'][-1],
         robot_dt=env_params['robot_dt'],
-        lidar_measurements=all_lidar_measurements,
         kinematics=kinematics,
         )
 # Print simulation times

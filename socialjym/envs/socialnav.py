@@ -237,12 +237,23 @@ class SocialNav(BaseEnv):
                 int(self.robot_dt/self.humans_dt),
                 lambda _ , x: self._update_state_info(*x, action),
                 (state, info))
-        ### Test outcome computation (during tests we check for actual collision or reaching goal)
+        ### Test outcome computation (during tests we check for INSTANT collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):
             state, info, outcome = val
-            outcome["success"] = jnp.linalg.norm(state[-1,0:2] - info["robot_goal"]) < self.robot_radius
-            outcome["failure"] = jnp.all(jnp.array([jnp.any(jnp.linalg.norm(state[0:self.n_humans,0:2] - state[-1,0:2], axis=1) < (info["humans_parameters"][:,0] + self.robot_radius)), jnp.logical_not(outcome["success"])]))
+            success, _ = self.reward_function.goal_reached_termination(
+                state[-1,:2],
+                self.robot_radius,
+                info["robot_goal"],
+            )
+            failure, _ = self.reward_function.instant_collision_termination(
+                state[-1,:2],
+                self.robot_radius,
+                state[:-1,:2],
+                info["humans_parameters"][:,0]
+            )
+            outcome["success"] = success
+            outcome["failure"] = (failure) & (~(success))
             outcome["timeout"] = jnp.all(jnp.array([outcome["timeout"], jnp.logical_not(outcome["failure"]), jnp.logical_not(outcome["success"])]))
             outcome["nothing"] = jnp.logical_not(jnp.any(jnp.array([outcome["success"], outcome["failure"], outcome["timeout"]])))
             return outcome

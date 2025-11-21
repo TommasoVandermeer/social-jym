@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from socialjym.envs.lasernav import LaserNav
-from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
+from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward
 from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
@@ -22,7 +22,7 @@ env_params = {
     'humans_dt': 0.01,
     'robot_visible': False,
     'scenario': 'hybrid_scenario',
-    'reward_function': DummyReward(kinematics=kinematics),
+    'reward_function': DummyReward(robot_radius=0.3),
     'kinematics': kinematics,
 }
 
@@ -36,7 +36,7 @@ for i in range(n_episodes):
     all_states = np.array([state])
     all_observations = np.array([obs])
     while outcome["nothing"]:
-        state, obs, info, reward, outcome, _ = env.step(state,info,jnp.zeros((2,)),test=True)
+        state, obs, info, reward, outcome, _ = env.step(state,info,jnp.array([1.,0.]),test=True)
         all_states = np.vstack((all_states, [state]))
         all_observations = np.vstack((all_observations, [obs]))
     ## Animate trajectory

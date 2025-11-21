@@ -2,9 +2,11 @@ from jax import jit, lax
 import jax.numpy as jnp
 from functools import partial
 
-from socialjym.utils.aux_functions import batch_point_to_line_distance
 from socialjym.utils.rewards.base_reward import BaseReward
 from socialjym.envs.base_env import ROBOT_KINEMATICS
+from socialjym.utils.terminations.robot_human_collision import InstantRobotHumanCollision, IntervalRobotHumanCollision
+from socialjym.utils.terminations.robot_reached_goal import RobotReachedGoal
+from socialjym.utils.terminations.timeout import Timeout
 
 class DummyReward(BaseReward):
     def __init__(
@@ -19,6 +21,11 @@ class DummyReward(BaseReward):
         self.type = "socialnav_dummyreward"
         self.time_limit = time_limit
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
+        # Define terminations
+        self.interval_collision_termination = IntervalRobotHumanCollision()
+        self.instant_collision_termination = InstantRobotHumanCollision()
+        self.goal_reached_termination = RobotReachedGoal()
+        self.timeout = Timeout(time_limit)
 
     @partial(jit, static_argnames=("self"))
     def __call__(
@@ -67,17 +74,26 @@ class DummyReward(BaseReward):
                 robot_pos)
         next_humans_pos = humans_pos + obs[0:-1,2:4] * dt
         # Collision and discomfort detection with humans (within a duration of dt)
-        distances = batch_point_to_line_distance(jnp.zeros((len(obs)-1,2)), humans_pos - robot_pos, next_humans_pos - next_robot_pos) - (humans_radiuses + robot_radius)
-        collision = jnp.any(distances < 0)
+        collision, _ = self.interval_collision_termination(
+            robot_pos, 
+            next_robot_pos,
+            robot_radius,
+            humans_pos,
+            next_humans_pos,
+            humans_radiuses
+        )
         # Check if the robot reached its goal
-        reached_goal = jnp.linalg.norm(next_robot_pos - robot_goal) < robot_radius
+        reached_goal, _ = self.goal_reached_termination(
+            next_robot_pos,
+            robot_radius,
+            robot_goal,
+        )
         # Timeout
-        timeout =  (time >= self.time_limit) & (~(collision)) & (~(reached_goal))
-        # Compute outcome 
+        timeout, _ =  self.timeout(time) # Compute outcome 
         outcome = {
-            "nothing": jnp.logical_not(jnp.any(jnp.array([collision,reached_goal,timeout]))),
+            "nothing": ~((collision) | (reached_goal) | (timeout)),
             "success": (~(collision)) & (reached_goal),
             "failure": collision,
-            "timeout": timeout
+            "timeout": timeout & (~(collision)) & (~(reached_goal))
         }
         return 0., outcome

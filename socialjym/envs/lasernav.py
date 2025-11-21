@@ -216,7 +216,7 @@ class LaserNav(BaseEnv):
             )
         ### Compute reward and outcome
         obs = self._get_obs(state, info, action)
-        reward, outcome = self.reward_function(obs, info, self.robot_dt)
+        reward, outcome = self.reward_function(state, action, info, self.robot_dt)
         ### Update state and info
         if self.robot_visible:
             if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
@@ -244,10 +244,28 @@ class LaserNav(BaseEnv):
         @jit
         def _test_outcome(val:tuple):
             state, info, outcome = val
-            outcome["success"] = jnp.linalg.norm(state[-1,0:2] - info["robot_goal"]) < self.robot_radius
-            outcome["failure"] = jnp.all(jnp.array([jnp.any(jnp.linalg.norm(state[0:self.n_humans,0:2] - state[-1,0:2], axis=1) < (info["humans_parameters"][:,0] + self.robot_radius)), jnp.logical_not(outcome["success"])]))
-            outcome["timeout"] = jnp.all(jnp.array([outcome["timeout"], jnp.logical_not(outcome["failure"]), jnp.logical_not(outcome["success"])]))
-            outcome["nothing"] = jnp.logical_not(jnp.any(jnp.array([outcome["success"], outcome["failure"], outcome["timeout"]])))
+            success, _ = self.reward_function.goal_reached_termination(
+                state[-1,:2],
+                self.robot_radius,
+                info["robot_goal"],
+            )
+            collision_with_human, _ = self.reward_function.instant_human_collision_termination(
+                state[-1,:2],
+                self.robot_radius,
+                state[:-1,:2],
+                info["humans_parameters"][:,0]
+            )
+            collision_with_obstacle, _ = self.reward_function.instant_obstacle_collision_termination(
+                state[-1,:2],
+                self.robot_radius,
+                info['static_obstacles'][-1],
+            )
+            failure = collision_with_human | collision_with_obstacle
+            outcome["success"] = success
+            outcome["collision_with_human"] = (collision_with_human) & (~success)
+            outcome["collision_with_obstacle"] = (collision_with_obstacle) & (~success)
+            outcome["timeout"] = jnp.all(jnp.array([outcome["timeout"], ~failure, jnp.logical_not(outcome["success"])]))
+            outcome["nothing"] = jnp.logical_not(jnp.any(jnp.array([outcome["success"], failure, outcome["timeout"]])))
             return outcome
         outcome = lax.cond(test, lambda x: _test_outcome(x), lambda x: x[2], (new_state, info, outcome))
         ### If done and reset_if_done, automatically reset the environment (available only if using standard scenarios)
@@ -289,7 +307,7 @@ class LaserNav(BaseEnv):
     @partial(jit, static_argnames=("self"))
     def reset(self, key:random.PRNGKey) -> tuple:
         initial_state, key, info = self._reset(key)
-        return initial_state, key, info["previous_obs"], info, {"success": False, "failure": False, "timeout": False, "nothing": True}
+        return initial_state, key, info["previous_obs"], info, {"success": False, "collision_with_human": False, "collision_with_obstacle": False, "timeout": False, "nothing": True}
     
     @partial(jit, static_argnames=("self"))
     def batch_reset(self, keys):
