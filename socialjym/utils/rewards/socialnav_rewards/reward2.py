@@ -2,9 +2,12 @@ from jax import jit, lax, vmap, debug
 import jax.numpy as jnp
 from functools import partial
 
-from socialjym.utils.aux_functions import batch_point_to_line_distance, binary_to_decimal
+from socialjym.utils.aux_functions import binary_to_decimal
 from socialjym.utils.rewards.base_reward import BaseReward
 from socialjym.envs.base_env import ROBOT_KINEMATICS, wrap_angle
+from socialjym.utils.terminations.robot_human_collision import InstantRobotHumanCollision, IntervalRobotHumanCollision
+from socialjym.utils.terminations.robot_reached_goal import RobotReachedGoal
+from socialjym.utils.terminations.timeout import Timeout
 
 @jit
 def batch_wrap_angle(angles:jnp.ndarray) -> jnp.ndarray:
@@ -68,6 +71,11 @@ class Reward2(BaseReward):
         self.angular_speed_penalty_weight = angular_speed_penalty_weight
         # Default parameters
         self.kinematics = ROBOT_KINEMATICS.index('unicycle')   
+        # Define terminations
+        self.interval_collision_termination = IntervalRobotHumanCollision()
+        self.instant_collision_termination = InstantRobotHumanCollision()
+        self.goal_reached_termination = RobotReachedGoal()
+        self.timeout = Timeout(time_limit)
 
     @partial(jit, static_argnames=("self"))
     def __call__(
@@ -115,12 +123,24 @@ class Reward2(BaseReward):
         # Compute next humans positions
         next_humans_pos = humans_pos + obs[0:-1,2:4] * dt
         # Collision with humans (within a duration of dt)
-        distances = batch_point_to_line_distance(jnp.zeros((len(obs)-1,2)), humans_pos - robot_pos, next_humans_pos - next_robot_pos) - (humans_radiuses + robot_radius)
-        collision = jnp.any(distances < 0)
+        collision, collision_info = self.interval_collision_termination(
+            robot_pos, 
+            next_robot_pos,
+            robot_radius,
+            humans_pos,
+            next_humans_pos,
+            humans_radiuses
+        )
+        min_distance = collision_info['min_distance']
+        discomfort = jnp.all(jnp.array([jnp.logical_not(collision), min_distance < self.discomfort_distance]))
         # Check if the robot reached its goal
-        reached_goal = jnp.linalg.norm(next_robot_pos - robot_goal) < robot_radius
+        reached_goal, _ = self.goal_reached_termination(
+            next_robot_pos,
+            robot_radius,
+            robot_goal,
+        )
         # Timeout
-        timeout = (time >= self.time_limit) & (~(collision)) & (~(reached_goal))
+        timeout, _ =  self.timeout(time) 
         ### COMPUTE REWARD ###
         reward = 0.
         # Reward for reaching the goal
@@ -141,7 +161,6 @@ class Reward2(BaseReward):
             ) 
         # Penalty for getting too close to humans
         if self.discomfort_distance_penalty_reward:
-            min_distance = jnp.max(jnp.array([jnp.min(distances),0]))
             discomfort = (~(collision)) & (min_distance < self.discomfort_distance)
             reward = lax.cond(
                 discomfort, 
@@ -179,7 +198,7 @@ class Reward2(BaseReward):
             "nothing": ~((collision) | (reached_goal) | (timeout)),
             "success": ~(collision) & (reached_goal),
             "failure": collision,
-            "timeout": timeout
+            "timeout": timeout & (~(collision)) & (~(reached_goal))
         }
         # # DEBUG
         # debug.print("\n")
