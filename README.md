@@ -23,6 +23,7 @@ pip install -e social-jym social-jym/JHSFM social-jym/JSFM social-jym/JORCA
 The source code of the project can be found in the folder socialjym which includes all the python modules. It is structured as follows:
 ```bash
 ├── socialjym
+│   ├── __init__.py
 │   ├── envs
 │   │   ├── __init__.py
 │   │   ├── base_env.py
@@ -67,12 +68,21 @@ The source code of the project can be found in the folder socialjym which includ
 │   │   │   │   ├── dummy_reward.py
 │   │   │   │   ├── reward1.py
 │   │   │   │   ├── reward2.py
+│   │   │   ├── lasernav_rewards
+│   │   │   │   ├── __init__.py
+│   │   │   │   ├── dummy_reward.py
 │   │   ├── rollouts
 │   │   │   ├── __init__.py
 │   │   │   ├── act_cri_rollouts.py
 │   │   │   ├── ppo_rollouts.py
 │   │   │   ├── vnet_rollouts.py
-│   ├── __init__.py
+│   │   ├── terminations
+│   │   │   ├── __init__.py
+│   │   │   ├── base_termination.py
+│   │   │   ├── robot_human_collision.py
+│   │   │   ├── robot_obstacle_collision.py
+│   │   │   ├── robot_reached_goal.py
+│   │   │   ├── timeout.py
 ```
 ### Envs ([envs readme](socialjym/envs/README.md))
 Includes all the available Reinforcement Learning environments developed in an open AI gymnasium style (step, reset, _get_obs, ecc..) but with functional programming (required for JAX). BaseEnv serves as a base class defining the methods and attributes each environment should have. In BaseEnv also the available scenarios, human motion models and robot kinematic models are listed. [SocialNav](socialjym/envs/README.md) and [LaserEnv](socialjym/envs/README.md) are complete environments that can be used to train and test RL policies for navigation (click on the links to see more). 
@@ -114,12 +124,13 @@ Includes all the available Reinforcement Learning policies that can be used in t
 
 ### Utils
 Includes all the necessary implementations to train RL-based policies:
-- <b>Cell decompositions</b>: contains various method to discretize the 2D space for global planning.
+- <b>Cell decompositions</b>: contain various method to discretize the 2D space for global planning.
 - <b>Distributions</b>: implementations of various stochastic distributions (used to parameterize the action space in continuos control for actor-critic policies).
-- <b>Global planners</b>: contains various algorithms for the shortest path problem.
+- <b>Global planners</b>: contain various algorithms for the shortest path problem.
 - <b>Replay buffers</b>: implementations of different buffers for the offline RL.
-- <b>Rewards</b>: contains the reward functions for each environment.
-- <b>Rollouts</b>: implements the learning cycle for each method (Actor-Critic and Value Network Learning).
+- <b>Rewards</b>: contain the reward functions for each environment.
+- <b>Rollouts</b>: implement the learning cycle for each method (Actor-Critic and Value Network Learning).
+- <b>Terminations</b>: implementation of termination conditions for RL episodes.
 
 ## Get started
 The notebooks folder contains examples on how to use this package with a step-by-step guide. Get started by looking at the example in there.
