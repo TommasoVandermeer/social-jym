@@ -1,4 +1,4 @@
-from jax import jit
+from jax import jit, debug
 import jax.numpy as jnp
 from functools import partial
 
@@ -33,7 +33,8 @@ class InstantRobotObstacleCollision(BaseTermination):
         - collision: bool. True if a collision has occurred, False otherwise.
         - info: dict. Additional information about the collision status.
         """
-        distances = vectorized_compute_obstacle_closest_point(robot_pos, obstacles) - robot_radius
+        closest_points = vectorized_compute_obstacle_closest_point(robot_pos, obstacles)
+        distances = jnp.linalg.norm(closest_points - robot_pos, axis=-1) - robot_radius
         min_distance = jnp.nanmax(jnp.array([jnp.nanmin(distances),0]))
         collision = jnp.any(distances < 0)
         return collision, {'min_distance': min_distance}

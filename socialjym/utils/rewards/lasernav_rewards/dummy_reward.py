@@ -104,12 +104,12 @@ class DummyReward(BaseReward):
         )
         # Timeout
         timeout, _ =  self.timeout(time) # Compute outcome 
-        collision = collision_with_human | collision_with_obstacle
+        failure = collision_with_human | collision_with_obstacle
         outcome = {
-            "nothing": ~((collision) | (reached_goal) | (timeout)),
-            "success": (~(collision)) & (reached_goal),
+            "nothing": ~((failure) | (reached_goal) | (timeout)),
+            "success": (~(failure)) & (reached_goal),
             "collision_with_human": collision_with_human,
             "collision_with_obstacle": collision_with_obstacle,
-            "timeout": timeout & (~(collision)) & (~(reached_goal))
+            "timeout": timeout & (~(failure)) & (~(reached_goal))
         }
         return 0., outcome
