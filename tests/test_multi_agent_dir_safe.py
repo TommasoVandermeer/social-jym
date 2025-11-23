@@ -21,7 +21,7 @@ from socialjym.utils.aux_functions import animate_trajectory, interpolate_humans
 save_videos = False
 trial = 18
 n_humans = 30
-time_limit = 2.
+time_limit = 60.
 reward_function = Reward2(
     time_limit=time_limit,
     target_reached_reward = True,
@@ -215,71 +215,116 @@ state, _, obs, info, outcome = test_env.reset_custom_episode(
 )
 paths = [list(path[1:]) for path in paths]  # Convert to list for easy popping
 ## Run the episode
-all_states = jnp.array([state])
-all_robot_goals = jnp.array([[path[0] for path in paths]])
-previous_actions = jnp.zeros((n_robots, 2))
-while info['time'] < time_limit:
-    print(f"Time: {info['time']:.2f}s - Remaining waypoints for robots: {[len(path) for path in paths]}")
-    # Update humans goal
-    info["humans_goal"] = lax.fori_loop(
-        0, 
-        n_humans, 
-        lambda h, x: lax.cond(
-            jnp.linalg.norm(state[h,:2] - info["humans_goal"][h]) <= info["humans_parameters"][h,0],
-            lambda y: lax.cond(
-                jnp.all(jnp.isclose(info["humans_goal"][h], custom_episodes["humans_goal"][trial,h])),
-                lambda z: z.at[h].set(custom_episodes["full_state"][trial,h,:2]),
-                lambda z: z.at[h].set(custom_episodes["humans_goal"][trial,h]),
-                y,
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'multi_agent_dir_safe_episode.pkl')):
+    all_states = jnp.array([state])
+    all_robot_goals = jnp.array([[path[0] for path in paths]])
+    previous_actions = jnp.zeros((n_robots, 2))
+    while info['time'] < time_limit:
+        print(f"Time: {info['time']:.2f}s - Remaining waypoints for robots: {[len(path) for path in paths]}")
+        # Update humans goal
+        info["humans_goal"] = lax.fori_loop(
+            0, 
+            n_humans, 
+            lambda h, x: lax.cond(
+                jnp.linalg.norm(state[h,:2] - info["humans_goal"][h]) <= info["humans_parameters"][h,0],
+                lambda y: lax.cond(
+                    jnp.all(jnp.isclose(info["humans_goal"][h], custom_episodes["humans_goal"][trial,h])),
+                    lambda z: z.at[h].set(custom_episodes["full_state"][trial,h,:2]),
+                    lambda z: z.at[h].set(custom_episodes["humans_goal"][trial,h]),
+                    y,
+                ),
+                lambda y: y,
+                x
             ),
-            lambda y: y,
-            x
-        ),
-        info["humans_goal"],
-    )
-    # Update robots velocities
-    for robot in range(n_robots):
-        state = state.at[n_humans + robot].set(jnp.array([*state[n_humans + robot,:2], previous_actions[robot,0], 0., state[n_humans + robot,4], previous_actions[robot,1]]))
-    # Compute robots actions
-    robots_state = jnp.copy(state[n_humans:])
-    new_actions = jnp.zeros((n_robots, 2))
-    for robot in range(n_robots):
-        aux_info = info.copy()
-        # Update robot goal
-        if (jnp.linalg.norm(state[n_humans + robot,:2] - paths[robot][0]) <= test_env.robot_radius*2) & \
-            (len(paths[robot]) > 1):
-            paths[robot].pop(0)
-        aux_info['robot_goal'] = paths[robot][0]
-        # Rearrange observation for action computation
-        aux_state = jnp.copy(state)
-        temp = aux_state[n_humans + robot].copy()
-        aux_state = aux_state.at[n_humans + robot].set(aux_state[-1])
-        aux_state = aux_state.at[-1].set(temp)
-        aux_obs = test_env._get_obs(aux_state, aux_info, previous_actions[robot])
-        # Step the environment
-        action, _, _, _, _ = policy.act(random.PRNGKey(0), aux_obs, aux_info, actor_params, sample=False)
-        # Apply action
-        robots_state = robots_state.at[robot].set(lax.cond(
-                jnp.abs(action[1]) > 1e-5,
-                lambda x: x.at[:].set(jnp.array([
-                    robots_state[robot,0]+(action[0]/action[1])*(jnp.sin(robots_state[robot,4]+action[1]*test_env.robot_dt)-jnp.sin(robots_state[robot,4])),
-                    robots_state[robot,1]+(action[0]/action[1])*(jnp.cos(robots_state[robot,4])-jnp.cos(robots_state[robot,4]+action[1]*test_env.robot_dt)),
-                    *robots_state[robot,2:4],
-                    wrap_angle(robots_state[robot,4]+action[1]*test_env.robot_dt),
-                    robots_state[robot,5]])),
-                lambda x: x.at[:].set(jnp.array([
-                    robots_state[robot,0]+action[0]*test_env.robot_dt*jnp.cos(robots_state[robot,4]),
-                    robots_state[robot,1]+action[0]*test_env.robot_dt*jnp.sin(robots_state[robot,4]),
-                    *robots_state[robot,2:]])),
-                robots_state[robot]))
-        new_actions = new_actions.at[robot].set(action)
-    # Update final state
-    state, obs, info, _, outcome, _ = test_env.step(state,info,action,test=True)
-    state = state.at[n_humans:, :].set(robots_state)
-    previous_actions = new_actions
-    # Save the state
-    all_states = jnp.vstack((all_states, jnp.array([state])))
-    all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([[path[0] for path in paths]])))
+            info["humans_goal"],
+        )
+        # Update robots velocities
+        for robot in range(n_robots):
+            state = state.at[n_humans + robot].set(jnp.array([*state[n_humans + robot,:2], previous_actions[robot,0], 0., state[n_humans + robot,4], previous_actions[robot,1]]))
+        # Compute robots actions
+        robots_state = jnp.copy(state[n_humans:])
+        new_actions = jnp.zeros((n_robots, 2))
+        for robot in range(n_robots):
+            aux_info = info.copy()
+            # Update robot goal
+            if (jnp.linalg.norm(state[n_humans + robot,:2] - paths[robot][0]) <= test_env.robot_radius*2) & \
+                (len(paths[robot]) > 1):
+                paths[robot].pop(0)
+            aux_info['robot_goal'] = paths[robot][0]
+            # Rearrange observation for action computation
+            aux_state = jnp.copy(state)
+            temp = aux_state[n_humans + robot].copy()
+            aux_state = aux_state.at[n_humans + robot].set(aux_state[-1])
+            aux_state = aux_state.at[-1].set(temp)
+            aux_obs = test_env._get_obs(aux_state, aux_info, previous_actions[robot])
+            # Step the environment
+            action, _, _, _, _ = policy.act(random.PRNGKey(0), aux_obs, aux_info, actor_params, sample=False)
+            # Apply action
+            robots_state = robots_state.at[robot].set(lax.cond(
+                    jnp.abs(action[1]) > 1e-5,
+                    lambda x: x.at[:].set(jnp.array([
+                        robots_state[robot,0]+(action[0]/action[1])*(jnp.sin(robots_state[robot,4]+action[1]*test_env.robot_dt)-jnp.sin(robots_state[robot,4])),
+                        robots_state[robot,1]+(action[0]/action[1])*(jnp.cos(robots_state[robot,4])-jnp.cos(robots_state[robot,4]+action[1]*test_env.robot_dt)),
+                        *robots_state[robot,2:4],
+                        wrap_angle(robots_state[robot,4]+action[1]*test_env.robot_dt),
+                        robots_state[robot,5]])),
+                    lambda x: x.at[:].set(jnp.array([
+                        robots_state[robot,0]+action[0]*test_env.robot_dt*jnp.cos(robots_state[robot,4]),
+                        robots_state[robot,1]+action[0]*test_env.robot_dt*jnp.sin(robots_state[robot,4]),
+                        *robots_state[robot,2:]])),
+                    robots_state[robot]))
+            new_actions = new_actions.at[robot].set(action)
+        # Update final state
+        state, obs, info, _, outcome, _ = test_env.step(state,info,action,test=True)
+        state = state.at[n_humans:, :].set(robots_state)
+        previous_actions = new_actions
+        # Save the state
+        all_states = jnp.vstack((all_states, jnp.array([state])))
+        all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([[path[0] for path in paths]])))
+        with open(os.path.join(os.path.dirname(__file__), 'multi_agent_dir_safe_episode.pkl'), 'wb') as f:
+            pickle.dump({
+                'all_states': all_states,
+                'all_robot_goals': all_robot_goals,
+            }, f)
+else:
+    with open(os.path.join(os.path.dirname(__file__), 'multi_agent_dir_safe_episode.pkl'), 'rb') as f:
+        data = pickle.load(f)
+        all_states = data['all_states']
+        all_robot_goals = data['all_robot_goals']
+### Plot trajectory
+figure, ax = plt.subplots(1,1, figsize=(16.04,9.11))
+figure.subplots_adjust(left=0.09, right=0.85, top=0.99, bottom=0.05)
+ax.set_xlim(xlims[0], xlims[1])
+ax.set_ylim(ylims[0], ylims[1])
+ax.set_xlabel('X')
+ax.set_ylabel('Y', labelpad=-13)
+for h in range(len(full_state)-1): 
+        head = plt.Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * humans_radiuses[h], full_state[h,1] + jnp.sin(full_state[h,4]) * humans_radiuses[h]), 0.1, color="blue", zorder=1)
+        ax.add_patch(head)
+        circle = plt.Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor="blue", facecolor="white", fill=True, zorder=1)
+        ax.add_patch(circle)
+for o in obstacles: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+for i in range(n_robots):
+    ax.plot(all_states[:, n_humans + i, 0], all_states[:, n_humans + i, 1], linestyle='--', color=colors[i % len(colors)], linewidth=2, zorder=2)
+    head = plt.Circle((all_states[0, n_humans + i, 0] + jnp.cos(starting_orientations[i]) * humans_radiuses[i], all_states[0, n_humans + i, 1] + jnp.sin(starting_orientations[i]) * humans_radiuses[i]), 0.1, color='black', zorder=1)
+    ax.add_patch(head)
+    circle = plt.Circle((all_states[0, n_humans + i, 0],all_states[0, n_humans + i, 1]),humans_radiuses[i], edgecolor='black', facecolor=colors[i % len(colors)], fill=True, zorder=1)
+    ax.add_patch(circle)
+    ax.scatter(paths[i][-1][0], paths[i][-1][1], marker='*', color=colors[i % len(colors)], s=150, zorder=4)  # Goal
+ax.set_aspect('equal')
+handles = \
+    [Line2D([0], [0], color='white', marker='o', markersize=11, markerfacecolor=colors[i % len(colors)], markeredgecolor='black', linewidth=2, label='Robot '+str(i)) for i in range(n_robots)] + \
+    [Line2D([0], [0], color='white', marker='o', markersize=11, markerfacecolor='white', markeredgecolor='blue', linewidth=2, label='Humans')]
+ax.legend(
+    # title=f"Time: {'{:.2f}'.format(round(frame*robot_dt,2))}",
+    handles=handles,
+    loc='center left',    
+    bbox_to_anchor=(1., .5),
+    fontsize=20,
+    title_fontsize=7,
+)
+figure.savefig(os.path.join(os.path.dirname(__file__), f'multi_agent_dir_safe_trajectory.eps'), dpi=300)
+plt.show()
 ### Animate trajectory
 rc('font', weight='regular', size=9)
 handles = \
