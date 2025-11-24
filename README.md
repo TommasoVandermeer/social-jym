@@ -20,6 +20,7 @@ git clone --recurse-submodules https://github.com/otr-ebla/albe-social-jym.git
 ```
 Install the submodules and the main package.
 ```
+cd ~/albe-social-jym
 pip install -e .
 ```
 
