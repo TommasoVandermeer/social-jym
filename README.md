@@ -20,7 +20,7 @@ git clone --recurse-submodules https://github.com/otr-ebla/albe-social-jym.git
 ```
 Install the submodules and the main package.
 ```
-pip install -e albe-social-jym albe-social-jym/JHSFM albe-social-jym/JSFM social-jym/JORCA
+pip install -e albe-social-jym albe-social-jym/JHSFM albe-social-jym/JSFM albe-social-jym/JORCA
 ```
 
 ## Project structure
