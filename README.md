@@ -15,6 +15,10 @@ The second video shows a simulation in which A* is used as a global planner on t
 
 ![dir-safe long navigation (A*) simulation](.images/simulation2.gif)
 
+The third video depicts a multi agent simulation of the A* algorithm on top of 5 DIR-SAFE agents. Each agent is guided to its corresponding goal while avoiding collisions in a complex environment.
+
+![multi agent dir-safe long navigation (A*) simulation](.images/simulation3.gif)
+
 ## Installation
 Create a Python virtual environment.
 ```
