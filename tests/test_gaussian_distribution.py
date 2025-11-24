@@ -1,12 +1,21 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap
+import os
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
+from matplotlib import rc, rcParams
+font = {
+    'weight' : 'regular',
+    'size'   : 12
+}
+rc('font', **font)
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
 
 from socialjym.utils.distributions.gaussian import Gaussian
 
 random_seed = 0
-n_samples = 1_000
+n_samples = 3_000
 vmax = 1.
 wheels_distance = 0.7
 means = jnp.array([0., 0.])
@@ -51,6 +60,8 @@ samples = gaussian.batch_sample(distr, keys)
 # Compute bounded samples
 # bounded_samples = vmap(_bound_action, in_axes=(0, None, None))(samples, vmax, wheels_distance)
 bounded_samples = vmap(gaussian.bound_action, in_axes=(0, None, None, None))(samples, 1, vmax, wheels_distance)
+samples_actually_bounded = samples[jnp.any(bounded_samples != samples, axis=1)]
+samples_not_bounded = samples[jnp.all(bounded_samples == samples, axis=1)]
 
 # Compute entropy of distribution
 entropy = gaussian.entropy(distr)
@@ -98,11 +109,29 @@ plt.show()
 # Compute PDF value of samples and plot (unbounded) distribution
 pdf_values = gaussian.batch_p(distr, samples)
 fig = plt.figure()
+fig.subplots_adjust(top=0.9, bottom=0.1, left=0.1, right=0.9)
+ax = fig.add_subplot(projection='3d')
+ax.scatter(samples_not_bounded[:,0], samples_not_bounded[:,1], gaussian.batch_p(distr, samples_not_bounded), label='Feasible actions', zorder=5)
+ax.scatter(samples_actually_bounded[:,0], samples_actually_bounded[:,1], gaussian.batch_p(distr, samples_actually_bounded), c='r', label='Infeasible actions', alpha=0.05, zorder=2)
+ax.plot([vmax, 0, 0, vmax], [0, -2*vmax/wheels_distance, 2*vmax/wheels_distance,0], [0,0,0,0], c='black', linewidth=2, zorder=3, label="Action space bounds")
+ax.set(xlim=[-vmax-0.3,vmax+0.3], ylim=[-vmax*2/wheels_distance-0.5,+vmax*2/wheels_distance+0.5])
+ax.set_xlabel('$v$')
+ax.set_ylabel('$\\omega$')
+ax.set_zlabel(r'$f_{V \Omega}(v, \omega)$')
+ax.legend()
+fig.savefig(os.path.join(os.path.dirname(__file__), 'gaussian_unbounded_distribution.png'), dpi=300)
+plt.show()
+
+# Compute PDF value of samples and plot (unbounded) distribution
+pdf_values = gaussian.batch_p(distr, samples)
+fig = plt.figure()
 ax = fig.add_subplot(projection='3d')
 ax.scatter(bounded_samples[:,0], bounded_samples[:,1], pdf_values, label='PDF values')
 ax.scatter(0, 0, 0, c='g', label='Origin')
 ax.set(xlim=[-0.1,vmax+0.1], ylim=[-vmax*2/wheels_distance-0.2,+vmax*2/wheels_distance+0.2])
-ax.legend()
+ax.set_xlabel('$v$')
+ax.set_ylabel('$\\omega$')
+ax.set_zlabel(r'$f_{V \Omega}(v, \omega)$')
 plt.show()
 
 # Plot real (bounded) distribution

@@ -20,8 +20,9 @@ pip install -e social-jym social-jym/JHSFM social-jym/JSFM social-jym/JORCA
 ```
 
 ## Project structure
-The source code of the project can be found in the folder socialjym which includes all the python modules. It is structured as follows:
-```bash
+The source code of the project can be found in the folder socialjym which includes all the python modules. 
+<!-- It is structured as follows: -->
+<!-- ```bash
 ├── socialjym
 │   ├── __init__.py
 │   ├── envs
@@ -83,7 +84,7 @@ The source code of the project can be found in the folder socialjym which includ
 │   │   │   ├── robot_obstacle_collision.py
 │   │   │   ├── robot_reached_goal.py
 │   │   │   ├── timeout.py
-```
+``` -->
 ### Envs ([envs readme](socialjym/envs/README.md))
 Includes all the available Reinforcement Learning environments developed in an open AI gymnasium style (step, reset, _get_obs, ecc..) but with functional programming (required for JAX). BaseEnv serves as a base class defining the methods and attributes each environment should have. In BaseEnv also the available scenarios, human motion models and robot kinematic models are listed. [SocialNav](socialjym/envs/README.md) and [LaserEnv](socialjym/envs/README.md) are complete environments that can be used to train and test RL policies for navigation (click on the links to see more). 
 
