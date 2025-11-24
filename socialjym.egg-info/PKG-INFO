@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: socialjym
+Version: 0.0.1
+License-File: LICENSE
+Requires-Dist: jax>=0.4.30
+Requires-Dist: jax_tqdm>=0.2.2
+Requires-Dist: matplotlib>=3.9.1
+Requires-Dist: dm-haiku>=0.0.12
+Requires-Dist: optax>=0.2.3
+Requires-Dist: notebook>=7.2.2
+Requires-Dist: pandas>=2.2.3
+Requires-Dist: scipy>=1.14.0
+Dynamic: license-file
+Dynamic: requires-dist
