@@ -1,7 +1,17 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, nn
+from jax import random, jit
+import os
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
+from matplotlib import rc, rcParams
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+font = {
+    'weight' : 'regular',
+    'size'   : 12
+}
+rc('font', **font)
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
 
 from socialjym.utils.distributions.dirichlet import Dirichlet
 
@@ -9,7 +19,7 @@ random_seed = 0
 n_samples = 1_000
 vmax = 1
 wheels_distance = 0.7
-alpha = jnp.array([1.,1.,1.])
+alpha = jnp.array([1.6,1.6,1.])
 concentration = jnp.sum(alpha)
 epsilon = 1e-3
 
@@ -20,7 +30,7 @@ distribution = Dirichlet(epsilon)
 @jit
 def _reparametrize_alphas(alpha:jnp.ndarray, concentration:float) -> jnp.ndarray:
     return alpha / jnp.sum(alpha) * concentration   
-alpha = _reparametrize_alphas(alpha, concentration)
+# alpha = _reparametrize_alphas(alpha, concentration)
 print("Normalized alpha: ", alpha)
 distr = {"alphas": alpha, "vertices": jnp.array([[0,2*vmax/wheels_distance],[0,-2*vmax/wheels_distance],[vmax,0]])}
 
@@ -101,13 +111,16 @@ ax.add_patch(actions_space_bound)
 ax.legend()
 plt.show()
 
-# Compute PDF value of samples
-pdf_values = distribution.batch_p(distr, samples)
-print("\nNaNs in PDF values: ", jnp.isnan(pdf_values).sum())
+# Compute PDF value of samples and plot (unbounded) distribution
 fig = plt.figure()
+fig.subplots_adjust(top=0.9, bottom=0.1, left=0.1, right=0.9)
 ax = fig.add_subplot(projection='3d')
-ax.scatter(samples[:,0], samples[:,1], pdf_values, label='PDF values')
-ax.scatter(0, 0, 0, c='g', label='Origin')
-ax.set(xlim=[-0.1,vmax+0.1], ylim=[-vmax*2/wheels_distance-0.2,+vmax*2/wheels_distance+0.2])
+ax.scatter(samples[:,0], samples[:,1], distribution.batch_p(distr, samples), label='Feasible actions', zorder=5)
+ax.plot([vmax, 0, 0, vmax], [0, -2*vmax/wheels_distance, 2*vmax/wheels_distance,0], [0,0,0,0], c='black', linewidth=2, zorder=3, label="Action space bounds")
+ax.set(xlim=[-vmax-0.3,vmax+0.3], ylim=[-vmax*2/wheels_distance-0.5,+vmax*2/wheels_distance+0.5])
+ax.set_xlabel('$v$')
+ax.set_ylabel('$\\omega$')
+ax.set_zlabel(r'$f_{V \Omega}(v, \omega)$')
 ax.legend()
+fig.savefig(os.path.join(os.path.dirname(__file__), 'dirichlet_unbounded_distribution.png'), dpi=300)
 plt.show()
