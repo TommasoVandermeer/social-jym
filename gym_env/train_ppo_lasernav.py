@@ -44,7 +44,7 @@ def main():
     # ==========================================
     # Numero di ambienti paralleli (es. 4 o 8 in base alla tua CPU)
     N_ENVS = 32
-    TOTAL_TIMESTEPS = 1_000_000  
+    TOTAL_TIMESTEPS = 10_000_000  
 
     print(f"Creazione di {N_ENVS} ambienti paralleli...")
     # Crea gli ambienti paralleli passando i parametri
@@ -54,13 +54,30 @@ def main():
 
     print("Inizio training PPO...")
     model = PPO("MlpPolicy", vec_env, verbose=1, device="cuda") # Usa device="cuda" se hai GPU configurata
-    model.learn(total_timesteps=TOTAL_TIMESTEPS)
     
+    
+    
+    
+    #--------------------------------------
+    #----- LEARNING & SAVE MODEL -----------
+    #--------------------------------------
+    
+    model.learn(total_timesteps=TOTAL_TIMESTEPS)
     print("Training completato. Salvataggio modello...")
     model.save("ppo_lasernav_parallel")
     
     # Chiudiamo gli ambienti paralleli per liberare risorse
     vec_env.close()
+
+
+
+
+
+
+
+
+
+
 
     # ==========================================
     # 3. TEST E VISUALIZZAZIONE (Single Env)
