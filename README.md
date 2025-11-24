@@ -4,13 +4,17 @@ An environment based on JAX to train mobile robots within crowded environments. 
 ## Installation
 Create a virtual environment.
 ```
-virtualenv socialjym
+python3 -m venv socialjym
 ```
 Activate the virtual environment.
 ```
 source socialjym/bin/activate
 ```
-Clone the repository and its submodules.
+First, configure Git to swap the protocols.
+```
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+```
+Now, you can clone the repository and its submodules.
 ```
 git clone --recurse-submodules https://github.com/otr-ebla/albe-social-jym.git
 ```
