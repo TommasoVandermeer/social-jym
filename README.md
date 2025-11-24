@@ -12,7 +12,7 @@ source socialjym/bin/activate
 ```
 Clone the repository and its submodules.
 ```
-git clone --recurse-submodules https://github.com/TommasoVandermeer/social-jym.git
+git clone --recurse-submodules https://github.com/otr-ebla/albe-social-jym.git
 ```
 Install the submodules and the main package.
 ```
