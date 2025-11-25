@@ -1,5 +1,7 @@
 # DIR-SAFE (DIRichlet-based Socially Aware FEasible-action)
-A reinforcement learning–based local planner improving [[1]](#sarl) that unifies feasibility, safety, and social compliance for differential-drive robots. The method models the robot’s constrained triangular velocity space using Dirichlet-distributed actions and guarantees collision-free navigation via a lightweight action-space bounding algorithm informed by static obstacle maps. An actor–critic architecture with augmented state inputs enables efficient, real-time action inference without online optimization or simulators.
+A reinforcement learning–based local planner improving SARL [[1]](#sarl) that unifies feasibility, safety, and social compliance for differential-drive robots. The method models the robot’s constrained triangular velocity space using Dirichlet-distributed actions and guarantees collision-free navigation via a lightweight action-space bounding algorithm informed by static obstacle maps. An actor–critic architecture with augmented state inputs enables efficient, real-time action inference without online optimization or simulators. The DIR-SAFE scheme is the following.
+
+![dir-safe architecture](.images/dirsafe_architecture.png)
 
 <b>ATTENTION</b>: Please refer to the [main branch](https://github.com/TommasoVandermeer/social-jym/tree/main) for the latest updates of the social-jym JAX-based simulator. This branch is specifically generated as a showcase for the DIR-SAFE algorithm for social navigation.
 
