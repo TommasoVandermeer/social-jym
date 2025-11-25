@@ -6,6 +6,8 @@ from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.lines import Line2D
 
+save_video = True
+
 with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'rb') as file:
     raw_data = pickle.load(file)
 
@@ -67,6 +69,10 @@ def animate(frame):
             alpha = 1
             ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
 anim = FuncAnimation(fig, animate, interval=0.25*1000, frames=n_steps)
+if save_video:
+    save_path=os.path.join(os.path.dirname(__file__),f'icar25_training_setting.mp4')
+    writer_video = FFMpegWriter(fps=int(1/0.25), bitrate=1800)
+    anim.save(save_path, writer=writer_video, dpi=300)
 anim.paused = False
 def toggle_pause(self, *args, **kwargs):
     if anim.paused: anim.resume()
