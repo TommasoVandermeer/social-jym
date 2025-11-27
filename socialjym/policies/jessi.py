@@ -192,6 +192,7 @@ class JESSI(BasePolicy):
         lidar_angular_range=2*jnp.pi,
         lidar_max_dist=10.,
         lidar_num_rays=100,
+        lidar_angles_robot_frame=None, # If not specified, rays are evenly distributed in the angular range
         n_gmm_components:int=10,
         prediction_horizon:int=4,
         max_humans_velocity:float=1.5,
@@ -209,6 +210,11 @@ class JESSI(BasePolicy):
         self.lidar_angular_range = lidar_angular_range
         self.lidar_max_dist = lidar_max_dist
         self.lidar_num_rays = lidar_num_rays
+        if lidar_angles_robot_frame is None:
+            self.lidar_angles_robot_frame = jnp.linspace(-lidar_angular_range/2, lidar_angular_range/2, lidar_num_rays)
+        else:
+            assert len(lidar_angles_robot_frame) == lidar_num_rays, "Length of lidar_angles_robot_frame must be equal to lidar_num_rays"
+            self.lidar_angles_robot_frame = lidar_angles_robot_frame
         self.n_gmm_components = n_gmm_components
         self.gmm_means_limits = gmm_means_limits
         self.prediction_horizon = prediction_horizon
@@ -507,6 +513,34 @@ class JESSI(BasePolicy):
     def _batch_segment_rectangle_intersection(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax):
         return vmap(JESSI._segment_rectangle_intersection, in_axes=(None,0,0,0,0,None,None,None,None))(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax)
     
+    @partial(jit, static_argnames=("self"))
+    def _process_obs_stack(self, obs_stack, ref_position, ref_orientation):
+        """
+        args:
+        - obs_stack (lidar_num_rays + 6):  [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        """
+        ## Split obs stack
+        robot_position = obs_stack[:2]  # Shape: (2,)
+        robot_orientation = obs_stack[2]  # Shape: ()
+        robot_radius = obs_stack[3]  # Shape: ()
+        robot_action = obs_stack[4:6]  # Shape: (2,)
+        lidar_measurements = obs_stack[6:]  # Shape: (lidar_num_rays)
+        ## Align scan to reference frame
+        # Compute LiDAR angles in world frame
+        lidar_angles = self.lidar_angles_robot_frame + robot_orientation  # Shape: (lidar_num_rays)
+        # Compute cartesian coordinates of LiDAR points in world frame
+        xs = lidar_measurements * jnp.cos(lidar_angles) + robot_position[0]
+        ys = lidar_measurements * jnp.sin(lidar_angles) + robot_position[1]
+        points_world = jnp.stack((xs, ys), axis=-1)  # Shape: (lidar_num_rays, 2)
+        # Roto-translate points to robot frame
+        c, s = jnp.cos(ref_orientation), jnp.sin(ref_orientation)
+        R = jnp.array([
+            [c, -s],
+            [s,  c]
+        ])
+        points_robot = jnp.dot(points_world - ref_position, R)
+        return jnp.concatenate((points_robot.reshape(self.lidar_num_rays * 2,), robot_action), axis=-1)
+
     # Public methods
 
     @partial(jit, static_argnames=("self"))
@@ -528,6 +562,15 @@ class JESSI(BasePolicy):
         pass
 
     @partial(jit, static_argnames=("self"))
+    def process_obs(
+        self,
+        obs:jnp.ndarray,
+    ):
+        ref_position = obs[0,:2]
+        ref_orientation = obs[0,2]
+        return vmap(JESSI._process_obs_stack, in_axes=(None, 0, None, None))(self, obs, ref_position, ref_orientation)[::-1,:].flatten()
+
+    @partial(jit, static_argnames=("self"))
     def act(
         self, 
         key:random.PRNGKey, 
@@ -536,12 +579,19 @@ class JESSI(BasePolicy):
         actor_params:dict, 
         sample:bool = False,
     ) -> jnp.ndarray:
+        # Compute encoder input
+        encoder_input = self.process_obs(obs)
         # Compute GMMs (with encoder)
         obs_distr, hum_distr, next_hum_distr = self.encoder.apply(
             encoder_params, 
             None, 
-            obs
+            jnp.reshape(encoder_input, (1, self.n_stack * (2 * self.lidar_num_rays + 2))),
         )
+        encoder_distrs = {
+            "obs_distr": obs_distr,
+            "hum_distr": hum_distr,
+            "next_hum_distr": next_hum_distr,
+        }
         # Prepare input for actor
         actor_input = jnp.concatenate((
             obs_distr["means"].flatten(),
@@ -561,14 +611,14 @@ class JESSI(BasePolicy):
         # TODO: Implement action space bounding with LiDAR scan
         # Compute action
         key, subkey = random.split(key)
-        sampled_action, distr = self.actor.apply(
+        sampled_action, actor_distr = self.actor.apply(
             actor_params, 
             None, 
             actor_input, 
             random_key=subkey
         )
-        action = lax.cond(sample, lambda _: sampled_action, lambda _: self.dirichlet.mean(distr), None)
-        return action, key, actor_input, sampled_action, distr
+        action = lax.cond(sample, lambda _: sampled_action, lambda _: self.dirichlet.mean(actor_distr), None)
+        return action, key, actor_input, sampled_action, encoder_distrs, actor_distr
     
     @partial(jit, static_argnames=("self"))
     def batch_act(
