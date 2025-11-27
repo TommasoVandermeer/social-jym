@@ -12,7 +12,7 @@ from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.utils.aux_functions import animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
 
 ### Hyperparameters
-random_seed = 0 
+random_seed = 1
 n_episodes = 50
 v_max = 1
 tests_n_humans = [5, 10, 15, 20, 25]
@@ -35,7 +35,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': True,
-    'scenario': 'perpendicular_traffic',
+    'scenario': 'parallel_traffic',
     'hybrid_scenario_subset': jnp.array([0, 1, 2, 3, 4, 6]), # All scenarios but circular_crossing_with_static_obstacles
     'humans_policy': 'hsfm',
     'reward_function': reward_function,

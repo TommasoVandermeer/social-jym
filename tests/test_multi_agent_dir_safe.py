@@ -323,7 +323,7 @@ ax.legend(
     fontsize=20,
     title_fontsize=7,
 )
-figure.savefig(os.path.join(os.path.dirname(__file__), f'multi_agent_dir_safe_trajectory.eps'), dpi=300)
+figure.savefig(os.path.join(os.path.dirname(__file__), f'multi_agent_dir_safe_trajectory.png'), dpi=300, format='png')
 plt.show()
 ### Animate trajectory
 rc('font', weight='regular', size=9)
