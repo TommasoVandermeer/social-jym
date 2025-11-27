@@ -5,8 +5,17 @@ A reinforcement learning–based local planner improving SARL [[1]](#sarl) that 
 
 <b>ATTENTION</b>: Please refer to the [main branch](https://github.com/TommasoVandermeer/social-jym/tree/main) for the latest updates of the social-jym JAX-based simulator. This branch is specifically generated as a showcase for the DIR-SAFE algorithm for social navigation.
 
-<!-- ## Cite this paper
-If this repository or paper turns out to be useful for your research, please cite our paper: -->
+## Cite this paper
+If this repository or paper turns out to be useful for your research, please cite our paper:
+```bibtex
+@inproceedings{vander2025dirsafe,
+  title={Safe Robot Navigation with Reinforcement Learning using Dirichlet Distributions and Social Attention},
+  author={Van Der Meer, Tommaso and Garulli, Andrea and Giannitrapani, Antonio and Quartullo, Renato},
+  booktitle={2025 international conference on advanced robotics (ICAR)},
+  year={2025},
+  organization={IEEE}
+}
+```
 
 ## Simulation videos
 The first video depicts the DIR-SAFE algorithm operating in the parallel traffic scenario with 3 humans and 5 static obstacles. On the left, the video of the complete trajectory is shown and, on the right, the corresponding collision-free action space computed at each step is reported.
