@@ -134,6 +134,21 @@ with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.
     # }
 with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
     robot_centric_data = pickle.load(f)
+    # robot_centric_data = {
+    #     "episode_starts": raw_data["episode_starts"],
+    #     "rc_lidar_measurements": jnp.zeros((n_steps, lidar_num_rays, 2)),
+    #     "rc_humans_positions": jnp.zeros((n_steps, n_humans, 2)),
+    #     "rc_humans_orientations": jnp.zeros((n_steps, n_humans)),
+    #     "rc_humans_velocities": jnp.zeros((n_steps, n_humans, 2)),
+    #     "humans_radii": raw_data["humans_radii"],
+    #     "robot_actions": raw_data["robot_actions"],
+    #     "robot_positions": raw_data["robot_positions"],
+    #     "robot_orientations": raw_data["robot_orientations"],
+    #     "rc_robot_goals": jnp.zeros((n_steps, 2)),
+    #     "rc_obstacles": jnp.zeros((n_steps, n_obstacles, 1, 2, 2)),
+    #     "humans_visibility": jnp.zeros((n_steps, n_humans)),
+    #     "obstacles_visibility": jnp.zeros((n_steps, n_obstacles, 1)),
+    # }
 with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'rb') as f:
     dataset = pickle.load(f)
 
@@ -268,6 +283,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_traini
     actor_actions = raw_data["robot_actions"]
     controller_dataset = {
         "inputs": {
+            "rc_robot_goals": robot_centric_data["rc_robot_goals"],
             "obs_distrs": obs_distrs,
             "hum_distrs": hum_distrs,
             "next_hum_distrs": next_hum_distrs,
@@ -291,7 +307,7 @@ del raw_data
 
 ### INITIALIZE ACTOR NETWORK
 # Initialize actor network
-sample_input = jnp.zeros((1, 3 * 6 * n_gaussian_mixture_components))
+sample_input = jnp.zeros((1, 3 * 6 * n_gaussian_mixture_components + 2))
 actor_params = jessi.actor.init(random.PRNGKey(random_seed), sample_input)
 # Count network parameters
 def count_params(actor_params):
@@ -385,7 +401,7 @@ visualization_data = {
 }
 for i in range(100):
     ## Compute action from trained JESSI
-    action, _, _, _, encoder_distrs, actor_distr = jessi.act(random.PRNGKey(0), obs, encoder_params, actor_params, sample=False)
+    action, _, _, _, encoder_distrs, actor_distr = jessi.act(random.PRNGKey(0), obs, info, encoder_params, actor_params, sample=False)
     ## Simulate one step
     state, obs, info, _, _, reset_key = env.step(
         state,

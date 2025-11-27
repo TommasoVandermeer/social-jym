@@ -566,6 +566,17 @@ class JESSI(BasePolicy):
         self,
         obs:jnp.ndarray,
     ):
+        """
+        Align lidar scans in the observation stacks to the robot frame of the most recent observation.
+        Prepare the input for the encoder network.
+
+        args:
+        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        The first stack is the most recent one.
+
+        output:
+        - processed_obs (n_stack * (lidar_num_rays * 2 + 2)): flattened aligned observation stack. First information corresponds to the least recent observation.
+        """
         ref_position = obs[0,:2]
         ref_orientation = obs[0,2]
         return vmap(JESSI._process_obs_stack, in_axes=(None, 0, None, None))(self, obs, ref_position, ref_orientation)[::-1,:].flatten()
@@ -575,6 +586,7 @@ class JESSI(BasePolicy):
         self, 
         key:random.PRNGKey, 
         obs:jnp.ndarray, 
+        info:dict,
         encoder_params:dict,
         actor_params:dict, 
         sample:bool = False,
@@ -593,7 +605,15 @@ class JESSI(BasePolicy):
             "next_hum_distr": next_hum_distr,
         }
         # Prepare input for actor
+        robot_goal = info["robot_goal"]  # Shape: (2,)
+        robot_position = obs[0,:2]
+        robot_orientation = obs[0,2]
+        rc_robot_goal = jnp.array([
+            jnp.cos(-robot_orientation) * (robot_goal[0] - robot_position[0]) - jnp.sin(-robot_orientation) * (robot_goal[1] - robot_position[1]),
+            jnp.sin(-robot_orientation) * (robot_goal[0] - robot_position[0]) + jnp.cos(-robot_orientation) * (robot_goal[1] - robot_position[1]),
+        ])
         actor_input = jnp.concatenate((
+            rc_robot_goal,
             obs_distr["means"].flatten(),
             obs_distr["logsigmas"].flatten(),
             obs_distr["correlations"].flatten(),
@@ -747,6 +767,7 @@ class JESSI(BasePolicy):
                     ) -> jnp.ndarray:
                     # Concatenate GMM parameters into a single vector as actor input
                     actor_input = jnp.concatenate((
+                        input["rc_robot_goals"],
                         jnp.reshape(input["obs_distrs"]["means"], (-1,)),
                         jnp.reshape(input["obs_distrs"]["logsigmas"], (-1,)),
                         jnp.reshape(input["obs_distrs"]["correlations"], (-1,)),
@@ -783,10 +804,7 @@ class JESSI(BasePolicy):
             )
             return loss, grads
         # Compute loss and gradients for actor and critic
-        actor_loss, actor_grads = _compute_loss_and_gradients( 
-                actor_params,
-                experiences,
-        )
+        actor_loss, actor_grads = _compute_loss_and_gradients(actor_params,experiences)
         # Compute parameter updates
         actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
         # Apply updates
