@@ -48,7 +48,7 @@ for i in range(n_episodes):
     while outcome["nothing"]:
         # Compute action from trained JESSI
         action, _, _, _, encoder_distrs, actor_distr = policy.act(random.PRNGKey(0), obs, info, encoder_params, actor_params, sample=False)
-        state, obs, info, reward, outcome, _ = env.step(state,info,jnp.array([1.,0.]),test=True)
+        state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
         all_states = np.vstack((all_states, [state]))
         all_observations = np.vstack((all_observations, [obs]))
     print(outcome)

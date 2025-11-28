@@ -141,13 +141,14 @@ class Actor(hk.Module):
         ) -> jnp.ndarray:
         ## Get kwargs
         random_key = kwargs.get("random_key", random.PRNGKey(0))
-        alphas = self.mlp(x)
+        action_space_params = x[:3]
+        alphas = self.mlp(x[3:])
         alphas = nn.softplus(alphas) + 1
         ## Compute dirchlet distribution parameters
         vertices = jnp.array([
-            [0, (2 * self.vmax / self.wheels_distance)],
-            [0, (-2 * self.vmax / self.wheels_distance)],
-            [self.vmax, 0]
+            [0, action_space_params[1] * (2 * self.vmax / self.wheels_distance)],
+            [0, action_space_params[2] * (-2 * self.vmax / self.wheels_distance)],
+            [action_space_params[0] * self.vmax, 0]
         ])
         distribution = {"alphas": alphas, "vertices": vertices}
         ## Sample action
@@ -447,73 +448,6 @@ class JESSI(BasePolicy):
         return critic_loss, critic_grads, actor_loss, actor_grads, 0.
 
     @partial(jit, static_argnames=("self"))
-    def _segment_rectangle_intersection(self, x1, y1, x2, y2, xmin, xmax, ymin, ymax):
-        """
-        This is the Liang-Barsky algorithm for line clipping.
-        """
-        @jit
-        def _nan_segment(val):
-            return False, jnp.array([jnp.nan, jnp.nan]), jnp.array([jnp.nan, jnp.nan])
-        @jit
-        def _not_nan_segment(val):
-            x1, y1, x2, y2, xmin, xmax, ymin, ymax = val
-            dx = x2 - x1
-            dy = y2 - y1
-            p = jnp.array([-dx, dx, -dy, dy])
-            q = jnp.array([x1 - xmin, xmax - x1, y1 - ymin, ymax - y1])
-            @jit
-            def loop_body(i, tup):
-                t, p, q = tup
-                t0, t1 = t
-                t0, t1 = lax.switch(
-                    (jnp.sign(p[i])+1).astype(jnp.int32),
-                    [
-                        lambda t: lax.cond(q[i]/p[i] > t[1], lambda _: (2.,1.), lambda x: (jnp.max(jnp.array([x[0],q[i]/p[i]])), x[1]), t),  # p[i] < 0
-                        lambda t: lax.cond(q[i] < 0, lambda _: (2.,1.), lambda x: x, t),  # p[i] == 0
-                        lambda t: lax.cond(q[i]/p[i] < t[0], lambda _: (2.,1.), lambda x: (x[0], jnp.min(jnp.array([x[1],q[i]/p[i]]))), t),  # p[i] > 0
-                    ],
-                    (t0, t1),
-                )
-                return ((t0, t1), p ,q)
-            t, p, q = lax.fori_loop(
-                0, 
-                4,
-                loop_body,
-                ((0., 1.), p, q),
-            )
-            t0, t1 = t
-            inside_or_intersects = ~(t0 > t1)
-            intersection_point_0 = lax.switch(
-                jnp.argmax(jnp.array([~(inside_or_intersects), (inside_or_intersects) & (t0 == 0), (inside_or_intersects) & (t0 > 0)])),
-                [
-                    lambda _: jnp.array([jnp.nan, jnp.nan]),
-                    lambda _: jnp.array([x1, y1]),
-                    lambda _: jnp.array([x1 + t0 * dx, y1 + t0 * dy]),
-                ],
-                None,
-            )
-            intersection_point_1 = lax.switch(
-                jnp.argmax(jnp.array([~(inside_or_intersects), (inside_or_intersects) & (t1 == 1), (inside_or_intersects) & (t1 < 1)])),
-                [
-                    lambda _: jnp.array([jnp.nan, jnp.nan]),
-                    lambda _: jnp.array([x2, y2]),
-                    lambda _: jnp.array([x1 + t1 * dx, y1 + t1 * dy]),
-                ],
-                None,
-            )
-            return inside_or_intersects, intersection_point_0, intersection_point_1
-        return lax.cond(
-            jnp.any(jnp.isnan(jnp.array([x1, y1, x2, y2]))),
-            _nan_segment,
-            _not_nan_segment,
-            (x1, y1, x2, y2, xmin, xmax, ymin, ymax),
-        )
-
-    @partial(jit, static_argnames=("self"))
-    def _batch_segment_rectangle_intersection(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax):
-        return vmap(JESSI._segment_rectangle_intersection, in_axes=(None,0,0,0,0,None,None,None,None))(self, x1s, y1s, x2s, y2s, xmin, xmax, ymin, ymax)
-    
-    @partial(jit, static_argnames=("self"))
     def _process_obs_stack(self, obs_stack, ref_position, ref_orientation):
         """
         args:
@@ -554,12 +488,91 @@ class JESSI(BasePolicy):
         return encoder_params, actor_params, critic_params
 
     @partial(jit, static_argnames=("self"))
-    def bound_action_space(self, lidar_scan, robot_position, robot_orientation, robot_radius):
+    def bound_action_space(self, lidar_point_cloud, robot_radius):
         """
         Compute the bounds of the action space based on the control parameters alpha, beta, gamma.
+        WARNING: Assumes LiDAR orientations is align with robot frame.
         """
-        # TODO: Implement action space bounding with LiDAR scan
-        pass
+        # Construct segments by connecting consecutive LiDAR points
+        x1s = lidar_point_cloud[:,0]
+        y1s = lidar_point_cloud[:,1]
+        x2s = jnp.roll(lidar_point_cloud[:,0], -1)
+        y2s = jnp.roll(lidar_point_cloud[:,1], -1)
+        # Lower ALPHA
+        _, intersection_points0, intersection_points1 = self._batch_segment_rectangle_intersection(
+            x1s,
+            y1s,
+            x2s,
+            y2s,
+            # Restricting the rectangle by 1e-6 avoids problems when obstacles are parallel or perpendicular to the robot's direction
+            0. + 1e-6, # xmin
+            self.v_max * self.dt + robot_radius - 1e-6, # xmax
+            -robot_radius + 1e-6, # ymin
+            robot_radius - 1e-6, # ymax
+        )
+        intersection_points = jnp.vstack((intersection_points0, intersection_points1))
+        min_x = jnp.nanmin(intersection_points[:,0])
+        new_alpha = lax.cond(
+            ~jnp.isnan(min_x),
+            lambda _: jnp.max(jnp.array([0, min_x - robot_radius])) / (self.v_max * self.dt),
+            lambda _: 1.,
+            None,
+        )
+        @jit
+        def _lower_beta_and_gamma(tup:tuple):
+            x1s, y1s, x2s, y2s, new_alpha, vmax, wheels_distance, dt, robot_radius = tup
+            # Lower BETA
+            _, intersection_points0, intersection_points1 = self._batch_segment_rectangle_intersection(
+                x1s,
+                y1s,
+                x2s,
+                y2s,
+                # Restricting the rectangle by 1e-6 avoids problems when obstacles are parallel or perpendicular to the robot's direction
+                -robot_radius + 1e-6, # xmin
+                new_alpha * vmax * dt + robot_radius - 1e-6, # xmax
+                robot_radius + 1e-6, # ymin
+                robot_radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance)) - 1e-6, # ymax
+            )
+            intersection_points = jnp.vstack((intersection_points0, intersection_points1))
+            min_y = jnp.nanmin(intersection_points[:,1])
+            new_beta = lax.cond(
+                ~jnp.isnan(min_y),
+                lambda _: (min_y - robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
+                lambda _: 1.,
+                None,
+            )
+            # Lower GAMMA
+            _, intersection_points0, intersection_points1 = self._batch_segment_rectangle_intersection(
+                x1s,
+                y1s,
+                x2s,
+                y2s,
+                # Restricting the rectangle by 1e-6 avoids problems when obstacles are parallel or perpendicular to the robot's direction
+                -robot_radius + 1e-6, # xmin
+                new_alpha * vmax * dt + robot_radius - 1e-6, # xmax
+                -robot_radius - (new_alpha*dt**2*vmax**2/(4*wheels_distance)) + 1e-6, # ymin
+                -robot_radius - 1e-6, # ymax
+            )
+            intersection_points = jnp.vstack((intersection_points0, intersection_points1))
+            max_y = jnp.nanmax(intersection_points[:,1])
+            new_gamma = lax.cond(
+                ~jnp.isnan(max_y),
+                lambda _: (-max_y - robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
+                lambda _: 1.,
+                None,
+            )
+            return new_beta, new_gamma
+        new_beta, new_gamma = lax.cond(
+            new_alpha == 0.,
+            lambda _: (1., 1.),
+            _lower_beta_and_gamma,
+            (x1s, y1s, x2s, y2s, new_alpha, self.v_max, self.wheels_distance, self.dt, robot_radius)
+        )
+        # Apply lower blound to new_alpha, new_beta, new_gamma
+        new_alpha = jnp.max(jnp.array([EPSILON, new_alpha]))
+        new_beta = jnp.max(jnp.array([EPSILON, new_beta]))
+        new_gamma = jnp.max(jnp.array([EPSILON, new_gamma]))
+        return jnp.array([new_alpha, new_beta, new_gamma])
 
     @partial(jit, static_argnames=("self"))
     def process_obs(
@@ -591,8 +604,9 @@ class JESSI(BasePolicy):
         actor_params:dict, 
         sample:bool = False,
     ) -> jnp.ndarray:
-        # Compute encoder input
+        # Compute encoder input and last lidar point cloud (for action bounding)
         encoder_input = self.process_obs(obs)
+        last_lidar_point_cloud = encoder_input[-(2 * self.lidar_num_rays + 2):-2].reshape(self.lidar_num_rays, 2)
         # Compute GMMs (with encoder)
         obs_distr, hum_distr, next_hum_distr = self.encoder.apply(
             encoder_params, 
@@ -604,6 +618,12 @@ class JESSI(BasePolicy):
             "hum_distr": hum_distr,
             "next_hum_distr": next_hum_distr,
         }
+        # Compute bounded action space parameters and add it to the input
+        bounding_parameters = self.bound_action_space(
+            last_lidar_point_cloud,  
+            obs[0,3], # robot_radius
+        )
+        debug.print("Bounding parameters: {x}", x=bounding_parameters)
         # Prepare input for actor
         robot_goal = info["robot_goal"]  # Shape: (2,)
         robot_position = obs[0,:2]
@@ -613,6 +633,7 @@ class JESSI(BasePolicy):
             jnp.sin(-robot_orientation) * (robot_goal[0] - robot_position[0]) + jnp.cos(-robot_orientation) * (robot_goal[1] - robot_position[1]),
         ])
         actor_input = jnp.concatenate((
+            bounding_parameters,
             rc_robot_goal,
             obs_distr["means"].flatten(),
             obs_distr["logsigmas"].flatten(),
@@ -627,8 +648,6 @@ class JESSI(BasePolicy):
             next_hum_distr["correlations"].flatten(),
             next_hum_distr["weights"].flatten(),
         ))
-        # Compute bounded action space parameters and add it to the input
-        # TODO: Implement action space bounding with LiDAR scan
         # Compute action
         key, subkey = random.split(key)
         sampled_action, actor_distr = self.actor.apply(
