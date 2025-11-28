@@ -623,15 +623,16 @@ class JESSI(BasePolicy):
             last_lidar_point_cloud,  
             obs[0,3], # robot_radius
         )
-        debug.print("Bounding parameters: {x}", x=bounding_parameters)
+        # debug.print("Bounding parameters: {x}", x=bounding_parameters)
         # Prepare input for actor
         robot_goal = info["robot_goal"]  # Shape: (2,)
         robot_position = obs[0,:2]
         robot_orientation = obs[0,2]
-        rc_robot_goal = jnp.array([
-            jnp.cos(-robot_orientation) * (robot_goal[0] - robot_position[0]) - jnp.sin(-robot_orientation) * (robot_goal[1] - robot_position[1]),
-            jnp.sin(-robot_orientation) * (robot_goal[0] - robot_position[0]) + jnp.cos(-robot_orientation) * (robot_goal[1] - robot_position[1]),
-        ])
+        difference = robot_goal - robot_position
+        distance_to_goal = jnp.linalg.norm(difference)
+        theta_to_goal = wrap_angle(robot_orientation - jnp.atan2(difference[1], difference[0]))
+        rc_robot_goal = jnp.array([distance_to_goal, theta_to_goal])
+        debug.print("Goal coords: {x}", x=rc_robot_goal)
         actor_input = jnp.concatenate((
             bounding_parameters,
             rc_robot_goal,
