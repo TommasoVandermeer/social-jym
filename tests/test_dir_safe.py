@@ -9,7 +9,7 @@ import pickle
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.dir_safe import DIRSAFE
-from socialjym.utils.aux_functions import animate_trajectory, load_crowdnav_policy, test_k_trials, load_socialjym_policy
+from socialjym.utils.aux_functions import animate_trajectory, test_k_trials
 
 ### Hyperparameters
 random_seed = 1
