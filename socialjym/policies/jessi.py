@@ -3,6 +3,10 @@ from jax import random, jit, vmap, lax, debug, nn, value_and_grad
 from functools import partial
 import haiku as hk
 import optax
+import os
+from matplotlib import rc, rcParams
+from matplotlib.animation import FuncAnimation, FFMpegWriter
+import matplotlib.pyplot as plt
 
 from socialjym.envs.base_env import wrap_angle
 from socialjym.utils.distributions.base_distribution import DISTRIBUTIONS
@@ -185,6 +189,7 @@ class Critic(hk.Module):
 class JESSI(BasePolicy):
     def __init__(
         self, 
+        robot_radius:float=0.3,
         v_max:float=1., 
         gamma:float=0.9, 
         dt:float=0.25, 
@@ -204,6 +209,7 @@ class JESSI(BasePolicy):
         """
         # Configurable attributes
         super().__init__(discount=gamma)
+        self.robot_radius = robot_radius
         self.v_max = v_max
         self.dt = dt
         self.wheels_distance = wheels_distance
@@ -917,3 +923,146 @@ class JESSI(BasePolicy):
         # Apply updates
         updated_params = optax.apply_updates(current_params, updates)
         return updated_params, optimizer_state, loss
+    
+    def animate_trajectory(
+        self,
+        robot_poses, # x, y, theta
+        robot_actions,
+        robot_goals,
+        lidar_measurements,
+        actor_distrs,
+        encoder_distrs,
+        humans_poses, # x, y, theta
+        humans_velocities, # vx, vy (in global frame)
+        humans_radii,
+        static_obstacles,
+        p_visualization_threshold:float=0.05,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+    ):
+        # Validate input args
+        assert \
+            len(robot_poses) == \
+            len(robot_actions) == \
+            len(robot_goals) == \
+            len(lidar_measurements) == \
+            len(actor_distrs) == \
+            len(encoder_distrs) == \
+            len(humans_poses) == \
+            len(humans_velocities) == \
+            len(humans_radii) == \
+            len(static_obstacles), "All inputs must have the same length"
+        # Set matplotlib fonts
+        rc('font', weight='regular', size=20)
+        rcParams['pdf.fonttype'] = 42
+        rcParams['ps.fonttype'] = 42
+        # Compute informations for visualization
+        n_steps = len(robot_poses)
+        box_points = jnp.array([
+            [self.gmm_means_limits[0,0], self.gmm_means_limits[1,0]],
+            [self.gmm_means_limits[0,1], self.gmm_means_limits[1,0]],
+            [self.gmm_means_limits[0,1], self.gmm_means_limits[1,1]],
+            [self.gmm_means_limits[0,0], self.gmm_means_limits[1,1]],
+        ])
+        sx = jnp.linspace(self.gmm_means_limits[0, 0], self.gmm_means_limits[0, 1], num=60, endpoint=True)
+        sy = jnp.linspace(self.gmm_means_limits[1, 0], self.gmm_means_limits[1, 1], num=60, endpoint=True)
+        test_samples_x, test_samples_y = jnp.meshgrid(sx, sy)
+        test_samples = jnp.stack((test_samples_x.flatten(), test_samples_y.flatten()), axis=-1)
+        # Animate trajectory
+        fig, axs = plt.subplots(2,3,figsize=(24,8))
+        fig.subplots_adjust(left=0.05, right=0.99, wspace=0.13)
+        def animate(frame):
+            for ax in axs:
+                ax.clear()
+                ax.set(xlim=x_lims if x_lims is not None else [-10,10], ylim=y_lims if y_lims is not None else [-10,10])
+                ax.set_xlabel('X')
+                ax.set_ylabel('Y', labelpad=-13)
+                ax.set_aspect('equal', adjustable='box')
+                # Plot box limits
+                c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
+                rot = jnp.array([[c, -s], [s, c]])
+                rotated_box_points = jnp.einsum('ij,jk->ik', rot, box_points.T).T + robot_poses[frame,:2]
+                to_plot = jnp.vstack((rotated_box_points, rotated_box_points[0:1,:]))
+                ax.plot(to_plot[:,0], to_plot[:,1], color='grey', linewidth=2, alpha=0.5, zorder=1)
+                # Plot humans
+                for h in range(len(humans_poses[frame])):
+                    head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
+                    ax.add_patch(head)
+                    circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                    ax.add_patch(circle)
+                # Plot human velocities
+                for h in range(len(humans_poses[frame])):
+                    ax.arrow(
+                        humans_poses[frame][h,0],
+                        humans_poses[frame][h,1],
+                        humans_velocities[frame][h,0],
+                        humans_velocities[frame][h,1],
+                        head_width=0.15,
+                        head_length=0.15,
+                        fc="blue",
+                        ec="blue",
+                        alpha=0.6,
+                        zorder=30,
+                    )
+                # Plot robot
+                robot_position = robot_poses[frame,:2]
+                head = plt.Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
+                ax.add_patch(head)
+                circle = plt.Circle((robot_position[0], robot_position[1]), self.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+                ax.add_patch(circle)
+                # Plot robot goal
+                ax.plot(
+                    robot_goals[frame][0],
+                    robot_goals[frame][1],
+                    marker='*',
+                    markersize=7,
+                    color='red',
+                    zorder=5,
+                )
+                # Plot static obstacles
+                for o in static_obstacles[frame]:
+                    for s in o:
+                        ax.plot(s[:,0],s[:,1], color='black', linewidth=2, zorder=11, alpha=0.6, linestyle='solid')
+            ### FIRST ROW AXS: PERCEPTION
+            obs_distr = encoder_distrs[frame]["obs_distr"]
+            hum_distr = encoder_distrs[frame]["hum_distr"]
+            next_hum_distr = encoder_distrs[frame]["next_hum_distr"]
+            test_p = self.gmm.batch_p(obs_distr, test_samples)
+            points_high_p = test_samples[test_p > p_visualization_threshold]
+            corresponding_colors = test_p[test_p > p_visualization_threshold]
+            rotated_means = jnp.einsum('ij,jk->ik', rot, obs_distr["means"].T).T + robot_poses[frame,:2]
+            rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
+            axs[0,0].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
+            axs[0,0].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+            axs[0,0].set_title("Obstacles Predicted GMM")
+            test_p = self.gmm.batch_p(hum_distr, test_samples)
+            points_high_p = test_samples[test_p > p_visualization_threshold]
+            corresponding_colors = test_p[test_p > p_visualization_threshold]
+            rotated_means = jnp.einsum('ij,jk->ik', rot, hum_distr["means"].T).T + robot_poses[frame,:2]
+            rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
+            axs[0,1].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
+            axs[0,1].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+            axs[0,1].set_title("Humans Predicted GMM")
+            test_p = self.gmm.batch_p(next_hum_distr, test_samples)
+            points_high_p = test_samples[test_p > p_visualization_threshold]
+            corresponding_colors = test_p[test_p > p_visualization_threshold]
+            rotated_means = jnp.einsum('ij,jk->ik', rot, next_hum_distr["means"].T).T + robot_poses[frame,:2]
+            rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
+            axs[0,2].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
+            axs[0,2].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+            axs[0,2].set_title("Next Humans Predicted GMM")
+            ### SECOND ROW AXS: ACTIONS
+            # TODO: Implement this
+        anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
+        if save_video:
+            save_path = os.path.join(os.path.dirname(__file__), f'trained_network.mp4')
+            writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
+            anim.save(save_path, writer=writer_video, dpi=300)
+        anim.paused = False
+        def toggle_pause(self, *args, **kwargs):
+            if anim.paused: anim.resume()
+            else: anim.pause()
+            anim.paused = not anim.paused
+        fig.canvas.mpl_connect('button_press_event', toggle_pause)
+        plt.show()
