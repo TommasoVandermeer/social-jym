@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug, nn, value_and_grad
+from jax.tree_util import tree_map
 from functools import partial
 import haiku as hk
 import optax
@@ -8,13 +9,11 @@ from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
 
-from socialjym.envs.base_env import wrap_angle
-from socialjym.utils.distributions.base_distribution import DISTRIBUTIONS
+from socialjym.envs.base_env import wrap_angle, ROBOT_KINEMATICS, EPSILON
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.utils.distributions.gaussian_mixture_model import BivariateGMM
 from socialjym.policies.base_policy import BasePolicy
-
-EPSILON = 1e-5
+from jhsfm.hsfm import get_linear_velocity
 
 class Encoder(hk.Module):
     def __init__(
@@ -228,6 +227,7 @@ class JESSI(BasePolicy):
         self.max_humans_velocity = max_humans_velocity
         # Default attributes
         self.name = "JESSI"
+        self.kinematics = ROBOT_KINEMATICS.index("unicycle")
         self.dirichlet = Dirichlet()
         self.gmm = BivariateGMM(self.n_gmm_components)
         # Initialize Encoder network
@@ -458,6 +458,10 @@ class JESSI(BasePolicy):
         """
         args:
         - obs_stack (lidar_num_rays + 6):  [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+
+        outputs:
+        - pointcloud_and_action (lidar_num_rays * 2 + 2,): LiDAR points in robot reference frame + robot action
+        - pointcloud_world_frame (lidar_num_rays, 2): LiDAR points in world frame
         """
         ## Split obs stack
         robot_position = obs_stack[:2]  # Shape: (2,)
@@ -479,7 +483,7 @@ class JESSI(BasePolicy):
             [s,  c]
         ])
         points_robot = jnp.dot(points_world - ref_position, R)
-        return jnp.concatenate((points_robot.reshape(self.lidar_num_rays * 2,), robot_action), axis=-1)
+        return jnp.concatenate((points_robot.reshape(self.lidar_num_rays * 2,), robot_action), axis=-1), points_world
 
     # Public methods
 
@@ -594,11 +598,11 @@ class JESSI(BasePolicy):
         The first stack is the most recent one.
 
         output:
-        - processed_obs (n_stack * (lidar_num_rays * 2 + 2)): flattened aligned observation stack. First information corresponds to the least recent observation.
+        - processed_obs (n_stack, lidar_num_rays * 2 + 2): aligned observation stack. First information corresponds to the least recent observation.
         """
         ref_position = obs[0,:2]
         ref_orientation = obs[0,2]
-        return vmap(JESSI._process_obs_stack, in_axes=(None, 0, None, None))(self, obs, ref_position, ref_orientation)[::-1,:].flatten()
+        return vmap(JESSI._process_obs_stack, in_axes=(None, 0, None, None))(self, obs, ref_position, ref_orientation)
 
     @partial(jit, static_argnames=("self"))
     def act(
@@ -611,7 +615,7 @@ class JESSI(BasePolicy):
         sample:bool = False,
     ) -> jnp.ndarray:
         # Compute encoder input and last lidar point cloud (for action bounding)
-        encoder_input = self.process_obs(obs)
+        encoder_input = self.process_obs(obs)[0][::-1,:].flatten()
         last_lidar_point_cloud = encoder_input[-(2 * self.lidar_num_rays + 2):-2].reshape(self.lidar_num_rays, 2)
         # Compute GMMs (with encoder)
         obs_distr, hum_distr, next_hum_distr = self.encoder.apply(
@@ -638,7 +642,7 @@ class JESSI(BasePolicy):
         distance_to_goal = jnp.linalg.norm(difference)
         theta_to_goal = wrap_angle(robot_orientation - jnp.atan2(difference[1], difference[0]))
         rc_robot_goal = jnp.array([distance_to_goal, theta_to_goal])
-        debug.print("Goal coords: {x}", x=rc_robot_goal)
+        # debug.print("Goal coords: {x}", x=rc_robot_goal)
         actor_input = jnp.concatenate((
             bounding_parameters,
             rc_robot_goal,
@@ -922,21 +926,22 @@ class JESSI(BasePolicy):
         updates, optimizer_state = encoder_optimizer.update(grads, optimizer_state)
         # Apply updates
         updated_params = optax.apply_updates(current_params, updates)
-        return updated_params, optimizer_state, loss
-    
+        return updated_params, optimizer_state, loss    
+
     def animate_trajectory(
         self,
         robot_poses, # x, y, theta
         robot_actions,
         robot_goals,
-        lidar_measurements,
+        observations,
         actor_distrs,
         encoder_distrs,
         humans_poses, # x, y, theta
         humans_velocities, # vx, vy (in global frame)
         humans_radii,
         static_obstacles,
-        p_visualization_threshold:float=0.05,
+        p_visualization_threshold_gmm:float=0.05,
+        p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
         save_video:bool=False,
@@ -946,9 +951,9 @@ class JESSI(BasePolicy):
             len(robot_poses) == \
             len(robot_actions) == \
             len(robot_goals) == \
-            len(lidar_measurements) == \
-            len(actor_distrs) == \
-            len(encoder_distrs) == \
+            len(observations) == \
+            len(actor_distrs['alphas']) == \
+            len(encoder_distrs['obs_distr']['means']) == \
             len(humans_poses) == \
             len(humans_velocities) == \
             len(humans_radii) == \
@@ -969,94 +974,177 @@ class JESSI(BasePolicy):
         sy = jnp.linspace(self.gmm_means_limits[1, 0], self.gmm_means_limits[1, 1], num=60, endpoint=True)
         test_samples_x, test_samples_y = jnp.meshgrid(sx, sy)
         test_samples = jnp.stack((test_samples_x.flatten(), test_samples_y.flatten()), axis=-1)
+        from socialjym.policies.cadrl import CADRL
+        from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
+        dummy_cadrl = CADRL(DummyReward(kinematics="unicycle"),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
+        test_action_samples = dummy_cadrl._build_action_space(unicycle_triangle_samples=30)
         # Animate trajectory
         fig, axs = plt.subplots(2,3,figsize=(24,8))
-        fig.subplots_adjust(left=0.05, right=0.99, wspace=0.13)
+        fig.subplots_adjust(left=0.05, right=0.99, wspace=0.13, hspace=0.13)
         def animate(frame):
-            for ax in axs:
-                ax.clear()
-                ax.set(xlim=x_lims if x_lims is not None else [-10,10], ylim=y_lims if y_lims is not None else [-10,10])
-                ax.set_xlabel('X')
-                ax.set_ylabel('Y', labelpad=-13)
-                ax.set_aspect('equal', adjustable='box')
-                # Plot box limits
-                c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
-                rot = jnp.array([[c, -s], [s, c]])
-                rotated_box_points = jnp.einsum('ij,jk->ik', rot, box_points.T).T + robot_poses[frame,:2]
-                to_plot = jnp.vstack((rotated_box_points, rotated_box_points[0:1,:]))
-                ax.plot(to_plot[:,0], to_plot[:,1], color='grey', linewidth=2, alpha=0.5, zorder=1)
-                # Plot humans
-                for h in range(len(humans_poses[frame])):
-                    head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
+            for i, row in enumerate(axs):
+                for j, ax in enumerate(row):
+                    ax.clear()
+                    if i == 1 and j == 2: continue # This is the ax for the action space
+                    ax.set(xlim=x_lims if x_lims is not None else [-10,10], ylim=y_lims if y_lims is not None else [-10,10])
+                    ax.set_xlabel('X')
+                    ax.set_ylabel('Y', labelpad=-13)
+                    ax.set_aspect('equal', adjustable='box')
+                    # Plot box limits
+                    c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
+                    rot = jnp.array([[c, -s], [s, c]])
+                    rotated_box_points = jnp.einsum('ij,jk->ik', rot, box_points.T).T + robot_poses[frame,:2]
+                    to_plot = jnp.vstack((rotated_box_points, rotated_box_points[0:1,:]))
+                    ax.plot(to_plot[:,0], to_plot[:,1], color='grey', linewidth=2, alpha=0.5, zorder=1)
+                    # Plot humans
+                    for h in range(len(humans_poses[frame])):
+                        head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
+                        ax.add_patch(head)
+                        circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                        ax.add_patch(circle)
+                    # Plot human velocities
+                    for h in range(len(humans_poses[frame])):
+                        ax.arrow(
+                            humans_poses[frame][h,0],
+                            humans_poses[frame][h,1],
+                            humans_velocities[frame][h,0],
+                            humans_velocities[frame][h,1],
+                            head_width=0.15,
+                            head_length=0.15,
+                            fc="blue",
+                            ec="blue",
+                            alpha=0.6,
+                            zorder=30,
+                        )
+                    # Plot robot
+                    robot_position = robot_poses[frame,:2]
+                    head = plt.Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
                     ax.add_patch(head)
-                    circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                    circle = plt.Circle((robot_position[0], robot_position[1]), self.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
                     ax.add_patch(circle)
-                # Plot human velocities
-                for h in range(len(humans_poses[frame])):
-                    ax.arrow(
-                        humans_poses[frame][h,0],
-                        humans_poses[frame][h,1],
-                        humans_velocities[frame][h,0],
-                        humans_velocities[frame][h,1],
-                        head_width=0.15,
-                        head_length=0.15,
-                        fc="blue",
-                        ec="blue",
-                        alpha=0.6,
-                        zorder=30,
+                    # Plot robot goal
+                    ax.plot(
+                        robot_goals[frame][0],
+                        robot_goals[frame][1],
+                        marker='*',
+                        markersize=7,
+                        color='red',
+                        zorder=5,
                     )
-                # Plot robot
-                robot_position = robot_poses[frame,:2]
-                head = plt.Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
-                ax.add_patch(head)
-                circle = plt.Circle((robot_position[0], robot_position[1]), self.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
-                ax.add_patch(circle)
-                # Plot robot goal
-                ax.plot(
-                    robot_goals[frame][0],
-                    robot_goals[frame][1],
-                    marker='*',
-                    markersize=7,
-                    color='red',
-                    zorder=5,
-                )
-                # Plot static obstacles
-                for o in static_obstacles[frame]:
-                    for s in o:
-                        ax.plot(s[:,0],s[:,1], color='black', linewidth=2, zorder=11, alpha=0.6, linestyle='solid')
+                    # Plot static obstacles
+                    for o in static_obstacles[frame]:
+                        for s in o:
+                            ax.plot(s[:,0],s[:,1], color='black', linewidth=2, zorder=11, alpha=0.6, linestyle='solid')
             ### FIRST ROW AXS: PERCEPTION
-            obs_distr = encoder_distrs[frame]["obs_distr"]
-            hum_distr = encoder_distrs[frame]["hum_distr"]
-            next_hum_distr = encoder_distrs[frame]["next_hum_distr"]
+            obs_distr = tree_map(lambda x: x[frame], encoder_distrs["obs_distr"])
+            hum_distr = tree_map(lambda x: x[frame], encoder_distrs["hum_distr"])
+            next_hum_distr = tree_map(lambda x: x[frame], encoder_distrs["next_hum_distr"])
+            # AX 0,0: Obstacles GMM
             test_p = self.gmm.batch_p(obs_distr, test_samples)
-            points_high_p = test_samples[test_p > p_visualization_threshold]
-            corresponding_colors = test_p[test_p > p_visualization_threshold]
+            points_high_p = test_samples[test_p > p_visualization_threshold_gmm]
+            corresponding_colors = test_p[test_p > p_visualization_threshold_gmm]
             rotated_means = jnp.einsum('ij,jk->ik', rot, obs_distr["means"].T).T + robot_poses[frame,:2]
             rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
             axs[0,0].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
             axs[0,0].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[0,0].set_title("Obstacles Predicted GMM")
+            # AX 0,1: Humans GMM
             test_p = self.gmm.batch_p(hum_distr, test_samples)
-            points_high_p = test_samples[test_p > p_visualization_threshold]
-            corresponding_colors = test_p[test_p > p_visualization_threshold]
+            points_high_p = test_samples[test_p > p_visualization_threshold_gmm]
+            corresponding_colors = test_p[test_p > p_visualization_threshold_gmm]
             rotated_means = jnp.einsum('ij,jk->ik', rot, hum_distr["means"].T).T + robot_poses[frame,:2]
             rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
             axs[0,1].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
             axs[0,1].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[0,1].set_title("Humans Predicted GMM")
+            # AX 0,2: Next Humans GMM
             test_p = self.gmm.batch_p(next_hum_distr, test_samples)
-            points_high_p = test_samples[test_p > p_visualization_threshold]
-            corresponding_colors = test_p[test_p > p_visualization_threshold]
+            points_high_p = test_samples[test_p > p_visualization_threshold_gmm]
+            corresponding_colors = test_p[test_p > p_visualization_threshold_gmm]
             rotated_means = jnp.einsum('ij,jk->ik', rot, next_hum_distr["means"].T).T + robot_poses[frame,:2]
             rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
             axs[0,2].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
             axs[0,2].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[0,2].set_title("Next Humans Predicted GMM")
-            ### SECOND ROW AXS: ACTIONS
-            # TODO: Implement this
+            ### SECOND ROW AXS: SIMULATION, POINT CLOUD AND ACTIONS
+            # AX 1,0: Simulation with LiDAR ranges
+            lidar_scan = observations[frame,0,6:]
+            for ray in range(len(lidar_scan)):
+                axs[1,0].plot(
+                    [robot_poses[frame,0], robot_poses[frame,0] + lidar_scan[ray] * jnp.cos(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
+                    [robot_poses[frame,1], robot_poses[frame,1] + lidar_scan[ray] * jnp.sin(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
+                    color="black", 
+                    linewidth=0.5, 
+                    zorder=0
+                )
+            axs[1,0].set_title("Trajectory")
+            # AX 1,1: Simulation with LiDAR point cloud stack
+            point_cloud = self.process_obs(observations[frame])[1]
+            for i, cloud in enumerate(point_cloud):
+                # color/alpha fade with i (smaller i -> more faded)
+                t = i / (self.n_stack - 1)  # in [0,1]
+                axs[1,1].scatter(
+                    cloud[:,0],
+                    cloud[:,1],
+                    c=0.3 + 0.7 * jnp.ones((self.lidar_num_rays,)) * t,
+                    cmap='Reds',
+                    vmin=0.0,
+                    vmax=1.0,
+                    alpha=0.3 + 0.7 * t,
+                    zorder=20 + i,
+                )
+            axs[1,1].set_title("Pointcloud")
+            # AX 1,2: Feasible and bounded action space + action space distribution and action taken
+            axs[1,2].set_xlabel("$v$ (m/s)")
+            axs[1,2].set_ylabel("$\omega$ (rad/s)")
+            axs[1,2].set_xlim(-0.1, self.v_max + 0.1)
+            axs[1,2].set_ylim(-2*self.v_max/self.wheels_distance - 0.3, 2*self.v_max/self.wheels_distance + 0.3)
+            axs[1,2].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
+            axs[1,2].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
+            axs[1,2].set_yticks(jnp.arange(-2,3,1).tolist() + [2*self.v_max/self.wheels_distance,-2*self.v_max/self.wheels_distance])
+            axs[1,2].set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+            axs[1,2].grid()
+            axs[1,2].add_patch(
+                plt.Polygon(
+                    [   
+                        [0,2*self.v_max/self.wheels_distance],
+                        [0,-2*self.v_max/self.wheels_distance],
+                        [self.v_max,0],
+                    ],
+                    closed=True,
+                    fill=True,
+                    edgecolor='red',
+                    facecolor='lightcoral',
+                    linewidth=2,
+                    zorder=2,
+                ),
+            )
+            bounded_action_space_vertices = actor_distrs["vertices"][frame]
+            axs[1,2].add_patch(
+                plt.Polygon(
+                    [   
+                        bounded_action_space_vertices[0],
+                        bounded_action_space_vertices[1],
+                        bounded_action_space_vertices[2],
+                    ],
+                    closed=True,
+                    fill=True,
+                    edgecolor='green',
+                    facecolor='lightgreen',
+                    linewidth=2,
+                    zorder=3,
+                ),
+            )
+            actor_distr = tree_map(lambda x: x[frame], actor_distrs)
+            test_action_p = self.dirichlet.batch_p(actor_distr, test_action_samples)
+            points_high_p = test_action_samples[test_action_p > p_visualization_threshold_dir]
+            corresponding_colors = test_action_p[test_action_p > p_visualization_threshold_dir]
+            axs[1,2].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+            axs[1,2].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=7,color='red',zorder=51)
+            axs[1,2].set_title("Action space")
         anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
         if save_video:
-            save_path = os.path.join(os.path.dirname(__file__), f'trained_network.mp4')
+            save_path = os.path.join(os.path.dirname(__file__), f'jessi_trajectory.mp4')
             writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
             anim.save(save_path, writer=writer_video, dpi=300)
         anim.paused = False
@@ -1066,3 +1154,48 @@ class JESSI(BasePolicy):
             anim.paused = not anim.paused
         fig.canvas.mpl_connect('button_press_event', toggle_pause)
         plt.show()
+
+    def animate_lasernav_trajectory(
+        self,
+        states,
+        observations,
+        actions,
+        actor_distrs,
+        encoder_distrs,
+        goals,
+        static_obstacles,
+        humans_radii,
+        p_visualization_threshold_gmm:float=0.05,
+        p_visualization_threshold_dir:float=0.05,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+    ):
+        robot_positions = states[:,-1,:2]
+        robot_orientations = states[:,-1,4]
+        robot_poses = jnp.hstack((robot_positions, robot_orientations.reshape(-1,1)))
+        humans_positions = states[:,:-1,:2]
+        humans_orientations = states[:,:-1,4]
+        humans_poses = jnp.dstack((humans_positions, humans_orientations))
+        humans_body_velocities = states[:,:-1,2:4]
+        humans_velocities = vmap(vmap(get_linear_velocity, in_axes=(0,0)), in_axes=(0,0))(
+            humans_orientations,
+            humans_body_velocities,
+        )
+        self.animate_trajectory(
+            robot_poses,
+            actions,
+            goals,
+            observations,
+            actor_distrs,
+            encoder_distrs,
+            humans_poses,
+            humans_velocities,
+            humans_radii,
+            static_obstacles,
+            p_visualization_threshold_gmm,
+            p_visualization_threshold_dir,
+            x_lims,
+            y_lims,
+            save_video,
+        )
