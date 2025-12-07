@@ -24,7 +24,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'hybrid_scenario',
+    'scenario': 'robot_crowding',
     'reward_function': DummyReward(robot_radius=0.3),
     'kinematics': kinematics,
 }

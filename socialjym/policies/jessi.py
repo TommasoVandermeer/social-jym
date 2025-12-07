@@ -977,7 +977,7 @@ class JESSI(BasePolicy):
         from socialjym.policies.cadrl import CADRL
         from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
         dummy_cadrl = CADRL(DummyReward(kinematics="unicycle"),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
-        test_action_samples = dummy_cadrl._build_action_space(unicycle_triangle_samples=30)
+        test_action_samples = dummy_cadrl._build_action_space(unicycle_triangle_samples=35)
         # Animate trajectory
         fig, axs = plt.subplots(2,3,figsize=(24,8))
         fig.subplots_adjust(left=0.05, right=0.99, wspace=0.13, hspace=0.13)

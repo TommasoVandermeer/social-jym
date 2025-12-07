@@ -189,7 +189,7 @@ def actor_critic_il_rollout(
                                 k
                         )
                         # Update the model parameters
-                        if policy_index == policies.index("SARL-PPO") or policy_index == policies.index("SOAPPO"):
+                        if policy_index == policies.index("SARL-PPO") or policy_index == policies.index("DIRSAFE"):
                                 critic_params, actor_params, cri_opt_state, act_opt_state, cri_loss, act_loss, _ = policy.update_il(
                                         critic_params,
                                         actor_params,
