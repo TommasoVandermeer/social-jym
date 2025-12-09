@@ -38,6 +38,9 @@ class SocialNav(BaseEnv):
             grid_cell_size:float = 0.9, # Such parameter is suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT)
             grid_min_size:float = 18. # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
         ) -> None:
+        ## Warnings 
+        if n_obstacles > 0:
+            print(f"\nWARNING: Obstacles have been added to the environment, but collision detection is not implemented yet (only with humans).\nThe robot must be able to avoid them by design.\n")
         ## BaseEnv initialization
         super().__init__(
             robot_radius=robot_radius,

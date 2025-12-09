@@ -471,6 +471,35 @@ while outcome["nothing"]:
     all_states = jnp.vstack((all_states, jnp.array([state])))
     all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
     all_action_space_params.append(action_space_params)
+# Plot DIR-SAFE trajectory
+fig2, ax2 = plt.subplots(figsize=(6, 4.2))
+fig2.subplots_adjust(right=0.99, left=0.12, top=0.99, bottom=0.14)
+with open(os.path.join(os.path.dirname(__file__), 'custom_episodes_30_humans.pkl'), 'rb') as f:
+    custom_episodes = pickle.load(f)
+    full_state = custom_episodes['full_state'][1, :-1]
+    for h in range(full_state.shape[0]):
+        head = plt.Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * 0.3, full_state[h,1] + jnp.sin(full_state[h,4]) * 0.3), 0.1, color='purple', zorder=10)
+        ax2.add_patch(head)
+        circle = plt.Circle((full_state[h,0],full_state[h,1]),0.3, edgecolor='purple', facecolor="white", fill=True, zorder=10)
+        ax2.add_patch(circle)
+if obstacles.shape[1] > 1: # Polygon obstacles
+    for o in obstacles: 
+        ax2.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+else: # One segment obstacles
+    for o in obstacles: 
+        ax2.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+head = plt.Circle((all_states[0,-1,0] + jnp.cos(all_states[0,-1,4]) * 0.3, all_states[0,-1,1] + jnp.sin(all_states[0,-1,4]) * 0.3), 0.1, color='black', zorder=10)
+ax2.add_patch(head)
+circle = plt.Circle((all_states[0,-1,0],all_states[0,-1,1]),0.3, edgecolor='black', facecolor="red", fill=True, zorder=10)
+ax2.add_patch(circle)
+ax2.scatter(goal_pos[0], goal_pos[1], color='red', label='Goal Position', zorder=4, marker='*', s=100)
+ax2.plot(all_states[:, -1, 0], all_states[:, -1, 1], color='blue', linewidth=2, label='DIR-SAFE Trajectory', zorder=3, linestyle='--')
+ax2.set_xlabel('x (m)')
+ax2.set_ylabel('y (m)', labelpad=-10)
+ax2.set_xticks(jnp.arange(-15, 16, 5))
+ax2.set_aspect('equal', adjustable='box')
+fig2.savefig(os.path.join(os.path.dirname(__file__), 'long_nav_snapshot_trajectory.png'), format='png', dpi=300)
+plt.show()
 # Animate trajectory
 animate_trajectory(
     all_states, 

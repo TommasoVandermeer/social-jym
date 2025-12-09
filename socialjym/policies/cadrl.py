@@ -66,26 +66,30 @@ class CADRL(BasePolicy):
 
     # Private methods
 
-    def _build_action_space(self) -> jnp.ndarray:
+    def _build_action_space(
+        self,
+        holonomic_speed_sample:int=5,
+        holonomic_rotation_samples:int=16,
+        unicycle_box_samples:int=9,
+        unicycle_triangle_samples:int=9,
+    ) -> jnp.ndarray:
         if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-            # The number of actions will be equal to (speed_samples * rotation_samples + 1)
-            speed_samples = 5
-            rotation_samples = 16
-            speeds = lax.fori_loop(0,speed_samples,lambda i, speeds: speeds.at[i].set((jnp.exp((i + 1) / speed_samples) - 1) / (jnp.e - 1) * self.v_max), jnp.zeros((speed_samples,)))
-            rotations = jnp.linspace(0, 2 * jnp.pi, rotation_samples, endpoint=False)
-            action_space = jnp.empty((speed_samples * rotation_samples + 1,2))
+            # The number of actions will be equal to (holonomic_speed_sample * holonomic_rotation_samples + 1)
+            speeds = lax.fori_loop(0,holonomic_speed_sample,lambda i, speeds: speeds.at[i].set((jnp.exp((i + 1) / holonomic_speed_sample) - 1) / (jnp.e - 1) * self.v_max), jnp.zeros((holonomic_speed_sample,)))
+            rotations = jnp.linspace(0, 2 * jnp.pi, holonomic_rotation_samples, endpoint=False)
+            action_space = jnp.empty((holonomic_speed_sample * holonomic_rotation_samples + 1,2))
             action_space = action_space.at[0].set(jnp.array([0., 0.])) # First action is to stay still
             action_space = lax.fori_loop(1,
                                         len(action_space), 
                                         lambda i, acts: acts.at[i].set(jnp.array([
-                                            speeds[(i-1) % speed_samples] * jnp.cos(rotations[(i-1) // speed_samples]),
-                                            speeds[(i-1) % speed_samples] * jnp.sin(rotations[(i-1) // speed_samples])])),
+                                            speeds[(i-1) % holonomic_speed_sample] * jnp.cos(rotations[(i-1) // holonomic_speed_sample]),
+                                            speeds[(i-1) % holonomic_speed_sample] * jnp.sin(rotations[(i-1) // holonomic_speed_sample])])),
                                         action_space)
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
             if self.unicycle_box_action_space:
-                # We will subdivide the linear velocities in 9 intervals and the angular velocities in 9 intervals, for a total of 81 actions
-                linear_speeds = jnp.linspace(0, self.v_max, 9)
-                angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 9)
+                # We will subdivide the linear velocities in unicycle_box_samples intervals and the angular velocities in unicycle_box_samples intervals, for a total of unicycle_box_samples**2 actions
+                linear_speeds = jnp.linspace(0, self.v_max, unicycle_box_samples)
+                angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), unicycle_box_samples)
                 action_space = jnp.empty((len(linear_speeds)*len(angular_speeds),2))
                 action_space = lax.fori_loop(
                     0,
@@ -97,11 +101,10 @@ class CADRL(BasePolicy):
                         x),
                     action_space)
             else:
-                # The number of actions will be equal to (samples**2) (which corresponds to the number of positive linear velocities)
-                # The linear velocities are crossed with (samples * 2 -1) angular speeds to create the feasible action space)
-                samples = 9
-                angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 2*samples-1)
-                speeds = jnp.linspace(0, self.v_max, samples)
+                # The number of actions will be equal to (unicycle_triangle_samples**2) (which corresponds to the number of positive linear velocities)
+                # The linear velocities are crossed with (unicycle_triangle_samples * 2 -1) angular speeds to create the feasible action space)
+                angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 2*unicycle_triangle_samples-1)
+                speeds = jnp.linspace(0, self.v_max, unicycle_triangle_samples)
                 unconstrained_action_space = jnp.empty((len(angular_speeds)*len(speeds),2))
                 unconstrained_action_space = lax.fori_loop(
                     0,

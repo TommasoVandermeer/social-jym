@@ -96,8 +96,6 @@ class BaseEnv(ABC):
         assert kinematics in ROBOT_KINEMATICS, f"Invalid robot kinematics. Choose one of {ROBOT_KINEMATICS}"
         if grid_map_computation:
             assert grid_cell_size > 0, "There should be at least one obstacle (also padding obstacles) to enable grid map computation."
-        if n_obstacles > 0:
-            print(f"\nWARNING: Obstacles have been added to the environment, but collision detection is not implemented yet (only with humans).\nThe robot must be able to avoid them by design.\n")
         assert humans_dt <= robot_dt, "The humans' time step must be less or equal than the robot's time step."
         assert is_multiple(robot_dt, humans_dt), "The robot's time step must be a multiple of the humans' time step."
         if scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or (scenario == SCENARIOS.index('hybrid_scenario') and SCENARIOS.index('circular_crossing_with_static_obstacles') in hybrid_scenario_subset):
