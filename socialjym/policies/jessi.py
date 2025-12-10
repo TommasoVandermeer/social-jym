@@ -598,7 +598,7 @@ class JESSI(BasePolicy):
         The first stack is the most recent one.
 
         output:
-        - processed_obs (n_stack, lidar_num_rays * 2 + 2): aligned observation stack. First information corresponds to the least recent observation.
+        - processed_obs (n_stack, lidar_num_rays * 2 + 2): aligned observation stack. First information corresponds to the most recent observation.
         """
         ref_position = obs[0,:2]
         ref_orientation = obs[0,2]
@@ -980,14 +980,14 @@ class JESSI(BasePolicy):
         test_action_samples = dummy_cadrl._build_action_space(unicycle_triangle_samples=35)
         # Animate trajectory
         fig, axs = plt.subplots(2,3,figsize=(24,8))
-        fig.subplots_adjust(left=0.05, right=0.99, wspace=0.13, hspace=0.13)
+        fig.subplots_adjust(left=0.02, right=0.99, wspace=0.08, hspace=0.2, top=0.95, bottom=0.07)
         def animate(frame):
             for i, row in enumerate(axs):
                 for j, ax in enumerate(row):
                     ax.clear()
                     if i == 1 and j == 2: continue # This is the ax for the action space
                     ax.set(xlim=x_lims if x_lims is not None else [-10,10], ylim=y_lims if y_lims is not None else [-10,10])
-                    ax.set_xlabel('X')
+                    ax.set_xlabel('X', labelpad=-5)
                     ax.set_ylabel('Y', labelpad=-13)
                     ax.set_aspect('equal', adjustable='box')
                     # Plot box limits
@@ -1047,7 +1047,7 @@ class JESSI(BasePolicy):
             rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
             axs[0,0].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
             axs[0,0].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
-            axs[0,0].set_title("Obstacles Predicted GMM")
+            axs[0,0].set_title("Obstacles GMM")
             # AX 0,1: Humans GMM
             test_p = self.gmm.batch_p(hum_distr, test_samples)
             points_high_p = test_samples[test_p > p_visualization_threshold_gmm]
@@ -1056,7 +1056,7 @@ class JESSI(BasePolicy):
             rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
             axs[0,1].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
             axs[0,1].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
-            axs[0,1].set_title("Humans Predicted GMM")
+            axs[0,1].set_title("Humans GMM")
             # AX 0,2: Next Humans GMM
             test_p = self.gmm.batch_p(next_hum_distr, test_samples)
             points_high_p = test_samples[test_p > p_visualization_threshold_gmm]
@@ -1065,7 +1065,7 @@ class JESSI(BasePolicy):
             rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
             axs[0,2].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
             axs[0,2].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
-            axs[0,2].set_title("Next Humans Predicted GMM")
+            axs[0,2].set_title("Next Humans GMM")
             ### SECOND ROW AXS: SIMULATION, POINT CLOUD AND ACTIONS
             # AX 1,0: Simulation with LiDAR ranges
             lidar_scan = observations[frame,0,6:]
@@ -1081,8 +1081,8 @@ class JESSI(BasePolicy):
             # AX 1,1: Simulation with LiDAR point cloud stack
             point_cloud = self.process_obs(observations[frame])[1]
             for i, cloud in enumerate(point_cloud):
-                # color/alpha fade with i (smaller i -> more faded)
-                t = i / (self.n_stack - 1)  # in [0,1]
+                # color/alpha fade with i (smaller i -> less faded)
+                t = (1 - i / (self.n_stack - 1))  # in [0,1]
                 axs[1,1].scatter(
                     cloud[:,0],
                     cloud[:,1],
@@ -1091,7 +1091,7 @@ class JESSI(BasePolicy):
                     vmin=0.0,
                     vmax=1.0,
                     alpha=0.3 + 0.7 * t,
-                    zorder=20 + i,
+                    zorder=20 + self.n_stack - i,
                 )
             axs[1,1].set_title("Pointcloud")
             # AX 1,2: Feasible and bounded action space + action space distribution and action taken
