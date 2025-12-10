@@ -98,6 +98,8 @@ class Encoder(hk.Module):
             x_log_sigmas = vector[:, 2*self.n_components:3*self.n_components]  # Std in x
             y_log_sigmas = vector[:, 3*self.n_components:4*self.n_components]  # Std in y
             correlations = nn.tanh(vector[:, 4*self.n_components:5*self.n_components])  # Correlations
+            # TODO: CORRECT!! since GMM heads have relu activation, the minimum value is 0, so softmax will assign weight one to score equal to 0 (the minimum)
+            # Either scores shoul be allowed to go to -inf or use antoher version of softmax (as in SARL)
             weights = nn.softmax(vector[:, 5*self.n_components:], axis=-1)  # Weights
             distr = {
                 "means": jnp.stack((x_means, y_means), axis=-1), # Shape (batch_size, n_components, n_dimensions)
@@ -130,12 +132,55 @@ class Actor(hk.Module):
         self.vmax = v_max
         self.wmax = 2 * v_max / wheels_distance
         self.wmin = -2 * v_max / wheels_distance
-        self.n_inputs = 3 * 6 * self.n_components + 5 # 6 outputs per GMM cell (mean_x, mean_y, sigma_x, sigma_y, correlation, weight) times  3 GMMs (obstacles, current humans, next humans)
+        self.n_inputs = (3, self.n_components, 7+9) # (3, Number of GMM compoents, 7 params per GMM component + 9 robot goal, robot vmax, robot radius, robot wheels distance, action space params)
         self.n_outputs = 3 # Dirichlet distribution over 3 action vertices
-        self.mlp = hk.nets.MLP(
+        # Obstacles MLPs
+        self.embedding_mlp_obs = hk.nets.MLP(
             **mlp_params, 
-            output_sizes=[self.n_inputs * 5, self.n_inputs * 5, self.n_inputs * 3, self.n_outputs], 
-            name="mlp"
+            output_sizes=[100, 50], 
+            name="embedding_mlp_obs"
+        )
+        self.features_mlp_obs = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[50, 25], 
+            name="features_mlp_obs"
+        )
+        self.attention_mlp_obs = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[50, 50, 1], 
+            name="attention_mlp_obs"
+        )
+        self.scores_mlp_obs = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[25, 10, 1],
+            name="scores_mlp_obs"
+        )
+        # Humans MLPs
+        self.embedding_mlp_hum = hk.nets.MLP(
+            **mlp_params, 
+            output_sizes=[150, 100], 
+            name="embedding_mlp_hum"
+        )
+        self.features_mlp_hum = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[100, 50], 
+            name="features_mlp_hum"
+        )
+        self.attention_mlp_hum = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[100, 100, 1], 
+            name="attention_mlp_hum"
+        )
+        self.scores_mlp_hum = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[50, 25, 1],
+            name="scores_mlp_hum"
+        )
+        # Output MLP
+        self.output_mlp = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[150, 100, 100, self.n_outputs], 
+            name="output_mlp"
         )
         self.dirichlet = Dirichlet()
 
@@ -144,12 +189,43 @@ class Actor(hk.Module):
             x,
             **kwargs:dict,
         ) -> jnp.ndarray:
-        ## Get kwargs
+        ## Extract robot state and random key for sampling
         random_key = kwargs.get("random_key", random.PRNGKey(0))
-        action_space_params = x[:3]
-        alphas = self.mlp(x)
+        robot_state = x[0,0, 7:]
+        action_space_params = robot_state[:3]
+        ## Compute obstcles attentive embedding
+        obstacles_input = x[0,:,:6]  # Shape: (n_components, 6)
+        obstacles_weights = x[0,:,6] # Shape: (n_components,)
+        obstacles_embeddings = self.embedding_mlp_obs(obstacles_input)  # Shape: (n_components, obs embedding_size)
+        global_obstacle_embeddings = jnp.tile(jnp.mean(obstacles_embeddings, axis=0, keepdims=True), (self.n_components,1))  # Shape: (n_components, obs embedding_size)
+        obstacles_features = self.features_mlp_obs(obstacles_embeddings)  # Shape: (n_components, obs feature_size)
+        obstacles_attention = self.attention_mlp_obs(jnp.concatenate((obstacles_embeddings, global_obstacle_embeddings), axis=-1))  # Shape: (n_components, 1)
+        obstacles_attention_exp = jnp.exp(obstacles_attention) * jnp.array(obstacles_attention != 0, dtype=jnp.float32)
+        obstacles_attention = obstacles_attention_exp / jnp.sum(obstacles_attention_exp, axis=0)
+        obstacles_scores = self.scores_mlp_obs(jnp.concatenate((obstacles_attention, obstacles_weights[:,None]), axis=-1))  # Shape: (n_components, 1)
+        obstacles_scores_exp = jnp.exp(obstacles_scores) * jnp.array(obstacles_scores != 0, dtype=jnp.float32)
+        obstacles_scores = obstacles_scores_exp / jnp.sum(obstacles_scores_exp, axis=0)
+        weighted_obstacles_features = jnp.sum(jnp.multiply(obstacles_scores, obstacles_features), axis=0) # Shape: (obs feature_size,)
+        ## Compute human attentive embedding
+        humans_input = jnp.concatenate([x[1,:,:6], x[2,:,:6]], axis=-1)  # Shape: (n_components, 12)
+        humans_weights = x[1,:,6]  # Shape: (n_components, 1)
+        next_humans_weights = x[2,:,6]  # Shape: (n_components, 1)
+        humans_embeddings = self.embedding_mlp_hum(humans_input)  # Shape: (n_components, hum embedding_size)
+        global_human_embeddings = jnp.tile(jnp.mean(humans_embeddings, axis=0, keepdims=True), (self.n_components,1))  # Shape: (n_components, hum embedding_size)
+        humans_features = self.features_mlp_hum(humans_embeddings)  # Shape: (n_components, hum feature_size)
+        humans_attention = self.attention_mlp_hum(jnp.concatenate((humans_embeddings, global_human_embeddings), axis=-1))  # Shape: (n_components, 1)
+        humans_attention_exp = jnp.exp(humans_attention) * jnp.array(humans_attention != 0, dtype=jnp.float32)
+        humans_attention = humans_attention_exp / jnp.sum(humans_attention_exp, axis=0)
+        humans_scores = self.scores_mlp_hum(jnp.concatenate((humans_attention, humans_weights[:,None], next_humans_weights[:,None]), axis=-1))  # Shape: (n_components, 1)
+        humans_scores_exp = jnp.exp(humans_scores) * jnp.array(humans_scores != 0, dtype=jnp.float32)
+        humans_scores = humans_scores_exp / jnp.sum(humans_scores_exp, axis=0)
+        weighted_humans_features = jnp.sum(jnp.multiply(humans_scores, humans_features), axis=0) # Shape: (hum feature_size,)
+        ## Concatenate weighted features
+        weighted_features = jnp.concatenate((weighted_obstacles_features, weighted_humans_features), axis=-1) # Shape: (obs feature_size + hum feature_size,)
+        ## Compute Dirichlet distribution parameters
+        alphas = self.output_mlp(jnp.concatenate([robot_state, weighted_features], axis=0))
         alphas = nn.softplus(alphas) + 1
-        ## Compute dirchlet distribution parameters
+        ## Compute dirchlet distribution vetices
         vertices = jnp.array([
             [0., action_space_params[1] * self.wmax],
             [0., action_space_params[2] * self.wmin],
@@ -495,9 +571,9 @@ class JESSI(BasePolicy):
         key:random.PRNGKey, 
     ) -> tuple:
         encoder_params = self.encoder.init(key, jnp.zeros((1, self.n_stack * (2 * self.lidar_num_rays + 2))))
-        actor_params = self.actor.init(key, jnp.zeros((3 * 6 * self.n_gmm_components + 5)))
-        critic_params = self.critic.init(key, jnp.zeros((3 * 6 * self.n_gmm_components + 5)))
-        return encoder_params, actor_params, critic_params
+        actor_params = self.actor.init(key, jnp.zeros((3, self.n_gmm_components, 7 + 9)))  # 7 params per GMM component + 9 robot goal, robot vmax, robot radius, robot wheels distance, action space params
+        # critic_params = 
+        return encoder_params, actor_params, {}
 
     @partial(jit, static_argnames=("self"))
     def bound_action_space(self, lidar_point_cloud):
@@ -607,6 +683,96 @@ class JESSI(BasePolicy):
         return vmap(JESSI._process_obs_stack, in_axes=(None, 0, None, None))(self, obs, ref_position, ref_orientation)
 
     @partial(jit, static_argnames=("self"))
+    def compute_actor_input(
+        self,
+        obs_gmm,
+        hum_gmm,
+        next_hum_gmm,
+        action_space_params,
+        robot_goal, # In cartesian coordinates (gx, gy) IN THE ROBOT FRAME
+    ):
+        # Compute ROBOT state inputs
+        robot_goal_dist = jnp.linalg.norm(robot_goal)
+        robot_goal_theta = jnp.arctan2(robot_goal[1], robot_goal[0])
+        robot_goal_sin_theta = jnp.sin(robot_goal_theta)
+        robot_goal_cos_theta = jnp.cos(robot_goal_theta)
+        tiled_action_space_params = jnp.tile(action_space_params, (self.n_gmm_components,1)) # Shape: (n_components, 3)
+        tiled_robot_params = jnp.tile(jnp.array([self.v_max, self.robot_radius, self.wheels_distance]), (self.n_gmm_components,1)) # Shape: (n_components, 3)
+        tiled_robot_goals = jnp.tile(jnp.array([robot_goal_dist, robot_goal_sin_theta, robot_goal_cos_theta]), (self.n_gmm_components,1)) # Shape: (n_components, 3)
+        # Compute OBSTACLES GMMs input
+        obs_means_dist = jnp.linalg.norm(obs_gmm["means"], axis=-1)
+        obs_means_theta = jnp.arctan2(obs_gmm["means"][:,1], obs_gmm["means"][:,0])
+        obs_means_sin_theta = jnp.sin(obs_means_theta)
+        obs_means_cos_theta = jnp.cos(obs_means_theta)
+        hum_means_dist = jnp.linalg.norm(hum_gmm["means"], axis=-1)
+        hum_means_theta = jnp.arctan2(hum_gmm["means"][:,1], hum_gmm["means"][:,0])
+        hum_means_sin_theta = jnp.sin(hum_means_theta)
+        hum_means_cos_theta = jnp.cos(hum_means_theta)
+        next_hum_means_dist = jnp.linalg.norm(next_hum_gmm["means"], axis=-1)
+        next_hum_means_theta = jnp.arctan2(next_hum_gmm["means"][:,1], next_hum_gmm["means"][:,0])
+        next_hum_means_sin_theta = jnp.sin(next_hum_means_theta)
+        next_hum_means_cos_theta = jnp.cos(next_hum_means_theta)
+        obs_gmm = jnp.column_stack((
+            obs_means_dist,
+            obs_means_sin_theta,
+            obs_means_cos_theta,
+            obs_gmm["logsigmas"][:, 0],
+            obs_gmm["logsigmas"][:, 1],
+            obs_gmm["correlations"],
+            obs_gmm["weights"],
+            tiled_action_space_params[:, 0],
+            tiled_action_space_params[:, 1],
+            tiled_action_space_params[:, 2],
+            tiled_robot_params[:, 0],
+            tiled_robot_params[:, 1],
+            tiled_robot_params[:, 2],
+            tiled_robot_goals[:, 0],
+            tiled_robot_goals[:, 1],
+            tiled_robot_goals[:, 2],
+        ))  # Shape: (n_components, 7 + 8)
+        # Compute HUMANS GMMs input
+        hum_gmm = jnp.column_stack((
+            hum_means_dist,
+            hum_means_sin_theta,
+            hum_means_cos_theta,
+            hum_gmm["logsigmas"][:, 0],
+            hum_gmm["logsigmas"][:, 1],
+            hum_gmm["correlations"],
+            hum_gmm["weights"],
+            tiled_action_space_params[:, 0],
+            tiled_action_space_params[:, 1],
+            tiled_action_space_params[:, 2],
+            tiled_robot_params[:, 0],
+            tiled_robot_params[:, 1],
+            tiled_robot_params[:, 2],
+            tiled_robot_goals[:, 0],
+            tiled_robot_goals[:, 1],
+            tiled_robot_goals[:, 2],
+        ))  # Shape: (n_components, 7 + 8)
+        # Compute NEXT HUMANS GMMs input
+        next_hum_gmm = jnp.column_stack(( 
+            next_hum_means_dist,
+            next_hum_means_sin_theta,
+            next_hum_means_cos_theta,
+            next_hum_gmm["logsigmas"][:, 0],
+            next_hum_gmm["logsigmas"][:, 1],
+            next_hum_gmm["correlations"],
+            next_hum_gmm["weights"],
+            tiled_action_space_params[:, 0],
+            tiled_action_space_params[:, 1],
+            tiled_action_space_params[:, 2],
+            tiled_robot_params[:, 0],
+            tiled_robot_params[:, 1],
+            tiled_robot_params[:, 2],
+            tiled_robot_goals[:, 0],
+            tiled_robot_goals[:, 1],
+            tiled_robot_goals[:, 2],
+        )) # Shape: (n_components, 7 + 8)
+        # Concatenate all inputs
+        actor_input = jnp.array([obs_gmm, hum_gmm, next_hum_gmm])  # Shape: (3, n_components, 7 + 8)
+        return actor_input
+
+    @partial(jit, static_argnames=("self"))
     def act(
         self, 
         key:random.PRNGKey, 
@@ -639,27 +805,19 @@ class JESSI(BasePolicy):
         robot_goal = info["robot_goal"]  # Shape: (2,)
         robot_position = obs[0,:2]
         robot_orientation = obs[0,2]
-        difference = robot_goal - robot_position
-        distance_to_goal = jnp.linalg.norm(difference)
-        theta_to_goal = wrap_angle(robot_orientation - jnp.atan2(difference[1], difference[0]))
-        rc_robot_goal = jnp.array([distance_to_goal, theta_to_goal])
+        c, s = jnp.cos(-robot_orientation), jnp.sin(-robot_orientation)
+        R = jnp.array([[c, -s],
+                    [s,  c]])
+        translated_position = robot_goal - robot_position
+        rc_robot_goal = R @ translated_position
         # debug.print("Goal coords: {x}", x=rc_robot_goal)
-        actor_input = jnp.concatenate((
+        actor_input = self.compute_actor_input(
+            obs_distr,
+            hum_distr,
+            next_hum_distr,
             bounding_parameters,
             rc_robot_goal,
-            obs_distr["means"].flatten(),
-            obs_distr["logsigmas"].flatten(),
-            obs_distr["correlations"].flatten(),
-            obs_distr["weights"].flatten(),
-            hum_distr["means"].flatten(),
-            hum_distr["logsigmas"].flatten(),
-            hum_distr["correlations"].flatten(),
-            hum_distr["weights"].flatten(),
-            next_hum_distr["means"].flatten(),
-            next_hum_distr["logsigmas"].flatten(),
-            next_hum_distr["correlations"].flatten(),
-            next_hum_distr["weights"].flatten(),
-        ))
+        )
         # Compute action
         key, subkey = random.split(key)
         sampled_action, actor_distr = self.actor.apply(
@@ -797,22 +955,13 @@ class JESSI(BasePolicy):
                     sample_action:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Concatenate GMM parameters into a single vector as actor input
-                    actor_input = jnp.concatenate((
+                    actor_input = self.compute_actor_input(
+                        input["obs_distrs"],
+                        input["hum_distrs"],
+                        input["next_hum_distrs"],
                         input["action_space_params"],
                         input["rc_robot_goals"],
-                        jnp.reshape(input["obs_distrs"]["means"], (-1,)),
-                        jnp.reshape(input["obs_distrs"]["logsigmas"], (-1,)),
-                        jnp.reshape(input["obs_distrs"]["correlations"], (-1,)),
-                        jnp.reshape(input["obs_distrs"]["weights"], (-1,)),
-                        jnp.reshape(input["hum_distrs"]["means"], (-1,)),
-                        jnp.reshape(input["hum_distrs"]["logsigmas"], (-1,)),
-                        jnp.reshape(input["hum_distrs"]["correlations"], (-1,)),
-                        jnp.reshape(input["hum_distrs"]["weights"], (-1,)),
-                        jnp.reshape(input["next_hum_distrs"]["means"], (-1,)),
-                        jnp.reshape(input["next_hum_distrs"]["logsigmas"], (-1,)),
-                        jnp.reshape(input["next_hum_distrs"]["correlations"], (-1,)),
-                        jnp.reshape(input["next_hum_distrs"]["weights"], (-1,)),
-                    ), axis=0)
+                    )
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
                     _, distr = self.actor.apply(current_actor_params, None, actor_input)
                     # Get mean action
