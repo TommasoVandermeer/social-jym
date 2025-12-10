@@ -126,9 +126,11 @@ class Actor(hk.Module):
         ) -> None:
         super().__init__(name="actor_network") 
         self.n_components = n_gaussian_mixture_components
-        self.vmax = v_max
         self.wheels_distance = wheels_distance
-        self.n_inputs = 3 * 6 * self.n_components  # 6 outputs per GMM cell (mean_x, mean_y, sigma_x, sigma_y, correlation, weight) times  3 GMMs (obstacles, current humans, next humans)
+        self.vmax = v_max
+        self.wmax = 2 * v_max / wheels_distance
+        self.wmin = -2 * v_max / wheels_distance
+        self.n_inputs = 3 * 6 * self.n_components + 5 # 6 outputs per GMM cell (mean_x, mean_y, sigma_x, sigma_y, correlation, weight) times  3 GMMs (obstacles, current humans, next humans)
         self.n_outputs = 3 # Dirichlet distribution over 3 action vertices
         self.mlp = hk.nets.MLP(
             **mlp_params, 
@@ -145,13 +147,13 @@ class Actor(hk.Module):
         ## Get kwargs
         random_key = kwargs.get("random_key", random.PRNGKey(0))
         action_space_params = x[:3]
-        alphas = self.mlp(x[3:])
+        alphas = self.mlp(x)
         alphas = nn.softplus(alphas) + 1
         ## Compute dirchlet distribution parameters
         vertices = jnp.array([
-            [0, action_space_params[1] * (2 * self.vmax / self.wheels_distance)],
-            [0, action_space_params[2] * (-2 * self.vmax / self.wheels_distance)],
-            [action_space_params[0] * self.vmax, 0]
+            [0., action_space_params[1] * self.wmax],
+            [0., action_space_params[2] * self.wmin],
+            [action_space_params[0] * self.vmax, 0.]
         ])
         distribution = {"alphas": alphas, "vertices": vertices}
         ## Sample action
@@ -171,7 +173,7 @@ class Critic(hk.Module):
         ) -> None:
         super().__init__(name="critic_network") 
         self.n_components = n_gaussian_mixture_components
-        self.n_inputs = 3 * 6 * self.n_components  # 6 outputs per GMM cell (mean_x, mean_y, sigma_x, sigma_y, correlation, weight) times  3 GMMs (obstacles, current humans, next humans)
+        self.n_inputs = 3 * 6 * self.n_components + 5  # 6 outputs per GMM cell (mean_x, mean_y, sigma_x, sigma_y, correlation, weight) times  3 GMMs (obstacles, current humans, next humans)
         self.n_outputs = 1 # State value
         self.mlp = hk.nets.MLP(
             **mlp_params, 
@@ -493,12 +495,12 @@ class JESSI(BasePolicy):
         key:random.PRNGKey, 
     ) -> tuple:
         encoder_params = self.encoder.init(key, jnp.zeros((1, self.n_stack * (2 * self.lidar_num_rays + 2))))
-        actor_params = self.actor.init(key, jnp.zeros((1, 3 * 6 * self.n_gmm_components)))
-        critic_params = self.critic.init(key, jnp.zeros((1, 3 * 6 * self.n_gmm_components)))
+        actor_params = self.actor.init(key, jnp.zeros((3 * 6 * self.n_gmm_components + 5)))
+        critic_params = self.critic.init(key, jnp.zeros((3 * 6 * self.n_gmm_components + 5)))
         return encoder_params, actor_params, critic_params
 
     @partial(jit, static_argnames=("self"))
-    def bound_action_space(self, lidar_point_cloud, robot_radius):
+    def bound_action_space(self, lidar_point_cloud):
         """
         Compute the bounds of the action space based on the control parameters alpha, beta, gamma.
         WARNING: Assumes LiDAR orientations is align with robot frame.
@@ -516,21 +518,21 @@ class JESSI(BasePolicy):
             y2s,
             # Restricting the rectangle by 1e-6 avoids problems when obstacles are parallel or perpendicular to the robot's direction
             0. + 1e-6, # xmin
-            self.v_max * self.dt + robot_radius - 1e-6, # xmax
-            -robot_radius + 1e-6, # ymin
-            robot_radius - 1e-6, # ymax
+            self.v_max * self.dt + self.robot_radius - 1e-6, # xmax
+            -self.robot_radius + 1e-6, # ymin
+            self.robot_radius - 1e-6, # ymax
         )
         intersection_points = jnp.vstack((intersection_points0, intersection_points1))
         min_x = jnp.nanmin(intersection_points[:,0])
         new_alpha = lax.cond(
             ~jnp.isnan(min_x),
-            lambda _: jnp.max(jnp.array([0, min_x - robot_radius])) / (self.v_max * self.dt),
+            lambda _: jnp.max(jnp.array([0, min_x - self.robot_radius])) / (self.v_max * self.dt),
             lambda _: 1.,
             None,
         )
         @jit
         def _lower_beta_and_gamma(tup:tuple):
-            x1s, y1s, x2s, y2s, new_alpha, vmax, wheels_distance, dt, robot_radius = tup
+            x1s, y1s, x2s, y2s, new_alpha, vmax, wheels_distance, dt, self.robot_radius = tup
             # Lower BETA
             _, intersection_points0, intersection_points1 = self._batch_segment_rectangle_intersection(
                 x1s,
@@ -538,16 +540,16 @@ class JESSI(BasePolicy):
                 x2s,
                 y2s,
                 # Restricting the rectangle by 1e-6 avoids problems when obstacles are parallel or perpendicular to the robot's direction
-                -robot_radius + 1e-6, # xmin
-                new_alpha * vmax * dt + robot_radius - 1e-6, # xmax
-                robot_radius + 1e-6, # ymin
-                robot_radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance)) - 1e-6, # ymax
+                -self.robot_radius + 1e-6, # xmin
+                new_alpha * vmax * dt + self.robot_radius - 1e-6, # xmax
+                self.robot_radius + 1e-6, # ymin
+                self.robot_radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance)) - 1e-6, # ymax
             )
             intersection_points = jnp.vstack((intersection_points0, intersection_points1))
             min_y = jnp.nanmin(intersection_points[:,1])
             new_beta = lax.cond(
                 ~jnp.isnan(min_y),
-                lambda _: (min_y - robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
+                lambda _: (min_y - self.robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
                 lambda _: 1.,
                 None,
             )
@@ -558,16 +560,16 @@ class JESSI(BasePolicy):
                 x2s,
                 y2s,
                 # Restricting the rectangle by 1e-6 avoids problems when obstacles are parallel or perpendicular to the robot's direction
-                -robot_radius + 1e-6, # xmin
-                new_alpha * vmax * dt + robot_radius - 1e-6, # xmax
-                -robot_radius - (new_alpha*dt**2*vmax**2/(4*wheels_distance)) + 1e-6, # ymin
-                -robot_radius - 1e-6, # ymax
+                -self.robot_radius + 1e-6, # xmin
+                new_alpha * vmax * dt + self.robot_radius - 1e-6, # xmax
+                -self.robot_radius - (new_alpha*dt**2*vmax**2/(4*wheels_distance)) + 1e-6, # ymin
+                -self.robot_radius - 1e-6, # ymax
             )
             intersection_points = jnp.vstack((intersection_points0, intersection_points1))
             max_y = jnp.nanmax(intersection_points[:,1])
             new_gamma = lax.cond(
                 ~jnp.isnan(max_y),
-                lambda _: (-max_y - robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
+                lambda _: (-max_y - self.robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
                 lambda _: 1.,
                 None,
             )
@@ -576,7 +578,7 @@ class JESSI(BasePolicy):
             new_alpha == 0.,
             lambda _: (1., 1.),
             _lower_beta_and_gamma,
-            (x1s, y1s, x2s, y2s, new_alpha, self.v_max, self.wheels_distance, self.dt, robot_radius)
+            (x1s, y1s, x2s, y2s, new_alpha, self.v_max, self.wheels_distance, self.dt, self.robot_radius)
         )
         # Apply lower blound to new_alpha, new_beta, new_gamma
         new_alpha = jnp.max(jnp.array([EPSILON, new_alpha]))
@@ -631,7 +633,6 @@ class JESSI(BasePolicy):
         # Compute bounded action space parameters and add it to the input
         bounding_parameters = self.bound_action_space(
             last_lidar_point_cloud,  
-            obs[0,3], # robot_radius
         )
         # debug.print("Bounding parameters: {x}", x=bounding_parameters)
         # Prepare input for actor
@@ -797,6 +798,7 @@ class JESSI(BasePolicy):
                     ) -> jnp.ndarray:
                     # Concatenate GMM parameters into a single vector as actor input
                     actor_input = jnp.concatenate((
+                        input["action_space_params"],
                         input["rc_robot_goals"],
                         jnp.reshape(input["obs_distrs"]["means"], (-1,)),
                         jnp.reshape(input["obs_distrs"]["logsigmas"], (-1,)),
