@@ -532,7 +532,7 @@ class JESSI(BasePolicy):
         )
         @jit
         def _lower_beta_and_gamma(tup:tuple):
-            x1s, y1s, x2s, y2s, new_alpha, vmax, wheels_distance, dt, self.robot_radius = tup
+            x1s, y1s, x2s, y2s, new_alpha, vmax, wheels_distance, dt = tup
             # Lower BETA
             _, intersection_points0, intersection_points1 = self._batch_segment_rectangle_intersection(
                 x1s,
@@ -578,7 +578,7 @@ class JESSI(BasePolicy):
             new_alpha == 0.,
             lambda _: (1., 1.),
             _lower_beta_and_gamma,
-            (x1s, y1s, x2s, y2s, new_alpha, self.v_max, self.wheels_distance, self.dt, self.robot_radius)
+            (x1s, y1s, x2s, y2s, new_alpha, self.v_max, self.wheels_distance, self.dt)
         )
         # Apply lower blound to new_alpha, new_beta, new_gamma
         new_alpha = jnp.max(jnp.array([EPSILON, new_alpha]))
