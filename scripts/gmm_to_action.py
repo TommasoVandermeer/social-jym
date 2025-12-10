@@ -309,17 +309,6 @@ del robot_centric_data
 del raw_data
 
 ### INITIALIZE ACTOR NETWORK
-from jax.tree_util import tree_map
-obs_distr = tree_map(lambda x: x[0], controller_dataset["inputs"]["obs_distrs"])
-hum_distr = tree_map(lambda x: x[0], controller_dataset["inputs"]["hum_distrs"])
-next_hum_distr = tree_map(lambda x: x[0], controller_dataset["inputs"]["next_hum_distrs"])
-jessi.compute_actor_input(
-    obs_distr,
-    hum_distr,
-    next_hum_distr,
-    controller_dataset["inputs"]["action_space_params"][0],
-    controller_dataset["inputs"]["rc_robot_goals"][0],
-)
 # Initialize actor network
 _, actor_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
 # Count network parameters

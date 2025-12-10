@@ -791,6 +791,9 @@ class JESSI(BasePolicy):
             None, 
             jnp.reshape(encoder_input, (1, self.n_stack * (2 * self.lidar_num_rays + 2))),
         )
+        obs_distr = {k: jnp.squeeze(v) for k, v in obs_distr.items()}
+        hum_distr = {k: jnp.squeeze(v) for k, v in hum_distr.items()}
+        next_hum_distr = {k: jnp.squeeze(v) for k, v in next_hum_distr.items()}
         encoder_distrs = {
             "obs_distr": obs_distr,
             "hum_distr": hum_distr,
