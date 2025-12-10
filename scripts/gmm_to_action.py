@@ -34,7 +34,7 @@ max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the m
 negative_samples_threshold = 0.2 # Distance threshold from objects to consider a sample as negative (in meters)
 learning_rate = 1e-3
 batch_size = 200
-n_epochs = 100
+n_epochs = 500
 p_visualization_threshold = 0.05
 # Environment parameters
 robot_radius = 0.3
@@ -281,12 +281,16 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_traini
         ins
     )
     actor_actions = raw_data["robot_actions"]
+    # Compute robot-centric goal representation
     rc_robot_goals_xy = robot_centric_data["rc_robot_goals"]
     distance_to_goal = jnp.linalg.norm(rc_robot_goals_xy, axis=-1)
     theta_to_goal = jnp.atan2(rc_robot_goals_xy[:,1], rc_robot_goals_xy[:,0])
-    rc_robot_goals = jnp.array([distance_to_goal, theta_to_goal])
+    rc_robot_goals = jnp.stack((distance_to_goal, theta_to_goal), axis=-1)
+    # Compute action space parameters
+    action_space_params = vmap(jessi.bound_action_space, in_axes=(0))(robot_centric_data["rc_lidar_measurements"])
     controller_dataset = {
         "inputs": {
+            "action_space_params": action_space_params,
             "rc_robot_goals": rc_robot_goals,
             "obs_distrs": obs_distrs,
             "hum_distrs": hum_distrs,
@@ -311,8 +315,7 @@ del raw_data
 
 ### INITIALIZE ACTOR NETWORK
 # Initialize actor network
-sample_input = jnp.zeros((1, 3 * 6 * n_gaussian_mixture_components + 2))
-actor_params = jessi.actor.init(random.PRNGKey(random_seed), sample_input)
+_, actor_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
 # Count network parameters
 def count_params(actor_params):
     return sum(jnp.prod(jnp.array(p.shape)) for layer in actor_params.values() for p in layer.values())
