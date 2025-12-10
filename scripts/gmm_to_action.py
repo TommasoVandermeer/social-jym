@@ -281,9 +281,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_traini
         ins
     )
     actor_actions = raw_data["robot_actions"]
+    rc_robot_goals_xy = robot_centric_data["rc_robot_goals"]
+    distance_to_goal = jnp.linalg.norm(rc_robot_goals_xy, axis=-1)
+    theta_to_goal = jnp.atan2(rc_robot_goals_xy[:,1], rc_robot_goals_xy[:,0])
+    rc_robot_goals = jnp.array([distance_to_goal, theta_to_goal])
     controller_dataset = {
         "inputs": {
-            "rc_robot_goals": robot_centric_data["rc_robot_goals"],
+            "rc_robot_goals": rc_robot_goals,
             "obs_distrs": obs_distrs,
             "hum_distrs": hum_distrs,
             "next_hum_distrs": next_hum_distrs,
