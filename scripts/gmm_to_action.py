@@ -32,9 +32,9 @@ n_loss_samples = 1000  # Number of samples to estimate the loss
 prediction_horizon = 4  # Number of steps ahead to predict next GMM (in seconds it is prediction_horizon * robot_dt)
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
 negative_samples_threshold = 0.2 # Distance threshold from objects to consider a sample as negative (in meters)
-learning_rate = 1e-3
+learning_rate = 0.005
 batch_size = 200
-n_epochs = 1000
+n_epochs = 100
 p_visualization_threshold = 0.05
 # Environment parameters
 robot_radius = 0.3

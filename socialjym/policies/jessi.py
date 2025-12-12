@@ -135,46 +135,34 @@ class Actor(hk.Module):
         self.n_inputs = (3, self.n_components, 7+9) # (3, Number of GMM compoents, 7 params per GMM component + 9 robot goal, robot vmax, robot radius, robot wheels distance, action space params)
         self.n_outputs = 3 # Dirichlet distribution over 3 action vertices
         # Obstacles MLPs
-        self.embedding_mlp_obs = hk.nets.MLP(
-            **mlp_params, 
-            output_sizes=[100, 50], 
-            name="embedding_mlp_obs"
-        )
         self.features_mlp_obs = hk.nets.MLP(
             **mlp_params,
-            output_sizes=[50, 25], 
+            output_sizes=[100, 50, 50], 
             name="features_mlp_obs"
-        )
-        self.attention_mlp_obs = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[50, 50, 1], 
-            name="attention_mlp_obs"
-        )
-        self.scores_mlp_obs = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[25, 10, 1],
-            name="scores_mlp_obs"
         )
         # Humans MLPs
         self.embedding_mlp_hum = hk.nets.MLP(
-            **mlp_params, 
+            activation=nn.relu,
+            activate_final=True,
+            w_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+            b_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             output_sizes=[150, 100], 
             name="embedding_mlp_hum"
         )
-        self.features_mlp_hum = hk.nets.MLP(
+        self.hum_key_mlp = hk.nets.MLP(
             **mlp_params,
             output_sizes=[100, 50], 
-            name="features_mlp_hum"
+            name="hum_key_mlp"
         )
-        self.attention_mlp_hum = hk.nets.MLP(
+        self.hum_query_mlp = hk.nets.MLP(
             **mlp_params,
-            output_sizes=[100, 100, 1], 
-            name="attention_mlp_hum"
+            output_sizes=[100, 50], 
+            name="hum_query_mlp"
         )
-        self.scores_mlp_hum = hk.nets.MLP(
+        self.hum_value_mlp = hk.nets.MLP(
             **mlp_params,
-            output_sizes=[50, 25, 1],
-            name="scores_mlp_hum"
+            output_sizes=[100, 50], 
+            name="hum_value_mlp"
         )
         # Output MLP
         self.output_mlp = hk.nets.MLP(
@@ -196,30 +184,20 @@ class Actor(hk.Module):
         ## Compute obstcles attentive embedding
         obstacles_input = x[0,:,:6]  # Shape: (n_components, 6)
         obstacles_weights = x[0,:,6] # Shape: (n_components,)
-        obstacles_embeddings = self.embedding_mlp_obs(obstacles_input)  # Shape: (n_components, obs embedding_size)
-        global_obstacle_embeddings = jnp.tile(jnp.mean(obstacles_embeddings, axis=0, keepdims=True), (self.n_components,1))  # Shape: (n_components, obs embedding_size)
-        obstacles_features = self.features_mlp_obs(obstacles_embeddings)  # Shape: (n_components, obs feature_size)
-        obstacles_attention = self.attention_mlp_obs(jnp.concatenate((obstacles_embeddings, global_obstacle_embeddings), axis=-1))  # Shape: (n_components, 1)
-        obstacles_attention_exp = jnp.exp(obstacles_attention) * jnp.array(obstacles_attention != 0, dtype=jnp.float32)
-        obstacles_attention = obstacles_attention_exp / jnp.sum(obstacles_attention_exp, axis=0)
-        obstacles_scores = self.scores_mlp_obs(jnp.concatenate((obstacles_attention, obstacles_weights[:,None]), axis=-1))  # Shape: (n_components, 1)
-        obstacles_scores_exp = jnp.exp(obstacles_scores) * jnp.array(obstacles_scores != 0, dtype=jnp.float32)
-        obstacles_scores = obstacles_scores_exp / jnp.sum(obstacles_scores_exp, axis=0)
-        weighted_obstacles_features = jnp.sum(jnp.multiply(obstacles_scores, obstacles_features), axis=0) # Shape: (obs feature_size,)
+        obstacles_features = self.features_mlp_obs(obstacles_input)  # Shape: (n_components, obs embedding_size)
+        weighted_obstacles_features = jnp.sum(jnp.multiply(obstacles_weights[:,None], obstacles_features), axis=0) # Shape: (obs feature_size,)
         ## Compute human attentive embedding
         humans_input = jnp.concatenate([x[1,:,:6], x[2,:,:6]], axis=-1)  # Shape: (n_components, 12)
         humans_weights = x[1,:,6]  # Shape: (n_components, 1)
-        next_humans_weights = x[2,:,6]  # Shape: (n_components, 1)
+        next_humans_weights = x[2,:,6]  # Shape: (n_components, 1) - Currently these are the same as humans_weights
         humans_embeddings = self.embedding_mlp_hum(humans_input)  # Shape: (n_components, hum embedding_size)
-        global_human_embeddings = jnp.tile(jnp.mean(humans_embeddings, axis=0, keepdims=True), (self.n_components,1))  # Shape: (n_components, hum embedding_size)
-        humans_features = self.features_mlp_hum(humans_embeddings)  # Shape: (n_components, hum feature_size)
-        humans_attention = self.attention_mlp_hum(jnp.concatenate((humans_embeddings, global_human_embeddings), axis=-1))  # Shape: (n_components, 1)
-        humans_attention_exp = jnp.exp(humans_attention) * jnp.array(humans_attention != 0, dtype=jnp.float32)
-        humans_attention = humans_attention_exp / jnp.sum(humans_attention_exp, axis=0)
-        humans_scores = self.scores_mlp_hum(jnp.concatenate((humans_attention, humans_weights[:,None], next_humans_weights[:,None]), axis=-1))  # Shape: (n_components, 1)
-        humans_scores_exp = jnp.exp(humans_scores) * jnp.array(humans_scores != 0, dtype=jnp.float32)
-        humans_scores = humans_scores_exp / jnp.sum(humans_scores_exp, axis=0)
-        weighted_humans_features = jnp.sum(jnp.multiply(humans_scores, humans_features), axis=0) # Shape: (hum feature_size,)
+        humans_keys = self.hum_key_mlp(humans_embeddings)  # Shape: (n_components, key_size)
+        humans_queries = self.hum_query_mlp(humans_embeddings)  # Shape: (n_components, query_size)
+        humans_values = self.hum_value_mlp(humans_embeddings)  # Shape: (n_components, value_size)
+        humans_attention_matrix = jnp.dot(humans_queries, humans_keys.T) / jnp.sqrt(humans_keys.shape[-1])  # Shape: (n_components, n_components)
+        humans_attention_matrix = nn.softmax(humans_attention_matrix, axis=-1)  # Shape: (n_components, n_components)
+        humans_features = jnp.dot(humans_attention_matrix, humans_values)  # Shape: (n_components, value_size)
+        weighted_humans_features = jnp.sum(jnp.multiply(humans_weights[:,None], humans_features), axis=0)  # Shape: (hum feature_size,)
         ## Concatenate weighted features
         weighted_features = jnp.concatenate((weighted_obstacles_features, weighted_humans_features), axis=-1) # Shape: (obs feature_size + hum feature_size,)
         ## Compute Dirichlet distribution parameters
