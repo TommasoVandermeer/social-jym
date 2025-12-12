@@ -69,6 +69,7 @@ for i in range(n_episodes):
     while outcome["nothing"]:
         # Compute action from trained JESSI
         action, _, _, _, encoder_distrs, actor_distr = policy.act(random.PRNGKey(0), obs, info, encoder_params, actor_params, sample=False)
+        # print("Dirichlet distribution parameters: ", actor_distr['alphas'])
         # Step the environment
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
         # Save data for animation
@@ -94,18 +95,18 @@ for i in range(n_episodes):
     ## Animate only trajectory
     angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
     lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,6:], angles)
-    animate_trajectory(
-        all_states, 
-        info['humans_parameters'][:,0], 
-        env.robot_radius, 
-        'hsfm',
-        info['robot_goal'],
-        info['current_scenario'],
-        static_obstacles=info['static_obstacles'][-1],
-        robot_dt=env_params['robot_dt'],
-        lidar_measurements=lidar_measurements,
-        kinematics=kinematics,
-    )
+    # animate_trajectory(
+    #     all_states, 
+    #     info['humans_parameters'][:,0], 
+    #     env.robot_radius, 
+    #     'hsfm',
+    #     info['robot_goal'],
+    #     info['current_scenario'],
+    #     static_obstacles=info['static_obstacles'][-1],
+    #     robot_dt=env_params['robot_dt'],
+    #     lidar_measurements=lidar_measurements,
+    #     kinematics=kinematics,
+    # )
     ## Animate trajectory with JESSI's perception and action distribution
     policy.animate_lasernav_trajectory(
         all_states[:-1],
