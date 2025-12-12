@@ -104,7 +104,7 @@ for i in range(n_episodes):
     #     info['current_scenario'],
     #     static_obstacles=info['static_obstacles'][-1],
     #     robot_dt=env_params['robot_dt'],
-    #     lidar_measurements=lidar_measurements,
+    #     # lidar_measurements=lidar_measurements,
     #     kinematics=kinematics,
     # )
     ## Animate trajectory with JESSI's perception and action distribution

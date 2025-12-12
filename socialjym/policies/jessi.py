@@ -9,7 +9,7 @@ from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
 
-from socialjym.envs.base_env import wrap_angle, ROBOT_KINEMATICS, EPSILON
+from socialjym.envs.base_env import ROBOT_KINEMATICS, EPSILON
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.utils.distributions.gaussian_mixture_model import BivariateGMM
 from socialjym.policies.base_policy import BasePolicy
@@ -89,18 +89,18 @@ class Encoder(hk.Module):
         ), axis=-1)
         ### Transform outputs to GMM parameters
         @jit
-        def vector_to_gmm_params(vector:jnp.ndarray, x_mean_bounds:jnp.ndarray, y_mean_bounds:jnp.ndarray) -> dict:  
-            ### Separate outputs
+        def vector_to_gmm_params(vector:jnp.ndarray) -> dict:  
             x_means = nn.tanh(vector[:, :self.n_components])
-            x_means = ((x_means + 1) / 2) * (x_mean_bounds[1] - x_mean_bounds[0]) + x_mean_bounds[0]  # Scale to box limits
+            x_means = ((x_means + 1) / 2) * (self.mean_limits[0][1] - self.mean_limits[0][0]) + self.mean_limits[0][0]  # Scale to box limits
             y_means = nn.tanh(vector[:, self.n_components:2*self.n_components])
-            y_means = ((y_means + 1) / 2) * (y_mean_bounds[1] - y_mean_bounds[0]) + y_mean_bounds[0]  # Scale to box limits
+            y_means = ((y_means + 1) / 2) * (self.mean_limits[1][1] - self.mean_limits[1][0]) + self.mean_limits[1][0]  # Scale to box limits
             x_log_sigmas = vector[:, 2*self.n_components:3*self.n_components]  # Std in x
             y_log_sigmas = vector[:, 3*self.n_components:4*self.n_components]  # Std in y
             correlations = nn.tanh(vector[:, 4*self.n_components:5*self.n_components])  # Correlations
-            # TODO: CORRECT!! since GMM heads have relu activation, the minimum value is 0, so softmax will assign weight one to score equal to 0 (the minimum)
-            # Either scores shoul be allowed to go to -inf or use antoher version of softmax (as in SARL)
-            weights = nn.softmax(vector[:, 5*self.n_components:], axis=-1)  # Weights
+            # Since GMM heads have relu activation, the minimum value is 0, so softmax will assign weight one to score equal to 0 (the minimum)
+            # weights = nn.softmax(vector[:, 5*self.n_components:], axis=-1)  # Weights
+            wights_exp = jnp.exp(vector[:, 5*self.n_components:]) * jnp.array(vector[:, 5*self.n_components:] != 0, dtype=jnp.float32)
+            weights = wights_exp / (jnp.sum(wights_exp, axis=-1, keepdims=True) + 1e-6)
             distr = {
                 "means": jnp.stack((x_means, y_means), axis=-1), # Shape (batch_size, n_components, n_dimensions)
                 "logsigmas": jnp.stack((x_log_sigmas, y_log_sigmas), axis=-1), # Shape (batch_size, n_components, n_dimensions)
@@ -108,9 +108,9 @@ class Encoder(hk.Module):
                 "weights": weights,  # Shape (batch_size, n_components)
             }
             return distr
-        obs_distr = vector_to_gmm_params(obstacles_gmm, self.mean_limits[0], self.mean_limits[1])
-        hum_distr = vector_to_gmm_params(humans_gmm, self.mean_limits[0], self.mean_limits[1])
-        next_hum_distr = vector_to_gmm_params(next_humans_gmm, self.mean_limits[0], self.mean_limits[1])
+        obs_distr = vector_to_gmm_params(obstacles_gmm)
+        hum_distr = vector_to_gmm_params(humans_gmm)
+        next_hum_distr = vector_to_gmm_params(next_humans_gmm)
         return obs_distr, hum_distr, next_hum_distr
 
 class Actor(hk.Module):
@@ -177,6 +177,14 @@ class Actor(hk.Module):
             x,
             **kwargs:dict,
         ) -> jnp.ndarray:
+        """
+        Self-attention based actor that maps GMM parameters to Dirichlet distribution over action space vertices.
+        Obstacles GMM is passed through a standard MLP to extract features.
+        Humans GMM (current and next) are passed through a self-attention mechanism to extract relationship between humans motions.
+        The features of each GMM are weighted by the corresponding GMM weights to obtain a one-dimensional feature vector for obstacles and on for humans.
+        This encodes the fact that the weight of each GMM component represents its probability of being a real object/human.
+        Both features vectors are finally concatenated with robot state and passed through an MLP to compute Dirichlet distribution parameters.
+        """
         ## Extract robot state and random key for sampling
         random_key = kwargs.get("random_key", random.PRNGKey(0))
         robot_state = x[0,0, 7:]
