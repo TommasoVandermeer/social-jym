@@ -17,6 +17,47 @@ from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KI
 from socialjym.policies.base_policy import BasePolicy
 
 @jit
+def roto_translate_pose_and_vel(position, orientation, velocity, ref_position, ref_orientation):
+    """Roto-translate a 2D pose and a velocity to a given reference pose."""
+    c, s = jnp.cos(-ref_orientation), jnp.sin(-ref_orientation)
+    R = jnp.array([[c, -s],
+                [s,  c]])
+    translated_position = position - ref_position
+    rotated_position = R @ translated_position
+    rotated_orientation = orientation - ref_orientation
+    rotated_velocity = R @ velocity
+    return rotated_position, rotated_orientation, rotated_velocity
+
+@jit
+def roto_translate_poses_and_vels(positions, orientations, velocities, ref_position, ref_orientation):
+    """Roto-translate a batch of 2D poses and velocities to a given reference pose."""
+    return vmap(roto_translate_pose_and_vel, in_axes=(0, 0, 0, None, None))(positions, orientations, velocities, ref_position, ref_orientation)
+
+@jit
+def batch_roto_translate_poses_and_vels(positions, orientations, velocities, ref_positions, ref_orientations):
+    """Roto-translate a batch of 2D poses and velocities to a batch of given reference poses."""
+    return vmap(roto_translate_poses_and_vels, in_axes=(0, 0, 0, 0, 0))(positions, orientations, velocities, ref_positions, ref_orientations)
+
+@jit
+def roto_translate_obstacle_segments(obstacle_segments, ref_position, ref_orientation):
+    # Translate segments to robot frame
+    obstacle_segments = obstacle_segments.at[:, :, 0].set(obstacle_segments[:, :, 0] - ref_position[0])
+    obstacle_segments = obstacle_segments.at[:, :, 1].set(obstacle_segments[:, :, 1] - ref_position[1])
+    # Rotate segments by -ref_orientation
+    c, s = jnp.cos(-ref_orientation), jnp.sin(-ref_orientation)
+    rot = jnp.array([[c, -s], [s, c]])
+    obstacle_segments = jnp.einsum('ij,klj->kli', rot, obstacle_segments)
+    return obstacle_segments
+
+@jit
+def roto_translate_obstacles(obstacles, ref_positions, ref_orientations):
+    return vmap(roto_translate_obstacle_segments, in_axes=(0, None, None))(obstacles, ref_positions, ref_orientations)
+
+@jit
+def batch_roto_translate_obstacles(obstacles, ref_positions, ref_orientations):
+    return vmap(roto_translate_obstacles, in_axes=(0, 0, 0))(obstacles, ref_positions, ref_orientations)
+
+@jit
 def linear_decay(start:float, end:float, current_iteration:int, decay_rate:float) -> float:
     value = lax.cond(current_iteration < decay_rate, lambda x: start + (end - start) / decay_rate * x, lambda x: end, current_iteration)
     return value

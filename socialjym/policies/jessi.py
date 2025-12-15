@@ -13,7 +13,7 @@ from socialjym.envs.base_env import ROBOT_KINEMATICS, EPSILON
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.utils.distributions.gaussian_mixture_model import BivariateGMM
 from socialjym.policies.base_policy import BasePolicy
-from jhsfm.hsfm import get_linear_velocity
+from jhsfm.hsfm import get_linear_velocity, vectorized_compute_obstacle_closest_point
 
 class Encoder(hk.Module):
     def __init__(
@@ -39,27 +39,34 @@ class Encoder(hk.Module):
         self.prediction_time = prediction_time
         self.max_humans_velocity = max_humans_velocity
         self.max_displacement = self.max_humans_velocity * self.prediction_time
-        self.n_inputs = n_stack * (2 * lidar_num_rays + 2)
+        self.token_size = 12
         self.n_outputs = self.n_components * 6 * 3  # 6 outputs per GMM cell (mean_x, mean_y, sigma_x, sigma_y, correlation, weight) times  3 GMMs (current and next)
-        self.backbone = hk.nets.MLP(
-            **mlp_params, 
-            output_sizes=[self.n_inputs * 2, self.n_inputs, self.n_outputs * 2], 
-            name="mlp"
+        self.token_embeddings_mlp = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[64, 64, 32],
+            name="token_embeddings_mlp"
         )
-        self.head1 = hk.nets.MLP(
-            **mlp_params, 
-            output_sizes=[self.n_outputs * 2, self.n_outputs // 3], 
-            name="head1"
+        self.self_attention = hk.MultiHeadAttention(
+            num_heads=4,
+            key_size=32,
+            value_size=64,
+            w_init_scale=1/3,
+            name="self_attention"
         )
-        self.head2 = hk.nets.MLP(
-            **mlp_params, 
-            output_sizes=[self.n_outputs * 2, self.n_outputs // 3], 
-            name="head2"
+        self.obs_gmm_head = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[256, 128, self.n_components * 6],
+            name="obs_gmm_head"
         )
-        self.head3 = hk.nets.MLP(
-            **mlp_params, 
-            output_sizes=[self.n_outputs * 3, self.n_outputs * 2, (self.n_outputs // 3) - self.n_components], # We take GMM component weights predicted by head2
-            name="head3"
+        self.hum_gmm_head = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[256, 128, self.n_components * 6],
+            name="hum_gmm_head"
+        )
+        self.next_hum_gmm_head = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[256, 128, self.n_components * 5],
+            name="next_hum_gmm_head"
         )
 
     def __call__(
@@ -67,39 +74,49 @@ class Encoder(hk.Module):
             x: jnp.ndarray
         ) -> jnp.ndarray:
         """
-        Maps Lidar scan to GMM parameters
+        Maps Lidar scan to GMM parameters.
+
+        x (num_beams, token_size)
+
         """
         ### Process inputs
-        backbone_out = self.backbone(x)
-        obstacles_gmm = self.head1(backbone_out)
-        humans_gmm = self.head2(backbone_out)
-        next_humans_info = self.head3(jnp.concatenate((backbone_out, humans_gmm), axis=-1))
+        token_embeddings = self.token_embeddings_mlp(x)  # Shape: (num_beams, embedding_size)
+        attention_output = self.self_attention(
+            token_embeddings,
+            token_embeddings,
+            token_embeddings,
+        )  # Shape: (num_beams, value_size*num_heads)
+        output = jnp.concat([token_embeddings, attention_output], axis=-1)  # Shape: (num_beams, embedding_size + value_size*num_heads)
+        pooled_output = jnp.mean(output, axis=0)  # Shape: (embedding_size + value_size*num_heads)
+        obstacles_gmm = self.obs_gmm_head(pooled_output)  # Shape: (n_components * 6,)
+        humans_gmm = self.hum_gmm_head(pooled_output)  # Shape: (n_components * 6,)
+        next_humans_info = self.next_hum_gmm_head(pooled_output)  # Shape: (n_components * 5,)
         ### Clip next humans displacement means
-        x_displacement_means = next_humans_info[:, :self.n_components]
-        y_displacement_means = next_humans_info[:, self.n_components:2*self.n_components]
+        x_displacement_means = next_humans_info[:self.n_components]
+        y_displacement_means = next_humans_info[self.n_components:2*self.n_components]
         dists = jnp.sqrt(x_displacement_means**2 + y_displacement_means**2)
         soft_clipped_dists = nn.tanh(dists) * self.max_displacement
         x_displacement_means = x_displacement_means / (dists + 1e-6) * soft_clipped_dists
         y_displacement_means = y_displacement_means / (dists + 1e-6) * soft_clipped_dists
         next_humans_gmm = jnp.concatenate((
-            humans_gmm[:, :self.n_components] + x_displacement_means,
-            humans_gmm[:, self.n_components:2*self.n_components] + y_displacement_means,
-            next_humans_info[:, 2*self.n_components:5*self.n_components],
-            humans_gmm[:, 5*self.n_components:],
+            humans_gmm[:self.n_components] + x_displacement_means,
+            humans_gmm[self.n_components:2*self.n_components] + y_displacement_means,
+            next_humans_info[2*self.n_components:5*self.n_components],
+            humans_gmm[5*self.n_components:],
         ), axis=-1)
         ### Transform outputs to GMM parameters
         @jit
         def vector_to_gmm_params(vector:jnp.ndarray) -> dict:  
-            x_means = nn.tanh(vector[:, :self.n_components])
+            x_means = nn.tanh(vector[:self.n_components])
             x_means = ((x_means + 1) / 2) * (self.mean_limits[0][1] - self.mean_limits[0][0]) + self.mean_limits[0][0]  # Scale to box limits
-            y_means = nn.tanh(vector[:, self.n_components:2*self.n_components])
+            y_means = nn.tanh(vector[self.n_components:2*self.n_components])
             y_means = ((y_means + 1) / 2) * (self.mean_limits[1][1] - self.mean_limits[1][0]) + self.mean_limits[1][0]  # Scale to box limits
-            x_log_sigmas = vector[:, 2*self.n_components:3*self.n_components]  # Std in x
-            y_log_sigmas = vector[:, 3*self.n_components:4*self.n_components]  # Std in y
-            correlations = nn.tanh(vector[:, 4*self.n_components:5*self.n_components])  # Correlations
+            x_log_sigmas = vector[2*self.n_components:3*self.n_components]  # Std in x
+            y_log_sigmas = vector[3*self.n_components:4*self.n_components]  # Std in y
+            correlations = nn.tanh(vector[4*self.n_components:5*self.n_components])  # Correlations
             # Since GMM heads have relu activation, the minimum value is 0, so softmax will assign weight one to score equal to 0 (the minimum)
-            # weights = nn.softmax(vector[:, 5*self.n_components:], axis=-1)  # Weights
-            wights_exp = jnp.exp(vector[:, 5*self.n_components:]) * jnp.array(vector[:, 5*self.n_components:] != 0, dtype=jnp.float32)
+            # weights = nn.softmax(vector[5*self.n_components:], axis=-1)  # Weights
+            wights_exp = jnp.exp(vector[5*self.n_components:]) * jnp.array(vector[5*self.n_components:] != 0, dtype=jnp.float32)
             weights = wights_exp / (jnp.sum(wights_exp, axis=-1, keepdims=True) + 1e-6)
             distr = {
                 "means": jnp.stack((x_means, y_means), axis=-1), # Shape (batch_size, n_components, n_dimensions)
@@ -111,7 +128,7 @@ class Encoder(hk.Module):
         obs_distr = vector_to_gmm_params(obstacles_gmm)
         hum_distr = vector_to_gmm_params(humans_gmm)
         next_hum_distr = vector_to_gmm_params(next_humans_gmm)
-        return obs_distr, hum_distr, next_hum_distr
+        return {"obs_distr": obs_distr, "hum_distr": hum_distr, "next_hum_distr": next_hum_distr}
 
 class Actor(hk.Module):
     def __init__(
@@ -197,7 +214,7 @@ class Actor(hk.Module):
         ## Compute human attentive embedding
         humans_input = jnp.concatenate([x[1,:,:6], x[2,:,:6]], axis=-1)  # Shape: (n_components, 12)
         humans_weights = x[1,:,6]  # Shape: (n_components, 1)
-        next_humans_weights = x[2,:,6]  # Shape: (n_components, 1) - Currently these are the same as humans_weights
+        # next_humans_weights = x[2,:,6]  # Shape: (n_components, 1) - Currently these are the same as humans_weights
         humans_embeddings = self.embedding_mlp_hum(humans_input)  # Shape: (n_components, hum embedding_size)
         humans_keys = self.hum_key_mlp(humans_embeddings)  # Shape: (n_components, key_size)
         humans_queries = self.hum_query_mlp(humans_embeddings)  # Shape: (n_components, query_size)
@@ -270,6 +287,18 @@ class JESSI(BasePolicy):
         """
         JESSI (JAX-based E2E Safe Social Interpretable autonomous navigation).
         """
+        # Input validation
+        assert robot_radius > 0, "Robot radius must be positive"
+        assert v_max > 0, "Maximum robot velocity must be positive"
+        assert gamma >= 0 and gamma <= 1, "Discount factor must be in [0, 1]"
+        assert dt > 0, "Time step must be positive"
+        assert wheels_distance > 0, "Wheels distance must be positive"
+        assert n_stack >= 2, "Number of stacked observations must be at least 2, to observe motion"
+        assert lidar_angular_range > 0 and lidar_angular_range <= 2*jnp.pi, "LiDAR angular range must be in (0, 2pi]"
+        assert lidar_max_dist > 1, "LiDAR maximum distance must be greater than 1 meter"
+        assert lidar_num_rays >= 10, "LiDAR number of rays must be at least 10"
+        assert n_gmm_components >= 2, "Number of GMM components must be at least 2"
+        assert prediction_horizon >= 1, "Prediction horizon must be at least 1"
         # Configurable attributes
         super().__init__(discount=gamma)
         self.robot_radius = robot_radius
@@ -518,20 +547,20 @@ class JESSI(BasePolicy):
         return critic_loss, critic_grads, actor_loss, actor_grads, 0.
 
     @partial(jit, static_argnames=("self"))
-    def _process_obs_stack(self, obs_stack, ref_position, ref_orientation):
+    def _process_lidar_stack(self, obs_stack, ref_position, ref_orientation):
         """
         args:
         - obs_stack (lidar_num_rays + 6):  [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
 
         outputs:
-        - pointcloud_and_action (lidar_num_rays * 2 + 2,): LiDAR points in robot reference frame + robot action
+        - pointcloud_and_action (lidar_num_rays, 2): LiDAR points in robot reference frame
         - pointcloud_world_frame (lidar_num_rays, 2): LiDAR points in world frame
         """
         ## Split obs stack
         robot_position = obs_stack[:2]  # Shape: (2,)
         robot_orientation = obs_stack[2]  # Shape: ()
-        robot_radius = obs_stack[3]  # Shape: ()
-        robot_action = obs_stack[4:6]  # Shape: (2,)
+        #robot_radius = obs_stack[3]  # Shape: ()
+        #robot_action = obs_stack[4:6]  # Shape: (2,)
         lidar_measurements = obs_stack[6:]  # Shape: (lidar_num_rays)
         ## Align scan to reference frame
         # Compute LiDAR angles in world frame
@@ -547,7 +576,7 @@ class JESSI(BasePolicy):
             [s,  c]
         ])
         points_robot = jnp.dot(points_world - ref_position, R)
-        return jnp.concatenate((points_robot.reshape(self.lidar_num_rays * 2,), robot_action), axis=-1), points_world
+        return points_robot, points_world
 
     # Public methods
 
@@ -649,7 +678,7 @@ class JESSI(BasePolicy):
         return jnp.array([new_alpha, new_beta, new_gamma])
 
     @partial(jit, static_argnames=("self"))
-    def process_obs(
+    def process_lidar(
         self,
         obs:jnp.ndarray,
     ):
@@ -662,11 +691,11 @@ class JESSI(BasePolicy):
         The first stack is the most recent one.
 
         output:
-        - processed_obs (n_stack, lidar_num_rays * 2 + 2): aligned observation stack. First information corresponds to the most recent observation.
+        - processed_obs (n_stack, lidar_num_rays * 2): aligned LiDAR stack. First information corresponds to the most recent observation.
         """
         ref_position = obs[0,:2]
         ref_orientation = obs[0,2]
-        return vmap(JESSI._process_obs_stack, in_axes=(None, 0, None, None))(self, obs, ref_position, ref_orientation)
+        return vmap(JESSI._process_lidar_stack, in_axes=(None, 0, None, None))(self, obs, ref_position, ref_orientation)
 
     @partial(jit, static_argnames=("self"))
     def compute_actor_input(
@@ -759,6 +788,83 @@ class JESSI(BasePolicy):
         return actor_input
 
     @partial(jit, static_argnames=("self"))
+    def compute_encoder_input(
+        self,
+        obs:jnp.ndarray,
+    ):
+        """
+        Prepare the input for the encoder network.
+
+        args:
+        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        The first stack is the most recent one.
+
+        output:
+        - lidar_tokens (n_stack * lidar_num_rays, 12): aligned LiDAR tokens for transformer encoder.
+        12 features per token: [hit, inside_box, distance, sin(theta), cos(theta), x, y, norm_stack_index, delta_x, delta_y, delta_theta, norm_delta_t]
+        - last LiDAR point cloud (lidar_num_rays, 2): in robot frame of the most recent observation.
+        """
+        # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.
+        aligned_lidar_scans = self.process_lidar(obs)[0]  # Shape: (n_stack, lidar_num_rays, 2)
+        last_lidar_point_cloud = aligned_lidar_scans[0,:, :]  # Shape: (lidar_num_rays, 2)
+        ego_delta_xs = obs[:,0] - obs[0,0]
+        ego_delta_ys = obs[:,1] - obs[0,1]
+        ego_delta_thetas = obs[:,2] - obs[0,2]
+        # Compute LiDAR tokens
+        @jit
+        def compute_beam_token(
+            scan_index:int,
+            point:jnp.ndarray,
+            ego_delta_x:float,
+            ego_delta_y:float,
+            ego_delta_theta:float,
+        ) -> jnp.ndarray:
+            # Extract point coordinates
+            x, y = point
+            # Check if point is inside the bounding box
+            inside_box = jnp.where(
+                (x >= self.gmm_means_limits[0,0]) & (x <= self.gmm_means_limits[0,1]) &
+                (y >= self.gmm_means_limits[1,0]) & (y <= self.gmm_means_limits[1,1]),
+                1.0,
+                0.0
+            )
+            # Compute beam features
+            distance = jnp.linalg.norm(point)
+            angle = jnp.arctan2(y, x)
+            sin_theta = jnp.sin(angle)
+            cos_theta = jnp.cos(angle)
+            hit = jnp.where(distance < self.lidar_max_dist, 1.0, 0.0)
+            # Compute stack index features
+            norm_stack_index = scan_index / (self.n_stack - 1)
+            norm_delta_t = scan_index * self.dt / ((self.n_stack - 1) * self.dt)
+            return jnp.array([
+                hit,
+                inside_box,
+                distance,
+                sin_theta,
+                cos_theta,
+                x,
+                y,
+                norm_stack_index,
+                ego_delta_x,
+                ego_delta_y,
+                ego_delta_theta,
+                norm_delta_t,
+            ])
+        encoder_input = vmap(vmap(compute_beam_token, in_axes=(None, 0, None, None, None)), in_axes=(0, 0, 0, 0, 0))(
+            jnp.arange(self.n_stack),
+            aligned_lidar_scans,
+            ego_delta_xs,
+            ego_delta_ys,
+            ego_delta_thetas,
+        )  # Shape: (n_stack, lidar_num_rays, 12)
+        # Optionally select TOP K beams to reduce computation
+
+        # Reshape to (n_stack * lidar_num_rays, 12)
+        encoder_input = jnp.reshape(encoder_input, (self.n_stack * self.lidar_num_rays, 12))
+        return encoder_input, last_lidar_point_cloud
+
+    @partial(jit, static_argnames=("self"))
     def act(
         self, 
         key:random.PRNGKey, 
@@ -769,22 +875,13 @@ class JESSI(BasePolicy):
         sample:bool = False,
     ) -> jnp.ndarray:
         # Compute encoder input and last lidar point cloud (for action bounding)
-        encoder_input = self.process_obs(obs)[0][::-1,:].flatten()
-        last_lidar_point_cloud = encoder_input[-(2 * self.lidar_num_rays + 2):-2].reshape(self.lidar_num_rays, 2)
+        encoder_input, last_lidar_point_cloud = self.compute_encoder_input(obs)
         # Compute GMMs (with encoder)
-        obs_distr, hum_distr, next_hum_distr = self.encoder.apply(
+        encoder_distrs = self.encoder.apply(
             encoder_params, 
             None, 
-            jnp.reshape(encoder_input, (1, self.n_stack * (2 * self.lidar_num_rays + 2))),
+            encoder_input,
         )
-        obs_distr = {k: jnp.squeeze(v) for k, v in obs_distr.items()}
-        hum_distr = {k: jnp.squeeze(v) for k, v in hum_distr.items()}
-        next_hum_distr = {k: jnp.squeeze(v) for k, v in next_hum_distr.items()}
-        encoder_distrs = {
-            "obs_distr": obs_distr,
-            "hum_distr": hum_distr,
-            "next_hum_distr": next_hum_distr,
-        }
         # Compute bounded action space parameters and add it to the input
         bounding_parameters = self.bound_action_space(
             last_lidar_point_cloud,  
@@ -801,9 +898,9 @@ class JESSI(BasePolicy):
         rc_robot_goal = R @ translated_position
         # debug.print("Goal coords: {x}", x=rc_robot_goal)
         actor_input = self.compute_actor_input(
-            obs_distr,
-            hum_distr,
-            next_hum_distr,
+            encoder_distrs["obs_distr"],
+            encoder_distrs["hum_distr"],
+            encoder_distrs["next_hum_distr"],
             bounding_parameters,
             rc_robot_goal,
         )
@@ -1018,11 +1115,10 @@ class JESSI(BasePolicy):
                     next_humans_samples:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Compute the prediction
-                    input = jnp.reshape(input, (1, self.n_stack * (2 * self.lidar_num_rays + 2)))
-                    obs_prediction, humans_prediction, next_humans_prediction = self.encoder.apply(current_params, None, input)
-                    obs_prediction = {k: jnp.squeeze(v) for k, v in obs_prediction.items()}
-                    humans_prediction = {k: jnp.squeeze(v) for k, v in humans_prediction.items()}
-                    next_humans_prediction = {k: jnp.squeeze(v) for k, v in next_humans_prediction.items()}
+                    encoder_distrs = self.encoder.apply(current_params, None, input)
+                    obs_prediction = encoder_distrs["obs_distr"]
+                    humans_prediction = encoder_distrs["hum_distr"]
+                    next_humans_prediction = encoder_distrs["next_hum_distr"]
                     # Compute the loss
                     loss1 = jnp.mean(self.gmm.batch_contrastivelogp(obs_prediction, obstacles_samples["position"], obstacles_samples["is_positive"]))
                     loss2 = jnp.mean(self.gmm.batch_contrastivelogp(humans_prediction, humans_samples["position"], humans_samples["is_positive"]))
@@ -1067,6 +1163,263 @@ class JESSI(BasePolicy):
         # Apply updates
         updated_params = optax.apply_updates(current_params, updates)
         return updated_params, optimizer_state, loss    
+
+    @partial(jit, static_argnames=("self", "n_samples", "n_humans"))
+    def build_frame_humans_samples(
+        self,
+        rc_humans_positions:jnp.ndarray,
+        humans_radii:jnp.ndarray,
+        humans_visibility:jnp.ndarray,
+        key:random.PRNGKey,
+        n_samples:int,
+        n_humans:int,
+        negative_samples_threshold:float=0.2,
+    ) -> jnp.ndarray:
+        """
+        Sample points inside the local box around the robot, labeling them as positive/negative depending on whether they fall inside/outside any human.
+        1. Sample points uniformly inside each visible human.
+        2. Fill the remaining samples with random negative samples (outside all humans).
+        3. Return samples and their labels.
+
+        args:
+        - rc_humans_positions (n_humans, 2): Humans positions IN THE ROBOT FRAME.
+        - humans_radii (n_humans,): Humans radii.
+        - humans_visibility (n_humans,): Boolean mask indicating which humans are visible.
+        - key: JAX random key.
+        - n_samples: Total number of samples to generate.
+        - n_humans: Number of humans in the scene.
+        - negative_samples_threshold: Minimum distance from human boundary for negative samples.
+
+        output:
+        - humans_samples: dict with:
+            - position (n_samples, 2): Sampled points positions.
+            - is_positive (n_samples,): Boolean mask indicating whether each sample is positive (inside any human) or negative (outside all humans).
+        """
+        ### Mask invisible humans and obstacles with NaNs
+        humans = jnp.where(
+            humans_visibility[:, None],
+            jnp.concatenate((rc_humans_positions, humans_radii[:, None]), axis=-1),
+            jnp.array([jnp.nan, jnp.nan, jnp.nan])
+        )  # Shape: (n_humans, 3)
+        ### Split n_samples evenly with respect to humans
+        samples_per_object = n_samples // n_humans
+        # Humans samples
+        @partial(jit, static_argnames=['n_hum_samples'])
+        def sample_from_human(human: jnp.ndarray, key: random.PRNGKey, n_hum_samples: int) -> jnp.ndarray:
+            @jit
+            def _not_nan_human(human):
+                position, radius = human[0:2], human[2]
+                angle_key, radius_key = random.split(key)
+                angles = random.uniform(angle_key, (n_hum_samples,), minval=0.0, maxval=2*jnp.pi)
+                rs = radius * jnp.sqrt(random.uniform(radius_key, (n_hum_samples,)))
+                xs = position[0] + rs * jnp.cos(angles)
+                ys = position[1] + rs * jnp.sin(angles)
+                return jnp.stack((xs, ys), axis=-1)  # Shape: (n_hum_samples, 2)
+
+            return lax.cond(
+                jnp.any(jnp.isnan(human)),
+                lambda _: jnp.full((n_hum_samples, 2), jnp.nan),
+                _not_nan_human,
+                human
+            )
+        humans_keys = random.split(key, n_humans)
+        humans_samples = vmap(sample_from_human, in_axes=(0, 0, None))(humans, humans_keys, samples_per_object)  # Shape: (n_humans, samples_per_object, 2)
+        humans_samples = humans_samples.reshape((n_humans * samples_per_object, 2))
+        # Randomly fill nan samples with negative samples
+        nan_mask = jnp.isnan(humans_samples).any(axis=1)
+        total_nans = jnp.sum(nan_mask)
+        aux_samples = jnp.nan_to_num(humans_samples, nan=jnp.inf)  # Temporary replace NaNs with large negative number for sorting
+        idxs = jnp.argsort(aux_samples, axis=0)
+        positive = vmap(lambda x: x < n_samples - total_nans)(jnp.arange(n_samples))
+        humans_samples = { 
+            "position": humans_samples[idxs[:,0]],  # Sort samples so that NaNs are at the end
+            "is_positive": positive,
+        }
+        keys = random.split(key, n_samples)
+        @jit
+        def fill_nan_samples_with_negatives(sample: jnp.ndarray, key: random.PRNGKey, humans: jnp.ndarray) -> jnp.ndarray:
+            @jit
+            def find_negative_sample(val:tuple) -> jnp.ndarray:
+                _, key, humans = val
+                def _while_body(state):
+                    key, _, is_positive, humans = state
+                    key, subkey = random.split(key)
+                    x_key, y_key = random.split(subkey)
+                    x = random.uniform(x_key, minval=self.gmm_means_limits[0,0], maxval=self.gmm_means_limits[0,1])
+                    y = random.uniform(y_key, minval=self.gmm_means_limits[1,0], maxval=self.gmm_means_limits[1,1])
+                    pos = jnp.array([x, y])
+                    is_positive = jnp.any(jnp.linalg.norm(pos - humans[:,:2], axis=1) < humans[:,2] + negative_samples_threshold)
+                    return key, pos, is_positive, humans
+                _, sample_position, _, _ = lax.while_loop(
+                    lambda state: state[2],
+                    _while_body,
+                    (key, jnp.array([0.,0.]), True, humans)
+                )
+                return {"position": sample_position, "is_positive": False}
+            return lax.cond(
+                sample["is_positive"],
+                lambda x: {"position": x[0]["position"], "is_positive": x[0]["is_positive"]},
+                find_negative_sample,
+                (sample, key, humans)
+            )
+        return vmap(fill_nan_samples_with_negatives, in_axes=(0, 0, None))(
+            humans_samples,
+            keys,
+            humans,
+        )
+
+    @partial(jit, static_argnames=("self", "n_samples", "n_humans"))
+    def batch_build_frame_humans_samples(
+        self,
+        batch_rc_humans_positions:jnp.ndarray,
+        batch_humans_radii:jnp.ndarray,
+        batch_humans_visibility:jnp.ndarray,
+        keys:random.PRNGKey,
+        n_samples:int,
+        n_humans:int,
+        negative_samples_threshold:float=0.2,
+    ) -> jnp.ndarray:
+        """
+        Batch version of build_frame_humans_samples. Refers to the documentation of that method for details.
+        """
+        return vmap(JESSI.build_frame_humans_samples, in_axes=(None, 0, 0, 0, 0, None, None, None))(
+            self,
+            batch_rc_humans_positions,
+            batch_humans_radii,
+            batch_humans_visibility,
+            keys,
+            n_samples,
+            n_humans,
+            negative_samples_threshold,
+        )
+
+    @partial(jit, static_argnames=("self", "n_samples", "n_obstacles"))
+    def build_frame_obstacles_samples(
+        self,
+        rc_static_obstacles:jnp.ndarray,
+        obstacles_visibility:jnp.ndarray,
+        key:random.PRNGKey,
+        n_samples:int,
+        n_obstacles:int,
+        negative_samples_threshold:float,
+    ) -> jnp.ndarray:
+        """
+        Sample points inside the local box around the robot, labeling them as positive/negative depending on whether they fall inside/outside any obstacle.
+        1. Sample points uniformly inside each visible obstacle.
+        2. Fill the remaining samples with random negative samples (outside all obstacles).
+        3. Return samples and their labels.
+
+        args:
+        - rc_obstacles_positions (n_obstacles, 2): obstacles positions IN THE ROBOT FRAME.
+        - obstacles_visibility (n_obstacles,): Boolean mask indicating which obstacles are visible.
+        - key: JAX random key.
+        - n_samples: Total number of samples to generate.
+        - n_obstacles: Number of obstacles in the scene.
+        - negative_samples_threshold: Minimum distance from obstacle boundary for negative samples.
+
+        output:
+        - obstacles_samples: dict with:
+            - position (n_samples, 2): Sampled points positions.
+            - is_positive (n_samples,): Boolean mask indicating whether each sample is positive (inside any obstacle) or negative (outside all obstacles).
+        """
+        ### WARNING: CURRENT IMPLEMENTATION CONSIDERS THE INSIDE OF POLIGONAL OBSTACLES AS FREE SPACE
+        obstacles = jnp.where(
+            obstacles_visibility[:,:, None, None],
+            rc_static_obstacles,
+            jnp.array([[jnp.nan, jnp.nan], [jnp.nan, jnp.nan]])
+        )  # Shape: (n_obstacles, 1, 2, 2)
+        ### Split n_samples evenly with respect to n_obstacles
+        samples_per_object = n_samples // n_obstacles
+        # Obstacles samples
+        @partial(jit, static_argnames=['n_obs_samples'])
+        def sample_from_obstacle(obstacle: jnp.ndarray, key: random.PRNGKey, n_obs_samples: int) -> jnp.ndarray:
+            n_seg_samples = n_obs_samples // obstacle.shape[0]
+            @jit
+            def _segment_samples(segment):
+                @jit
+                def _not_nan_segment(segment):
+                    p1, p2 = segment[0], segment[1]
+                    # Sample uniformly on the segment
+                    ts = random.uniform(key, (n_seg_samples,), minval=0.0, maxval=1.0)
+                    xs = p1[0] + ts * (p2[0] - p1[0])
+                    ys = p1[1] + ts * (p2[1] - p1[1])
+                    return jnp.stack((xs, ys), axis=-1)  # Shape: (n_samples, 2)
+                return lax.cond(
+                    jnp.any(jnp.isnan(segment)),
+                    lambda _: jnp.full((n_seg_samples, 2), jnp.nan),
+                    _not_nan_segment,
+                    segment
+                )
+            return jnp.concatenate(vmap(_segment_samples, in_axes=(0,))(obstacle), axis=0)  # Shape: (n_obs_samples, 2)
+        obstacles_keys = random.split(key, n_obstacles)
+        obstacles_samples = vmap(sample_from_obstacle, in_axes=(0, 0, None))(obstacles, obstacles_keys, samples_per_object)  # Shape: (n_obstacles, samples_per_object, 2)
+        obstacles_samples = obstacles_samples.reshape((n_obstacles * samples_per_object, 2))
+        # Randomly fill nan samples with negative samples
+        nan_mask = jnp.isnan(obstacles_samples).any(axis=1)
+        total_nans = jnp.sum(nan_mask)
+        aux_samples = jnp.nan_to_num(obstacles_samples, nan=jnp.inf)  # Temporary replace NaNs with large negative number for sorting
+        idxs = jnp.argsort(aux_samples, axis=0)
+        positive = vmap(lambda x: x < n_samples - total_nans)(jnp.arange(n_samples))
+        obstacles_samples = { 
+            "position": obstacles_samples[idxs[:,0]],  # Sort samples so that NaNs are at the end
+            "is_positive": positive,
+        }
+        keys = random.split(key, n_samples)
+        @jit
+        def fill_nan_samples_with_negatives(sample: jnp.ndarray, key: random.PRNGKey, obstacles: jnp.ndarray) -> jnp.ndarray:
+            @jit
+            def find_negative_sample(val:tuple) -> jnp.ndarray:
+                _, key, obstacles = val
+                def _while_body(state):
+                    key, _, is_positive, obstacles = state
+                    key, subkey = random.split(key)
+                    x_key, y_key = random.split(subkey)
+                    x = random.uniform(x_key, minval=self.gmm_means_limits[0,0], maxval=self.gmm_means_limits[0,1])
+                    y = random.uniform(y_key, minval=self.gmm_means_limits[1,0], maxval=self.gmm_means_limits[1,1])
+                    pos = jnp.array([x, y])
+                    closest_points = vectorized_compute_obstacle_closest_point(pos, obstacles)
+                    is_positive = jnp.any(jnp.linalg.norm(pos - closest_points, axis=1) < negative_samples_threshold)
+                    return key, pos, is_positive, obstacles
+                _, sample_position, _, _ = lax.while_loop(
+                    lambda state: state[2],
+                    _while_body,
+                    (key, jnp.array([0.,0.]), True, obstacles)
+                )
+                return {"position": sample_position, "is_positive": False}
+            return lax.cond(
+                sample["is_positive"],
+                lambda x: {"position": x[0]["position"], "is_positive": x[0]["is_positive"]},
+                find_negative_sample,
+                (sample, key, obstacles)
+            )
+        return vmap(fill_nan_samples_with_negatives, in_axes=(0, 0, None))(
+            obstacles_samples,
+            keys,
+            obstacles,
+        )
+
+    @partial(jit, static_argnames=("self", "n_samples", "n_obstacles"))
+    def batch_build_frame_obstacles_samples(
+        self,
+        batch_rc_static_obstacles:jnp.ndarray,
+        batch_obstacles_visibility:jnp.ndarray,
+        keys:random.PRNGKey,
+        n_samples:int,
+        n_obstacles:int,
+        negative_samples_threshold:float,
+    ) -> jnp.ndarray:
+        """
+        Batch version of build_frame_obstacles_samples. Refers to the documentation of that method for details.
+        """
+        return vmap(JESSI.build_frame_obstacles_samples, in_axes=(None, 0, 0, 0, None, None, None))(
+            self,
+            batch_rc_static_obstacles,
+            batch_obstacles_visibility,
+            keys,
+            n_samples,
+            n_obstacles,
+            negative_samples_threshold,
+        )
 
     def animate_trajectory(
         self,
@@ -1192,20 +1545,34 @@ class JESSI(BasePolicy):
             test_p = self.gmm.batch_p(hum_distr, test_samples)
             points_high_p = test_samples[test_p > p_visualization_threshold_gmm]
             corresponding_colors = test_p[test_p > p_visualization_threshold_gmm]
-            rotated_means = jnp.einsum('ij,jk->ik', rot, hum_distr["means"].T).T + robot_poses[frame,:2]
+            rotated_means_hum = jnp.einsum('ij,jk->ik', rot, hum_distr["means"].T).T + robot_poses[frame,:2]
             rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
-            axs[0,1].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
+            axs[0,1].scatter(rotated_means_hum[:,0], rotated_means_hum[:,1], c='red', s=10, marker='x', zorder=100)
             axs[0,1].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[0,1].set_title("Humans GMM")
             # AX 0,2: Next Humans GMM
             test_p = self.gmm.batch_p(next_hum_distr, test_samples)
             points_high_p = test_samples[test_p > p_visualization_threshold_gmm]
             corresponding_colors = test_p[test_p > p_visualization_threshold_gmm]
-            rotated_means = jnp.einsum('ij,jk->ik', rot, next_hum_distr["means"].T).T + robot_poses[frame,:2]
+            rotated_means_next_hum = jnp.einsum('ij,jk->ik', rot, next_hum_distr["means"].T).T + robot_poses[frame,:2]
             rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + robot_poses[frame,:2]
-            axs[0,2].scatter(rotated_means[:,0], rotated_means[:,1], c='red', s=10, marker='x', zorder=100)
+            axs[0,2].scatter(rotated_means_next_hum[:,0], rotated_means_next_hum[:,1], c='red', s=10, marker='x', zorder=100)
             axs[0,2].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[0,2].set_title("Next Humans GMM")
+            # Plot means displacement arrows between humans and next humans GMMs
+            for c in range(len(hum_distr["means"])):
+                axs[0,1].arrow(
+                    rotated_means_hum[c,0],
+                    rotated_means_hum[c,1],
+                    rotated_means_next_hum[c,0] - rotated_means_hum[c,0],
+                    rotated_means_next_hum[c,1] - rotated_means_hum[c,1],
+                    head_width=0.15,
+                    head_length=0.15,
+                    fc="red",
+                    ec="red",
+                    alpha=0.8,
+                    zorder=50,
+                )
             ### SECOND ROW AXS: SIMULATION, POINT CLOUD AND ACTIONS
             # AX 1,0: Simulation with LiDAR ranges
             lidar_scan = observations[frame,0,6:]
@@ -1219,7 +1586,7 @@ class JESSI(BasePolicy):
                 )
             axs[1,0].set_title("Trajectory")
             # AX 1,1: Simulation with LiDAR point cloud stack
-            point_cloud = self.process_obs(observations[frame])[1]
+            point_cloud = self.process_lidar(observations[frame])[1]
             for i, cloud in enumerate(point_cloud):
                 # color/alpha fade with i (smaller i -> less faded)
                 t = (1 - i / (self.n_stack - 1))  # in [0,1]
