@@ -345,208 +345,6 @@ class JESSI(BasePolicy):
     # Private methods
 
     @partial(jit, static_argnames=("self"))
-    def _compute_rl_loss_and_gradients(
-        self, 
-        current_critic_params:dict, 
-        current_actor_params:dict, 
-        experiences:dict[str:jnp.ndarray],
-        current_beta_entropy:float,
-        clip_range:float,
-        debugging:bool=False,
-    ) -> tuple:
-        
-        # Experiences: {
-        #   "inputs":jnp.ndarray, 
-        #   "critic_targets":jnp.ndarray, 
-        #   "sample_actions":jnp.ndarray, 
-        #   "old_values":jnp.ndarray, 
-        #   "old_neglogpdfs":jnp.ndarray
-        # },
-
-        @jit
-        def _batch_critic_loss_function(
-            current_critic_params:dict,
-            inputs:jnp.ndarray,
-            critic_targets:jnp.ndarray, 
-            old_values:jnp.ndarray, 
-        ) -> jnp.ndarray:
-            
-            @partial(vmap, in_axes=(None, 0, 0, 0))
-            def _rl_loss_function(
-                current_critic_params:dict,
-                input:jnp.ndarray,
-                target:float, 
-                old_value:float,
-                ) -> jnp.ndarray:
-                # Compute the prediction
-                prediction = self.critic.apply(current_critic_params, None, input)
-                # Compute the clipped prediction
-                clipped_prediction = jnp.clip(prediction, old_value - clip_range, old_value + clip_range)
-                # Compute the loss
-                return jnp.maximum(jnp.square(target - prediction), jnp.square(target - clipped_prediction))
-            
-            critic_loss = _rl_loss_function(current_critic_params, inputs, critic_targets, old_values)
-            return 0.5 * jnp.mean(critic_loss)
-        
-        @jit
-        def _batch_actor_loss_function(
-            current_actor_params:dict,
-            inputs:jnp.ndarray,
-            sample_actions:jnp.ndarray,
-            advantages:jnp.ndarray,  
-            old_neglogpdfs:jnp.ndarray,
-            beta_entropy:float = 0.0001,
-        ) -> jnp.ndarray:
-            
-            @partial(vmap, in_axes=(None, 0, 0, 0, 0))
-            def _rl_loss_function(
-                current_actor_params:dict,
-                input:jnp.ndarray,
-                sample_action:jnp.ndarray,
-                advantage:jnp.ndarray, 
-                old_neglogpdf:jnp.ndarray,
-            ) -> jnp.ndarray:
-                # Compute the prediction
-                _, distr = self.actor.apply(current_actor_params, None, input)
-                # Compute the log probability of the action
-                neglogpdf = self.dirichlet.neglogp(distr, sample_action)
-                # Compute policy ratio
-                ratio = jnp.exp(old_neglogpdf - neglogpdf)
-                lax.cond(
-                    debugging,
-                    lambda _: debug.print(
-                        "Ratio: {x} - Old neglogp: {y} - New neglogp: {z} - distr: {w} - action: {a} - advantage: {b}", 
-                        x=ratio,
-                        y=old_neglogpdf,
-                        z=neglogpdf,
-                        w=distr,
-                        a=sample_action,
-                        b=advantage,
-                    ),
-                    lambda _: None,
-                    None,
-                )
-                # Compute actor loss
-                actor_loss = jnp.maximum(- ratio * advantage, - jnp.clip(ratio, 1-clip_range, 1+clip_range) * advantage)
-                # Compute the entropy loss
-                entropy_loss = self.dirichlet.entropy(distr)
-                # Compute the loss
-                return actor_loss, entropy_loss
-            
-            actor_losses, entropy_losses = _rl_loss_function(current_actor_params, inputs, sample_actions, advantages, old_neglogpdfs)
-            actor_loss = jnp.mean(actor_losses)
-            entropy_loss = - beta_entropy * jnp.mean(entropy_losses)
-            loss = actor_loss + entropy_loss
-            return loss, {"actor_loss": actor_loss, "entropy_loss": entropy_loss}
-
-        inputs = experiences["inputs"]
-        critic_targets = experiences["critic_targets"]
-        sample_actions = experiences["sample_actions"]
-        old_values = experiences["old_values"]
-        old_neglogpdfs = experiences["old_neglogpdfs"]
-        # Compute and normalize advantages
-        advantages = critic_targets - old_values
-        advantages = (advantages - jnp.mean(advantages)) / (jnp.std(advantages) + EPSILON)
-        # Compute critic loss and gradients
-        critic_loss, critic_grads = value_and_grad(_batch_critic_loss_function)(
-            current_critic_params, 
-            inputs,
-            critic_targets,
-            old_values
-        )
-        # Compute actor loss and gradients
-        actor_and_entropy_loss, actor_grads = value_and_grad(_batch_actor_loss_function, has_aux=True)(
-            current_actor_params, 
-            inputs,
-            sample_actions, 
-            advantages,
-            old_neglogpdfs,
-            current_beta_entropy,
-        )
-        _, all_losses = actor_and_entropy_loss
-        actor_loss = all_losses["actor_loss"]
-        entropy_loss = all_losses["entropy_loss"]
-        return critic_loss, critic_grads, actor_loss, actor_grads, entropy_loss
-
-    @partial(jit, static_argnames=("self"))
-    def _compute_il_loss_and_gradients(
-        self, 
-        current_critic_params:dict, 
-        current_actor_params:dict, 
-        experiences:dict[str:jnp.ndarray],
-    ) -> tuple:
-        
-        # Experiences: {
-        #   "inputs":jnp.ndarray, 
-        #   "critic_targets":jnp.ndarray, 
-        #   "sample_actions":jnp.ndarray, 
-        # },
-
-        @jit
-        def _batch_critic_loss_function(
-            current_critic_params:dict,
-            inputs:jnp.ndarray,
-            critic_targets:jnp.ndarray, 
-        ) -> jnp.ndarray:
-            
-            @partial(vmap, in_axes=(None, 0, 0))
-            def _il_loss_function(
-                current_critic_params:dict,
-                input:jnp.ndarray,
-                target:float, 
-                ) -> jnp.ndarray:
-                # Compute the prediction
-                prediction = self.critic.apply(current_critic_params, None, input)
-                # Compute the loss
-                return jnp.square(target - prediction)
-            
-            critic_loss = _il_loss_function(
-                current_critic_params,
-                inputs,
-                critic_targets)
-            return jnp.mean(critic_loss)
-        
-        @jit
-        def _batch_actor_loss_function(
-            current_actor_params:dict,
-            inputs:jnp.ndarray,
-            sample_actions:jnp.ndarray,
-        ) -> jnp.ndarray:
-            
-            @partial(vmap, in_axes=(None, 0, 0))
-            def _il_loss_function(
-                current_actor_params:dict,
-                input:jnp.ndarray,
-                sample_action:jnp.ndarray,
-            ) -> jnp.ndarray:
-                # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                _, distr = self.actor.apply(current_actor_params, None, input)
-                # Get mean action
-                action = self.dirichlet.mean(distr)
-                # Compute the loss
-                return 0.5 * jnp.sum(jnp.square(action - sample_action))
-            
-            actor_losses = _il_loss_function(current_actor_params, inputs, sample_actions)
-            return jnp.mean(actor_losses)
-
-        inputs = experiences["inputs"]
-        critic_targets = experiences["critic_targets"]
-        sample_actions = experiences["sample_actions"]
-        # Compute critic loss and gradients
-        critic_loss, critic_grads = value_and_grad(_batch_critic_loss_function)(
-            current_critic_params, 
-            inputs,
-            critic_targets,
-        )
-        # Compute actor loss and gradients
-        actor_loss, actor_grads = value_and_grad(_batch_actor_loss_function)(
-            current_actor_params, 
-            inputs,
-            sample_actions,
-        )
-        return critic_loss, critic_grads, actor_loss, actor_grads, 0.
-
-    @partial(jit, static_argnames=("self"))
     def _process_lidar_stack(self, obs_stack, ref_position, ref_orientation):
         """
         args:
@@ -931,7 +729,54 @@ class JESSI(BasePolicy):
             encoder_params, 
             actor_params, 
             sample,
-        )
+        )   
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_loss_function_encoder(
+        self,
+        current_params:dict,
+        inputs:jnp.ndarray,
+        obstacles_samples:jnp.ndarray,
+        humans_samples:jnp.ndarray,
+        next_humans_samples:jnp.ndarray,
+        ) -> jnp.ndarray:
+        
+        @partial(vmap, in_axes=(None, 0, 0, 0, 0))
+        def _loss_function(
+            current_params:dict,
+            input:jnp.ndarray,
+            obstacles_samples:jnp.ndarray,
+            humans_samples:jnp.ndarray,
+            next_humans_samples:jnp.ndarray,
+            ) -> jnp.ndarray:
+            # Compute the prediction
+            encoder_distrs = self.encoder.apply(current_params, None, input)
+            obs_prediction = encoder_distrs["obs_distr"]
+            humans_prediction = encoder_distrs["hum_distr"]
+            next_humans_prediction = encoder_distrs["next_hum_distr"]
+            # Compute the loss
+            loss1 = jnp.mean(self.gmm.batch_contrastivelogp(obs_prediction, obstacles_samples["position"], obstacles_samples["is_positive"]))
+            loss2 = jnp.mean(self.gmm.batch_contrastivelogp(humans_prediction, humans_samples["position"], humans_samples["is_positive"]))
+            loss3 = jnp.mean(self.gmm.batch_contrastivelogp(next_humans_prediction, next_humans_samples["position"], next_humans_samples["is_positive"]))
+            contrastive_loss = 0.5 * loss1 + 0.5 * loss2 + 0.5 * loss3
+            # Weights entropy regularization
+            obs_weights = obs_prediction["weights"]
+            hum_weights = humans_prediction["weights"]
+            next_hum_weights = next_humans_prediction["weights"]
+            eloss1 = -jnp.sum(obs_weights * jnp.log(obs_weights + 1e-8))
+            eloss2 = -jnp.sum(hum_weights * jnp.log(hum_weights + 1e-8))
+            eloss3 = -jnp.sum(next_hum_weights * jnp.log(next_hum_weights + 1e-8))
+            entropy_loss = 1e-3 * (eloss1 + eloss2 + eloss3)
+            # debug.print("nll_loss: {x} - entropy_loss: {y}", x=nll_loss, y=entropy_loss)
+            return contrastive_loss + entropy_loss
+        
+        return jnp.mean(_loss_function(
+            current_params,
+            inputs,
+            obstacles_samples,
+            humans_samples,
+            next_humans_samples
+        ))
 
     @partial(jit, static_argnames=("self","actor_optimizer","critic_optimizer"))
     def update(
@@ -946,73 +791,12 @@ class JESSI(BasePolicy):
         beta_entropy:float,
         clip_range:float,
         debugging:bool=False,
-    ) -> tuple:
-        # Compute loss and gradients for actor and critic
-        critic_loss, critic_grads, actor_loss, actor_grads, entropy_loss = self._compute_rl_loss_and_gradients(
-                critic_params, 
-                actor_params,
-                experiences,
-                beta_entropy,
-                clip_range,
-                debugging=debugging, #debugging,
-        )
-        ## CRITIC
-        # Compute parameter updates
-        critic_updates, critic_opt_state = critic_optimizer.update(critic_grads, critic_opt_state)
-        # Apply updates
-        updated_critic_params = optax.apply_updates(critic_params, critic_updates)
-        ## ACTOR
-        # Compute parameter updates
-        actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
-        # Apply updates
-        updated_actor_params = optax.apply_updates(actor_params, actor_updates)
-        return (
-            updated_critic_params, 
-            updated_actor_params, 
-            critic_opt_state, 
-            actor_opt_state, 
-            critic_loss, 
-            actor_loss, 
-            entropy_loss
-        )
-    
-    @partial(jit, static_argnames=("self","actor_optimizer","critic_optimizer"))
-    def update_il(
-        self, 
-        critic_params:dict, 
-        actor_params:dict,
-        actor_optimizer:optax.GradientTransformation, 
-        actor_opt_state: jnp.ndarray, 
-        critic_optimizer:optax.GradientTransformation,
-        critic_opt_state: jnp.ndarray,
-        experiences:dict[str:jnp.ndarray], 
-    ) -> tuple:
-        # Compute loss and gradients for actor and critic
-        critic_loss, critic_grads, actor_loss, actor_grads, entropy_loss = self._compute_il_loss_and_gradients(
-                critic_params, 
-                actor_params,
-                experiences,
-        )
-        ## CRITIC
-        # Compute parameter updates
-        critic_updates, critic_opt_state = critic_optimizer.update(critic_grads, critic_opt_state)
-        # Apply updates
-        updated_critic_params = optax.apply_updates(critic_params, critic_updates)
-        ## ACTOR
-        # Compute parameter updates
-        actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
-        # Apply updates
-        updated_actor_params = optax.apply_updates(actor_params, actor_updates)
-        return (
-            updated_critic_params, 
-            updated_actor_params, 
-            critic_opt_state, 
-            actor_opt_state, 
-            critic_loss, 
-            actor_loss, 
-            entropy_loss
-        )
-    
+    ):
+        """
+        Update both actor and critic networks using the provided experiences in RL setting.
+        """
+        pass
+
     @partial(jit, static_argnames=("self","actor_optimizer"))
     def update_il_only_actor(
         self, 
@@ -1097,58 +881,13 @@ class JESSI(BasePolicy):
             experiences:dict[str:jnp.ndarray],
             # Experiences: {"inputs":jnp.ndarray, "obstacles_samples":jnp.ndarray, "humans_samples":jnp.ndarray, "next_humans_samples":jnp.ndarray}
         ) -> tuple:
-            @jit
-            def _batch_loss_function(
-                current_params:dict,
-                inputs:jnp.ndarray,
-                obstacles_samples:jnp.ndarray,
-                humans_samples:jnp.ndarray,
-                next_humans_samples:jnp.ndarray,
-                ) -> jnp.ndarray:
-                
-                @partial(vmap, in_axes=(None, 0, 0, 0, 0))
-                def _loss_function(
-                    current_params:dict,
-                    input:jnp.ndarray,
-                    obstacles_samples:jnp.ndarray,
-                    humans_samples:jnp.ndarray,
-                    next_humans_samples:jnp.ndarray,
-                    ) -> jnp.ndarray:
-                    # Compute the prediction
-                    encoder_distrs = self.encoder.apply(current_params, None, input)
-                    obs_prediction = encoder_distrs["obs_distr"]
-                    humans_prediction = encoder_distrs["hum_distr"]
-                    next_humans_prediction = encoder_distrs["next_hum_distr"]
-                    # Compute the loss
-                    loss1 = jnp.mean(self.gmm.batch_contrastivelogp(obs_prediction, obstacles_samples["position"], obstacles_samples["is_positive"]))
-                    loss2 = jnp.mean(self.gmm.batch_contrastivelogp(humans_prediction, humans_samples["position"], humans_samples["is_positive"]))
-                    loss3 = jnp.mean(self.gmm.batch_contrastivelogp(next_humans_prediction, next_humans_samples["position"], next_humans_samples["is_positive"]))
-                    contrastive_loss = 0.5 * loss1 + 0.5 * loss2 + 0.5 * loss3
-                    # Weights entropy regularization
-                    obs_weights = obs_prediction["weights"]
-                    hum_weights = humans_prediction["weights"]
-                    next_hum_weights = next_humans_prediction["weights"]
-                    eloss1 = -jnp.sum(obs_weights * jnp.log(obs_weights + 1e-8))
-                    eloss2 = -jnp.sum(hum_weights * jnp.log(hum_weights + 1e-8))
-                    eloss3 = -jnp.sum(next_hum_weights * jnp.log(next_hum_weights + 1e-8))
-                    entropy_loss = 1e-3 * (eloss1 + eloss2 + eloss3)
-                    # debug.print("nll_loss: {x} - entropy_loss: {y}", x=nll_loss, y=entropy_loss)
-                    return contrastive_loss + entropy_loss
-                
-                return jnp.mean(_loss_function(
-                    current_params,
-                    inputs,
-                    obstacles_samples,
-                    humans_samples,
-                    next_humans_samples
-                ))
 
             inputs = experiences["inputs"]
             obstacles_samples = experiences["obstacles_samples"]
             humans_samples = experiences["humans_samples"]
             next_humans_samples = experiences["next_humans_samples"]
             # Compute the loss and gradients
-            loss, grads = value_and_grad(_batch_loss_function)(
+            loss, grads = value_and_grad(self.batch_loss_function_encoder)(
                 current_params, 
                 inputs,
                 obstacles_samples,

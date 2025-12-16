@@ -20,11 +20,12 @@ from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as LaserNavDummyReward
 
+#TODO: Split training data in train/val/test sets and save them separately
 save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
-n_steps = 1_000  # Number of labeled examples to train Lidar to GMM network
+n_steps = 10_000  # Number of labeled examples to train Lidar to GMM network
 n_gaussian_mixture_components = 10  # Number of GMM components
 box_limits = jnp.array([[-2,4], [-3,3]])  # Grid limits in meters [[x_min,x_max],[y_min,y_max]]
 visibility_threshold_from_grid = 0.5  # Distance from grid limit to consider an object inside the grid
@@ -32,9 +33,10 @@ n_loss_samples = 1000  # Number of samples to estimate the loss
 prediction_horizon = 4  # Number of steps ahead to predict next GMM (in seconds it is prediction_horizon * robot_dt)
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
 negative_samples_threshold = 0.2 # Distance threshold from objects to consider a sample as negative (in meters)
-learning_rate = 1e-3
+learning_rate = 1e-2
 batch_size = 200
 n_epochs = 1000
+data_split = [0.8, 0.1, 0.1]  # Train/Val/Test split ratios
 p_visualization_threshold = 0.05  # Minimum probability threshold to visualize GMM components
 # Environment parameters
 robot_radius = 0.3
@@ -58,6 +60,7 @@ env_params = {
     'humans_dt': 0.01,
     'robot_visible': robot_visible,
     'scenario': scenario,
+    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,7]), # Exclude circular_crossing_with_static_obstacles
     'kinematics': kinematics,
     'lidar_angular_range':lidar_angular_range,
     'lidar_max_dist':lidar_max_dist,
@@ -95,6 +98,11 @@ ax_lims = jnp.array([
 gmm = BivariateGMM(n_components=n_gaussian_mixture_components)
 
 ### Parameters validation
+assert sum(data_split) == 1.0, "data_split must sum to 1.0"
+assert n_steps % batch_size == 0, "n_steps must be divisible by batch_size"
+assert int(n_steps * data_split[0]) % batch_size == 0, "Training set size must be divisible by batch_size"
+assert int(n_steps * data_split[1]) % batch_size == 0, "Validation set size must be divisible by batch_size"
+assert int(n_steps * data_split[2]) % batch_size == 0, "Test set size must be divisible by batch_size"
 cond1 = n_loss_samples % n_humans == 0
 cond2 = n_loss_samples % n_obstacles == 0
 cond3 = (n_loss_samples / n_obstacles) % env.static_obstacles_per_scenario.shape[2] == 0
@@ -681,34 +689,112 @@ test_samples = jnp.stack((test_samples_x.flatten(), test_samples_y.flatten()), a
 # plt.show()
 
 ### TRAINING LOOP
+# Split dataset into TRAIN, VAL, TEST
+n_data = dataset["observations"].shape[0]
+n_train_data = int(data_split[0] * n_data)
+n_val_data = int(data_split[1] * n_data)
+n_test_data = n_data - n_train_data - n_val_data
+print(f"# Training dataset size: {n_data} experiences")
+print(f"-> TRAIN size: {n_train_data} experiences")
+print(f"-> VAL size: {n_val_data} experiences")
+print(f"-> TEST size: {n_test_data} experiences")
+shuffle_key = random.PRNGKey(random_seed + 1_000_000)
+indexes = jnp.arange(n_data)
+shuffled_indexes = random.permutation(shuffle_key, indexes)
+train_indexes = shuffled_indexes[:n_train_data]
+val_indexes = shuffled_indexes[n_train_data:n_train_data + n_val_data]
+test_indexes = shuffled_indexes[n_train_data + n_val_data:]
+train_dataset = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(train_indexes, dataset)
+val_dataset = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(val_indexes, dataset)
+test_dataset = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(test_indexes, dataset)
+del dataset  # Free memory
 # Initialize optimizer and its state
-optimizer = optax.sgd(learning_rate=learning_rate, momentum=0.9)
+optimizer = optax.chain(
+    optax.clip_by_global_norm(1.0),
+    optax.adam(
+        learning_rate=optax.schedules.linear_schedule(
+            init_value=learning_rate, 
+            end_value=learning_rate * 0.02, 
+            transition_steps=int(n_epochs*n_data//batch_size),
+            transition_begin=0
+        ), 
+        eps=1e-7, 
+        b1=0.9,
+    ),
+)
 optimizer_state = optimizer.init(params)
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')):
-    n_data = dataset["observations"].shape[0]
-    print(f"# Training dataset size: {dataset['observations'].shape[0]} experiences")
+    @jit
+    def batch_val_test_loss(
+        batch:dict,
+        params:dict,
+        seed:int,
+    ) -> tuple:
+        # TODO: Shutdown dropout layers and stochasticity during validation
+        inputs = vmap(jessi.compute_encoder_input, in_axes=(0))(batch["observations"])[0]
+        human_samples = jessi.batch_build_frame_humans_samples(
+            batch["rc_humans_positions"],
+            batch["humans_radii"],
+            batch["humans_visibility"],
+            random.split(random.PRNGKey(seed), batch_size),
+            n_samples = n_loss_samples,
+            n_humans = n_humans,
+            negative_samples_threshold=negative_samples_threshold,
+        )
+        obstacles_samples = jessi.batch_build_frame_obstacles_samples(
+            batch["rc_obstacles"],
+            batch["obstacles_visibility"],
+            random.split(random.PRNGKey(seed), batch_size),
+            n_samples = n_loss_samples,
+            n_obstacles = n_obstacles,
+            negative_samples_threshold=negative_samples_threshold,
+        )
+        next_humans_samples = jessi.batch_build_frame_humans_samples(
+            batch["rc_humans_positions"] + batch["rc_humans_velocities"] * (robot_dt * prediction_horizon),
+            batch["humans_radii"],
+            batch["humans_visibility"],
+            random.split(random.PRNGKey(seed), batch_size),
+            n_samples = n_loss_samples,
+            n_humans = n_humans,
+            negative_samples_threshold=negative_samples_threshold,
+        )
+        # Compute loss
+        loss = jessi.batch_loss_function_encoder(
+            params, 
+            inputs,
+            obstacles_samples,
+            human_samples,
+            next_humans_samples,
+        )
+        return loss
+    @jit
+    def val_test_loss(
+        batches:dict,
+        params:dict,
+        seeds:int,
+    ):
+        return vmap(batch_val_test_loss, in_axes=(0, None, 0))(batches, params, seeds)
     @loop_tqdm(n_epochs, desc="Training Lidar->GMM network")
     @jit 
     def _epoch_loop(
         i:int,
         epoch_for_val:tuple,
     ) -> tuple:
-        dataset, params, optimizer_state, losses = epoch_for_val
-        # Shuffle dataset at the beginning of the epoch
+        train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses = epoch_for_val
+        ## TRAINING
         shuffle_key = random.PRNGKey(random_seed + i)
-        indexes = jnp.arange(n_data)
+        indexes = jnp.arange(n_train_data)
         shuffled_indexes = random.permutation(shuffle_key, indexes)
-        epoch_data = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(shuffled_indexes, dataset)
-        # Batch loop
+        train_epoch_data = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(shuffled_indexes, train_dataset)
         @jit
-        def _batch_loop(
+        def _batch_train_loop(
             j:int,
             batch_for_val:tuple
         ) -> tuple:
-            epoch_data, params, optimizer_state, losses = batch_for_val
+            train_epoch_data, params, optimizer_state, losses = batch_for_val
             # Retrieve batch experiences
             indexes = (jnp.arange(batch_size) + j * batch_size).astype(jnp.int32)
-            batch = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, epoch_data)
+            batch = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, train_epoch_data)
             ## Tranform batch into training_batch data (it is done during training loop to save memory)
             # training_batch = {
             #     "inputs": jnp.zeros((batch_size, n_stack * lidar_num_rays, 12)),
@@ -760,36 +846,72 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
                 optimizer_state,
                 training_batch,
             )
-            debug.print("Epoch {x}, Batch {y}, Loss: {l}", x=i, y=j, l=loss)
+            # debug.print("Epoch {x}, Batch {y}, TRAIN Loss: {l}", x=i, y=j, l=loss)
             # Save loss
             losses = losses.at[i,j].set(loss)
-            return epoch_data, params, optimizer_state, losses
-        n_batches = n_data // batch_size
-        _, params, optimizer_state, losses = lax.fori_loop(
+            return train_epoch_data, params, optimizer_state, losses
+        n_train_batches = n_train_data // batch_size
+        _, params, optimizer_state, train_losses = lax.fori_loop(
             0,
-            n_batches,
-            _batch_loop,
-            (epoch_data, params, optimizer_state, losses)
+            n_train_batches,
+            _batch_train_loop,
+            (train_epoch_data, params, optimizer_state, train_losses)
         )
-        return dataset, params, optimizer_state, losses
+        ## VALIDATION
+        shuffle_key = random.PRNGKey(random_seed + i)
+        indexes = jnp.arange(n_val_data)
+        shuffled_indexes = random.permutation(shuffle_key, indexes)
+        val_epoch_data = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(shuffled_indexes, val_dataset)
+        val_epoch_data = tree_map(lambda x: x.reshape((n_val_data // batch_size, batch_size) + x.shape[1:]), val_epoch_data)
+        val_losses = val_losses.at[i].set(
+            val_test_loss(
+                val_epoch_data,
+                params,
+                jnp.arange(n_val_data // batch_size),
+            )
+        )
+        _, _, _,
+        debug.print("Epoch {x}, TRAIN Loss: {t}, VAL Loss: {v}", x=i, t=jnp.mean(train_losses[i]), v=jnp.mean(val_losses[i]))
+        return train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses
     # Epoch loop
-    _, params, optimizer_state, losses = lax.fori_loop(
+    _, _, params, optimizer_state, train_losses, val_losses = lax.fori_loop(
         0,
         n_epochs,
         _epoch_loop,
-        (dataset, params, optimizer_state, jnp.zeros((n_epochs, int(n_data // batch_size))))
+        (train_dataset, val_dataset, params, optimizer_state, jnp.zeros((n_epochs, int(n_train_data // batch_size))), jnp.zeros((n_epochs, int(n_val_data // batch_size))))
     )
     # Save trained parameters
     with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'wb') as f:
         pickle.dump(params, f)
-    # Plot training loss
-    avg_losses = jnp.mean(losses, axis=1)
-    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-    ax.plot(jnp.arange(n_epochs), avg_losses, label="Training Loss")
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Loss")
-    ax.set_title("Lidar to GMM Network Training Loss")
-    fig.savefig(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_training_loss.eps'), format='eps')
+    ## TEST
+    n_train_batches = n_train_data // batch_size
+    test_losses = jnp.zeros((1, int(n_test_data // batch_size)))
+    shuffle_key = random.PRNGKey(random_seed)
+    indexes = jnp.arange(n_test_data)
+    shuffled_indexes = random.permutation(shuffle_key, indexes)
+    test_epoch_data = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(shuffled_indexes, test_dataset)
+    test_epoch_data = tree_map(lambda x: x.reshape((n_test_data // batch_size, batch_size) + x.shape[1:]), test_epoch_data)
+    test_losses = val_test_loss(
+        test_epoch_data,
+        params,
+        jnp.arange(n_test_data // batch_size),
+    )
+    # Plot training and validation loss
+    avg_train_losses = jnp.mean(train_losses, axis=1)
+    avg_val_losses = jnp.mean(val_losses, axis=1)
+    avg_test_loss = jnp.mean(test_losses)
+    fig, ax = plt.subplots(1, 2, figsize=(8, 6))
+    fig.suptitle("Lidar to GMM Network Losses - Test Loss: {:.4f}".format(avg_test_loss))
+    ax[0].plot(jnp.arange(n_epochs), avg_train_losses, label="Training Loss")
+    ax[0].set_xlabel("Epoch")
+    ax[0].set_ylabel("Loss")
+    ax[1].plot(jnp.arange(n_epochs), avg_val_losses, label="Validation Loss")
+    ax[1].set_xlabel("Epoch")
+    ax[1].set_ylabel("Loss")
+    fig.savefig(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_loss.eps'), format='eps')
+    del train_dataset
+    del val_dataset
+    del test_dataset
 else:
     # Load trained parameters
     with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'rb') as f:
@@ -798,6 +920,8 @@ else:
 ### CHECK TRAINED NETWORK PREDICTIONS
 with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
     robot_centric_data = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'rb') as f:
+    dataset = pickle.load(f)
 fig, axs = plt.subplots(1,3,figsize=(24,8))
 fig.subplots_adjust(left=0.05, right=0.99, wspace=0.13)
 def animate(frame):
@@ -847,7 +971,7 @@ def animate(frame):
                 alpha = 0.6 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
                 ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
     # Plot predicted GMM samples
-    obs_distr, hum_distr, next_hum_distr = jessi.encoder.apply(
+    encoder_distr = jessi.encoder.apply(
         params, 
         None, 
         jessi.compute_encoder_input(dataset["observations"][frame]), 
@@ -855,22 +979,22 @@ def animate(frame):
     # print(f"Obstacles distribution covariance (frame {frame}): {gmm.covariances(obs_distr)}")
     # print(f"Humans distribution covariance (frame {frame}): {gmm.covariances(hum_distr)}")
     # print(f"Next humans distribution covariance (frame {frame}): {gmm.covariances(next_hum_distr)}")
-    test_p = gmm.batch_p(obs_distr, test_samples)
+    test_p = gmm.batch_p(encoder_distr["obs_distr"], test_samples)
     points_high_p = test_samples[test_p > p_visualization_threshold]
     corresponding_colors = test_p[test_p > p_visualization_threshold]
-    axs[0].scatter(obs_distr["means"][:,0], obs_distr["means"][:,1], c='red', s=10, marker='x', zorder=100)
+    axs[0].scatter(encoder_distr["obs_distr"]["means"][:,0], encoder_distr["obs_distr"]["means"][:,1], c='red', s=10, marker='x', zorder=100)
     axs[0].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
     axs[0].set_title("Obstacles Predicted GMM")
-    test_p = gmm.batch_p(hum_distr, test_samples)
+    test_p = gmm.batch_p(encoder_distr["hum_distr"], test_samples)
     points_high_p = test_samples[test_p > p_visualization_threshold]
     corresponding_colors = test_p[test_p > p_visualization_threshold]
-    axs[1].scatter(hum_distr["means"][:,0], hum_distr["means"][:,1], c='red', s=10, marker='x', zorder=100)
+    axs[1].scatter(encoder_distr["hum_distr"]["means"][:,0], encoder_distr["hum_distr"]["means"][:,1], c='red', s=10, marker='x', zorder=100)
     axs[1].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
     axs[1].set_title("Humans Predicted GMM")
-    test_p = gmm.batch_p(next_hum_distr, test_samples)
+    test_p = gmm.batch_p(encoder_distr["next_hum_distr"], test_samples)
     points_high_p = test_samples[test_p > p_visualization_threshold]
     corresponding_colors = test_p[test_p > p_visualization_threshold]
-    axs[2].scatter(next_hum_distr["means"][:,0], next_hum_distr["means"][:,1], c='red', s=10, marker='x', zorder=100)
+    axs[2].scatter(encoder_distr["next_hum_distr"]["means"][:,0], encoder_distr["next_hum_distr"]["means"][:,1], c='red', s=10, marker='x', zorder=100)
     axs[2].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
     axs[2].set_title("Next Humans Predicted GMM")
 anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
