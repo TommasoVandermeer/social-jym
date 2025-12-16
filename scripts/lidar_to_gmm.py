@@ -2,6 +2,7 @@ from jax import random, jit, vmap, lax, debug
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
+import gc
 import matplotlib.pyplot as plt
 import os
 import pickle
@@ -627,6 +628,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
     # Delete robot_centric_data and raw_data to save memory
     del robot_centric_data
     del raw_data
+    gc.collect()
 else:
     # Load dataset
     with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'rb') as f:
@@ -689,6 +691,9 @@ test_samples = jnp.stack((test_samples_x.flatten(), test_samples_y.flatten()), a
 # plt.show()
 
 ### TRAINING LOOP
+# TODO: Don't vmap validation loss computation (to expensive in memory)
+# TODO: Don't pass entire dataset in fori loop, use scan and pass only the batch required
+# TODO: Split in TRAIN VAL TEST only using indexes to save memory (do not copy the dataset)
 # Split dataset into TRAIN, VAL, TEST
 n_data = dataset["observations"].shape[0]
 n_train_data = int(data_split[0] * n_data)
@@ -714,6 +719,7 @@ del shuffled_indexes
 del train_indexes
 del val_indexes
 del test_indexes
+gc.collect()
 # Initialize optimizer and its state
 optimizer = optax.chain(
     optax.clip_by_global_norm(1.0),
@@ -779,7 +785,24 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
         params:dict,
         seeds:int,
     ):
-        return vmap(batch_val_test_loss, in_axes=(0, None, 0))(batches, params, seeds)
+        # VMAP version (fast but too much memory consumption)
+        #return vmap(batch_val_test_loss, in_axes=(0, None, 0))(batches, params, seeds)
+        # SCAN version (slower but low memory consumption)
+        def _scan_loop(carry, x):
+            params = carry
+            batch, seed = x
+            loss = batch_val_test_loss(
+                batch,
+                params,
+                seed,
+            )
+            return params, loss
+        _, losses = lax.scan(
+            _scan_loop,
+            params,
+            (batches, seeds),
+        )
+        return losses
     @loop_tqdm(n_epochs, desc="Training Lidar->GMM network")
     @jit 
     def _epoch_loop(
