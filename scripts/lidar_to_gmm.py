@@ -2,7 +2,6 @@ from jax import random, jit, vmap, lax, debug
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
-import gc
 import matplotlib.pyplot as plt
 import os
 import pickle
@@ -21,14 +20,14 @@ from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as LaserNavDummyReward
 
-#TODO: Split training data in train/val/test sets and save them separately
+#TODO: Make humans and obstacles invisible if outside LiDAR range
 save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
 n_steps = 100_000  # Number of labeled examples to train Lidar to GMM network
 n_gaussian_mixture_components = 10  # Number of GMM components
-box_limits = jnp.array([[-2,4], [-3,3]])  # Grid limits in meters [[x_min,x_max],[y_min,y_max]]
+box_limits = jnp.array([[-10,10], [-10,10]])  # Grid limits in meters [[x_min,x_max],[y_min,y_max]]
 visibility_threshold_from_grid = 0.5  # Distance from grid limit to consider an object inside the grid
 n_loss_samples = 1000  # Number of samples to estimate the loss
 prediction_horizon = 4  # Number of steps ahead to predict next GMM (in seconds it is prediction_horizon * robot_dt)
@@ -628,7 +627,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
     # Delete robot_centric_data and raw_data to save memory
     del robot_centric_data
     del raw_data
-    gc.collect()
 else:
     # Load dataset
     with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'rb') as f:
@@ -719,7 +717,6 @@ del shuffled_indexes
 del train_indexes
 del val_indexes
 del test_indexes
-gc.collect()
 # Initialize optimizer and its state
 optimizer = optax.chain(
     optax.clip_by_global_norm(1.0),
@@ -727,7 +724,7 @@ optimizer = optax.chain(
         learning_rate=optax.schedules.linear_schedule(
             init_value=learning_rate, 
             end_value=learning_rate * 0.02, 
-            transition_steps=int(n_epochs*n_data//batch_size),
+            transition_steps=int(n_epochs*n_train_data//batch_size),
             transition_begin=0
         ), 
         eps=1e-7, 
@@ -785,9 +782,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
         params:dict,
         seeds:int,
     ):
-        # VMAP version (fast but too much memory consumption)
+        # VMAP version (fast, much memory consumption)
         #return vmap(batch_val_test_loss, in_axes=(0, None, 0))(batches, params, seeds)
-        # SCAN version (slower but low memory consumption)
+        # SCAN version (slow, low memory consumption)
         def _scan_loop(carry, x):
             params = carry
             batch, seed = x
@@ -929,14 +926,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
     avg_train_losses = jnp.mean(train_losses, axis=1)
     avg_val_losses = jnp.mean(val_losses, axis=1)
     avg_test_loss = jnp.mean(test_losses)
-    fig, ax = plt.subplots(1, 2, figsize=(8, 6))
-    fig.suptitle("Lidar to GMM Network Losses - Test Loss: {:.4f}".format(avg_test_loss))
-    ax[0].plot(jnp.arange(n_epochs), avg_train_losses, label="Training Loss")
-    ax[0].set_xlabel("Epoch")
-    ax[0].set_ylabel("Loss")
-    ax[1].plot(jnp.arange(n_epochs), avg_val_losses, label="Validation Loss")
-    ax[1].set_xlabel("Epoch")
-    ax[1].set_ylabel("Loss")
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    fig.suptitle("Perception network losses - Test Loss: {:.4f}".format(avg_test_loss))
+    ax.plot(jnp.arange(n_epochs), avg_train_losses, label="Training Loss", color='orange')
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.plot(jnp.arange(n_epochs), avg_val_losses, label="Validation Loss", color='blue')
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
     fig.savefig(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_loss.eps'), format='eps')
     del train_dataset
     del val_dataset
@@ -945,96 +942,3 @@ else:
     # Load trained parameters
     with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'rb') as f:
         params = pickle.load(f)
-
-### CHECK TRAINED NETWORK PREDICTIONS
-with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
-    robot_centric_data = pickle.load(f)
-with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'rb') as f:
-    dataset = pickle.load(f)
-fig, axs = plt.subplots(1,3,figsize=(24,8))
-fig.subplots_adjust(left=0.05, right=0.99, wspace=0.13)
-def animate(frame):
-    for ax in axs:
-        ax.clear()
-        ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y', labelpad=-13)
-        ax.set_aspect('equal', adjustable='box')
-        # Plot box limits
-        rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-        ax.add_patch(rect)
-        # Plot visibility threshold
-        rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
-        ax.add_patch(rect)
-        # Plot humans
-        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
-            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
-            alpha = 0.6 if robot_centric_data["humans_visibility"][frame][h] else 0.3
-            if humans_policy == 'hsfm':
-                head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
-                ax.add_patch(head)
-            circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-            ax.add_patch(circle)
-        # Plot human velocities
-        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
-            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
-            alpha = 0.6 if robot_centric_data["humans_visibility"][frame][h] else 0.3
-            if robot_centric_data["humans_visibility"][frame][h]:
-                ax.arrow(
-                    robot_centric_data["rc_humans_positions"][frame][h,0],
-                    robot_centric_data["rc_humans_positions"][frame][h,1],
-                    robot_centric_data["rc_humans_velocities"][frame][h,0],
-                    robot_centric_data["rc_humans_velocities"][frame][h,1],
-                    head_width=0.15,
-                    head_length=0.15,
-                    fc=color,
-                    ec=color,
-                    alpha=alpha,
-                    zorder=30,
-                )
-        # Plot static obstacles
-        for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
-            for j, s in enumerate(o):
-                color = 'black' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'grey'
-                linestyle = 'solid' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'dashed'
-                alpha = 0.6 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
-                ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
-    # Plot predicted GMM samples
-    encoder_distr = jessi.encoder.apply(
-        params, 
-        None, 
-        jessi.compute_encoder_input(dataset["observations"][frame]), 
-    )
-    # print(f"Obstacles distribution covariance (frame {frame}): {gmm.covariances(obs_distr)}")
-    # print(f"Humans distribution covariance (frame {frame}): {gmm.covariances(hum_distr)}")
-    # print(f"Next humans distribution covariance (frame {frame}): {gmm.covariances(next_hum_distr)}")
-    test_p = gmm.batch_p(encoder_distr["obs_distr"], test_samples)
-    points_high_p = test_samples[test_p > p_visualization_threshold]
-    corresponding_colors = test_p[test_p > p_visualization_threshold]
-    axs[0].scatter(encoder_distr["obs_distr"]["means"][:,0], encoder_distr["obs_distr"]["means"][:,1], c='red', s=10, marker='x', zorder=100)
-    axs[0].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
-    axs[0].set_title("Obstacles Predicted GMM")
-    test_p = gmm.batch_p(encoder_distr["hum_distr"], test_samples)
-    points_high_p = test_samples[test_p > p_visualization_threshold]
-    corresponding_colors = test_p[test_p > p_visualization_threshold]
-    axs[1].scatter(encoder_distr["hum_distr"]["means"][:,0], encoder_distr["hum_distr"]["means"][:,1], c='red', s=10, marker='x', zorder=100)
-    axs[1].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
-    axs[1].set_title("Humans Predicted GMM")
-    test_p = gmm.batch_p(encoder_distr["next_hum_distr"], test_samples)
-    points_high_p = test_samples[test_p > p_visualization_threshold]
-    corresponding_colors = test_p[test_p > p_visualization_threshold]
-    axs[2].scatter(encoder_distr["next_hum_distr"]["means"][:,0], encoder_distr["next_hum_distr"]["means"][:,1], c='red', s=10, marker='x', zorder=100)
-    axs[2].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
-    axs[2].set_title("Next Humans Predicted GMM")
-anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
-if save_videos:
-    save_path = os.path.join(os.path.dirname(__file__), f'trained_network.mp4')
-    writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
-    anim.save(save_path, writer=writer_video, dpi=300)
-anim.paused = False
-def toggle_pause(self, *args, **kwargs):
-    if anim.paused: anim.resume()
-    else: anim.pause()
-    anim.paused = not anim.paused
-fig.canvas.mpl_connect('button_press_event', toggle_pause)
-plt.show()

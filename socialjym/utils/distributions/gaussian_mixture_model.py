@@ -202,6 +202,8 @@ class BivariateGMM(BaseDistribution):
             return log_prob
 
         logps = vmap(_component_logp)(means, covariances, weights)
+        # Clip logps for numerical stability
+        logps = jnp.clip(logps, a_min=-20, a_max=20)
         return -logsumexp(logps)
 
     @partial(jit, static_argnames=("self"))
