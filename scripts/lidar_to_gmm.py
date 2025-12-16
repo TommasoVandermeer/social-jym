@@ -25,7 +25,7 @@ save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
-n_steps = 10_000  # Number of labeled examples to train Lidar to GMM network
+n_steps = 100_000  # Number of labeled examples to train Lidar to GMM network
 n_gaussian_mixture_components = 10  # Number of GMM components
 box_limits = jnp.array([[-2,4], [-3,3]])  # Grid limits in meters [[x_min,x_max],[y_min,y_max]]
 visibility_threshold_from_grid = 0.5  # Distance from grid limit to consider an object inside the grid
@@ -559,7 +559,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
     fig.canvas.mpl_connect('button_press_event', toggle_pause)
     plt.show()
     ## Build obstacles samples
-    dataset["obstacles_samples"] = jessi.batch_build_frame_obstacles_samples(
+    obstacles_samples = jessi.batch_build_frame_obstacles_samples(
         robot_centric_data["rc_obstacles"][:debugging_steps],
         robot_centric_data["obstacles_visibility"][:debugging_steps],
         random.split(random.PRNGKey(random_seed), debugging_steps),
@@ -602,9 +602,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         # Plot target samples
         col = ['red', 'blue']
         ax.scatter(
-            dataset["obstacles_samples"]["position"][frame][:,0],
-            dataset["obstacles_samples"]["position"][frame][:,1],
-            c=[col[int(is_pos)] for is_pos in dataset["obstacles_samples"]["is_positive"][frame]],
+            obstacles_samples["position"][frame][:,0],
+            obstacles_samples["position"][frame][:,1],
+            c=[col[int(is_pos)] for is_pos in obstacles_samples["is_positive"][frame]],
             s=5,
             alpha=0.5,
             zorder=20,
@@ -704,10 +704,16 @@ shuffled_indexes = random.permutation(shuffle_key, indexes)
 train_indexes = shuffled_indexes[:n_train_data]
 val_indexes = shuffled_indexes[n_train_data:n_train_data + n_val_data]
 test_indexes = shuffled_indexes[n_train_data + n_val_data:]
-train_dataset = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(train_indexes, dataset)
-val_dataset = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(val_indexes, dataset)
-test_dataset = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(test_indexes, dataset)
-del dataset  # Free memory
+train_dataset =  tree_map(lambda x: x[train_indexes], dataset)
+val_dataset =  tree_map(lambda x: x[val_indexes], dataset)
+test_dataset =  tree_map(lambda x: x[test_indexes], dataset)
+# Free memory
+del dataset 
+del indexes
+del shuffled_indexes
+del train_indexes
+del val_indexes
+del test_indexes
 # Initialize optimizer and its state
 optimizer = optax.chain(
     optax.clip_by_global_norm(1.0),
@@ -785,7 +791,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
         shuffle_key = random.PRNGKey(random_seed + i)
         indexes = jnp.arange(n_train_data)
         shuffled_indexes = random.permutation(shuffle_key, indexes)
-        train_epoch_data = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(shuffled_indexes, train_dataset)
+        train_epoch_data = tree_map(lambda x: x[shuffled_indexes], train_dataset)
         @jit
         def _batch_train_loop(
             j:int,
@@ -861,7 +867,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
         shuffle_key = random.PRNGKey(random_seed + i)
         indexes = jnp.arange(n_val_data)
         shuffled_indexes = random.permutation(shuffle_key, indexes)
-        val_epoch_data = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(shuffled_indexes, val_dataset)
+        val_epoch_data = tree_map(lambda x: x[shuffled_indexes], val_dataset)
         val_epoch_data = tree_map(lambda x: x.reshape((n_val_data // batch_size, batch_size) + x.shape[1:]), val_epoch_data)
         val_losses = val_losses.at[i].set(
             val_test_loss(
@@ -889,7 +895,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
     shuffle_key = random.PRNGKey(random_seed)
     indexes = jnp.arange(n_test_data)
     shuffled_indexes = random.permutation(shuffle_key, indexes)
-    test_epoch_data = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(shuffled_indexes, test_dataset)
+    test_epoch_data = tree_map(lambda x: x[shuffled_indexes], test_dataset)
     test_epoch_data = tree_map(lambda x: x.reshape((n_test_data // batch_size, batch_size) + x.shape[1:]), test_epoch_data)
     test_losses = val_test_loss(
         test_epoch_data,
