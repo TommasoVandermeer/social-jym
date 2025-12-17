@@ -113,7 +113,7 @@ class Encoder(hk.Module):
             y_means = ((y_means + 1) / 2) * (self.mean_limits[1][1] - self.mean_limits[1][0]) + self.mean_limits[1][0]  # Scale to box limits
             x_log_sigmas = vector[2*self.n_components:3*self.n_components]  # Std in x
             y_log_sigmas = vector[3*self.n_components:4*self.n_components]  # Std in y
-            correlations = nn.tanh(vector[4*self.n_components:5*self.n_components])  # Correlations
+            correlations = 0.99 * nn.tanh(vector[4*self.n_components:5*self.n_components])  # Correlations [-0.99, 0.99] - 1 IS NOT NUMERICALLY STABLE
             # Since GMM heads have relu activation, the minimum value is 0, so softmax will assign weight one to score equal to 0 (the minimum)
             # weights = nn.softmax(vector[5*self.n_components:], axis=-1)  # Weights
             wights_exp = jnp.exp(vector[5*self.n_components:]) * jnp.array(vector[5*self.n_components:] != 0, dtype=jnp.float32)
@@ -282,7 +282,7 @@ class JESSI(BasePolicy):
         n_gmm_components:int=10,
         prediction_horizon:int=4,
         max_humans_velocity:float=1.5,
-        gmm_means_limits:jnp.ndarray=jnp.array([[-2,4], [-3,3]]),
+        gmm_means_limits:jnp.ndarray=jnp.array([[-10,10], [-10,10]]),
     ) -> None:
         """
         JESSI (JAX-based E2E Safe Social Interpretable autonomous navigation).
