@@ -15,209 +15,243 @@ from socialjym.utils.distributions.gaussian_mixture_model import BivariateGMM
 from socialjym.policies.base_policy import BasePolicy
 from jhsfm.hsfm import get_linear_velocity, vectorized_compute_obstacle_closest_point
 
-class SpatioTemporalAttention(hk.Module):
-    def __init__(self, name, n_stack, token_embed_dim) -> None:
+import jax
+import jax.numpy as jnp
+import haiku as hk
+from jax import nn
+
+class SpatioTemporalEncoder(hk.Module):
+    def __init__(self, embed_dim=64, name=None):
         super().__init__(name=name)
-        self.n_stack = n_stack
-        self.embed_dim = token_embed_dim
+        self.embed_dim = embed_dim
+        
+        # 1. Spatial Encoding: 1D Convolutions sono perfette per i LiDAR
+        # Gestiscono numero di raggi variabile e catturano correlazioni locali.
+        self.spatial_conv1 = hk.Conv1D(output_channels=embed_dim, kernel_shape=3, stride=1, padding="SAME")
+        self.spatial_conv2 = hk.Conv1D(output_channels=embed_dim, kernel_shape=3, stride=1, padding="SAME")
+        self.spatial_norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
-        self.spatial_attention = hk.MultiHeadAttention(
-            num_heads=2,
-            key_size=32,
-            value_size=32,
-            w_init_scale=1/3,
-            name="spatial_attention"
-        )
-        self.spatial_norm = hk.LayerNorm(
-            axis=-1,
-            create_scale=True,
-            create_offset=True,
-            name="spatial_layer_norm"
-        )
-        self.temporal_attention = hk.MultiHeadAttention(
-            num_heads=2,
-            key_size=32,
-            value_size=32,
-            w_init_scale=1/3,
-            name="temporal_attention"
-        )
-        self.temporal_norm = hk.LayerNorm(
-            axis=-1,
-            create_scale=True,
-            create_offset=True,
-            name="temporal_layer_norm"
-        )
-        self.cross_attention = hk.MultiHeadAttention(
-            num_heads=2,
-            key_size=32,
-            value_size=32,
-            w_init_scale=1/3,
-            name="cross_attention"
-        )
-        self.cross_norm = hk.LayerNorm(
-            axis=-1,
-            create_scale=True,
-            create_offset=True,
-            name="cross_layer_norm"
-        )
-        self.out_norm = hk.LayerNorm(
-            axis=-1,
-            create_scale=True,
-            create_offset=True,
-            name="out_layer_norm"
-        )
-        self.linear = hk.Linear(
-            output_size=token_embed_dim,
-            w_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-            b_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-            name="linear_out"
-        )
+        # 2. Temporal Encoding: Self-Attention sul tempo
+        self.temporal_attn = hk.MultiHeadAttention(num_heads=4, key_size=16, w_init_scale=1.0)
+        self.temporal_norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
-    @partial(jit, static_argnames=("self"))
-    @partial(vmap, in_axes=(None, None, 0), out_axes=(1)) 
-    def _batched_temporal_encoding(self, temp_idx: jnp.ndarray, dim: jnp.ndarray):
-        def _even_encoding():
-            return jnp.sin(temp_idx / (jnp.power(10_000, 2 * dim / self.embed_dim)))
-
-        def _odd_encoding():
-            return jnp.cos(temp_idx / (jnp.power(10_000, 2 * dim / self.embed_dim)))
-
-        is_even = dim % 2 == 0
-        return lax.cond(is_even, _even_encoding, _odd_encoding)
-
-    def __call__(self, x) -> jnp.ndarray:
+    def __call__(self, x):
         """
-        Computes spatio-temporal attention over input LiDAR tokens.
-
-        args:
-            x (n_stack, num_beams, embedding_size)
-
-        returns:
-            out (n_stack, num_beams, embedding_size)
+        x shape: [Batch, Time, Beams, Features] 
+        Nota: Se non hai Batch dimensione, aggiungila con jnp.expand_dims(x, 0) prima di chiamare.
         """
-        spatial_out = self.spatial_attention(x, x, x)  # Shape: (n_stack, num_beams, embedding_size)
-        spatial_out = self.spatial_norm(x + spatial_out)  # Shape: (n_stack, num_beams, embedding_size)
-        scan_out = jnp.mean(spatial_out, axis=1) + self._batched_temporal_encoding(jnp.arange(self.n_stack)[::-1], jnp.arange(self.embed_dim))  # Shape: (n_stack, embedding_size)
-        temp_out = self.temporal_attention(scan_out, scan_out, scan_out)  # Shape: (n_stack, embedding_size)
-        temp_out = self.temporal_norm(scan_out + temp_out)  # Shape: (n_stack, embedding_size)
-        cross_out = self.cross_attention(spatial_out, temp_out, temp_out)  # Shape: (n_stack, num_beams, embedding_size)
-        pre_out = jnp.concatenate([spatial_out, cross_out], axis=-1)  # Shape: (n_stack, num_beams, embedding_size * 2)
-        return self.out_norm(x + self.linear(pre_out))  # Shape: (n_stack, num_beams, embedding_size)
+        B, T, L, F = x.shape
+        
+        # --- A. Spatial Mixing (Conv1D) ---
+        # Fondiamo Batch e Time per processare ogni scan indipendentemente
+        x_flat = x.reshape(B * T, L, F) 
+        
+        # Proiezione iniziale e feature extraction locale
+        h = nn.gelu(self.spatial_conv1(x_flat))
+        h = self.spatial_conv2(h) # [B*T, L, embed_dim]
+        
+        # Residual + Norm
+        # Nota: Qui assumiamo che x originale sia stato proiettato se F != embed_dim. 
+        # Per semplicità, sommiamo l'output della conv direttamente (la conv cambia le feature size)
+        h = self.spatial_norm(h)
+        
+        # Reshape back to separate Time: [B, T, L, embed_dim]
+        h = h.reshape(B, T, L, self.embed_dim)
 
+        # --- B. Temporal Mixing (Attention) ---
+        # Vogliamo che ogni raggio (o feature spaziale) guardi alla sua storia.
+        # Permutiamo per avere [Batch, Beam, Time, Dim] -> Time è la sequence dim
+        h_transposed = h.transpose(0, 2, 1, 3) # [B, L, T, D]
+        h_reshaped = h_transposed.reshape(B * L, T, self.embed_dim) # "Batch" per MHA è B*L
+        
+        # Self Attention temporale
+        t_out = self.temporal_attn(query=h_reshaped, key=h_reshaped, value=h_reshaped)
+        
+        # Residual connection sul tempo + Norm
+        h_reshaped = self.temporal_norm(h_reshaped + t_out)
+        
+        # Ritorniamo alla forma originale: [B, T, L, D]
+        h_final = h_reshaped.reshape(B, L, T, self.embed_dim).transpose(0, 2, 1, 3)
+        
+        return h_final
+
+class GMMQueryDecoder(hk.Module):
+    def __init__(self, n_components, embed_dim, name=None):
+        super().__init__(name=name)
+        self.n_components = n_components
+        self.embed_dim = embed_dim
+        
+        # LEARNABLE QUERIES: Il cuore del sistema DETR-like.
+        # Ogni query imparerà a rappresentare una parte della GMM (es. Query 0 = Ostacoli vicini, Query 1 = Ostacoli lontani...)
+        self.query_embeddings = hk.get_parameter(
+            "query_embeddings", 
+            shape=[1, self.n_components, embed_dim], 
+            init=hk.initializers.TruncatedNormal(stddev=0.02)
+        )
+        
+        self.cross_attn = hk.MultiHeadAttention(num_heads=4, key_size=16, w_init_scale=1.0)
+        self.norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.ffn = hk.nets.MLP([embed_dim * 2, embed_dim], activation=nn.gelu, activate_final=False)
+        self.norm_ffn = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+
+    def __call__(self, encoder_output):
+        # encoder_output: [B, T, L, D]
+        B, T, L, D = encoder_output.shape
+        
+        # 1. Flatten Spatio-Temporal dimensions for Cross Attention
+        # Le query devono attendere su tutto lo spazio-tempo.
+        # Key/Values: [B, T*L, D]
+        kv = encoder_output.reshape(B, T * L, D)
+        
+        # 2. Prepare Queries
+        # Espandiamo le query per la dimensione del batch: [B, n_components, D]
+        q = jnp.tile(self.query_embeddings, (B, 1, 1))
+        
+        # 3. Cross Attention
+        # Le Queries "leggono" l'input codificato per aggiornare il loro stato
+        attn_out = self.cross_attn(query=q, key=kv, value=kv)
+        q = self.norm(q + attn_out)
+        
+        # 4. FFN (Feed Forward per elaborare le informazioni)
+        ffn_out = self.ffn(q)
+        q = self.norm_ffn(q + ffn_out)
+        
+        return q # [B, n_components, D]
 
 class Encoder(hk.Module):
     def __init__(
             self,
-            mean_limits:jnp.ndarray,
-            n_gaussian_mixture_components:int,
-            lidar_num_rays:int,
-            n_stack:int,
-            prediction_time:float,
-            max_humans_velocity:float,
-            mlp_params:dict={
-                "activation": nn.relu,
-                "activate_final": False,
-                "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-                "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-            },
-            smoothing:float=0.9,
-        ) -> None:
-        super().__init__(name="lidar_network") 
-        self.smoothing = smoothing
-        smoothing_weights = self.smoothing ** jnp.arange(n_stack)
-        self.smoothing_weights = smoothing_weights / jnp.sum(smoothing_weights)
-        self.mean_limits = mean_limits 
+            mean_limits: jnp.ndarray, # Shape ((x_min, x_max), (y_min, y_max))
+            n_gaussian_mixture_components: int,
+            prediction_time: float,
+            max_humans_velocity: float,
+            embed_dim: int = 64
+        ):
+        super().__init__(name="lidar_gmm_encoder")
+        self.mean_limits = mean_limits
         self.n_components = n_gaussian_mixture_components
-        self.lidar_rays = lidar_num_rays
-        self.n_stack = n_stack
+        self.embed_dim = embed_dim
         self.prediction_time = prediction_time
-        self.max_humans_velocity = max_humans_velocity
-        self.max_displacement = self.max_humans_velocity * self.prediction_time
-        self.token_size = 12
-        self.n_outputs = self.n_components * 6 * 3  # 6 outputs per GMM cell (mean_x, mean_y, sigma_x, sigma_y, correlation, weight) times  3 GMMs (current and next)
-        self.token_embeddings = hk.Linear(
-            output_size=64,
-            w_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-            b_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-            name="token_embeddings_mlp"
-        )
-        self.transformer_1 = SpatioTemporalAttention(name="spatio_temporal_attention_1", n_stack=self.n_stack, token_embed_dim=64)
-        self.transformer_2 = SpatioTemporalAttention(name="spatio_temporal_attention_2", n_stack=self.n_stack, token_embed_dim=64)
-        self.transformer_3 = SpatioTemporalAttention(name="spatio_temporal_attention_3", n_stack=self.n_stack, token_embed_dim=64)
-        self.obs_gmm_head = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[256, 128, self.n_components * 6],
-            name="obs_gmm_head"
-        )
-        self.hum_gmm_head = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[256, 128, self.n_components * 6],
-            name="hum_gmm_head"
-        )
-        self.next_hum_gmm_head = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[256, 128, self.n_components * 5],
-            name="next_hum_gmm_head"
-        )
+        self.max_disp = max_humans_velocity * prediction_time
 
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        """
-        Maps Lidar scan to GMM parameters.
+        # Modules
+        self.input_proj = hk.Linear(embed_dim, name="input_projection")
+        self.encoder = SpatioTemporalEncoder(embed_dim=embed_dim)
+        
+        # Decoders specifici per ogni task (Obs, Hum, NextHum)
+        # Usiamo decoders separati perché le query per un muro sono diverse dalle query per un umano
+        self.obs_decoder = GMMQueryDecoder(n_gaussian_mixture_components, embed_dim, name="obs_decoder")
+        self.hum_decoder = GMMQueryDecoder(n_gaussian_mixture_components, embed_dim, name="hum_decoder")
+        self.next_hum_decoder = GMMQueryDecoder(n_gaussian_mixture_components, embed_dim, name="next_hum_decoder")
 
-        x (n_stack, num_beams, token_size)
-        """
-        ### Process inputs
-        token_embeddings = self.token_embeddings(x)  # Shape: (n_stack, num_beams, embedding_size)
-        block1_out = self.transformer_1(token_embeddings)  # Shape: (n_stack, num_beams, embedding_size)
-        block2_out = self.transformer_2(block1_out)  # Shape: (n_stack, num_beams, embedding_size)
-        block3_out = self.transformer_3(block2_out)  # Shape: (n_stack, num_beams, embedding_size)
-        output = jnp.concatenate((
-            block1_out,
-            block2_out,
-            block3_out
-        ), axis=-1)  # Shape: (n_stack, num_beams, embedding_size * 3,)
-        pooled_output = jnp.mean(output, axis=(1)).flatten()  # Shape: (n_stack * embedding_size * 3,)
-        obstacles_gmm = self.obs_gmm_head(pooled_output)  # Shape: (n_components * 6,)
-        humans_gmm = self.hum_gmm_head(pooled_output)  # Shape: (n_components * 6,)
-        next_humans_info = self.next_hum_gmm_head(pooled_output)  # Shape: (n_components * 5,)
-        ### Clip next humans displacement means
-        x_displacement_means = next_humans_info[:self.n_components]
-        y_displacement_means = next_humans_info[self.n_components:2*self.n_components]
-        dists = jnp.sqrt(x_displacement_means**2 + y_displacement_means**2)
-        soft_clipped_dists = nn.tanh(dists) * self.max_displacement
-        x_displacement_means = x_displacement_means / (dists + 1e-6) * soft_clipped_dists
-        y_displacement_means = y_displacement_means / (dists + 1e-6) * soft_clipped_dists
-        next_humans_gmm = jnp.concatenate((
-            humans_gmm[:self.n_components] + x_displacement_means,
-            humans_gmm[self.n_components:2*self.n_components] + y_displacement_means,
-            next_humans_info[2*self.n_components:5*self.n_components],
-            humans_gmm[5*self.n_components:],
-        ), axis=-1)
-        ### Transform outputs to GMM parameters
-        @jit
-        def vector_to_gmm_params(vector:jnp.ndarray) -> dict:  
-            x_means = nn.tanh(vector[:self.n_components])
-            x_means = ((x_means + 1) / 2) * (self.mean_limits[0][1] - self.mean_limits[0][0]) + self.mean_limits[0][0]  # Scale to box limits
-            y_means = nn.tanh(vector[self.n_components:2*self.n_components])
-            y_means = ((y_means + 1) / 2) * (self.mean_limits[1][1] - self.mean_limits[1][0]) + self.mean_limits[1][0]  # Scale to box limits
-            x_log_sigmas = 5 * nn.tanh(vector[2*self.n_components:3*self.n_components])  # Std in x # logsigma [-5,5] sigma [exp(-5), exp(5)] = [0.0067, 148.4]
-            y_log_sigmas = 5 * nn.tanh(vector[3*self.n_components:4*self.n_components])  # Std in y
-            correlations = 0.99 * nn.tanh(vector[4*self.n_components:5*self.n_components])  # Correlations [-0.99, 0.99] - 1 IS NOT NUMERICALLY STABLE
-            # Since GMM heads have relu activation, the minimum value is 0, so softmax will assign weight one to score equal to 0 (the minimum)
-            # weights = nn.softmax(vector[5*self.n_components:], axis=-1)  # Weights
-            weights_exp = jnp.exp(vector[5*self.n_components:]) * jnp.array(vector[5*self.n_components:] != 0, dtype=jnp.float32)
-            weights = weights_exp / (jnp.sum(weights_exp, axis=-1, keepdims=True) + 1e-6)
-            distr = {
-                "means": jnp.stack((x_means, y_means), axis=-1), # Shape (batch_size, n_components, n_dimensions)
-                "logsigmas": jnp.stack((x_log_sigmas, y_log_sigmas), axis=-1), # Shape (batch_size, n_components, n_dimensions)
-                "correlations": correlations,  # Shape (batch_size, n_components)
-                "weights": weights,  # Shape (batch_size, n_components)
+        # Heads (MLP finali per trasformare i vettori latenti in parametri GMM)
+        # Output sizes: 
+        # Obs/Hum: 6 params (mu_x, mu_y, log_sig_x, log_sig_y, corr, logit_weight)
+        # NextHum: 5 params (delta_mu_x, delta_mu_y, next_sig_x, next_sig_y, next_corr) -> weight is shared? Or separate? 
+        # Assumiamo output full GMM per coerenza col tuo codice precedente
+        self.head_obs = hk.Linear(6) 
+        self.head_hum = hk.Linear(6)
+        self.head_next = hk.Linear(5) # Delta Mu + params
+
+    def _params_to_gmm(self, raw_params, is_delta=False, base_means=None):
+        """Converte raw output MLP in parametri GMM validi."""
+        # raw_params: [B, n_comp, 6] or [B, n_comp, 5]
+        
+        # 1. Means (Position)
+        # Usiamo Sigmoid per vincolare strettamente dentro i limiti [0, 1] -> [min, max]
+        # Se is_delta=True, calcoliamo lo spostamento
+        if not is_delta:
+            raw_x, raw_y = raw_params[..., 0], raw_params[..., 1]
+            mu_x = nn.sigmoid(raw_x) * (self.mean_limits[0][1] - self.mean_limits[0][0]) + self.mean_limits[0][0]
+            mu_y = nn.sigmoid(raw_y) * (self.mean_limits[1][1] - self.mean_limits[1][0]) + self.mean_limits[1][0]
+            idx_offset = 2
+        else:
+            # Per Next Human, prediciamo spostamento relativo (velocity * time)
+            # Limitiamo lo spostamento massimo con tanh
+            d_x, d_y = raw_params[..., 0], raw_params[..., 1]
+            dist = jnp.sqrt(d_x**2 + d_y**2 + 1e-6)
+            scale = nn.tanh(dist) * self.max_disp
+            delta_x = (d_x / dist) * scale
+            delta_y = (d_y / dist) * scale
+            
+            mu_x = base_means[..., 0] + delta_x
+            mu_y = base_means[..., 1] + delta_y
+            idx_offset = 2
+
+        # 2. Log Sigmas
+        # Usiamo 5 * tanh per vincolare log_sigma in [-5, 5].
+        # Sigma = exp(log_sigma) sarà in [0.0067, 148.4].
+        # Questo è preferibile a softplus per evitare esplosioni o valori troppo piccoli.
+        log_sig_x = 5.0 * nn.tanh(raw_params[..., idx_offset])
+        log_sig_y = 5.0 * nn.tanh(raw_params[..., idx_offset+1])
+        
+        # 3. Correlation (Tanh -> [-0.99, 0.99])
+        rho = nn.tanh(raw_params[..., idx_offset+2]) * 0.99
+        
+        # 4. Weights (Softmax)
+        if not is_delta:
+            # raw_params[..., 5] sono i logits
+            w_logits = raw_params[..., 5]
+            weights = nn.softmax(w_logits, axis=-1)
+            
+            return {
+                "means": jnp.stack([mu_x, mu_y], axis=-1),
+                "logsigmas": jnp.stack([log_sig_x, log_sig_y], axis=-1), # Export stddev instead of logsigma for easier usage
+                "correlations": rho,
+                "weights": weights
             }
-            return distr
-        obs_distr = vector_to_gmm_params(obstacles_gmm)
-        hum_distr = vector_to_gmm_params(humans_gmm)
-        next_hum_distr = vector_to_gmm_params(next_humans_gmm)
-        return {"obs_distr": obs_distr, "hum_distr": hum_distr, "next_hum_distr": next_hum_distr}
+        else:
+            # Per next step, potremmo riutilizzare i pesi correnti o predirne di nuovi.
+            # Qui ritorno solo i parametri geometrici, i pesi si prendono dallo step attuale solitamente
+            return {
+                "means": jnp.stack([mu_x, mu_y], axis=-1),
+                "logsigmas": jnp.stack([log_sig_x, log_sig_y], axis=-1),
+                "correlations": rho
+            }
+
+    def __call__(self, x):
+        # x input: [n_stack, num_beams, 12] -> Assumiamo che l'utente gestisca il batch fuori o input sia single sample
+        # Aggiungiamo dimensione batch fittizia se manca:
+        has_batch = x.ndim == 4
+        if not has_batch:
+            x = jnp.expand_dims(x, 0) # [1, T, L, F]
+
+        # 1. Feature Projection
+        x_emb = self.input_proj(x) # [B, T, L, embed_dim]
+        
+        # 2. Spatio-Temporal Encoding
+        encoded_features = self.encoder(x_emb) # [B, T, L, embed_dim]
+        
+        # 3. Decoding via Queries
+        # Ogni decoder produce [B, n_components, embed_dim]
+        obs_latents = self.obs_decoder(encoded_features)
+        hum_latents = self.hum_decoder(encoded_features)
+        next_hum_latents = self.next_hum_decoder(encoded_features)
+        
+        # 4. Heads & Parameter Transformation
+        raw_obs = self.head_obs(obs_latents)
+        raw_hum = self.head_hum(hum_latents)
+        raw_next = self.head_next(next_hum_latents)
+        
+        obs_distr = self._params_to_gmm(raw_obs, is_delta=False)
+        hum_distr = self._params_to_gmm(raw_hum, is_delta=False)
+        
+        # Per next humans, usiamo le medie correnti come base
+        next_hum_distr = self._params_to_gmm(raw_next, is_delta=True, base_means=hum_distr["means"])
+        # Assegniamo i pesi attuali anche al futuro (o aggiungi una head per delta weights)
+        next_hum_distr["weights"] = hum_distr["weights"]
+
+        # Rimuovi batch dimension se l'input non l'aveva
+        if not has_batch:
+            obs_distr = jax.tree_map(lambda t: t[0], obs_distr)
+            hum_distr = jax.tree_map(lambda t: t[0], hum_distr)
+            next_hum_distr = jax.tree_map(lambda t: t[0], next_hum_distr)
+
+        return {
+            "obs_distr": obs_distr,
+            "hum_distr": hum_distr,
+            "next_hum_distr": next_hum_distr
+        }
 
 class Actor(hk.Module):
     def __init__(
@@ -415,7 +449,7 @@ class JESSI(BasePolicy):
         # Initialize Encoder network
         @hk.transform
         def encoder_network(x):
-            net = Encoder(self.gmm_means_limits, self.n_gmm_components, self.lidar_num_rays, self.n_stack, self.dt * self.prediction_horizon, self.max_humans_velocity)
+            net = Encoder(self.gmm_means_limits, self.n_gmm_components, self.dt * self.prediction_horizon, self.max_humans_velocity)
             return net(x)
         self.encoder = encoder_network
         # Initialize Actor
