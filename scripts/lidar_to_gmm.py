@@ -648,47 +648,6 @@ sy = jnp.linspace(box_limits[1, 0], box_limits[1, 1], num=60, endpoint=True)
 test_samples_x, test_samples_y = jnp.meshgrid(sx, sy)
 test_samples = jnp.stack((test_samples_x.flatten(), test_samples_y.flatten()), axis=-1)
 
-# ### TEST INITIAL NETWORK
-# # Forward pass
-# encoder_distr = jessi.encoder.apply(
-#     params, 
-#     None, 
-#     sample_input, 
-# )
-# fig, ax = plt.subplots(1, 3, figsize=(24, 8))
-# fig.subplots_adjust(left=0.03, right=0.99, wspace=0.1)
-# # Plot output obstacles distribution
-# test_p = gmm.batch_p(encoder_distr["obs_distr"], test_samples)
-# ax[0].set(xlim=[box_limits[0,0]-1, box_limits[0,1]+1], ylim=[box_limits[1,0]-1, box_limits[1,1]+1])
-# ax[0].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7)
-# ax[0].set_title("Random Obstacles GMM")
-# ax[0].set_xlabel("X")
-# ax[0].set_ylabel("Y")
-# rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-# ax[0].add_patch(rect)
-# ax[0].set_aspect('equal', adjustable='box')
-# # Plot output humans distribution
-# test_p = gmm.batch_p(encoder_distr["hum_distr"], test_samples)
-# ax[1].set(xlim=[box_limits[0,0]-1, box_limits[0,1]+1], ylim=[box_limits[1,0]-1, box_limits[1,1]+1])
-# ax[1].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7)
-# ax[1].set_title("Random Humans GMM")
-# ax[1].set_xlabel("X")
-# ax[1].set_ylabel("Y")
-# rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-# ax[1].add_patch(rect)
-# ax[1].set_aspect('equal', adjustable='box')
-# # Plot output next humans distribution
-# test_p = gmm.batch_p(encoder_distr["next_hum_distr"], test_samples)
-# ax[2].set(xlim=[box_limits[0,0]-1, box_limits[0,1]+1], ylim=[box_limits[1,0]-1, box_limits[1,1]+1])
-# ax[2].scatter(test_samples[:, 0], test_samples[:, 1], c=test_p, cmap='viridis', s=7)
-# ax[2].set_title("Random Next Humans GMM")
-# ax[2].set_xlabel("X")
-# ax[2].set_ylabel("Y")
-# rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-# ax[2].add_patch(rect)
-# ax[2].set_aspect('equal', adjustable='box')
-# plt.show()
-
 ### TRAINING LOOP
 # TODO: Don't vmap validation loss computation (to expensive in memory)
 # TODO: Don't pass entire dataset in fori loop, use scan and pass only the batch required

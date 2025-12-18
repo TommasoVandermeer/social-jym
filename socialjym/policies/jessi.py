@@ -20,6 +20,7 @@ class SpatioTemporalAttention(hk.Module):
         super().__init__(name=name)
         self.n_stack = n_stack
         self.embed_dim = token_embed_dim
+
         self.spatial_attention = hk.MultiHeadAttention(
             num_heads=2,
             key_size=32,
@@ -59,11 +60,17 @@ class SpatioTemporalAttention(hk.Module):
             create_offset=True,
             name="cross_layer_norm"
         )
+        self.out_norm = hk.LayerNorm(
+            axis=-1,
+            create_scale=True,
+            create_offset=True,
+            name="out_layer_norm"
+        )
         self.linear = hk.Linear(
             output_size=token_embed_dim,
             w_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             b_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-            name="token_embeddings_mlp"
+            name="linear_out"
         )
 
     @partial(jit, static_argnames=("self"))
@@ -82,7 +89,11 @@ class SpatioTemporalAttention(hk.Module):
         """
         Computes spatio-temporal attention over input LiDAR tokens.
 
-        x (n_stack, num_beams, embedding_size)
+        args:
+            x (n_stack, num_beams, embedding_size)
+
+        returns:
+            out (n_stack, num_beams, embedding_size)
         """
         spatial_out = self.spatial_attention(x, x, x)  # Shape: (n_stack, num_beams, embedding_size)
         spatial_out = self.spatial_norm(x + spatial_out)  # Shape: (n_stack, num_beams, embedding_size)
@@ -90,9 +101,8 @@ class SpatioTemporalAttention(hk.Module):
         temp_out = self.temporal_attention(scan_out, scan_out, scan_out)  # Shape: (n_stack, embedding_size)
         temp_out = self.temporal_norm(scan_out + temp_out)  # Shape: (n_stack, embedding_size)
         cross_out = self.cross_attention(spatial_out, temp_out, temp_out)  # Shape: (n_stack, num_beams, embedding_size)
-        cross_out = self.cross_norm(spatial_out + cross_out)  # Shape: (n_stack, num_beams, embedding_size)
-        cross_out = jnp.mean(cross_out, axis=1)  # Shape: (n_stack, embedding_size)
-        return scan_out, temp_out, cross_out
+        pre_out = jnp.concatenate([spatial_out, cross_out], axis=-1)  # Shape: (n_stack, num_beams, embedding_size * 2)
+        return self.out_norm(x + self.linear(pre_out))  # Shape: (n_stack, num_beams, embedding_size)
 
 
 class Encoder(hk.Module):
@@ -131,7 +141,9 @@ class Encoder(hk.Module):
             b_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             name="token_embeddings_mlp"
         )
-        self.spatio_temporal_attention = SpatioTemporalAttention(name="spatio_temporal_attention_1", n_stack=self.n_stack, token_embed_dim=64)
+        self.transformer_1 = SpatioTemporalAttention(name="spatio_temporal_attention_1", n_stack=self.n_stack, token_embed_dim=64)
+        self.transformer_2 = SpatioTemporalAttention(name="spatio_temporal_attention_2", n_stack=self.n_stack, token_embed_dim=64)
+        self.transformer_3 = SpatioTemporalAttention(name="spatio_temporal_attention_3", n_stack=self.n_stack, token_embed_dim=64)
         self.obs_gmm_head = hk.nets.MLP(
             **mlp_params,
             output_sizes=[256, 128, self.n_components * 6],
@@ -156,12 +168,15 @@ class Encoder(hk.Module):
         """
         ### Process inputs
         token_embeddings = self.token_embeddings(x)  # Shape: (n_stack, num_beams, embedding_size)
-        scan_out, temp_out, cross_out = self.spatio_temporal_attention(token_embeddings)  # Shape: (n_stack, embedding_size), (n_stack, embedding_size), (n_stack, embedding_size)
-        pooled_output = jnp.concatenate((
-            scan_out[0], # Most recent scan embedding
-            jnp.sum(temp_out * self.smoothing_weights[:,None], axis=0),  # Smoothed temporal embedding
-            jnp.sum(cross_out * self.smoothing_weights[:,None], axis=0),  # Smoothed cross embedding
-        ), axis=-1)  # Shape: (embedding_size * 3,)
+        block1_out = self.transformer_1(token_embeddings)  # Shape: (n_stack, num_beams, embedding_size)
+        block2_out = self.transformer_2(block1_out)  # Shape: (n_stack, num_beams, embedding_size)
+        block3_out = self.transformer_3(block2_out)  # Shape: (n_stack, num_beams, embedding_size)
+        output = jnp.concatenate((
+            block1_out,
+            block2_out,
+            block3_out
+        ), axis=-1)  # Shape: (n_stack, num_beams, embedding_size * 3,)
+        pooled_output = jnp.mean(output, axis=(1)).flatten()  # Shape: (n_stack * embedding_size * 3,)
         obstacles_gmm = self.obs_gmm_head(pooled_output)  # Shape: (n_components * 6,)
         humans_gmm = self.hum_gmm_head(pooled_output)  # Shape: (n_components * 6,)
         next_humans_info = self.next_hum_gmm_head(pooled_output)  # Shape: (n_components * 5,)
