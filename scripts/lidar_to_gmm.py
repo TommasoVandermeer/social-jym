@@ -868,7 +868,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
             return early_stopping_info
         early_stopping_info = lax.cond(val_loss_improved, _update_early_stopping_info_improved, lambda esi: esi, early_stopping_info)
         early_stopping_info['epoch'] = i + 1
-        early_stopping_info['stop'] = ((i - early_stopping_info['last_improvement']) >= patience) & (early_stopping_info['epoch'] >= n_max_epochs)
+        early_stopping_info['stop'] = ((i - early_stopping_info['last_improvement']) >= patience) | (early_stopping_info['epoch'] >= n_max_epochs)
         return early_stopping_info, train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses
     # Epoch loop
     early_stopping_info, _, _, _, optimizer_state, train_losses, val_losses = lax.while_loop(

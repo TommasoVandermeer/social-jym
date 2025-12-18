@@ -15,11 +15,6 @@ from socialjym.utils.distributions.gaussian_mixture_model import BivariateGMM
 from socialjym.policies.base_policy import BasePolicy
 from jhsfm.hsfm import get_linear_velocity, vectorized_compute_obstacle_closest_point
 
-import jax
-import jax.numpy as jnp
-import haiku as hk
-from jax import nn
-
 class SpatioTemporalEncoder(hk.Module):
     def __init__(self, embed_dim=64, name=None):
         super().__init__(name=name)
@@ -243,9 +238,9 @@ class Encoder(hk.Module):
 
         # Rimuovi batch dimension se l'input non l'aveva
         if not has_batch:
-            obs_distr = jax.tree_map(lambda t: t[0], obs_distr)
-            hum_distr = jax.tree_map(lambda t: t[0], hum_distr)
-            next_hum_distr = jax.tree_map(lambda t: t[0], next_hum_distr)
+            obs_distr = tree_map(lambda t: t[0], obs_distr)
+            hum_distr = tree_map(lambda t: t[0], hum_distr)
+            next_hum_distr = tree_map(lambda t: t[0], next_hum_distr)
 
         return {
             "obs_distr": obs_distr,
@@ -721,7 +716,7 @@ class JESSI(BasePolicy):
         The first stack is the most recent one.
 
         output:
-        - lidar_tokens (n_stack * lidar_num_rays, 12): aligned LiDAR tokens for transformer encoder.
+        - lidar_tokens (n_stack, lidar_num_rays, 12): aligned LiDAR tokens for transformer encoder.
         12 features per token: [hit, inside_box, distance, sin(theta), cos(theta), x, y, norm_stack_index, delta_x, delta_y, delta_theta, norm_delta_t]
         - last LiDAR point cloud (lidar_num_rays, 2): in robot frame of the most recent observation.
         """
