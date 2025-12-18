@@ -15,6 +15,86 @@ from socialjym.utils.distributions.gaussian_mixture_model import BivariateGMM
 from socialjym.policies.base_policy import BasePolicy
 from jhsfm.hsfm import get_linear_velocity, vectorized_compute_obstacle_closest_point
 
+class SpatioTemporalAttention(hk.Module):
+    def __init__(self, name, n_stack, token_embed_dim) -> None:
+        super().__init__(name=name)
+        self.n_stack = n_stack
+        self.embed_dim = token_embed_dim
+        self.spatial_attention = hk.MultiHeadAttention(
+            num_heads=2,
+            key_size=32,
+            value_size=32,
+            w_init_scale=1/3,
+            name="spatial_attention"
+        )
+        self.spatial_norm = hk.LayerNorm(
+            axis=-1,
+            create_scale=True,
+            create_offset=True,
+            name="spatial_layer_norm"
+        )
+        self.temporal_attention = hk.MultiHeadAttention(
+            num_heads=2,
+            key_size=32,
+            value_size=32,
+            w_init_scale=1/3,
+            name="temporal_attention"
+        )
+        self.temporal_norm = hk.LayerNorm(
+            axis=-1,
+            create_scale=True,
+            create_offset=True,
+            name="temporal_layer_norm"
+        )
+        self.cross_attention = hk.MultiHeadAttention(
+            num_heads=2,
+            key_size=32,
+            value_size=32,
+            w_init_scale=1/3,
+            name="cross_attention"
+        )
+        self.cross_norm = hk.LayerNorm(
+            axis=-1,
+            create_scale=True,
+            create_offset=True,
+            name="cross_layer_norm"
+        )
+        self.linear = hk.Linear(
+            output_size=token_embed_dim,
+            w_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+            b_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+            name="token_embeddings_mlp"
+        )
+
+    @partial(jit, static_argnames=("self"))
+    @partial(vmap, in_axes=(None, None, 0), out_axes=(1)) 
+    def _batched_temporal_encoding(self, temp_idx: jnp.ndarray, dim: jnp.ndarray):
+        def _even_encoding():
+            return jnp.sin(temp_idx / (jnp.power(10_000, 2 * dim / self.embed_dim)))
+
+        def _odd_encoding():
+            return jnp.cos(temp_idx / (jnp.power(10_000, 2 * dim / self.embed_dim)))
+
+        is_even = dim % 2 == 0
+        return lax.cond(is_even, _even_encoding, _odd_encoding)
+
+    def __call__(self, x) -> jnp.ndarray:
+        """
+        Computes spatio-temporal attention over input LiDAR tokens.
+
+        x (n_stack, num_beams, embedding_size)
+        """
+        spatial_out = self.spatial_attention(x, x, x)  # Shape: (n_stack, num_beams, embedding_size)
+        spatial_out = self.spatial_norm(x + spatial_out)  # Shape: (n_stack, num_beams, embedding_size)
+        scan_out = jnp.mean(spatial_out, axis=1) + self._batched_temporal_encoding(jnp.arange(self.n_stack)[::-1], jnp.arange(self.embed_dim))  # Shape: (n_stack, embedding_size)
+        temp_out = self.temporal_attention(scan_out, scan_out, scan_out)  # Shape: (n_stack, embedding_size)
+        temp_out = self.temporal_norm(scan_out + temp_out)  # Shape: (n_stack, embedding_size)
+        cross_out = self.cross_attention(spatial_out, temp_out, temp_out)  # Shape: (n_stack, num_beams, embedding_size)
+        cross_out = self.cross_norm(spatial_out + cross_out)  # Shape: (n_stack, num_beams, embedding_size)
+        cross_out = jnp.mean(cross_out, axis=1)  # Shape: (n_stack, embedding_size)
+        return scan_out, temp_out, cross_out
+
+
 class Encoder(hk.Module):
     def __init__(
             self,
@@ -30,8 +110,12 @@ class Encoder(hk.Module):
                 "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
                 "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             },
+            smoothing:float=0.9,
         ) -> None:
         super().__init__(name="lidar_network") 
+        self.smoothing = smoothing
+        smoothing_weights = self.smoothing ** jnp.arange(n_stack)
+        self.smoothing_weights = smoothing_weights / jnp.sum(smoothing_weights)
         self.mean_limits = mean_limits 
         self.n_components = n_gaussian_mixture_components
         self.lidar_rays = lidar_num_rays
@@ -41,18 +125,13 @@ class Encoder(hk.Module):
         self.max_displacement = self.max_humans_velocity * self.prediction_time
         self.token_size = 12
         self.n_outputs = self.n_components * 6 * 3  # 6 outputs per GMM cell (mean_x, mean_y, sigma_x, sigma_y, correlation, weight) times  3 GMMs (current and next)
-        self.token_embeddings_mlp = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[64, 64, 32],
+        self.token_embeddings = hk.Linear(
+            output_size=64,
+            w_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+            b_init=hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             name="token_embeddings_mlp"
         )
-        self.self_attention = hk.MultiHeadAttention(
-            num_heads=4,
-            key_size=32,
-            value_size=64,
-            w_init_scale=1/3,
-            name="self_attention"
-        )
+        self.spatio_temporal_attention = SpatioTemporalAttention(name="spatio_temporal_attention_1", n_stack=self.n_stack, token_embed_dim=64)
         self.obs_gmm_head = hk.nets.MLP(
             **mlp_params,
             output_sizes=[256, 128, self.n_components * 6],
@@ -69,25 +148,20 @@ class Encoder(hk.Module):
             name="next_hum_gmm_head"
         )
 
-    def __call__(
-            self, 
-            x: jnp.ndarray
-        ) -> jnp.ndarray:
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         """
         Maps Lidar scan to GMM parameters.
 
-        x (num_beams, token_size)
-
+        x (n_stack, num_beams, token_size)
         """
         ### Process inputs
-        token_embeddings = self.token_embeddings_mlp(x)  # Shape: (num_beams, embedding_size)
-        attention_output = self.self_attention(
-            token_embeddings,
-            token_embeddings,
-            token_embeddings,
-        )  # Shape: (num_beams, value_size*num_heads)
-        output = jnp.concat([token_embeddings, attention_output], axis=-1)  # Shape: (num_beams, embedding_size + value_size*num_heads)
-        pooled_output = jnp.mean(output, axis=0)  # Shape: (embedding_size + value_size*num_heads)
+        token_embeddings = self.token_embeddings(x)  # Shape: (n_stack, num_beams, embedding_size)
+        scan_out, temp_out, cross_out = self.spatio_temporal_attention(token_embeddings)  # Shape: (n_stack, embedding_size), (n_stack, embedding_size), (n_stack, embedding_size)
+        pooled_output = jnp.concatenate((
+            scan_out[0], # Most recent scan embedding
+            jnp.sum(temp_out * self.smoothing_weights[:,None], axis=0),  # Smoothed temporal embedding
+            jnp.sum(cross_out * self.smoothing_weights[:,None], axis=0),  # Smoothed cross embedding
+        ), axis=-1)  # Shape: (embedding_size * 3,)
         obstacles_gmm = self.obs_gmm_head(pooled_output)  # Shape: (n_components * 6,)
         humans_gmm = self.hum_gmm_head(pooled_output)  # Shape: (n_components * 6,)
         next_humans_info = self.next_hum_gmm_head(pooled_output)  # Shape: (n_components * 5,)
@@ -111,13 +185,13 @@ class Encoder(hk.Module):
             x_means = ((x_means + 1) / 2) * (self.mean_limits[0][1] - self.mean_limits[0][0]) + self.mean_limits[0][0]  # Scale to box limits
             y_means = nn.tanh(vector[self.n_components:2*self.n_components])
             y_means = ((y_means + 1) / 2) * (self.mean_limits[1][1] - self.mean_limits[1][0]) + self.mean_limits[1][0]  # Scale to box limits
-            x_log_sigmas = vector[2*self.n_components:3*self.n_components]  # Std in x
-            y_log_sigmas = vector[3*self.n_components:4*self.n_components]  # Std in y
+            x_log_sigmas = 5 * nn.tanh(vector[2*self.n_components:3*self.n_components])  # Std in x # logsigma [-5,5] sigma [exp(-5), exp(5)] = [0.0067, 148.4]
+            y_log_sigmas = 5 * nn.tanh(vector[3*self.n_components:4*self.n_components])  # Std in y
             correlations = 0.99 * nn.tanh(vector[4*self.n_components:5*self.n_components])  # Correlations [-0.99, 0.99] - 1 IS NOT NUMERICALLY STABLE
             # Since GMM heads have relu activation, the minimum value is 0, so softmax will assign weight one to score equal to 0 (the minimum)
             # weights = nn.softmax(vector[5*self.n_components:], axis=-1)  # Weights
-            wights_exp = jnp.exp(vector[5*self.n_components:]) * jnp.array(vector[5*self.n_components:] != 0, dtype=jnp.float32)
-            weights = wights_exp / (jnp.sum(wights_exp, axis=-1, keepdims=True) + 1e-6)
+            weights_exp = jnp.exp(vector[5*self.n_components:]) * jnp.array(vector[5*self.n_components:] != 0, dtype=jnp.float32)
+            weights = weights_exp / (jnp.sum(weights_exp, axis=-1, keepdims=True) + 1e-6)
             distr = {
                 "means": jnp.stack((x_means, y_means), axis=-1), # Shape (batch_size, n_components, n_dimensions)
                 "logsigmas": jnp.stack((x_log_sigmas, y_log_sigmas), axis=-1), # Shape (batch_size, n_components, n_dimensions)
@@ -383,7 +457,7 @@ class JESSI(BasePolicy):
         self, 
         key:random.PRNGKey, 
     ) -> tuple:
-        encoder_params = self.encoder.init(key, jnp.zeros((1, self.n_stack * (2 * self.lidar_num_rays + 2))))
+        encoder_params = self.encoder.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 12)))
         actor_params = self.actor.init(key, jnp.zeros((3, self.n_gmm_components, 7 + 9)))  # 7 params per GMM component + 9 robot goal, robot vmax, robot radius, robot wheels distance, action space params
         # critic_params = 
         return encoder_params, actor_params, {}
@@ -656,10 +730,8 @@ class JESSI(BasePolicy):
             ego_delta_ys,
             ego_delta_thetas,
         )  # Shape: (n_stack, lidar_num_rays, 12)
-        # Optionally select TOP K beams to reduce computation
+        # Optionally select TOP K beams for each stack here to reduce computation
 
-        # Reshape to (n_stack * lidar_num_rays, 12)
-        encoder_input = jnp.reshape(encoder_input, (self.n_stack * self.lidar_num_rays, 12))
         return encoder_input, last_lidar_point_cloud
 
     @partial(jit, static_argnames=("self"))

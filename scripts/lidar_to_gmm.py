@@ -33,9 +33,11 @@ n_loss_samples = 1000  # Number of samples to estimate the loss
 prediction_horizon = 4  # Number of steps ahead to predict next GMM (in seconds it is prediction_horizon * robot_dt)
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
 negative_samples_threshold = 0.2 # Distance threshold from objects to consider a sample as negative (in meters)
-learning_rate = 1e-2
+learning_rate = 1e-3
 batch_size = 200
-n_epochs = 1000
+n_max_epochs = 1000
+patience = 25  # Early stopping patience
+delta_improvement = 5e-4  # Minimum validation improvement to reset early stopping patience
 data_split = [0.8, 0.1, 0.1]  # Train/Val/Test split ratios
 p_visualization_threshold = 0.05  # Minimum probability threshold to visualize GMM components
 # Environment parameters
@@ -634,8 +636,7 @@ else:
 
 ### DEFINE NEURAL NETWORK
 # Initialize network
-sample_input = jnp.zeros((n_stack * lidar_num_rays, 12))
-params = jessi.encoder.init(random.PRNGKey(random_seed), sample_input)
+params, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
 # Count network parameters
 def count_params(params):
     return sum(jnp.prod(jnp.array(p.shape)) for layer in params.values() for p in layer.values())
@@ -724,7 +725,7 @@ optimizer = optax.chain(
         learning_rate=optax.schedules.linear_schedule(
             init_value=learning_rate, 
             end_value=learning_rate * 0.02, 
-            transition_steps=int(n_epochs*n_train_data//batch_size),
+            transition_steps=int(n_max_epochs*n_train_data//batch_size),
             transition_begin=0
         ), 
         eps=1e-7, 
@@ -800,13 +801,12 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
             (batches, seeds),
         )
         return losses
-    @loop_tqdm(n_epochs, desc="Training Lidar->GMM network")
     @jit 
     def _epoch_loop(
-        i:int,
         epoch_for_val:tuple,
     ) -> tuple:
-        train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses = epoch_for_val
+        early_stopping_info, train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses = epoch_for_val
+        i = early_stopping_info['epoch']
         ## TRAINING
         shuffle_key = random.PRNGKey(random_seed + i)
         indexes = jnp.arange(n_train_data)
@@ -896,16 +896,38 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
                 jnp.arange(n_val_data // batch_size),
             )
         )
-        _, _, _,
-        debug.print("Epoch {x}, TRAIN Loss: {t}, VAL Loss: {v}", x=i, t=jnp.mean(train_losses[i]), v=jnp.mean(val_losses[i]))
-        return train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses
+        current_val_loss = jnp.mean(val_losses[i])
+        val_loss_improved = (early_stopping_info['best_val_loss'] - current_val_loss) / jnp.abs(early_stopping_info['best_val_loss']) > delta_improvement
+        val_loss_improved = val_loss_improved | (i == 0)
+        debug.print("Epoch {x}, TRAIN Loss: {t}, VAL Loss: {v} (Improved: {imp})", x=i, t=jnp.mean(train_losses[i]), v=current_val_loss, imp=val_loss_improved)
+        # Update early stopping info
+        @jit
+        def _update_early_stopping_info_improved(early_stopping_info):
+            early_stopping_info['best_val_loss'] = current_val_loss
+            early_stopping_info['best_params'] = params
+            early_stopping_info['last_improvement'] = i
+            return early_stopping_info
+        early_stopping_info = lax.cond(val_loss_improved, _update_early_stopping_info_improved, lambda esi: esi, early_stopping_info)
+        early_stopping_info['epoch'] = i + 1
+        early_stopping_info['stop'] = ((i - early_stopping_info['last_improvement']) >= patience) & (early_stopping_info['epoch'] >= n_max_epochs)
+        return early_stopping_info, train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses
     # Epoch loop
-    _, _, params, optimizer_state, train_losses, val_losses = lax.fori_loop(
-        0,
-        n_epochs,
+    early_stopping_info, _, _, _, optimizer_state, train_losses, val_losses = lax.while_loop(
+        lambda x: ~x[0]['stop'],
         _epoch_loop,
-        (train_dataset, val_dataset, params, optimizer_state, jnp.zeros((n_epochs, int(n_train_data // batch_size))), jnp.zeros((n_epochs, int(n_val_data // batch_size))))
+        (
+            {'stop': False, 'epoch': 0, 'last_improvement': 0, 'best_params': params, 'best_val_loss': jnp.inf}, 
+            train_dataset, 
+            val_dataset, 
+            params, 
+            optimizer_state, 
+            jnp.zeros((n_max_epochs, int(n_train_data // batch_size))), 
+            jnp.zeros((n_max_epochs, int(n_val_data // batch_size)))
+        )
     )
+    n_epochs = early_stopping_info['epoch']
+    params = early_stopping_info['best_params']
+    print(f"\nTraining completed in {n_epochs} epochs. - Best val loss: {early_stopping_info['best_val_loss']}\n")
     # Save trained parameters
     with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'wb') as f:
         pickle.dump(params, f)
@@ -923,8 +945,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
         jnp.arange(n_test_data // batch_size),
     )
     # Plot training and validation loss
-    avg_train_losses = jnp.mean(train_losses, axis=1)
-    avg_val_losses = jnp.mean(val_losses, axis=1)
+    avg_train_losses = jnp.mean(train_losses[:n_epochs], axis=1)
+    avg_val_losses = jnp.mean(val_losses[:n_epochs], axis=1)
     avg_test_loss = jnp.mean(test_losses)
     fig, ax = plt.subplots(1, 1, figsize=(8, 6))
     fig.subplots_adjust(right=0.9)

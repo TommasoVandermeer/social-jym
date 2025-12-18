@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax
 from jax.scipy.special import logsumexp
+from jax.scipy.linalg import solve_triangular
 from functools import partial
 
 from socialjym.utils.distributions.base_distribution import BaseDistribution
@@ -165,12 +166,16 @@ class BivariateGMM(BaseDistribution):
         pass
 
     @partial(jit, static_argnames=("self"))
-    def covariances(self, distribution:dict) -> float:
+    def cholesky_factors(self, distribution:dict) -> float:
         logsigmas = distribution["logsigmas"]  + self.epsilon # shape: (n_components, 2)   
         correlations = distribution["correlations"]  # shape: (n_components,)
         return vmap(
-            lambda sigmas, corr: jnp.array([[sigmas[0] ** 2, corr * sigmas[0] * sigmas[1]], [corr * sigmas[0] * sigmas[1], sigmas[1] ** 2]]), 
+            lambda sigmas, corr: jnp.array([[sigmas[0], 0.], [corr * sigmas[1], sigmas[1] * jnp.sqrt(1 - corr ** 2 + self.epsilon)]]), 
             in_axes=(0,0))(jnp.exp(logsigmas), correlations)  # shape: (n_components, 2, 2)
+
+    @partial(jit, static_argnames=("self"))
+    def covariances(self, distribution:dict) -> float:
+        return vmap(lambda L: L @ L.T, in_axes=0)(self.cholesky_factors(distribution))  # shape: (n_components, 2, 2) 
 
     @partial(jit, static_argnames=("self"))
     def sample(self, distribution:dict, key:random.PRNGKey):
@@ -188,22 +193,22 @@ class BivariateGMM(BaseDistribution):
     @partial(jit, static_argnames=("self"))
     def neglogp(self, distribution:dict, sample:jnp.ndarray):
         means = distribution["means"]  # shape: (n_components, 2)
-        covariances = self.covariances(distribution)  # shape: (n_components, 2, 2)
+        choleskys = self.cholesky_factors(distribution)  # shape: (n_components, 2, 2)
         weights = distribution["weights"]  # shape: (n_components,)
         @jit
-        def _component_logp(mean, covariance, weight):
+        def _component_logp(mean, cholesky, weight):
             # log N(x | mean, cov) + log(weight)
-            inv_cov = jnp.linalg.inv(covariance)
-            det_cov = jnp.linalg.det(covariance)
             diff = sample - mean
-            log_prob = -0.5 * jnp.log((2 * jnp.pi) ** 2 * det_cov + self.epsilon)
-            log_prob += -0.5 * diff.T @ inv_cov @ diff
+            y = solve_triangular(cholesky, diff, lower=True)
+            maha = jnp.sum(y**2)
+            log_det = 2 * jnp.sum(jnp.log(jnp.diag(cholesky) + self.epsilon))
+            log_prob = -0.5 * (2 * jnp.log(2 * jnp.pi) + log_det + maha)
             log_prob += jnp.log(weight + self.epsilon)
             return log_prob
 
-        logps = vmap(_component_logp)(means, covariances, weights)
+        logps = vmap(_component_logp)(means, choleskys, weights)
         # Clip logps for numerical stability
-        logps = jnp.clip(logps, a_min=-20, a_max=20)
+        # logps = jnp.clip(logps, a_min=-20, a_max=20)
         return -logsumexp(logps)
 
     @partial(jit, static_argnames=("self"))
