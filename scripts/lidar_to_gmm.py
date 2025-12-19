@@ -24,7 +24,7 @@ save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
-n_steps = 10_000  # Number of labeled examples to train Perception network
+n_steps = 100_000  # Number of labeled examples to train Perception network
 n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
 learning_rate = 1e-3

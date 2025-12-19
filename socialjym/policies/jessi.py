@@ -15,32 +15,60 @@ from socialjym.utils.distributions.gaussian import BivariateGaussian
 from socialjym.policies.base_policy import BasePolicy
 from jhsfm.hsfm import get_linear_velocity
 
+class SinusoidalPositionalEncoding(hk.Module):
+    def __init__(self, d_model, max_len=5000, name=None):
+        super().__init__(name=name)
+        self.d_model = d_model
+        self.max_len = max_len
+
+    def __call__(self, x):
+        # x shape: [Batch, SeqLen, d_model]
+        seq_len = x.shape[1]
+        position = jnp.arange(seq_len, dtype=jnp.float32)[:, jnp.newaxis]
+        div_term = jnp.exp(jnp.arange(0, self.d_model, 2) * -(jnp.log(10000.0) / self.d_model))
+        pe = jnp.zeros((seq_len, self.d_model))
+        pe = pe.at[:, 0::2].set(jnp.sin(position * div_term))
+        pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
+        return x + pe[None, :, :]
+
 class SpatioTemporalEncoder(hk.Module):
-    def __init__(self, embed_dim=64, name=None):
+    def __init__(self, embed_dim=128, name=None): 
         super().__init__(name=name)
         self.embed_dim = embed_dim
-        self.spatial_conv1 = hk.Conv1D(output_channels=embed_dim, kernel_shape=3, stride=1, padding="SAME")
-        self.spatial_conv2 = hk.Conv1D(output_channels=embed_dim, kernel_shape=3, stride=1, padding="SAME")
-        self.spatial_norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-        self.temporal_attn = hk.MultiHeadAttention(num_heads=4, key_size=16, w_init_scale=1.0)
+        # 1. Spatial Feature Extraction
+        self.spatial_net = hk.Sequential([
+            hk.Conv1D(output_channels=64, kernel_shape=5, stride=1, padding="SAME"),
+            nn.gelu,
+            hk.LayerNorm(axis=-1, create_scale=True, create_offset=True),
+            
+            hk.Conv1D(output_channels=128, kernel_shape=3, stride=2, padding="SAME"),
+            nn.gelu,
+            hk.LayerNorm(axis=-1, create_scale=True, create_offset=True),
+            
+            hk.Conv1D(output_channels=embed_dim, kernel_shape=3, stride=1, padding="SAME"),
+            nn.gelu,
+            hk.LayerNorm(axis=-1, create_scale=True, create_offset=True),
+        ])
+        # 2. Positional Encodings
+        self.pos_encoder_space = SinusoidalPositionalEncoding(embed_dim, max_len=2048)
+        self.pos_encoder_time = SinusoidalPositionalEncoding(embed_dim, max_len=100)
+        # 3. Temporal Attention
+        self.temporal_attn = hk.MultiHeadAttention(num_heads=4, key_size=32, w_init_scale=1.0)
         self.temporal_norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
     def __call__(self, x):
-        """
-        x shape: [Batch, Time, Beams, Features] 
-        """
+        # x shape: [Batch, Time, Beams, Features]
         B, T, L, F = x.shape
         x_flat = x.reshape(B * T, L, F) 
-        h = nn.gelu(self.spatial_conv1(x_flat))
-        h = self.spatial_conv2(h) # [B*T, L, embed_dim]
-        h = self.spatial_norm(h)
-        # Reshape back to separate Time: [B, T, L, embed_dim]
-        h = h.reshape(B, T, L, self.embed_dim)
-        h_transposed = h.transpose(0, 2, 1, 3) # [B, L, T, D]
-        h_reshaped = h_transposed.reshape(B * L, T, self.embed_dim) # "Batch" per MHA è B*L
-        t_out = self.temporal_attn(query=h_reshaped, key=h_reshaped, value=h_reshaped)
-        h_reshaped = self.temporal_norm(h_reshaped + t_out)
-        h_final = h_reshaped.reshape(B, L, T, self.embed_dim).transpose(0, 2, 1, 3) # [B, T, L, D]
+        h_spatial = self.spatial_net(x_flat) # [B*T, L/2, embed_dim] (nota L/2 per stride)
+        h_spatial = self.pos_encoder_space(h_spatial)
+        L_new = h_spatial.shape[1]
+        h_spatial = h_spatial.reshape(B, T, L_new, self.embed_dim)
+        h_time_in = h_spatial.transpose(0, 2, 1, 3).reshape(B * L_new, T, self.embed_dim)
+        h_time_in = self.pos_encoder_time(h_time_in)
+        t_out = self.temporal_attn(query=h_time_in, key=h_time_in, value=h_time_in)
+        h_time_out = self.temporal_norm(h_time_in + t_out)
+        h_final = h_time_out.reshape(B, L_new, T, self.embed_dim).transpose(0, 2, 1, 3)
         return h_final
 
 class HCGQueryDecoder(hk.Module):
@@ -54,7 +82,7 @@ class HCGQueryDecoder(hk.Module):
             shape=[1, self.n_detectable_humans, embed_dim], 
             init=hk.initializers.TruncatedNormal(stddev=0.02)
         )
-        self.cross_attn = hk.MultiHeadAttention(num_heads=4, key_size=16, w_init_scale=1.0)
+        self.cross_attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, value_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
         self.norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
         self.ffn = hk.nets.MLP([embed_dim * 2, embed_dim], activation=nn.gelu, activate_final=False)
         self.norm_ffn = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
@@ -78,7 +106,7 @@ class Perception(hk.Module):
             n_detectable_humans: int,
             max_humans_velocity: float,
             max_lidar_distance: float,
-            embed_dim: int = 64
+            embed_dim: int = 128
         ):
         super().__init__(name="lidar_perception")
         self.n_detectable_humans = n_detectable_humans
@@ -682,7 +710,9 @@ class JESSI(BasePolicy):
         prob_cost = -jnp.log(jnp.expand_dims(human_distrs['weights'], 2) + 1e-6) # (B, K, 1)
         cost_matrix = lambda_pos_reg * dist + lambda_cls * prob_cost # (B, K, M)
         ## Matching
-        best_pred_idx = jnp.argmin(cost_matrix, axis=1) # Shape: (B, M)
+        assigned_query_idx, assigned_gt_idx = vmap(optax.assignment.hungarian_algorithm)(cost_matrix)
+        sort_perm = jnp.argsort(assigned_gt_idx, axis=1) # Shape (B, M)
+        best_pred_idx = jnp.take_along_axis(assigned_query_idx, sort_perm, axis=1) # Shape (B, M)
         # One-hot mask - shape: (B, K, M) -> 1 if k matches m, 0 otherwise
         matched_mask = nn.one_hot(best_pred_idx, K, axis=1) # Shape: (B, K, M)
         # Filter with GT mask
