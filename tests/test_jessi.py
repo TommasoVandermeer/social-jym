@@ -10,7 +10,6 @@ from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
-gmm_means_limits = jnp.array([[-10,10], [-10,10]])
 n_gmm_components = 10
 random_seed = 1
 n_episodes = 50
@@ -35,7 +34,7 @@ env_params = {
 env = LaserNav(**env_params)
 
 # Initialize the policy
-policy = JESSI(gmm_means_limits=gmm_means_limits, n_gmm_components=n_gmm_components)
+policy = JESSI(n_gmm_components=n_gmm_components)
 with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'rb') as f:
     encoder_params = pickle.load(f)
 with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:

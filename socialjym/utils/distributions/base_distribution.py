@@ -6,6 +6,7 @@ from jax import jit
 
 DISTRIBUTIONS = [
     "gaussian",
+    "bivariate_gaussian",
     "GMM",
     "dirichlet",
     "BivariateGMM",

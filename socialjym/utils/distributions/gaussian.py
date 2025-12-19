@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax
 from functools import partial
+from jax.scipy.linalg import solve_triangular
 
 from socialjym.utils.distributions.base_distribution import BaseDistribution
 from socialjym.envs.base_env import ROBOT_KINEMATICS
@@ -147,3 +148,79 @@ class Gaussian(BaseDistribution):
         Compute the standard deviations of a batch of Gaussian distributions.
         """
         return jnp.exp(distributions["logsigmas"])
+    
+class BivariateGaussian(BaseDistribution):
+    def __init__(self, epsilon=1e-6) -> None:
+        """
+        This is a bivariate Gaussian distribution with full covariance matrix. When calling any method of this class,
+        the distribution dict must contain the following keys: ["means", "logsigmas", "correlation"]."
+        """
+        self.name="bivariate_gaussian"
+        self.n_dimensions = 2
+        self.epsilon = epsilon
+    
+    @partial(jit, static_argnames=("self"))
+    def cholesky(self, distribution:dict) -> float:
+        logsigmas = distribution["logsigmas"]  + self.epsilon # shape: (2,)  
+        sigmas = jnp.exp(logsigmas)  # shape: (2,) 
+        correlation = distribution["correlation"]  # shape: (1,)
+        return jnp.squeeze(jnp.array([
+            [sigmas[0], 0.], 
+            [correlation * sigmas[1], sigmas[1] * jnp.sqrt(1 - correlation ** 2 + self.epsilon)]
+        ]))  # shape: (2, 2)
+
+    @partial(jit, static_argnames=("self"))
+    def mean(self, distribution:dict) -> jnp.ndarray:
+        return distribution["means"]
+    
+    @partial(jit, static_argnames=("self"))
+    def var(self, distribution:dict) -> jnp.ndarray:
+        return jnp.diag(self.covariance(distribution))
+
+    @partial(jit, static_argnames=("self"))
+    def entropy(self, distribution:dict) -> float:
+        logsigmas = distribution["logsigmas"]
+        correlation = distribution["correlation"]
+        return 0.5 * jnp.log((2 * jnp.pi * jnp.exp(1))**2 * jnp.exp(2 * jnp.sum(logsigmas)) * (1 - correlation**2 + self.epsilon))
+
+    @partial(jit, static_argnames=("self"))
+    def covariance(self, distribution:dict) -> float:
+        L = self.cholesky(distribution)  # shape: (2, 2)
+        return L @ L.T  # shape: (2, 2)
+
+    @partial(jit, static_argnames=("self"))
+    def neglogp(self, distribution:dict, sample:jnp.ndarray):
+        mean = distribution["means"]  # shape: (2, )
+        cholesky = self.cholesky(distribution)  # shape: (2, 2)
+        diff = sample - mean
+        y = solve_triangular(cholesky, diff, lower=True)
+        maha = jnp.sum(y**2)
+        log_det = 2 * jnp.sum(jnp.log(jnp.diag(cholesky) + self.epsilon))
+        log_prob = -0.5 * (2 * jnp.log(2 * jnp.pi) + log_det + maha)
+        return -log_prob
+
+    @partial(jit, static_argnames=("self"))
+    def batch_neglogp(self, distribution:dict, samples:jnp.ndarray):
+        return vmap(BivariateGaussian.neglogp, in_axes=(None, None, 0))(self, distribution, samples)
+
+    @partial(jit, static_argnames=("self"))
+    def logp(self, distribution:dict, sample:jnp.ndarray):
+        return -self.neglogp(distribution, sample)
+
+    @partial(jit, static_argnames=("self"))
+    def batch_logp(self, distribution:dict, samples:jnp.ndarray):
+        return vmap(BivariateGaussian.logp, in_axes=(None, None, 0))(self, distribution, samples)
+
+    @partial(jit, static_argnames=("self"))
+    def p(self, distribution:dict, sample:jnp.ndarray):
+        return jnp.exp(self.logp(distribution, sample))
+
+    @partial(jit, static_argnames=("self"))
+    def batch_p(self, distribution:dict, samples:jnp.ndarray):
+        return vmap(BivariateGaussian.p, in_axes=(None, None, 0))(self, distribution, samples)
+    
+    @partial(jit, static_argnames=("self"))
+    def sample(self, distribution:dict, key:random.PRNGKey):
+        means = distribution["means"]
+        covariance = self.covariance(distribution)
+        return random.multivariate_normal(key, means, covariance)

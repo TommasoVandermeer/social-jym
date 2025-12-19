@@ -14,32 +14,26 @@ rcParams['ps.fonttype'] = 42
 
 from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.policies.jessi import JESSI
-from socialjym.utils.distributions.gaussian_mixture_model import BivariateGMM
 from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as LaserNavDummyReward
+from jhsfm.hsfm import vectorized_compute_edge_closest_point
 
-#TODO: Make humans and obstacles invisible if outside LiDAR range
 save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
-n_steps = 100_000  # Number of labeled examples to train Lidar to GMM network
-n_gaussian_mixture_components = 10  # Number of GMM components
-box_limits = jnp.array([[-10,10], [-10,10]])  # Grid limits in meters [[x_min,x_max],[y_min,y_max]]
-visibility_threshold_from_grid = 0.5  # Distance from grid limit to consider an object inside the grid
-n_loss_samples = 1000  # Number of samples to estimate the loss
-prediction_horizon = 4  # Number of steps ahead to predict next GMM (in seconds it is prediction_horizon * robot_dt)
+n_steps = 10_000  # Number of labeled examples to train Perception network
+n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
-negative_samples_threshold = 0.2 # Distance threshold from objects to consider a sample as negative (in meters)
 learning_rate = 1e-3
 batch_size = 200
 n_max_epochs = 1000
 patience = 25  # Early stopping patience
 delta_improvement = 5e-4  # Minimum validation improvement to reset early stopping patience
 data_split = [0.8, 0.1, 0.1]  # Train/Val/Test split ratios
-p_visualization_threshold = 0.05  # Minimum probability threshold to visualize GMM components
+p_visualization_threshold = 0.1  # Minimum probability threshold to visualize HCGs
 # Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -80,24 +74,17 @@ jessi = JESSI(
     lidar_max_dist=lidar_max_dist,
     lidar_angular_range=lidar_angular_range,
     n_stack=n_stack, 
-    gmm_means_limits=box_limits, 
-    n_gmm_components=n_gaussian_mixture_components, 
-    prediction_horizon=prediction_horizon, 
+    n_detectable_humans=n_detectable_humans, 
     max_humans_velocity=max_humans_velocity
 )
 with open(os.path.join(os.path.dirname(__file__), 'best_dir_safe.pkl'), 'rb') as f:
     actor_params = pickle.load(f)['actor_params']
 # Build local grid over which the GMM is defined
-visibility_thresholds = jnp.array([
-    [box_limits[0,0] - visibility_threshold_from_grid, box_limits[0,1] + visibility_threshold_from_grid],
-    [box_limits[1,0] - visibility_threshold_from_grid, box_limits[1,1] + visibility_threshold_from_grid]
-])
-ax_visibility = 7
+ax_visibility = 2
 ax_lims = jnp.array([
-    [visibility_thresholds[0,0]-ax_visibility, visibility_thresholds[0,1]+ax_visibility],
-    [visibility_thresholds[1,0]-ax_visibility, visibility_thresholds[1,1]+ax_visibility]
+    [-lidar_max_dist-ax_visibility,lidar_max_dist+ax_visibility],
+    [-lidar_max_dist-ax_visibility, lidar_max_dist+ax_visibility]
 ])
-gmm = BivariateGMM(n_components=n_gaussian_mixture_components)
 
 ### Parameters validation
 assert sum(data_split) == 1.0, "data_split must sum to 1.0"
@@ -105,18 +92,6 @@ assert n_steps % batch_size == 0, "n_steps must be divisible by batch_size"
 assert int(n_steps * data_split[0]) % batch_size == 0, "Training set size must be divisible by batch_size"
 assert int(n_steps * data_split[1]) % batch_size == 0, "Validation set size must be divisible by batch_size"
 assert int(n_steps * data_split[2]) % batch_size == 0, "Test set size must be divisible by batch_size"
-cond1 = n_loss_samples % n_humans == 0
-cond2 = n_loss_samples % n_obstacles == 0
-cond3 = (n_loss_samples / n_obstacles) % env.static_obstacles_per_scenario.shape[2] == 0
-if not (cond1 and cond2 and cond3):
-    print("\nWarning: n_loss_samples must be divisible by (n_humans) and (n_obstacles), and n_loss_samples per obstacle must be divisible by number of segments per obstacle")
-    print(f"Finding suitable n_loss_samples...")
-    while not (cond1 and cond2 and cond3):
-        n_loss_samples += 1
-        cond1 = n_loss_samples % n_humans == 0
-        cond2 = n_loss_samples % n_obstacles == 0
-        cond3 = (n_loss_samples / n_obstacles) % env.static_obstacles_per_scenario.shape[2] == 0
-    print(f"Found! Using n_loss_samples = {n_loss_samples}\n")
 
 def simulate_n_steps(n_steps):
     @loop_tqdm(n_steps, desc="Simulating steps")
@@ -239,35 +214,24 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         )
         # Assert if humans and obstacles are closer than visibility_threshold_from_grid to the robot
         @jit
-        def _object_is_inside_grid(humans_positions, humans_radii, static_obstacles):
+        def _object_is_in_lidar_range(humans_positions, humans_radii, static_obstacles):
             # Humans
             @jit
-            def is_human_inside_grid(position, radius):
-                return (
-                    (position[0] >= visibility_thresholds[0,0] - radius) &
-                    (position[0] <= visibility_thresholds[0,1] + radius) &
-                    (position[1] >= visibility_thresholds[1,0] - radius) &
-                    (position[1] <= visibility_thresholds[1,1] + radius)
-                )
-            humans_inside_mask = vmap(is_human_inside_grid, in_axes=(0,0))(humans_positions, humans_radii)
+            def is_human_inside_lidar_range(position, radius):
+                return jnp.linalg.norm(position) - radius <= lidar_max_dist
+            humans_inside_mask = vmap(is_human_inside_lidar_range, in_axes=(0,0))(humans_positions, humans_radii)
             # Obstacles
             @jit
-            def batch_obstacles_is_inside_grid(obstacles):
-                return vmap(dir_safe._batch_segment_rectangle_intersection, in_axes=(0,0,0,0,None,None,None,None))(
-                    obstacles[:,:,0,0], 
-                    obstacles[:,:,0,1], 
-                    obstacles[:,:,1,0], 
-                    obstacles[:,:,1,1], 
-                    visibility_thresholds[0,0], 
-                    visibility_thresholds[0,1], 
-                    visibility_thresholds[1,0], 
-                    visibility_thresholds[1,1],
-                )[0]
-            obstacles_inside_mask = batch_obstacles_is_inside_grid(static_obstacles)
+            def batch_obstacles_is_inside_lidar_range(obstacles):
+                return vmap(vectorized_compute_edge_closest_point, in_axes=(None,0))(
+                    jnp.array([0.,0.]),
+                    obstacles
+                )[1] <= lidar_max_dist
+            obstacles_inside_mask = batch_obstacles_is_inside_lidar_range(static_obstacles)
             return humans_inside_mask, obstacles_inside_mask
         @jit
         def batch_object_is_inside_grid(batch_humans_positions, humans_radii, batch_static_obstacles):
-            return vmap(_object_is_inside_grid, in_axes=(0, 0, 0))(batch_humans_positions, humans_radii, batch_static_obstacles)
+            return vmap(_object_is_in_lidar_range, in_axes=(0, 0, 0))(batch_humans_positions, humans_radii, batch_static_obstacles)
         humans_inside_mask, obstacles_inside_mask = batch_object_is_inside_grid(
             robot_centric_data['rc_humans_positions'],
             robot_centric_data['humans_radii'],
@@ -285,12 +249,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
             ax.set_xlabel('X')
             ax.set_ylabel('Y', labelpad=-13)
             ax.set_aspect('equal', adjustable='box')
-            # Plot box limits
-            rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-            ax.add_patch(rect)
-            # Plot visibility threshold
-            rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
-            ax.add_patch(rect)
             # Plot robot goal
             ax.scatter(robot_centric_data["rc_robot_goals"][frame,0], robot_centric_data["rc_robot_goals"][frame,1], marker="*", color="red", zorder=2)
             # Plot humans
@@ -344,18 +302,17 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         # Load robot-centered dataset
         with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
             robot_centric_data = pickle.load(f)
-    ### GENERATE LIDAR TO GMM SAMPLES DATASET
+    ### GENERATE PERCEPTION NETWORK TRAINING DATASET
     # Initialize final dataset
     dataset = {
         "observations": robot_centric_data["lasernav_observations"],
-        "rc_humans_positions": robot_centric_data["rc_humans_positions"],
-        "rc_humans_velocities": robot_centric_data["rc_humans_velocities"],
-        "humans_radii": robot_centric_data["humans_radii"],
-        "humans_visibility": robot_centric_data["humans_visibility"],
-        "rc_obstacles": robot_centric_data["rc_obstacles"],
-        "obstacles_visibility": robot_centric_data["obstacles_visibility"],
+        "targets": {
+            "gt_poses": robot_centric_data["rc_humans_positions"],
+            "gt_vels": robot_centric_data["rc_humans_velocities"],
+            "gt_mask": robot_centric_data["humans_visibility"],
+        },
     }
-    ## DEBUG: Inspect inputs
+    ## DEBUG: Inspect training dataset
     debugging_steps = 100
     # Plot robot-centric simulation
     fig, ax = plt.subplots(figsize=(8,8))
@@ -366,12 +323,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
         ax.set_xlabel('X')
         ax.set_ylabel('Y', labelpad=-13)
         ax.set_aspect('equal', adjustable='box')
-        # Plot box limits
-        rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-        ax.add_patch(rect)
-        # Plot visibility threshold
-        rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
-        ax.add_patch(rect)
         # Plot humans
         for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
             color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
@@ -389,7 +340,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
                 alpha = 1 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
                 ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
         # Plot lidar scans
-        point_clouds = jessi.process_lidar(dataset["observations"][frame])[0]  # (n_stack, lidar_num_rays, 2)
+        point_clouds = jessi.align_lidar(dataset["observations"][frame])[0]  # (n_stack, lidar_num_rays, 2)
         for i, cloud in enumerate(point_clouds):
             # color/alpha fade with i (smaller i -> less faded)
             t = (1 - i / (n_stack - 1))  # in [0,1]
@@ -406,214 +357,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
     anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=debugging_steps)
     if save_videos:
         save_path = os.path.join(os.path.dirname(__file__), f'network_inputs.mp4')
-        writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
-        anim.save(save_path, writer=writer_video, dpi=300)
-    anim.paused = False
-    def toggle_pause(self, *args, **kwargs):
-        if anim.paused: anim.resume()
-        else: anim.pause()
-        anim.paused = not anim.paused
-    fig.canvas.mpl_connect('button_press_event', toggle_pause)
-    plt.show()
-    ## Build humans samples (just the first hundred steps for debugging)
-    human_samples = jessi.batch_build_frame_humans_samples(
-        robot_centric_data["rc_humans_positions"][:debugging_steps],
-        robot_centric_data["humans_radii"][:debugging_steps],
-        robot_centric_data["humans_visibility"][:debugging_steps],
-        random.split(random.PRNGKey(random_seed), debugging_steps),
-        n_samples = n_loss_samples,
-        n_humans = n_humans,
-        negative_samples_threshold=negative_samples_threshold,
-    )
-    ## DEBUG: Inspect targets
-    # Plot robot-centric simulation
-    fig, ax = plt.subplots(figsize=(8,8))
-    def animate(frame):
-        ax.clear()
-        ax.set_title('Humans Samples Inspection')
-        ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y', labelpad=-13)
-        ax.set_aspect('equal', adjustable='box')
-        # Plot box limits
-        rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-        ax.add_patch(rect)
-        # Plot visibility threshold
-        rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
-        ax.add_patch(rect)
-        # Plot humans
-        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
-            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
-            alpha = 1 if robot_centric_data["humans_visibility"][frame][h] else 0.3
-            if humans_policy == 'hsfm':
-                head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
-                ax.add_patch(head)
-            circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-            ax.add_patch(circle)
-        # Plot static obstacles
-        for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
-            for j, s in enumerate(o):
-                color = 'grey'
-                linestyle = 'dashed'
-                alpha = 0.3
-                ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
-        # Plot target samples
-        col = ['red', 'blue']
-        ax.scatter(
-            human_samples["position"][frame][:,0],
-            human_samples["position"][frame][:,1],
-            c=[col[int(is_pos)] for is_pos in human_samples["is_positive"][frame]],
-            s=5,
-            alpha=0.5,
-            zorder=20,
-        )
-    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
-    if save_videos:
-        save_path = os.path.join(os.path.dirname(__file__), f'humans_samples.mp4')
-        writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
-        anim.save(save_path, writer=writer_video, dpi=300)
-    anim.paused = False
-    def toggle_pause(self, *args, **kwargs):
-        if anim.paused: anim.resume()
-        else: anim.pause()
-        anim.paused = not anim.paused
-    fig.canvas.mpl_connect('button_press_event', toggle_pause)
-    plt.show()
-    ## Build next humans samples
-    next_human_samples = jessi.batch_build_frame_humans_samples(
-        robot_centric_data["rc_humans_positions"][:debugging_steps] + robot_centric_data["rc_humans_velocities"][:debugging_steps] * (robot_dt * prediction_horizon),
-        robot_centric_data["humans_radii"][:debugging_steps],
-        robot_centric_data["humans_visibility"][:debugging_steps],
-        random.split(random.PRNGKey(random_seed), debugging_steps),
-        n_samples = n_loss_samples,
-        n_humans = n_humans,
-        negative_samples_threshold=negative_samples_threshold,
-    )
-    ## DEBUG: Inspect next targets
-    # Plot robot-centric simulation
-    fig, ax = plt.subplots(figsize=(8,8))
-    def animate(frame):
-        ax.clear()
-        ax.set_title('Next Humans Samples Inspection')
-        ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y', labelpad=-13)
-        ax.set_aspect('equal', adjustable='box')
-        # Plot box limits
-        rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-        ax.add_patch(rect)
-        # Plot visibility threshold
-        rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
-        ax.add_patch(rect)
-        # Plot humans
-        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
-            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
-            alpha = 1 if robot_centric_data["humans_visibility"][frame][h] else 0.3
-            if humans_policy == 'hsfm':
-                head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
-                ax.add_patch(head)
-            circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-            ax.add_patch(circle)
-        # Plot human velocities
-        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
-            color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
-            alpha = 1 if robot_centric_data["humans_visibility"][frame][h] else 0.3
-            if robot_centric_data["humans_visibility"][frame][h]:
-                ax.arrow(
-                    robot_centric_data["rc_humans_positions"][frame][h,0],
-                    robot_centric_data["rc_humans_positions"][frame][h,1],
-                    robot_centric_data["rc_humans_velocities"][frame][h,0],
-                    robot_centric_data["rc_humans_velocities"][frame][h,1],
-                    head_width=0.15,
-                    head_length=0.15,
-                    fc=color,
-                    ec=color,
-                    alpha=alpha,
-                    zorder=30,
-                )
-        # Plot static obstacles
-        for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
-            for j, s in enumerate(o):
-                color = 'grey'
-                linestyle = 'dashed'
-                alpha = 0.3
-                ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
-        # Plot target samples
-        col = ['red', 'blue']
-        ax.scatter(
-            next_human_samples["position"][frame][:,0],
-            next_human_samples["position"][frame][:,1],
-            c=[col[int(is_pos)] for is_pos in next_human_samples["is_positive"][frame]],
-            s=5,
-            alpha=0.5,
-            zorder=20,
-        )
-    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=debugging_steps)
-    if save_videos:
-        save_path = os.path.join(os.path.dirname(__file__), f'next_humans_samples.mp4')
-        writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
-        anim.save(save_path, writer=writer_video, dpi=300)
-    anim.paused = False
-    def toggle_pause(self, *args, **kwargs):
-        if anim.paused: anim.resume()
-        else: anim.pause()
-        anim.paused = not anim.paused
-    fig.canvas.mpl_connect('button_press_event', toggle_pause)
-    plt.show()
-    ## Build obstacles samples
-    obstacles_samples = jessi.batch_build_frame_obstacles_samples(
-        robot_centric_data["rc_obstacles"][:debugging_steps],
-        robot_centric_data["obstacles_visibility"][:debugging_steps],
-        random.split(random.PRNGKey(random_seed), debugging_steps),
-        n_samples = n_loss_samples,
-        n_obstacles = n_obstacles,
-        negative_samples_threshold=negative_samples_threshold,
-    )
-    ## DEBUG: Inspect obstacles targets
-    # Plot robot-centric simulation
-    fig, ax = plt.subplots(figsize=(8,8))
-    def animate(frame):
-        ax.clear()
-        ax.set_title('Obstacles Samples Inspection')
-        ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y', labelpad=-13)
-        ax.set_aspect('equal', adjustable='box')
-        # Plot box limits
-        rect = plt.Rectangle((box_limits[0,0], box_limits[1,0]), box_limits[0,1] - box_limits[0,0], box_limits[1,1] - box_limits[1,0], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
-        ax.add_patch(rect)
-        # Plot visibility threshold
-        rect = plt.Rectangle((visibility_thresholds[0,0], visibility_thresholds[1,0]), visibility_thresholds[0,1] - visibility_thresholds[0,0], visibility_thresholds[1,1] - visibility_thresholds[1,0], edgecolor='red', facecolor='none', linestyle='dashed', linewidth=1, alpha=0.5, zorder=1)
-        ax.add_patch(rect)
-        # Plot humans
-        for h in range(len(robot_centric_data["rc_humans_positions"][frame])):
-            color = "grey"
-            alpha = 0.3
-            if humans_policy == 'hsfm':
-                head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
-                ax.add_patch(head)
-            circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-            ax.add_patch(circle)
-        # Plot static obstacles
-        for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
-            for j, s in enumerate(o):
-                color = 'black' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'grey'
-                linestyle = 'solid' if robot_centric_data["obstacles_visibility"][frame][i,j] else 'dashed'
-                alpha = 1 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
-                ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
-        # Plot target samples
-        col = ['red', 'blue']
-        ax.scatter(
-            obstacles_samples["position"][frame][:,0],
-            obstacles_samples["position"][frame][:,1],
-            c=[col[int(is_pos)] for is_pos in obstacles_samples["is_positive"][frame]],
-            s=5,
-            alpha=0.5,
-            zorder=20,
-        )
-    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=debugging_steps)
-    if save_videos:
-        save_path = os.path.join(os.path.dirname(__file__), f'obstacles_samples.mp4')
         writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
         anim.save(save_path, writer=writer_video, dpi=300)
     anim.paused = False
@@ -642,16 +385,8 @@ def count_params(params):
     return sum(jnp.prod(jnp.array(p.shape)) for layer in params.values() for p in layer.values())
 n_params = count_params(params)
 print(f"# Lidar network parameters: {n_params}")
-# Compute test samples to visualize GMMs
-sx = jnp.linspace(box_limits[0, 0], box_limits[0, 1], num=60, endpoint=True)
-sy = jnp.linspace(box_limits[1, 0], box_limits[1, 1], num=60, endpoint=True)
-test_samples_x, test_samples_y = jnp.meshgrid(sx, sy)
-test_samples = jnp.stack((test_samples_x.flatten(), test_samples_y.flatten()), axis=-1)
 
 ### TRAINING LOOP
-# TODO: Don't vmap validation loss computation (to expensive in memory)
-# TODO: Don't pass entire dataset in fori loop, use scan and pass only the batch required
-# TODO: Split in TRAIN VAL TEST only using indexes to save memory (do not copy the dataset)
 # Split dataset into TRAIN, VAL, TEST
 n_data = dataset["observations"].shape[0]
 n_train_data = int(data_split[0] * n_data)
@@ -701,39 +436,12 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
     ) -> tuple:
         # TODO: Shutdown dropout layers and stochasticity during validation
         inputs = vmap(jessi.compute_encoder_input, in_axes=(0))(batch["observations"])[0]
-        human_samples = jessi.batch_build_frame_humans_samples(
-            batch["rc_humans_positions"],
-            batch["humans_radii"],
-            batch["humans_visibility"],
-            random.split(random.PRNGKey(seed), batch_size),
-            n_samples = n_loss_samples,
-            n_humans = n_humans,
-            negative_samples_threshold=negative_samples_threshold,
-        )
-        obstacles_samples = jessi.batch_build_frame_obstacles_samples(
-            batch["rc_obstacles"],
-            batch["obstacles_visibility"],
-            random.split(random.PRNGKey(seed), batch_size),
-            n_samples = n_loss_samples,
-            n_obstacles = n_obstacles,
-            negative_samples_threshold=negative_samples_threshold,
-        )
-        next_humans_samples = jessi.batch_build_frame_humans_samples(
-            batch["rc_humans_positions"] + batch["rc_humans_velocities"] * (robot_dt * prediction_horizon),
-            batch["humans_radii"],
-            batch["humans_visibility"],
-            random.split(random.PRNGKey(seed), batch_size),
-            n_samples = n_loss_samples,
-            n_humans = n_humans,
-            negative_samples_threshold=negative_samples_threshold,
-        )
+        targets = batch["targets"]
         # Compute loss
-        loss = jessi.batch_loss_function_encoder(
+        loss = jessi.encoder_loss(
             params, 
             inputs,
-            obstacles_samples,
-            human_samples,
-            next_humans_samples,
+            targets,
         )
         return loss
     @jit
@@ -782,48 +490,16 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
             batch = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, train_epoch_data)
             ## Tranform batch into training_batch data (it is done during training loop to save memory)
             # training_batch = {
-            #     "inputs": jnp.zeros((batch_size, n_stack * lidar_num_rays, 12)),
-            #     "humans_samples": {  # Network target: samples from the rc humans positions
-            #         "position": jnp.full((batch_size, n_loss_samples, 2), jnp.nan),
-            #         "is_positive": jnp.zeros((batch_size, n_loss_samples), dtype=bool),
-            #     },
-            #     "obstacles_samples": {  # Network target: samples from the rc obstacles positions
-            #         "position": jnp.full((batch_size, n_loss_samples, 2), jnp.nan),
-            #         "is_positive": jnp.zeros((batch_size, n_loss_samples), dtype=bool),
-            #     },
-            #     "next_humans_samples": { # Network target: samples from the next step rc humans positions
-            #         "position": jnp.full((batch_size, n_loss_samples, 2), jnp.nan),
-            #         "is_positive": jnp.zeros((batch_size, n_loss_samples), dtype=bool),
-            #     },
+            #     "inputs": jnp.zeros((batch_size, n_stack * lidar_num_rays, 7)),
+            #     "targets": {
+            #         "gt_mask": jnp.zeros((batch_size, n_humans,)),
+            #         "gt_poses": jnp.zeros((batch_size, n_humans, 2)),
+            #         "gt_vels": jnp.zeros((batch_size, n_humans, 2)),
+            #     }
             # }
             training_batch = {}
             training_batch["inputs"] = vmap(jessi.compute_encoder_input, in_axes=(0))(batch["observations"])[0]
-            training_batch["humans_samples"] = jessi.batch_build_frame_humans_samples(
-                batch["rc_humans_positions"],
-                batch["humans_radii"],
-                batch["humans_visibility"],
-                random.split(random.PRNGKey(random_seed + i * n_data // batch_size + j), batch_size),
-                n_samples = n_loss_samples,
-                n_humans = n_humans,
-                negative_samples_threshold=negative_samples_threshold,
-            )
-            training_batch["obstacles_samples"] = jessi.batch_build_frame_obstacles_samples(
-                batch["rc_obstacles"],
-                batch["obstacles_visibility"],
-                random.split(random.PRNGKey(random_seed + i * n_data // batch_size + j), batch_size),
-                n_samples = n_loss_samples,
-                n_obstacles = n_obstacles,
-                negative_samples_threshold=negative_samples_threshold,
-            )
-            training_batch["next_humans_samples"] = jessi.batch_build_frame_humans_samples(
-                batch["rc_humans_positions"] + batch["rc_humans_velocities"] * (robot_dt * prediction_horizon),
-                batch["humans_radii"],
-                batch["humans_visibility"],
-                random.split(random.PRNGKey(random_seed + i * n_data // batch_size + j), batch_size),
-                n_samples = n_loss_samples,
-                n_humans = n_humans,
-                negative_samples_threshold=negative_samples_threshold,
-            )
+            training_batch["targets"] = batch["targets"]
             # Update parameters
             params, optimizer_state, loss = jessi.update_encoder(
                 params, 
