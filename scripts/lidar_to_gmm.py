@@ -27,13 +27,12 @@ n_stack = 5  # Number of stacked LiDAR scans as input
 n_steps = 100_000  # Number of labeled examples to train Perception network
 n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
-learning_rate = 1e-3
-batch_size = 200
+learning_rate = 0.0005
+batch_size = 100
 n_max_epochs = 1000
 patience = 25  # Early stopping patience
 delta_improvement = 5e-4  # Minimum validation improvement to reset early stopping patience
-data_split = [0.8, 0.1, 0.1]  # Train/Val/Test split ratios
-p_visualization_threshold = 0.1  # Minimum probability threshold to visualize HCGs
+data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
 # Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -415,15 +414,15 @@ del test_indexes
 # Initialize optimizer and its state
 optimizer = optax.chain(
     optax.clip_by_global_norm(1.0),
-    optax.adam(
-        learning_rate=optax.schedules.linear_schedule(
-            init_value=learning_rate, 
-            end_value=learning_rate * 0.02, 
-            transition_steps=int(n_max_epochs*n_train_data//batch_size),
-            transition_begin=0
-        ), 
-        eps=1e-7, 
-        b1=0.9,
+    optax.adamw(
+        learning_rate=optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=learning_rate,
+            warmup_steps=n_max_epochs // 100 * (n_train_data // batch_size),
+            decay_steps=n_max_epochs * (n_train_data // batch_size),
+            end_value=learning_rate/20,
+        ),
+        weight_decay=1e-2,
     ),
 )
 optimizer_state = optimizer.init(params)

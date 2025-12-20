@@ -118,7 +118,7 @@ class Perception(hk.Module):
         self.perception = SpatioTemporalEncoder(embed_dim=embed_dim, name="spatio_temporal_encoder")
         self.decoder = HCGQueryDecoder(n_detectable_humans, embed_dim, name="decoder")
         # Head: 11 params (weight, mu_x, mu_y, log_sig_x, log_sig_y, corr, mu_vx, mu_vy, log_sig_vx, log_sig_vy, corr_v)
-        self.head_hum = hk.Linear(11)
+        self.head_hum = hk.Linear(11, w_init=hk.initializers.VarianceScaling(0.01))
 
     def limit_vector_norm(self, raw_vector:jnp.ndarray, max_norm:float) -> jnp.ndarray:
         current_norm = jnp.linalg.norm(raw_vector, axis=-1, keepdims=True) + 1e-6
@@ -238,38 +238,14 @@ class Actor(hk.Module):
             **kwargs:dict,
         ) -> jnp.ndarray:
         """
-        Self-attention based actor that maps GMM parameters to Dirichlet distribution over action space vertices.
-        Obstacles GMM is passed through a standard MLP to extract features.
-        Humans GMM (current and next) are passed through a self-attention mechanism to extract relationship between humans motions.
-        The features of each GMM are weighted by the corresponding GMM weights to obtain a one-dimensional feature vector for obstacles and on for humans.
-        This encodes the fact that the weight of each GMM component represents its probability of being a real object/human.
-        Both features vectors are finally concatenated with robot state and passed through an MLP to compute Dirichlet distribution parameters.
+        x (jnp.ndarray): Shape (n_detectable_humans, 11 + 9)
         """
         ## Extract robot state and random key for sampling
         random_key = kwargs.get("random_key", random.PRNGKey(0))
-        robot_state = x[0,0, 7:]
+        robot_state = x[0, 11:]
         action_space_params = robot_state[:3]
-        ## Compute obstcles attentive embedding
-        obstacles_input = x[0,:,:6]  # Shape: (n_detectable_humans, 6)
-        obstacles_weights = x[0,:,6] # Shape: (n_detectable_humans,)
-        obstacles_features = self.features_mlp_obs(obstacles_input)  # Shape: (n_detectable_humans, obs embedding_size)
-        weighted_obstacles_features = jnp.sum(jnp.multiply(obstacles_weights[:,None], obstacles_features), axis=0) # Shape: (obs feature_size,)
-        ## Compute human attentive embedding
-        humans_input = jnp.concatenate([x[1,:,:6], x[2,:,:6]], axis=-1)  # Shape: (n_detectable_humans, 7)
-        humans_weights = x[1,:,6]  # Shape: (n_detectable_humans, 1)
-        # next_humans_weights = x[2,:,6]  # Shape: (n_detectable_humans, 1) - Currently these are the same as humans_weights
-        humans_embeddings = self.embedding_mlp_hum(humans_input)  # Shape: (n_detectable_humans, hum embedding_size)
-        humans_keys = self.hum_key_mlp(humans_embeddings)  # Shape: (n_detectable_humans, key_size)
-        humans_queries = self.hum_query_mlp(humans_embeddings)  # Shape: (n_detectable_humans, query_size)
-        humans_values = self.hum_value_mlp(humans_embeddings)  # Shape: (n_detectable_humans, value_size)
-        humans_attention_matrix = jnp.dot(humans_queries, humans_keys.T) / jnp.sqrt(humans_keys.shape[-1])  # Shape: (n_detectable_humans, n_detectable_humans)
-        humans_attention_matrix = nn.softmax(humans_attention_matrix, axis=-1)  # Shape: (n_detectable_humans, n_detectable_humans)
-        humans_features = jnp.dot(humans_attention_matrix, humans_values)  # Shape: (n_detectable_humans, value_size)
-        weighted_humans_features = jnp.sum(jnp.multiply(humans_weights[:,None], humans_features), axis=0)  # Shape: (hum feature_size,)
-        ## Concatenate weighted features
-        weighted_features = jnp.concatenate((weighted_obstacles_features, weighted_humans_features), axis=-1) # Shape: (obs feature_size + hum feature_size,)
         ## Compute Dirichlet distribution parameters
-        alphas = self.output_mlp(jnp.concatenate([robot_state, weighted_features], axis=0))
+        alphas = self.output_mlp(x.flatten())
         alphas = nn.softplus(alphas) + 1
         ## Compute dirchlet distribution vetices
         vertices = jnp.array([
@@ -424,9 +400,9 @@ class JESSI(BasePolicy):
         key:random.PRNGKey, 
     ) -> tuple:
         perception_params = self.perception.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7)))
-        # actor_params = self.actor.init(key, jnp.zeros((self.n_detectable_humans, 11 + 9)))  # 7 params per GMM component + 9 robot goal, robot vmax, robot radius, robot wheels distance, action space params
+        actor_params = self.actor.init(key, jnp.zeros((self.n_detectable_humans, 20)))  # 11 params per HCG + 9 robot goal, robot vmax, robot radius, robot wheels distance, action space params
         # critic_params = 
-        return perception_params, {}, {}
+        return perception_params, actor_params, {}
 
     @partial(jit, static_argnames=("self"))
     def bound_action_space(self, lidar_point_cloud):
@@ -550,12 +526,23 @@ class JESSI(BasePolicy):
         tiled_action_space_params = jnp.tile(action_space_params, (self.n_detectable_humans,1)) # Shape: (n_detectable_humans, 3)
         tiled_robot_params = jnp.tile(jnp.array([self.v_max, self.robot_radius, self.wheels_distance]), (self.n_detectable_humans,1)) # Shape: (n_detectable_humans, 3)
         tiled_robot_goals = jnp.tile(jnp.array([robot_goal_dist, robot_goal_sin_theta, robot_goal_cos_theta]), (self.n_detectable_humans,1)) # Shape: (n_detectable_humans, 3)
+        # HCGs from dict to jnp.array
+        hcgs = jnp.concatenate((
+            hcgs["pos_distrs"]["means"],
+            hcgs["pos_distrs"]["logsigmas"],
+            hcgs["pos_distrs"]["correlation"][..., jnp.newaxis],
+            hcgs["vel_distrs"]["means"],
+            hcgs["vel_distrs"]["logsigmas"],
+            hcgs["vel_distrs"]["correlation"][..., jnp.newaxis],
+            hcgs["weights"][..., jnp.newaxis],
+        ), axis=-1)  # Shape: (n_detectable_humans, 11)
+        # Concatenate all inputs
         actor_input = jnp.concatenate((
             hcgs,
+            tiled_action_space_params,
             tiled_robot_goals,
             tiled_robot_params,
-            tiled_action_space_params,
-        ), axis=-1)  # Shape: (n_detectable_humans, 7 + 9)
+        ), axis=-1)  # Shape: (n_detectable_humans, 11 + 9)
         return actor_input
 
     @partial(jit, static_argnames=("self"))
@@ -623,12 +610,12 @@ class JESSI(BasePolicy):
         sample:bool = False,
     ) -> jnp.ndarray:
         # Compute encoder input and last lidar point cloud (for action bounding)
-        encoder_input, last_lidar_point_cloud = self.compute_encoder_input(obs)
-        # Compute GMMs (with encoder)
-        encoder_distrs = self.perception.apply(
+        perception_input, last_lidar_point_cloud = self.compute_encoder_input(obs)
+        # Compute HCGs (with perception network)
+        hcgs = self.perception.apply(
             encoder_params, 
             None, 
-            encoder_input,
+            perception_input,
         )
         # Compute bounded action space parameters and add it to the input
         bounding_parameters = self.bound_action_space(
@@ -646,9 +633,7 @@ class JESSI(BasePolicy):
         rc_robot_goal = R @ translated_position
         # debug.print("Goal coords: {x}", x=rc_robot_goal)
         actor_input = self.compute_actor_input(
-            encoder_distrs["obs_distr"],
-            encoder_distrs["hum_distr"],
-            encoder_distrs["next_hum_distr"],
+            hcgs,
             bounding_parameters,
             rc_robot_goal,
         )
@@ -661,7 +646,7 @@ class JESSI(BasePolicy):
             random_key=subkey
         )
         action = lax.cond(sample, lambda _: sampled_action, lambda _: self.dirichlet.mean(actor_distr), None)
-        return action, key, actor_input, sampled_action, encoder_distrs, actor_distr
+        return action, key, actor_input, sampled_action, hcgs, actor_distr
     
     @partial(jit, static_argnames=("self"))
     def batch_act(
@@ -687,8 +672,8 @@ class JESSI(BasePolicy):
         current_params:dict,
         inputs:jnp.ndarray,
         targets:jnp.ndarray,
-        lambda_pos_reg:float=5.0,
-        lambda_vel_reg:float=5.0,
+        lambda_pos_reg:float=1.0,
+        lambda_vel_reg:float=1.0,
         lambda_cls:float=1.0,
         ) -> jnp.ndarray:
         # B: batch size, K: number of HCGs, M: max number of ground truth humans
@@ -887,8 +872,8 @@ class JESSI(BasePolicy):
         humans_velocities, # vx, vy (in global frame)
         humans_radii,
         static_obstacles,
-        p_visualization_threshold_hcgs:float=0.1,
-        p_visualization_threshold_dir:float=0.05,
+        p_visualization_threshold_hcgs,
+        p_visualization_threshold_dir,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
         save_video:bool=False,
@@ -900,7 +885,7 @@ class JESSI(BasePolicy):
             len(robot_goals) == \
             len(observations) == \
             len(actor_distrs['alphas']) == \
-            len(humans_distrs['pos_distr']['means']) == \
+            len(humans_distrs['pos_distrs']['means']) == \
             len(humans_poses) == \
             len(humans_velocities) == \
             len(humans_radii) == \
@@ -914,6 +899,7 @@ class JESSI(BasePolicy):
         angs = jnp.linspace(0, 2*jnp.pi, 20, endpoint=False)
         dists = jnp.linspace(0, 1, 10)
         gauss_samples = jnp.array(jnp.meshgrid(angs, dists)).T.reshape(-1, 2)
+        gauss_samples = gauss_samples.at[:].set(jnp.stack((gauss_samples[:,1] * jnp.cos(gauss_samples[:,0]), gauss_samples[:,1] * jnp.sin(gauss_samples[:,0])), axis=-1))
         from socialjym.policies.cadrl import CADRL
         from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
         dummy_cadrl = CADRL(DummyReward(kinematics="unicycle"),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
@@ -930,8 +916,9 @@ class JESSI(BasePolicy):
             fig.add_subplot(gs[:,2]), # Action space distribution/bounding + action taken
         ]
         def animate(frame):
-            for ax in enumerate(axs[:-1]): # All except last (Action space)
+            for i, ax in enumerate(axs):
                 ax.clear()
+                if i == len(axs) - 1: continue
                 ax.set(xlim=x_lims if x_lims is not None else [-10,10], ylim=y_lims if y_lims is not None else [-10,10])
                 ax.set_xlabel('X', labelpad=-5)
                 ax.set_ylabel('Y', labelpad=-13)
@@ -1007,25 +994,27 @@ class JESSI(BasePolicy):
             axs[1].set_title("Pointcloud")
             ### SECOND ROW AXS: PERCEPTION + ACTION VISUALIZATION
             frame_humans_distrs = tree_map(lambda x: x[frame], humans_distrs)
-            pos_distrs = frame_humans_distrs["pos_distr"]
-            vel_distrs = frame_humans_distrs["vel_distr"]
+            pos_distrs = frame_humans_distrs["pos_distrs"]
+            vel_distrs = frame_humans_distrs["vel_distrs"]
             probs = frame_humans_distrs["weights"]
             # AX 1,0 and 1,1: Human-centric Gaussians (HCGs) positions and velocities
-            for h in range(len(humans_poses[frame])):
-                if probs[h] > 0.5:
+            for h in range(self.n_detectable_humans):
+                if probs[h] > 0.3:
+                    human_pos_distr = tree_map(lambda x: x[h], pos_distrs)
+                    human_vel_distr = tree_map(lambda x: x[h], vel_distrs)
                     # Position HCG
-                    test_p = self.bivariate_gaussian.batch_p(pos_distrs, gauss_samples)
+                    test_p = self.bivariate_gaussian.batch_p(human_pos_distr, gauss_samples)
                     points_high_p = gauss_samples[test_p > p_visualization_threshold_hcgs]
                     corresponding_colors = test_p[test_p > p_visualization_threshold_hcgs]
-                    pos = pos_distrs["means"] @ rot + robot_poses[frame,:2]
+                    pos = rot @ human_pos_distr["means"] + robot_poses[frame,:2]
                     rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + pos
                     axs[2].scatter(pos[0], pos[1], c='red', s=10, marker='x', zorder=100)
                     axs[2].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
                     # Velocity HCG
-                    test_p = self.bivariate_gaussian.batch_p(vel_distrs, gauss_samples)
+                    test_p = self.bivariate_gaussian.batch_p(human_vel_distr, gauss_samples)
                     points_high_p = gauss_samples[test_p > p_visualization_threshold_hcgs]
                     corresponding_colors = test_p[test_p > p_visualization_threshold_hcgs]
-                    vel = vel_distrs["means"] @ rot + pos
+                    vel = rot @ human_vel_distr["means"] + pos
                     rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + pos
                     axs[3].scatter(vel[0], vel[1], c='red', s=10, marker='x', zorder=100)
                     axs[3].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
@@ -1102,7 +1091,7 @@ class JESSI(BasePolicy):
         goals,
         static_obstacles,
         humans_radii,
-        p_visualization_threshold_gmm:float=0.1,
+        p_visualization_threshold_gmm:float=0.05,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,

@@ -10,7 +10,6 @@ from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
-n_gmm_components = 10
 random_seed = 1
 n_episodes = 50
 kinematics = 'unicycle'
@@ -34,11 +33,12 @@ env_params = {
 env = LaserNav(**env_params)
 
 # Initialize the policy
-policy = JESSI(n_gmm_components=n_gmm_components)
+policy = JESSI()
 with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'rb') as f:
     encoder_params = pickle.load(f)
 with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
-    actor_params = pickle.load(f)
+    # actor_params = pickle.load(f)
+    _, actor_params, _ = policy.init_nns(random.PRNGKey(0))
 
 # Simulate some episodes
 for i in range(n_episodes):
@@ -53,35 +53,29 @@ for i in range(n_episodes):
         'alphas': jnp.zeros((max_steps, 3)),
         'vertices': jnp.zeros((max_steps, 3, 2)),
     }
-    encoder_distrs = {
-        "means": jnp.zeros((max_steps,policy.n_gmm_components,2)),
-        "logsigmas": jnp.zeros((max_steps,policy.n_gmm_components,2)),
-        "correlations": jnp.zeros((max_steps,policy.n_gmm_components)),
-        "weights": jnp.zeros((max_steps,policy.n_gmm_components)),
+    bigauss = {
+        "means": jnp.zeros((max_steps,policy.n_detectable_humans,2)),
+        "logsigmas": jnp.zeros((max_steps,policy.n_detectable_humans,2)),
+        "correlation": jnp.zeros((max_steps,policy.n_detectable_humans)),
     }
     all_encoder_distrs = {
-        "obs_distr": encoder_distrs,
-        "hum_distr": encoder_distrs,
-        "next_hum_distr": encoder_distrs,
+        "pos_distrs": bigauss,
+        "vel_distrs": bigauss,
+        "weights": jnp.zeros((max_steps,policy.n_detectable_humans)),
     }
     all_robot_goals = jnp.array([info['robot_goal']])
     all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
     all_humans_radii = jnp.array([info['humans_parameters'][:,0]])
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, _, _, _, encoder_distrs, actor_distr = policy.act(random.PRNGKey(0), obs, info, encoder_params, actor_params, sample=False)
+        action, _, _, _, percepion_distr, actor_distr = policy.act(random.PRNGKey(0), obs, info, encoder_params, actor_params, sample=False)
         # print("Dirichlet distribution parameters: ", actor_distr['alphas'])
         # Step the environment
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
         # Save data for animation
         all_actions = all_actions.at[step].set(action)
         all_actor_distrs = tree_map(lambda x, y: x.at[step].set(y), all_actor_distrs, actor_distr)
-        encoder_distr = {
-            "obs_distr": {k: jnp.squeeze(v) for k, v in encoder_distrs['obs_distr'].items()},
-            "hum_distr": {k: jnp.squeeze(v) for k, v in encoder_distrs['hum_distr'].items()},
-            "next_hum_distr": {k: jnp.squeeze(v) for k, v in encoder_distrs['next_hum_distr'].items()},
-        }
-        all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, encoder_distr)
+        all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, percepion_distr)
         all_states = jnp.vstack((all_states, jnp.array([state])))
         all_observations = jnp.vstack((all_observations, jnp.array([obs])))
         all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
