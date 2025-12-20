@@ -999,23 +999,23 @@ class JESSI(BasePolicy):
             probs = frame_humans_distrs["weights"]
             # AX 1,0 and 1,1: Human-centric Gaussians (HCGs) positions and velocities
             for h in range(self.n_detectable_humans):
-                if probs[h] > 0.3:
+                if probs[h] > 0.5:
                     human_pos_distr = tree_map(lambda x: x[h], pos_distrs)
                     human_vel_distr = tree_map(lambda x: x[h], vel_distrs)
                     # Position HCG
-                    test_p = self.bivariate_gaussian.batch_p(human_pos_distr, gauss_samples)
+                    pos = rot @ human_pos_distr["means"] + robot_poses[frame,:2]
+                    test_p = self.bivariate_gaussian.batch_p(human_pos_distr, human_pos_distr["means"] + gauss_samples)
                     points_high_p = gauss_samples[test_p > p_visualization_threshold_hcgs]
                     corresponding_colors = test_p[test_p > p_visualization_threshold_hcgs]
-                    pos = rot @ human_pos_distr["means"] + robot_poses[frame,:2]
                     rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + pos
                     axs[2].scatter(pos[0], pos[1], c='red', s=10, marker='x', zorder=100)
                     axs[2].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
                     # Velocity HCG
-                    test_p = self.bivariate_gaussian.batch_p(human_vel_distr, gauss_samples)
+                    vel = rot @ human_vel_distr["means"] + pos
+                    test_p = self.bivariate_gaussian.batch_p(human_vel_distr, human_vel_distr["means"] + gauss_samples)
                     points_high_p = gauss_samples[test_p > p_visualization_threshold_hcgs]
                     corresponding_colors = test_p[test_p > p_visualization_threshold_hcgs]
-                    vel = rot @ human_vel_distr["means"] + pos
-                    rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + pos
+                    rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + vel
                     axs[3].scatter(vel[0], vel[1], c='red', s=10, marker='x', zorder=100)
                     axs[3].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[2].set_title("HCGs positions")
