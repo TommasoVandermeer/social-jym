@@ -20,6 +20,22 @@ from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward a
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as LaserNavDummyReward
 from jhsfm.hsfm import vectorized_compute_edge_closest_point
 
+### TODO: Improve training
+### PROBLEM: Current training highly overfits on training data.
+### Causes:
+### - Data is temporally correlated (consecutive steps are similar)
+### - Data diversity is low (only DIR-SAFE policy, fixed number of humans/obstacles)
+### Solutions:
+### - Increase dataset size (e.g., 1 million steps). Use maximum fitting in GPU memory.
+### - Simulate steps on 1000 vectorized simulations. Resulting in much less temporal correlation.
+### - Simulate with varying number of humans/obstacles.
+### - Employ data augmentation techniques 
+###     - Add Gaussian noise to LiDAR scans
+###     - Randomly rotate LiDAR scans and corresponding ground-truth human positions/velocities
+###     - Randomly flip x/y axes of LiDAR scans and corresponding ground-truth human positions/velocities
+### - Use dropout layers in the perception network architecture.
+### - Use permanent dropout of LiDAR beams during training (e.g., randomly drop 10% of beams).
+
 save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
 random_seed = 0
