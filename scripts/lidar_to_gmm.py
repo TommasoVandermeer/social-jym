@@ -27,7 +27,7 @@ from jhsfm.hsfm import vectorized_compute_edge_closest_point
 ### - Data diversity is low (only DIR-SAFE policy, fixed number of humans/obstacles)
 ### Solutions:
 ### - Increase dataset size (e.g., 1 million steps). Use maximum fitting in GPU memory.
-### - Simulate steps on 1000 vectorized simulations. Resulting in much less temporal correlation.
+### - ✅ Simulate steps on vectorized simulations. Resulting in much less temporal correlation.
 ### - Simulate with varying number of humans/obstacles.
 ### - Employ data augmentation techniques 
 ###     - Add Gaussian noise to LiDAR scans
@@ -41,6 +41,7 @@ save_videos = False  # Whether to save videos of the debug inspections
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
 n_steps = 100_000  # Number of labeled examples to train Perception network
+n_parallel_envs = 200  # Number of parallel environments to simulate to generate the dataset
 n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
 learning_rate = 0.0005
@@ -102,11 +103,14 @@ ax_lims = jnp.array([
 ])
 
 ### Parameters validation
+assert n_steps % n_parallel_envs == 0, "n_steps must be divisible by n_parallel_envs"
 assert sum(data_split) == 1.0, "data_split must sum to 1.0"
 assert n_steps % batch_size == 0, "n_steps must be divisible by batch_size"
 assert int(n_steps * data_split[0]) % batch_size == 0, "Training set size must be divisible by batch_size"
 assert int(n_steps * data_split[1]) % batch_size == 0, "Validation set size must be divisible by batch_size"
 assert int(n_steps * data_split[2]) % batch_size == 0, "Test set size must be divisible by batch_size"
+
+dummy_policy_keys = random.split(random.PRNGKey(0), n_parallel_envs)
 
 def simulate_n_steps(n_steps):
     @loop_tqdm(n_steps, desc="Simulating steps")
@@ -115,68 +119,70 @@ def simulate_n_steps(n_steps):
         ## Retrieve data from the tuple
         data, state, obs, info, outcome, reset_key, lasernav_obs, lasernav_info = for_val
         ## Compute robot action
-        action, _, _, _, _ = dir_safe.act(random.PRNGKey(0), obs, info, actor_params, sample=False)
+        action, _, _, _, _ = dir_safe.batch_act(dummy_policy_keys, obs, info, actor_params, sample=False)
         ## Save output data
         step_out_data = {
             "episode_starts": ~outcome["nothing"],
             "lasernav_observations": lasernav_obs,
-            "humans_positions": obs[:-1,:2],
-            "humans_velocities": obs[:-1,2:4],
-            "humans_radii": info["humans_parameters"][:,0],
-            "humans_orientations": state[:-1,4],
-            "robot_positions": obs[-1,:2],
-            "robot_orientations": obs[-1,5],
+            "humans_positions": obs[:,:-1,:2],
+            "humans_velocities": obs[:,:-1,2:4],
+            "humans_radii": info["humans_parameters"][:,:,0],
+            "humans_orientations": state[:,:-1,4],
+            "robot_positions": obs[:,-1,:2],
+            "robot_orientations": obs[:,-1,5],
             "robot_actions": action,
             "robot_goals": info["robot_goal"],
-            "static_obstacles": info["static_obstacles"][-1],
+            "static_obstacles": info["static_obstacles"][:,-1],
         }
         data = tree_map(lambda x, y: x.at[i].set(y), data, step_out_data)
         ## Simulate one step SOCIALNAV
-        final_state, final_obs, final_info, _, final_outcome, final_reset_key = env.step(
+        final_state, final_obs, final_info, _, final_outcome, final_reset_key = env.batch_step(
             state,
             info,
             action, 
+            reset_key,
             test=False,
             reset_if_done=True,
-            reset_key=reset_key
         )
         ## Simulate one step LASERNAV to update stacked observations
-        final_lasernav_state, final_lasernav_obs, final_lasernav_info, _, final_lasernav_outcome, _ = laser_env.step(
+        final_lasernav_state, final_lasernav_obs, final_lasernav_info, _, final_lasernav_outcome, _ = laser_env.batch_step(
             state,
             lasernav_info,
             action, 
+            reset_key,
             test=False,
             reset_if_done=True,
-            reset_key=reset_key
         )
         # debug.print("Equal states: {x}", x=jnp.allclose(final_state, final_lasernav_state))
         # debug.print("Equal outcomes: {out}", out=(final_lasernav_outcome['nothing'] == final_outcome['nothing']))
         return data, final_state, final_obs, final_info, final_outcome, final_reset_key, final_lasernav_obs, final_lasernav_info
     # Initialize first episode
-    state, reset_key, obs, info, outcome = env.reset(random.PRNGKey(random_seed))
-    _, _, lasernav_obs, lasernav_info, _ = laser_env.reset(random.PRNGKey(random_seed))
+    reset_keys = random.split(random.PRNGKey(random_seed), n_parallel_envs)
+    state, reset_key, obs, info, outcome = env.batch_reset(reset_keys)
+    _, _, lasernav_obs, lasernav_info, _ = laser_env.batch_reset(reset_keys)
     # Initialize setting data
     data = {
-        "episode_starts": jnp.zeros((n_steps,), dtype=bool),
-        "lasernav_observations": jnp.zeros((n_steps,n_stack,lidar_num_rays+6)),
-        "humans_positions": jnp.zeros((n_steps,n_humans,2)),
-        "humans_velocities": jnp.zeros((n_steps,n_humans,2)),
-        "humans_orientations": jnp.zeros((n_steps,n_humans)),
-        "humans_radii": jnp.zeros((n_steps,n_humans)),
-        "robot_positions": jnp.zeros((n_steps,2)),
-        "robot_orientations": jnp.zeros((n_steps,)),
-        "robot_actions": jnp.zeros((n_steps,2)),
-        "robot_goals": jnp.zeros((n_steps,2)),
-        "static_obstacles": jnp.zeros((n_steps,n_obstacles,1,2,2)),
+        "episode_starts": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs), dtype=bool),
+        "lasernav_observations": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_stack,lidar_num_rays+6)),
+        "humans_positions": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans,2)),
+        "humans_velocities": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans,2)),
+        "humans_orientations": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans)),
+        "humans_radii": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans)),
+        "robot_positions": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,2)),
+        "robot_orientations": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs)),
+        "robot_actions": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,2)),
+        "robot_goals": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,2)),
+        "static_obstacles": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_obstacles,1,2,2)),
     }
     # Step loop
     data, _, _, _, _, _, _, _ = lax.fori_loop(
         0,
-        n_steps,
+        n_steps // n_parallel_envs,
         _simulate_steps_with_lidar,
         (data, state, obs, info, outcome, reset_key, lasernav_obs, lasernav_info)
     )
-    data["episode_starts"] = data["episode_starts"].at[0].set(True)  # First step is always episode start
+    data["episode_starts"] = data["episode_starts"].at[0,:].set(True)  # First step is always episode start
+    data = tree_map(lambda x: x.reshape((-1,) + x.shape[2:]), data)  # Merge parallel envs
     return data
 
 ### GENERATE DATASET

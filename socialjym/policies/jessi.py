@@ -695,7 +695,7 @@ class JESSI(BasePolicy):
         prob_cost = -jnp.log(jnp.expand_dims(human_distrs['weights'], 2) + 1e-6) # (B, K, 1)
         cost_matrix = lambda_pos_reg * dist + lambda_cls * prob_cost # (B, K, M)
         ## Matching
-        assigned_query_idx, assigned_gt_idx = vmap(optax.assignment.hungarian_algorithm)(cost_matrix)
+        assigned_query_idx, assigned_gt_idx = vmap(optax.assignment.hungarian_algorithm)(cost_matrix) # Shapes: (B, M), (B, M)
         sort_perm = jnp.argsort(assigned_gt_idx, axis=1) # Shape (B, M)
         best_pred_idx = jnp.take_along_axis(assigned_query_idx, sort_perm, axis=1) # Shape (B, M)
         # One-hot mask - shape: (B, K, M) -> 1 if k matches m, 0 otherwise
@@ -855,7 +855,7 @@ class JESSI(BasePolicy):
         # Compute loss and gradients
         loss, grads = _compute_loss_and_gradients(current_params, experiences)
         # Compute parameter updates
-        updates, optimizer_state = encoder_optimizer.update(grads, optimizer_state)
+        updates, optimizer_state = encoder_optimizer.update(grads, optimizer_state, current_params)
         # Apply updates
         updated_params = optax.apply_updates(current_params, updates)
         return updated_params, optimizer_state, loss    
