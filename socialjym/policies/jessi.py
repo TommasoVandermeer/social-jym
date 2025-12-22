@@ -559,7 +559,7 @@ class JESSI(BasePolicy):
 
         output:
         - lidar_tokens (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
-        7 features per token: [norm_dist, hit, x, y, distance, sin_fixed_theta, cos_fixed_theta, delta_t].
+        7 features per token: [norm_dist, hit, x, y, sin_fixed_theta, cos_fixed_theta, delta_t].
         - last LiDAR point cloud (lidar_num_rays, 2): in robot frame of the most recent observation.
         """
         # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.

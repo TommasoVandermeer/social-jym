@@ -40,8 +40,8 @@ save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
-n_steps = 100_000  # Number of labeled examples to train Perception network
-n_parallel_envs = 200  # Number of parallel environments to simulate to generate the dataset
+n_steps = 500_000  # Number of labeled examples to train Perception network
+n_parallel_envs = 1000  # Number of parallel environments to simulate to generate the dataset
 n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
 learning_rate = 0.0005
@@ -113,7 +113,7 @@ assert int(n_steps * data_split[2]) % batch_size == 0, "Test set size must be di
 dummy_policy_keys = random.split(random.PRNGKey(0), n_parallel_envs)
 
 def simulate_n_steps(n_steps):
-    @loop_tqdm(n_steps, desc="Simulating steps")
+    @loop_tqdm(n_steps//n_parallel_envs, desc="Simulating steps")
     @jit
     def _simulate_steps_with_lidar(i:int, for_val:tuple):
         ## Retrieve data from the tuple
@@ -489,6 +489,57 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
             (batches, seeds),
         )
         return losses
+    @jit
+    def batch_augment_data(
+        batch:dict,
+        keys:random.PRNGKey,
+        base_lidar_noise_std:float = 0.01, # 1cm base noise
+        proportional_lidar_noise_std:float = 0.01, # 1% proportional noise
+    ) -> dict:
+        return vmap(augment_data, in_axes=(0, 0, None, None))(batch, keys, base_lidar_noise_std, proportional_lidar_noise_std)
+    @jit 
+    def augment_data(
+        data:dict,
+        key:random.PRNGKey,
+        base_lidar_noise_std:float,
+        proportional_lidar_noise_std:float,
+    ) -> dict:
+        # data = {
+        #     "inputs": shape (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
+        #               each token: [norm_dist, hit, x, y, sin_fixed_theta, cos_fixed_theta, delta_t]
+        #     "targets": {
+        #         "gt_mask": shape (n_humans,),
+        #         "gt_poses": shape (n_humans, 2),
+        #         "gt_vels": shape (n_humans, 2),
+        #     }
+        # }
+        input_key, rotation_key = random.split(key, 2)
+        ## Gaussian noise to LiDAR scans
+        raw_distances = data['inputs'][:,:,0] * jessi.max_beam_range  # (n_stack, lidar_num_rays)
+        sigma = base_lidar_noise_std + proportional_lidar_noise_std * raw_distances  # (n_stack, lidar_num_rays)
+        noise = random.normal(input_key, shape=raw_distances.shape) * sigma * data['inputs'][:,:,1]  # (n_stack, lidar_num_rays)
+        noisy_distances = jnp.clip(raw_distances + noise, 0., jessi.max_beam_range) # (n_stack, lidar_num_rays)
+        cos = data['inputs'][:,:,2] / (raw_distances + 1e-6)  # (n_stack, lidar_num_rays)
+        sin = data['inputs'][:,:,3] / (raw_distances + 1e-6)  # (n_stack, lidar_num_rays)
+        x = noisy_distances * cos  # (n_stack, lidar_num_rays)
+        y = noisy_distances * sin  # (n_stack, lidar_num_rays)
+        data['inputs'] = data['inputs'].at[:,:,0].set(noisy_distances / jessi.max_beam_range)
+        data['inputs'] = data['inputs'].at[:,:,1].set(jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0))
+        data['inputs'] = data['inputs'].at[:,:,2].set(x)
+        data['inputs'] = data['inputs'].at[:,:,3].set(y)
+        ## Random rotation
+        alpha = random.uniform(rotation_key, minval=-jnp.pi, maxval=jnp.pi)
+        ca, sa = jnp.cos(alpha), jnp.sin(alpha)
+        rot_mat = jnp.array([[ca, -sa], [sa, ca]])
+        s_new = data['inputs'][..., 4] * ca + data['inputs'][..., 5] * sa
+        c_new = data['inputs'][..., 5] * ca - data['inputs'][..., 4] * sa
+        xy_rotated = data['inputs'][..., 2:4]  @ rot_mat.T
+        data['inputs'] = data['inputs'].at[..., 2:4].set(xy_rotated)
+        data['inputs'] = data['inputs'].at[..., 4].set(s_new) 
+        data['inputs'] = data['inputs'].at[..., 5].set(c_new) 
+        data['targets']['gt_poses'] = data['targets']['gt_poses'] @ rot_mat.T
+        data['targets']['gt_vels'] = data['targets']['gt_vels'] @ rot_mat.T
+        return data
     @jit 
     def _epoch_loop(
         epoch_for_val:tuple,
@@ -500,6 +551,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
         indexes = jnp.arange(n_train_data)
         shuffled_indexes = random.permutation(shuffle_key, indexes)
         train_epoch_data = tree_map(lambda x: x[shuffled_indexes], train_dataset)
+        n_train_batches = n_train_data // batch_size
         @jit
         def _batch_train_loop(
             j:int,
@@ -521,6 +573,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
             training_batch = {}
             training_batch["inputs"] = vmap(jessi.compute_encoder_input, in_axes=(0))(batch["observations"])[0]
             training_batch["targets"] = batch["targets"]
+            ## DATA AUGMENTATION
+            training_batch = batch_augment_data(
+                training_batch,
+                random.split(random.PRNGKey(i * n_train_batches + j), batch_size),
+            )
             # Update parameters
             params, optimizer_state, loss = jessi.update_encoder(
                 params, 
@@ -532,7 +589,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
             # Save loss
             losses = losses.at[i,j].set(loss)
             return train_epoch_data, params, optimizer_state, losses
-        n_train_batches = n_train_data // batch_size
         _, params, optimizer_state, train_losses = lax.fori_loop(
             0,
             n_train_batches,
