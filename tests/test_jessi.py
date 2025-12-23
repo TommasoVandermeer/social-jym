@@ -70,7 +70,7 @@ for i in range(n_episodes):
         # Compute action from trained JESSI
         action, _, _, _, percepion_distr, actor_distr = policy.act(random.PRNGKey(0), obs, info, encoder_params, actor_params, sample=False)
         # print("Dirichlet distribution parameters: ", actor_distr['alphas'])
-        # print(percepion_distr)
+        print("Predicted HCGs scores", [f"{w:.2f}" for w in percepion_distr['weights']])
         # Step the environment
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
         # Save data for animation

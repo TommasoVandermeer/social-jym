@@ -26,15 +26,14 @@ from jhsfm.hsfm import vectorized_compute_edge_closest_point
 ### - Data is temporally correlated (consecutive steps are similar)
 ### - Data diversity is low (only DIR-SAFE policy, fixed number of humans/obstacles)
 ### Solutions:
-### - Increase dataset size (e.g., 1 million steps). Use maximum fitting in GPU memory.
+### - ✅ Increase dataset size (e.g., 1 million steps). Use maximum fitting in GPU memory.
 ### - ✅ Simulate steps on vectorized simulations. Resulting in much less temporal correlation.
 ### - Simulate with varying number of humans/obstacles.
-### - Employ data augmentation techniques 
+### - ✅ Employ data augmentation techniques 
 ###     - Add Gaussian noise to LiDAR scans
 ###     - Randomly rotate LiDAR scans and corresponding ground-truth human positions/velocities
-###     - Randomly flip x/y axes of LiDAR scans and corresponding ground-truth human positions/velocities
 ### - Use dropout layers in the perception network architecture.
-### - Use permanent dropout of LiDAR beams during training (e.g., randomly drop 10% of beams).
+### - ✅ Use permanent dropout of LiDAR beams during training (e.g., randomly drop 10% of beams).
 
 save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
@@ -495,14 +494,16 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
         keys:random.PRNGKey,
         base_lidar_noise_std:float = 0.01, # 1cm base noise
         proportional_lidar_noise_std:float = 0.01, # 1% proportional noise
+        beam_dropout_prob:float = 0.1, # 10% beams dropout
     ) -> dict:
-        return vmap(augment_data, in_axes=(0, 0, None, None))(batch, keys, base_lidar_noise_std, proportional_lidar_noise_std)
+        return vmap(augment_data, in_axes=(0, 0, None, None, None))(batch, keys, base_lidar_noise_std, proportional_lidar_noise_std, beam_dropout_prob)
     @jit 
     def augment_data(
         data:dict,
         key:random.PRNGKey,
         base_lidar_noise_std:float,
         proportional_lidar_noise_std:float,
+        beam_dropout_prob:float,
     ) -> dict:
         # data = {
         #     "inputs": shape (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
@@ -513,18 +514,21 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
         #         "gt_vels": shape (n_humans, 2),
         #     }
         # }
-        input_key, rotation_key = random.split(key, 2)
-        ## Gaussian noise to LiDAR scans
+        input_key, rotation_key, beam_dropout_key = random.split(key, 3)
+        ## Gaussian noise to LiDAR scans + Beam dropout
         raw_distances = data['inputs'][:,:,0] * jessi.max_beam_range  # (n_stack, lidar_num_rays)
         sigma = base_lidar_noise_std + proportional_lidar_noise_std * raw_distances  # (n_stack, lidar_num_rays)
         noise = random.normal(input_key, shape=raw_distances.shape) * sigma * data['inputs'][:,:,1]  # (n_stack, lidar_num_rays)
         noisy_distances = jnp.clip(raw_distances + noise, 0., jessi.max_beam_range) # (n_stack, lidar_num_rays)
+        is_dropout = random.bernoulli(beam_dropout_key, p=beam_dropout_prob, shape=raw_distances.shape)
+        noisy_distances = jnp.where(is_dropout, jessi.max_beam_range, noisy_distances)  # (n_stack, lidar_num_rays)
+        new_hit = jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0) * (1.0 - is_dropout)  # (n_stack, lidar_num_rays)
         cos = data['inputs'][:,:,2] / (raw_distances + 1e-6)  # (n_stack, lidar_num_rays)
         sin = data['inputs'][:,:,3] / (raw_distances + 1e-6)  # (n_stack, lidar_num_rays)
         x = noisy_distances * cos  # (n_stack, lidar_num_rays)
         y = noisy_distances * sin  # (n_stack, lidar_num_rays)
         data['inputs'] = data['inputs'].at[:,:,0].set(noisy_distances / jessi.max_beam_range)
-        data['inputs'] = data['inputs'].at[:,:,1].set(jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0))
+        data['inputs'] = data['inputs'].at[:,:,1].set(new_hit)
         data['inputs'] = data['inputs'].at[:,:,2].set(x)
         data['inputs'] = data['inputs'].at[:,:,3].set(y)
         ## Random rotation
