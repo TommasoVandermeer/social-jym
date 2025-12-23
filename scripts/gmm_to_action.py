@@ -26,7 +26,6 @@ random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
 n_steps = 30_000  # Number of labeled examples to train Lidar to GMM network
 n_gaussian_mixture_components = 10  # Number of GMM components
-box_limits = jnp.array([[-2,4], [-3,3]])  # Grid limits in meters [[x_min,x_max],[y_min,y_max]]
 visibility_threshold_from_grid = 0.5  # Distance from grid limit to consider an object inside the grid
 n_loss_samples = 1000  # Number of samples to estimate the loss
 prediction_horizon = 4  # Number of steps ahead to predict next GMM (in seconds it is prediction_horizon * robot_dt)
@@ -72,12 +71,12 @@ jessi = JESSI(
     lidar_max_dist=lidar_max_dist,
     lidar_angular_range=lidar_angular_range,
     n_stack=n_stack, 
-    gmm_means_limits=box_limits, 
     n_gmm_components=n_gaussian_mixture_components, 
     prediction_horizon=prediction_horizon, 
     max_humans_velocity=max_humans_velocity
 )
 # Build local grid over which the GMM is defined
+box_limits = jnp.array([[-lidar_max_dist,lidar_max_dist], [-lidar_max_dist,lidar_max_dist]])  # Grid limits in meters [[x_min,x_max],[y_min,y_max]]
 box_points = jnp.array([
     [box_limits[0,0], box_limits[1,0]],
     [box_limits[0,1], box_limits[1,0]],

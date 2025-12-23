@@ -9,7 +9,7 @@ setup(
     'jax_tqdm>=0.2.2',
     'matplotlib>=3.9.1',
     'dm-haiku>=0.0.12',
-    'optax>=0.2.3',
+    'optax>=0.2.4',
     'notebook>=7.2.2',
     'pandas>=2.2.3',
     'scipy>=1.14.0',

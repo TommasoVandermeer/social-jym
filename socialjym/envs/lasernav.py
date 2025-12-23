@@ -268,6 +268,11 @@ class LaserNav(BaseEnv):
             outcome["nothing"] = jnp.logical_not(jnp.any(jnp.array([outcome["success"], failure, outcome["timeout"]])))
             return outcome
         outcome = lax.cond(test, lambda x: _test_outcome(x), lambda x: x[2], (new_state, info, outcome))
+        ### Update time, step, return, previous observation
+        new_info["time"] += self.robot_dt
+        new_info["step"] += 1
+        new_info["return"] += pow(self.reward_function.gamma, info["step"] * self.robot_dt * self.reward_function.v_max) * reward
+        new_info["previous_obs"] = obs
         ### If done and reset_if_done, automatically reset the environment (available only if using standard scenarios)
         if self.scenario != -1: # Custom scenario, no automatic reset
             new_state, reset_key, new_info = lax.cond(
@@ -276,11 +281,6 @@ class LaserNav(BaseEnv):
                 lambda x: x,
                 (new_state, reset_key, new_info)
             )
-        ### Update time, step, return, previous observation
-        new_info["time"] += self.robot_dt
-        new_info["step"] += 1
-        new_info["return"] += pow(self.reward_function.gamma, info["step"] * self.robot_dt * self.reward_function.v_max) * reward
-        new_info["previous_obs"] = obs
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
         return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome, reset_key
 
@@ -307,7 +307,12 @@ class LaserNav(BaseEnv):
     @partial(jit, static_argnames=("self"))
     def reset(self, key:random.PRNGKey) -> tuple:
         initial_state, key, info = self._reset(key)
-        return initial_state, key, info["previous_obs"], info, {"success": False, "collision_with_human": False, "collision_with_obstacle": False, "timeout": False, "nothing": True}
+        return \
+            initial_state, \
+            key, \
+            info["previous_obs"], \
+            info, \
+            {"success": False, "collision_with_human": False, "collision_with_obstacle": False, "timeout": False, "nothing": True}
     
     @partial(jit, static_argnames=("self"))
     def batch_reset(self, keys):

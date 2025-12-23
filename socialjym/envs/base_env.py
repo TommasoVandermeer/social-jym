@@ -58,6 +58,40 @@ def is_multiple(number:float, dividend:float, tolerance:float=1e-7) -> bool:
     mod = number % dividend
     return jnp.any(jnp.array([abs(mod) <= tolerance,abs(dividend - mod) <= tolerance]))
 
+@jit
+def roto_translate_pose_and_vel(position, orientation, velocity, ref_position, ref_orientation):
+    """Roto-translate a 2D pose and a velocity to a given reference pose."""
+    c, s = jnp.cos(-ref_orientation), jnp.sin(-ref_orientation)
+    R = jnp.array([[c, -s],
+                [s,  c]])
+    translated_position = position - ref_position
+    rotated_position = R @ translated_position
+    rotated_orientation = orientation - ref_orientation
+    rotated_velocity = R @ velocity
+    return rotated_position, rotated_orientation, rotated_velocity
+
+@jit
+def roto_translate_poses_and_vels(positions, orientations, velocities, ref_position, ref_orientation):
+    """Roto-translate a batch of 2D poses and velocities to a given reference pose."""
+    return vmap(roto_translate_pose_and_vel, in_axes=(0, 0, 0, None, None))(positions, orientations, velocities, ref_position, ref_orientation)
+
+@jit
+def roto_translate_obstacle_segments(obstacle_segments, ref_position, ref_orientation):
+    # Translate segments to robot frame
+    obstacle_segments = obstacle_segments.at[:, :, 0].set(obstacle_segments[:, :, 0] - ref_position[0])
+    obstacle_segments = obstacle_segments.at[:, :, 1].set(obstacle_segments[:, :, 1] - ref_position[1])
+    # Rotate segments by -ref_orientation
+    c, s = jnp.cos(-ref_orientation), jnp.sin(-ref_orientation)
+    rot = jnp.array([[c, -s], [s, c]])
+    obstacle_segments = jnp.einsum('ij,klj->kli', rot, obstacle_segments)
+    return obstacle_segments
+
+@jit
+def roto_translate_obstacles(obstacles, ref_positions, ref_orientations):
+    return vmap(roto_translate_obstacle_segments, in_axes=(0, None, None))(obstacles, ref_positions, ref_orientations)
+
+
+
 class BaseEnv(ABC):
     """
     Base class for social navigation environments.
@@ -398,13 +432,17 @@ class BaseEnv(ABC):
     def _generate_delayed_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
         key, subkey = random.split(key)
         full_state, info = self._generate_circular_crossing_episode(key)
+        info = self._init_info(
+            full_state,
+            humans_goal=-info["humans_goal"],
+            robot_goal=self._init_robot_goal(SCENARIOS.index('delayed_circular_crossing')),
+            humans_parameters=info["humans_parameters"],
+            static_obstacles=self._init_obstacles(key, SCENARIOS.index('delayed_circular_crossing')),
+            current_scenario=SCENARIOS.index('delayed_circular_crossing'),
+            humans_delay=jnp.zeros((self.n_humans,)),
+        )
         possible_delays = jnp.arange(0., self.max_cc_delay + self.robot_dt, self.robot_dt)
         info["humans_delay"] = info["humans_delay"].at[:].set(random.choice(subkey, possible_delays, shape=(self.n_humans,)))
-        info["current_scenario"] = SCENARIOS.index('delayed_circular_crossing')
-        info["static_obstacles"] = self._init_obstacles(key, SCENARIOS.index('delayed_circular_crossing'))
-        info["robot_goal"] = self._init_robot_goal(SCENARIOS.index('delayed_circular_crossing'))
-        # The next waypoint of humans is set to be its initial position
-        info["humans_goal"] = info["humans_goal"].at[:].set(-info["humans_goal"])
         return full_state, info
 
     @partial(jit, static_argnames=("self"))
@@ -1325,6 +1363,144 @@ class BaseEnv(ABC):
         lidar_output = jnp.stack((measurements, angles), axis=-1)
         return lidar_output
     
+    @partial(jit, static_argnames=("self"))
+    def object_visibility(self, rc_humans_positions, humans_radii, rc_static_obstacles, epsilon=1e-5):
+        """
+        Assess which humans and static obstacles are visible from the robot's perspective.
+
+        params:
+        - rc_humans_positions: (n_humans, 2) array of humans positions IN ROBOT-CENTRIC FRAME
+        - humans_radii: (n_humans,) array of humans radii
+        - rc_static_obstacles: (n_obstacles, 2, 2) array of static obstacle segments IN ROBOT-CENTRIC FRAME
+
+        returns:
+        - visible_humans_mask: (n_humans,) boolean array indicating which humans are visible
+        - visible_static_obstacles_mask: (n_obstacles,n_segments) boolean array indicating which static obstacle segments are visible
+        """
+        ### Compute ordered array of all objects endpoint angles
+        ## Humans
+        humans_versors = rc_humans_positions / jnp.linalg.norm(rc_humans_positions, axis=1, keepdims=True)  # Shape: (n_humans, 2)
+        left_versors = humans_versors @ jnp.array([[0, 1], [-1, 0]])  # Rotate by +90 degrees
+        humans_left_edge_points = rc_humans_positions + (humans_radii[:, None] - epsilon) * left_versors  # Shape: (n_humans, 2)
+        humans_right_edge_points = rc_humans_positions - (humans_radii[:, None] - epsilon) * left_versors  # Shape: (n_humans, 2)
+        humans_left_angles = jnp.arctan2(humans_left_edge_points[:,1], humans_left_edge_points[:,0]) # Shape: (n_humans,)
+        humans_right_angles = jnp.arctan2(humans_right_edge_points[:,1], humans_right_edge_points[:,0]) # Shape: (n_humans,)
+        humans_edge_angles = jnp.concatenate((humans_left_angles, humans_right_angles))  # Shape: (2*n_humans,)
+        ## Obstacles
+        obstacle_segments = rc_static_obstacles.reshape((self.n_obstacles*self.static_obstacles_per_scenario.shape[2], 2, 2))  # Shape: (n_obstacles*n_segments, 2, 2)
+        obstacle_first_edge_points = obstacle_segments[:,0,:]  # Shape: (n_obstacles*n_segments, 2)
+        obstacle_second_edge_points = obstacle_segments[:,1,:]  # Shape: (n_obstacles*n_segments, 2)
+        first_to_second_versors = obstacle_second_edge_points - obstacle_first_edge_points / jnp.linalg.norm(obstacle_second_edge_points - obstacle_first_edge_points, axis=1, keepdims=True)  # Shape: (n_obstacles*n_segments, 2)
+        obstacle_first_edge_points = obstacle_first_edge_points + (epsilon * first_to_second_versors)  # Shape: (n_obstacles*n_segments, 2)
+        obstacle_second_edge_points = obstacle_second_edge_points - (epsilon * first_to_second_versors)  # Shape: (n_obstacles*n_segments, 2)
+        obstacle_first_edge_angles = jnp.arctan2(obstacle_first_edge_points[:,1], obstacle_first_edge_points[:,0])  # Shape: (n_obstacles*n_segments,)
+        obstacle_second_edge_angles = jnp.arctan2(obstacle_second_edge_points[:,1], obstacle_second_edge_points[:,0])  # Shape: (n_obstacles*n_segments,)
+        obstacle_edge_angles = jnp.append(obstacle_first_edge_angles, obstacle_second_edge_angles)  # Shape: (2*n_obstacles*n_segments,)
+        ## Merge and sort all edge angles
+        all_edge_angles = jnp.concatenate((humans_edge_angles, obstacle_edge_angles))  # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
+        sorted_all_edge_angles = jnp.sort(all_edge_angles)
+        # Wrap around for midpoint computation
+        sorted_all_edge_angles = jnp.append(sorted_all_edge_angles, sorted_all_edge_angles[0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1,)
+        ### Compute midpoint angles between consecutive object endpoints
+        sorted_all_verors = jnp.array([jnp.cos(sorted_all_edge_angles), jnp.sin(sorted_all_edge_angles)]).T  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1, 2)
+        midpoint_verors = (sorted_all_verors[:-1] + sorted_all_verors[1:])  # Shape: (2*n_humans + 2*n_obstacles*n_segments, 2)
+        midpoint_verors = midpoint_verors / jnp.linalg.norm(midpoint_verors, axis=1, keepdims=True)  # Normalize
+        midpoint_angles = jnp.arctan2(midpoint_verors[:,1], midpoint_verors[:,0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
+        all_angles = jnp.concatenate((all_edge_angles, midpoint_angles)) # Shape: (4*n_humans + 4*n_obstacles*n_segments,)
+        ### Ray-cast all computed angles and assess visibility of all objects (human_collision_idxs shape: (n_rays,), obstacle_collision_idxs shape: (n_rays, 2))
+        _, human_collision_idxs, obstacle_collision_idxs = self.batch_ray_cast(
+            all_angles,
+            jnp.array([0., 0.]),
+            rc_humans_positions,
+            humans_radii,
+            rc_static_obstacles
+        )
+        humans_visibility_mask = vmap(lambda idx: jnp.any(human_collision_idxs == idx))(jnp.arange(self.n_humans))  # Shape: (n_humans,)
+        @jit
+        def segment_visibility(obstacle_idx, segment_idx, obstacle_collision_idxs):
+            return jnp.any(jnp.all(obstacle_collision_idxs == jnp.array([obstacle_idx, segment_idx]), axis=1))
+        @jit
+        def obstacle_segments_visibility(obstacle_idx, segment_idxs, obstacle_collision_idxs):
+            return vmap(segment_visibility, in_axes=(None, 0, None))(obstacle_idx, segment_idxs, obstacle_collision_idxs)
+        obstacles_visibility_mask = vmap(obstacle_segments_visibility, in_axes=(0, None, None))(
+            jnp.arange(self.n_obstacles), 
+            jnp.arange(self.static_obstacles_per_scenario.shape[2]), 
+            obstacle_collision_idxs
+        ) # Shape: (n_obstacles, n_segments)
+        return humans_visibility_mask, obstacles_visibility_mask
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_object_visibility(self, batch_rc_humans_positions, batch_humans_radii, batch_rc_static_obstacles, epsilon=1e-5):
+        """
+        Compute object visibility with respect to the robot for a batch of frames.
+
+        params:
+        - batch_rc_humans_positions: (batch_size, n_humans, 2) array of humans positions IN ROBOT-CENTRIC FRAME
+        - batch_humans_radii: (batch_size, n_humans) array of humans radii
+        - batch_rc_static_obstacles: (batch_size, n_obstacles, n_segments, 2, 2) array of static obstacle segments IN ROBOT-CENTRIC FRAME
+        """
+        return vmap(BaseEnv.object_visibility, in_axes=(None,0,0,0,None))(
+            self,
+            batch_rc_humans_positions,
+            batch_humans_radii,
+            batch_rc_static_obstacles,
+            epsilon
+        )
+
+    @partial(jit, static_argnames=("self"))
+    def robot_centric_transform(
+        self, 
+        humans_positions,
+        humans_orientations,
+        humans_velocities,
+        static_obstacles,
+        robot_position,
+        robot_orientation,
+        robot_goal,
+    ):
+        rc_humans_positions, rc_humans_orientations, rc_humans_velocities = roto_translate_poses_and_vels(
+            humans_positions,
+            humans_orientations,
+            humans_velocities,
+            robot_position,
+            robot_orientation,
+        )
+        rc_static_obstacles = roto_translate_obstacles(
+            static_obstacles,
+            robot_position,
+            robot_orientation,
+        )
+        rc_robot_goal, _, _ = roto_translate_pose_and_vel(
+            robot_goal,
+            jnp.array([0.0]),
+            jnp.array([0.0,0.0]),
+            robot_position,
+            robot_orientation,
+        )
+        return rc_humans_positions, rc_humans_orientations, rc_humans_velocities, rc_static_obstacles, rc_robot_goal
+
+    @partial(jit, static_argnames=("self"))
+    def batch_robot_centric_transform(
+        self, 
+        humans_positions,
+        humans_orientations,
+        humans_velocities,
+        static_obstacles,
+        robot_positions,
+        robot_orientations,
+        robot_goals,
+    ):
+        return vmap(BaseEnv.robot_centric_transform, in_axes=(None,0,0,0,0,0,0,0))(
+            self,
+            humans_positions,
+            humans_orientations,
+            humans_velocities,
+            static_obstacles,
+            robot_positions,
+            robot_orientations,
+            robot_goals,
+        )
+
     @partial(jit, static_argnames=("self"))
     def get_grid_map_center(self, state, info):
         """
