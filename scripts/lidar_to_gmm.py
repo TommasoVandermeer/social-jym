@@ -46,8 +46,8 @@ max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the m
 learning_rate = 0.0005
 batch_size = 100
 n_max_epochs = 1000
-patience = 25  # Early stopping patience
-delta_improvement = 5e-4  # Minimum validation improvement to reset early stopping patience
+patience = 100  # Early stopping patience
+delta_improvement = 0.001  # Minimum validation improvement to reset early stopping patience
 data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
 # Environment parameters
 robot_radius = 0.3
@@ -441,7 +441,7 @@ optimizer = optax.chain(
             peak_value=learning_rate,
             warmup_steps=n_max_epochs // 100 * (n_train_data // batch_size),
             decay_steps=n_max_epochs * (n_train_data // batch_size),
-            end_value=learning_rate/20,
+            end_value=learning_rate/100,
         ),
         weight_decay=1e-2,
     ),
@@ -494,7 +494,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
         keys:random.PRNGKey,
         base_lidar_noise_std:float = 0.01, # 1cm base noise
         proportional_lidar_noise_std:float = 0.01, # 1% proportional noise
-        beam_dropout_prob:float = 0.1, # 10% beams dropout
+        beam_dropout_prob:float = 0.03, # 3% beams dropout
     ) -> dict:
         return vmap(augment_data, in_axes=(0, 0, None, None, None))(batch, keys, base_lidar_noise_std, proportional_lidar_noise_std, beam_dropout_prob)
     @jit 
