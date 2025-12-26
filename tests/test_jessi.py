@@ -34,7 +34,7 @@ env = LaserNav(**env_params)
 
 # Initialize the policy
 policy = JESSI()
-with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'gmm_network_5.pkl'), 'rb') as f:
     encoder_params = pickle.load(f)
 with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
     # actor_params = pickle.load(f)

@@ -672,7 +672,7 @@ class JESSI(BasePolicy):
         current_params:dict,
         inputs:jnp.ndarray,
         targets:jnp.ndarray,
-        lambda_pos_reg:float=1.0,
+        lambda_pos_reg:float=2.0,
         lambda_vel_reg:float=1.0,
         lambda_cls:float=1.0,
         ) -> jnp.ndarray:
