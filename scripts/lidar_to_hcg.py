@@ -185,7 +185,7 @@ def simulate_n_steps(n_steps):
     return data
 
 ### GENERATE DATASET
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_training_dataset.pkl')):
     ## GENERATE RAW DATASET
     if not os.path.exists(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl')):
         # Generate raw data
@@ -387,14 +387,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_gmm_trainin
     fig.canvas.mpl_connect('button_press_event', toggle_pause)
     plt.show()
     # Save dataset
-    with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'final_hcg_training_dataset.pkl'), 'wb') as f:
         pickle.dump(dataset, f)
     # Delete robot_centric_data and raw_data to save memory
     del robot_centric_data
     del raw_data
 else:
     # Load dataset
-    with open(os.path.join(os.path.dirname(__file__), 'final_gmm_training_dataset.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'final_hcg_training_dataset.pkl'), 'rb') as f:
         dataset = pickle.load(f)
 
 ### DEFINE NEURAL NETWORK
@@ -447,7 +447,7 @@ optimizer = optax.chain(
     ),
 )
 optimizer_state = optimizer.init(params)
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'perception_network.pkl')):
     @jit
     def batch_val_test_loss(
         batch:dict,
@@ -645,7 +645,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
     params = early_stopping_info['best_params']
     print(f"\nTraining completed in {n_epochs} epochs. - Best val loss: {early_stopping_info['best_val_loss']}\n")
     # Save trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'wb') as f:
         pickle.dump(params, f)
     ## TEST
     n_train_batches = n_train_data // batch_size
@@ -680,5 +680,5 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl')
     del test_dataset
 else:
     # Load trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'gmm_network.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb') as f:
         params = pickle.load(f)
