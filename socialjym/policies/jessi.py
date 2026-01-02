@@ -156,7 +156,7 @@ class Perception(hk.Module):
         }
 
     def __call__(self, x):
-        # x input: [B, n_stack, num_beams, 7]
+        # x input: [batch B, n_stack (T), num_beams (L), 7]
         has_batch = x.ndim == 4
         if not has_batch:
             x = jnp.expand_dims(x, 0) # [1, T, L, F]
@@ -164,7 +164,7 @@ class Perception(hk.Module):
         x_emb = self.input_proj(x) # [B, T, L, embed_dim]
         # 2. Spatio-Temporal Encoding
         encoded_features = self.perception(x_emb) # [B, T, L, embed_dim]
-        last_scan_embeddings = jnp.mean(encoded_features[:, -1, :, :], axis=1) # [B, embed_dim]
+        last_scan_embeddings = jnp.mean(encoded_features[:, 0, :, :], axis=1) # [B, embed_dim]
         # 3. Decoding via Queries
         latents = self.decoder(encoded_features) # [B, n_detectable_humans, embed_dim]        
         # 4. Heads & Parameter Transformation

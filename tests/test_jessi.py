@@ -18,12 +18,12 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': 2*jnp.pi,
     'lidar_max_dist': 10.,
-    'n_humans': 5,
+    'n_humans': 8,
     'n_obstacles': 3,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
-    'robot_visible': False,
+    'robot_visible': True,
     'scenario': 'hybrid_scenario',
     'reward_function': DummyReward(robot_radius=0.3),
     'kinematics': kinematics,
@@ -37,8 +37,8 @@ policy = JESSI()
 with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb') as f:
     encoder_params = pickle.load(f)
 with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
-    # actor_params = pickle.load(f)
-    _, actor_params, _ = policy.init_nns(random.PRNGKey(0))
+    actor_params = pickle.load(f)
+    # _, actor_params, _ = policy.init_nns(random.PRNGKey(0))
 
 # Simulate some episodes
 for i in range(n_episodes):
@@ -70,7 +70,7 @@ for i in range(n_episodes):
         # Compute action from trained JESSI
         action, _, _, _, percepion_distr, actor_distr = policy.act(random.PRNGKey(0), obs, info, encoder_params, actor_params, sample=False)
         # print("Dirichlet distribution parameters: ", actor_distr['alphas'])
-        print("Predicted HCGs scores", [f"{w:.2f}" for w in percepion_distr['weights']])
+        # print("Predicted HCGs scores", [f"{w:.2f}" for w in percepion_distr['weights']])
         # Step the environment
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
         # Save data for animation
