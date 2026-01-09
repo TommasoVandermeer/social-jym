@@ -908,24 +908,31 @@ class JESSI(BasePolicy):
         dummy_cadrl = CADRL(DummyReward(kinematics="unicycle"),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
         test_action_samples = dummy_cadrl._build_action_space(unicycle_triangle_samples=35)
         # Animate trajectory
-        fig = plt.figure(figsize=(16,8), layout='constrained')
-        fig.subplots_adjust(left=0.02, right=0.99, wspace=0.08, hspace=0.2, top=0.95, bottom=0.07)
-        gs = fig.add_gridspec(2, 3)
+        fig = plt.figure(figsize=(21.43,13.57))
+        fig.subplots_adjust(left=0.05, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
+        outer_gs = fig.add_gridspec(1, 2, width_ratios=[2, 0.4], wspace=0.09)
+        gs_left = outer_gs[0].subgridspec(2, 2, wspace=0.0, hspace=0.0)
         axs = [
-            fig.add_subplot(gs[0,0]), # Simulation + LiDAR ranges
-            fig.add_subplot(gs[0,1]), # Simulation + LiDAR point cloud stack
-            fig.add_subplot(gs[1,0]), # Human-centric Gaussians positions
-            fig.add_subplot(gs[1,1]), # Human-centric Gaussians velocities
-            fig.add_subplot(gs[:,2]), # Action space distribution/bounding + action taken
+            fig.add_subplot(gs_left[0, 0]), # Simulation + LiDAR ranges (Top-Left)
+            fig.add_subplot(gs_left[0, 1]), # Simulation + Point cloud (Top-Right)
+            fig.add_subplot(gs_left[1, 0]), # HCG positions (Bottom-Left)
+            fig.add_subplot(gs_left[1, 1]), # HCG velocities (Bottom-Right)
+            fig.add_subplot(outer_gs[1]),   # Action space (Right, tall)
         ]
         def animate(frame):
             for i, ax in enumerate(axs):
                 ax.clear()
                 if i == len(axs) - 1: continue
                 ax.set(xlim=x_lims if x_lims is not None else [-10,10], ylim=y_lims if y_lims is not None else [-10,10])
-                ax.set_xlabel('X', labelpad=-5)
-                ax.set_ylabel('Y', labelpad=-13)
-                ax.set_aspect('equal', adjustable='box')
+                if i >= 2:
+                    ax.set_xlabel('X', labelpad=-5)
+                else:
+                    ax.set_xticks([])
+                if i % 2 == 0:
+                    ax.set_ylabel('Y', labelpad=-13)
+                else:
+                    ax.set_yticks([])
+                ax.set_aspect('equal', adjustable='datalim')
                 # Plot humans
                 for h in range(len(humans_poses[frame])):
                     head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
@@ -1021,11 +1028,27 @@ class JESSI(BasePolicy):
                     rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + vel
                     axs[3].scatter(vel[0], vel[1], c='red', s=10, marker='x', zorder=100)
                     axs[3].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
-            axs[2].set_title("HCGs positions")
-            axs[3].set_title("HCGs velocities")
+            # axs[2].set_title("HCGs positions")
+            # axs[3].set_title("HCGs velocities")
+            axs[2].text(
+                0.5, -0.13,
+                "HCGs positions",
+                transform=axs[2].transAxes,
+                rotation=0,
+                va="center",
+                ha="center"
+            )
+            axs[3].text(
+                0.5, -0.13,
+                "HCGs velocities",
+                transform=axs[3].transAxes,
+                rotation=0,
+                va="center",
+                ha="center"
+            )
             # AX :,2: Feasible and bounded action space + action space distribution and action taken
             axs[4].set_xlabel("$v$ (m/s)")
-            axs[4].set_ylabel("$\omega$ (rad/s)")
+            axs[4].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
             axs[4].set_xlim(-0.1, self.v_max + 0.1)
             axs[4].set_ylim(-2*self.v_max/self.wheels_distance - 0.3, 2*self.v_max/self.wheels_distance + 0.3)
             axs[4].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
