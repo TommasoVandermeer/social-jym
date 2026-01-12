@@ -175,7 +175,20 @@ class Perception(hk.Module):
             last_scan_embeddings = last_scan_embeddings[0]
         return hum_distr, last_scan_embeddings
 
-class Actor(hk.Module):
+class LearnableLossWeights(hk.Module):
+    def __init__(self, name="learnable_losses"):
+        super().__init__(name=name)
+        # Shape [3]: 0 -> Actor, 1 -> Critic, 2 -> Perception
+        self.log_vars = hk.get_parameter(
+            "loss_log_vars", 
+            shape=[3], 
+            init=jnp.zeros
+        )
+
+    def __call__(self):
+        return self.log_vars
+
+class ActorCritic(hk.Module):
     def __init__(
             self,
             n_detectable_humans: int,
@@ -214,11 +227,18 @@ class Actor(hk.Module):
         )
         self.layer_norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
         # 3. Final Output MLP
-        self.output_mlp = hk.nets.MLP(
+        self.actor_head = hk.nets.MLP(
             **mlp_params,
             output_sizes=[150, 100, self.n_outputs], 
-            name="output_mlp"
+            name="actor_head"
         )
+        self.critic_head = hk.nets.MLP(
+            **mlp_params,
+            output_sizes=[150, 100, 1],
+            name="critic_head"
+        )
+        # 4. Learnable Loss Weights
+        self.llw = LearnableLossWeights()
         self.dirichlet = Dirichlet()
 
     def __call__(
@@ -229,66 +249,61 @@ class Actor(hk.Module):
     ) -> tuple:
         """
         Args:
-            x: HCGs + Robot State. Shape (n_detectable_humans, 11 + 9)
+            x: HCGs + Robot State. Shape (n_detectable_humans, 20) or (batch_size, n_detectable_humans, 20)
                - Index 0-10: HCG parameters (Mean, LogSigma, Corr, Weight)
                - Index 10: HCG Weight (Score)
                - Index 11-19: Tiled Robot Params
-            y: LiDAR embedding. Shape (scan_embedding_dim,)
+            y: LiDAR embedding. Shape (scan_embedding_dim,) or (batch_size, scan_embedding_dim)
+
+        Returns:
+            sampled_actions: Sampled actions from the policy. Shape (2,) or (batch_size, 2)
+            distributions: Dict containing the Dirichlet distribution parameters.
+            state_values: State value estimates from the critic. Shape (,) or (batch_size,)
+            loss_log_vars: Learnable loss weights log variances. Shape (3,)
         """
         random_key = kwargs.get("random_key", random.PRNGKey(0))
+        has_batch = x.ndim == 3
+        if not has_batch:
+            x = jnp.expand_dims(x, 0)
+            y = jnp.expand_dims(y, 0)
+        batch_size = x.shape[0]
+        keys = random.split(random_key, batch_size)
         hcg_scores = x[..., 10:11] 
-        global_robot_state = x[0, 11:] 
-        action_space_params = global_robot_state[:3]
-        embeddings = self.hcg_projection(x)  # (N, attention_dim)
-        att_out = self.attention(embeddings, embeddings, embeddings) # (N, attention_dim)
-        att_embeddings = self.layer_norm(embeddings + att_out) # (N, attention_dim)
-        weighted_embeddings = att_embeddings * hcg_scores # (N, attention_dim)
-        pooled_hcg_context = jnp.sum(weighted_embeddings, axis=0) # (attention_dim,)
-        actor_context = jnp.concatenate([
+        global_robot_state = x[:, 0, 11:] 
+        action_space_params = global_robot_state[:, :3]
+        embeddings = self.hcg_projection(x)  # (Batch, N, attention_dim)
+        att_out = self.attention(embeddings, embeddings, embeddings) # (Batch, N, attention_dim)
+        att_embeddings = self.layer_norm(embeddings + att_out) # (Batch, N, attention_dim)
+        weighted_embeddings = att_embeddings * hcg_scores # (Batch, N, attention_dim)
+        pooled_hcg_context = jnp.sum(weighted_embeddings, axis=1) # (Batch, attention_dim,)
+        context = jnp.concatenate([
             pooled_hcg_context, 
             global_robot_state, 
             y
         ], axis=-1)  # (attention_dim + 9 + scan_embedding_dim,)
+        ### ACTOR
         ## Compute Dirichlet distribution parameters
-        alphas = self.output_mlp(actor_context)
+        alphas = self.actor_head(context)
         alphas = nn.softplus(alphas) + 1
         ## Compute dirchlet distribution vetices
-        vertices = jnp.array([
-            [0., action_space_params[1] * self.wmax],
-            [0., action_space_params[2] * self.wmin],
-            [action_space_params[0] * self.vmax, 0.]
-        ])
-        distribution = {"alphas": alphas, "vertices": vertices}
+        zeros = jnp.zeros((batch_size,))
+        v1 = jnp.stack([zeros, action_space_params[:, 1] * self.wmax], axis=-1)
+        v2 = jnp.stack([zeros, action_space_params[:, 2] * self.wmin], axis=-1)
+        v3 = jnp.stack([action_space_params[:, 0] * self.vmax, zeros], axis=-1)
+        vertices = jnp.stack([v1, v2, v3], axis=1)  # Shape: (batch_size, 3, 2)
+        distributions = {"alphas": alphas, "vertices": vertices}
         ## Sample action
-        sampled_action = self.dirichlet.sample(distribution, random_key)
-        return sampled_action, distribution
-    
-class Critic(hk.Module):
-    def __init__(
-            self,
-            n_detectable_humans:int,
-            mlp_params:dict={
-                "activation": nn.relu,
-                "activate_final": False,
-                "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-                "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-            },
-        ) -> None:
-        super().__init__(name="critic_network") 
-        self.n_detectable_humans = n_detectable_humans
-        self.n_inputs = 3 * 6 * self.n_detectable_humans + 5  # 6 outputs per GMM cell (mean_x, mean_y, sigma_x, sigma_y, correlation, weight) times  3 GMMs (obstacles, current humans, next humans)
-        self.n_outputs = 1 # State value
-        self.mlp = hk.nets.MLP(
-            **mlp_params, 
-            output_sizes=[self.n_inputs * 5, self.n_inputs * 5, self.n_inputs * 3, self.n_outputs], 
-            name="mlp"
-        )
-
-    def __call__(
-            self, 
-            x,
-        ) -> jnp.ndarray:
-        return self.mlp(x)
+        sampled_actions = vmap(self.dirichlet.sample)(distributions, keys)
+        ### CRITIC
+        state_values = self.critic_head(context) # (Batch, 1)
+        state_values = jnp.squeeze(state_values, axis=-1) # (Batch,)
+        if not has_batch:
+            sampled_actions = sampled_actions[0]
+            state_values = state_values[0]
+            distributions = tree_map(lambda t: t[0], distributions)
+        ### LEARNABLE LOSS WEIGHTS
+        loss_log_vars = self.llw()
+        return sampled_actions, distributions, state_values, loss_log_vars
 
 class JESSI(BasePolicy):
     def __init__(
@@ -352,18 +367,12 @@ class JESSI(BasePolicy):
             net = Perception(self.n_detectable_humans, self.max_humans_velocity, self.lidar_max_dist, embed_dim=self.embedding_dim)
             return net(x)
         self.perception = perception_network
-        # Initialize Actor
+        # Initialize Actor Critic network
         @hk.transform
-        def actor_network(x, y, **kwargs) -> jnp.ndarray:
-            actor = Actor(self.n_detectable_humans, self.v_max, self.wheels_distance, scan_embedding_dim=self.embedding_dim) 
-            return actor(x, y, **kwargs)
-        self.actor = actor_network
-        # Initialize Critic
-        @hk.transform
-        def critic_network(x) -> jnp.ndarray:
-            critic = Critic(self.n_detectable_humans) 
-            return critic(x)
-        self.critic = critic_network
+        def actor_critic_network(x, y, **kwargs) -> jnp.ndarray:
+            actor_critic = ActorCritic(self.n_detectable_humans, self.v_max, self.wheels_distance, scan_embedding_dim=self.embedding_dim) 
+            return actor_critic(x, y, **kwargs)
+        self.actor_critic = actor_critic_network
 
     # Private methods
 
@@ -407,9 +416,8 @@ class JESSI(BasePolicy):
         key:random.PRNGKey, 
     ) -> tuple:
         perception_params = self.perception.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7)))
-        actor_params = self.actor.init(key, jnp.zeros((self.n_detectable_humans, 20)), jnp.zeros((self.embedding_dim,)))
-        # critic_params = 
-        return perception_params, actor_params, {}
+        actor_critic_params = self.actor_critic.init(key, jnp.zeros((self.n_detectable_humans, 20)), jnp.zeros((self.embedding_dim,)))
+        return perception_params, actor_critic_params
 
     @partial(jit, static_argnames=("self"))
     def bound_action_space(self, lidar_point_cloud):
@@ -613,7 +621,7 @@ class JESSI(BasePolicy):
         obs:jnp.ndarray, 
         info:dict,
         encoder_params:dict,
-        actor_params:dict, 
+        actor_critic_params:dict, 
         sample:bool = False,
     ) -> jnp.ndarray:
         # Compute encoder input and last lidar point cloud (for action bounding)
@@ -646,15 +654,15 @@ class JESSI(BasePolicy):
         )
         # Compute action
         key, subkey = random.split(key)
-        sampled_action, actor_distr = self.actor.apply(
-            actor_params, 
+        sampled_action, actor_distr, state_value = self.actor_critic.apply(
+            actor_critic_params, 
             None, 
             actor_input,
             last_scan_embedding,
             random_key=subkey
         )
         action = lax.cond(sample, lambda _: sampled_action, lambda _: self.dirichlet.mean(actor_distr), None)
-        return action, key, actor_input, sampled_action, hcgs, actor_distr
+        return action, key, actor_input, sampled_action, hcgs, actor_distr, state_value
     
     @partial(jit, static_argnames=("self"))
     def batch_act(
@@ -662,7 +670,7 @@ class JESSI(BasePolicy):
         keys,
         obses,
         encoder_params,
-        actor_params,
+        actor_critic_params,
         sample,
     ):
         return vmap(JESSI.act, in_axes=(None, 0, 0, None, None, None))(
@@ -670,7 +678,7 @@ class JESSI(BasePolicy):
             keys, 
             obses, 
             encoder_params, 
-            actor_params, 
+            actor_critic_params, 
             sample,
         )   
     
@@ -748,15 +756,12 @@ class JESSI(BasePolicy):
         cls_loss = jnp.mean(bce) 
         return lambda_pos_reg * pos_reg_loss + lambda_vel_reg * vel_reg_loss + lambda_cls * cls_loss
 
-    @partial(jit, static_argnames=("self","actor_optimizer","critic_optimizer"))
+    @partial(jit, static_argnames=("self","actor_critic_optimizer"))
     def update(
         self, 
-        critic_params:dict, 
-        actor_params:dict,
-        actor_optimizer:optax.GradientTransformation, 
-        actor_opt_state: jnp.ndarray, 
-        critic_optimizer:optax.GradientTransformation,
-        critic_opt_state: jnp.ndarray,
+        actor_critic_params:dict,
+        actor_critic_optimizer:optax.GradientTransformation, 
+        actor_critic_opt_state: jnp.ndarray, 
         experiences:dict[str:jnp.ndarray], 
         beta_entropy:float,
         clip_range:float,
@@ -767,12 +772,12 @@ class JESSI(BasePolicy):
         """
         pass
 
-    @partial(jit, static_argnames=("self","actor_optimizer"))
-    def update_il_only_actor(
+    @partial(jit, static_argnames=("self","actor_critic_optimizer"))
+    def update_il(
         self, 
-        actor_params:dict,
-        actor_optimizer:optax.GradientTransformation, 
-        actor_opt_state: jnp.ndarray, 
+        actor_critic_params:dict,
+        actor_critic_optimizer:optax.GradientTransformation, 
+        actor_critic_opt_state: jnp.ndarray, 
         experiences:dict[str:jnp.ndarray], 
     ) -> tuple:
         @jit
@@ -786,6 +791,7 @@ class JESSI(BasePolicy):
                 current_actor_params:dict,
                 inputs:jnp.ndarray,
                 sample_actions:jnp.ndarray,
+                returns:jnp.ndarray,
                 ) -> jnp.ndarray:
                 
                 @partial(vmap, in_axes=(None, 0, 0))
@@ -793,18 +799,26 @@ class JESSI(BasePolicy):
                     current_actor_params:dict,
                     input:jnp.ndarray,
                     sample_action:jnp.ndarray,
+                    returnn:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                    _, distr = self.actor.apply(current_actor_params, None, input['actor_input'], input['scan_embedding'])
+                    _, predicted_distr, predicted_state_value, loss_log_vars = self.actor_critic.apply(current_actor_params, None, input['actor_input'], input['scan_embedding'])
                     # Get mean action
-                    action = self.dirichlet.mean(distr)
-                    # Compute the loss
-                    return 0.5 * jnp.sum(jnp.square(action - sample_action))
+                    action = self.dirichlet.mean(predicted_distr)
+                    # Compute actor loss
+                    actor_loss = jnp.mean(jnp.square(action - sample_action))
+                    # Compute critic loss
+                    critic_loss = jnp.square(predicted_state_value - returnn)
+                    # Combine losses with learnable loss weights
+                    total_loss = jnp.exp(-loss_log_vars[0]) * actor_loss + 0.5 * loss_log_vars[0] + \
+                                 jnp.exp(-loss_log_vars[1]) * critic_loss + 0.5 * loss_log_vars[1]
+                    return total_loss, (actor_loss, critic_loss)
                 
                 return jnp.mean(_loss_function(
                     current_actor_params,
                     inputs,
-                    sample_actions
+                    sample_actions,
+                    returns,
                 ))
 
             inputs = {
@@ -812,23 +826,27 @@ class JESSI(BasePolicy):
                 "scan_embedding": experiences["scan_embeddings"],
             }
             sample_actions = experiences["actor_actions"]
+            returns = experiences["returns"]
             # Compute the loss and gradients
-            loss, grads = value_and_grad(_batch_loss_function)(
+            (loss, (actor_loss, critic_loss)), grads = value_and_grad(_batch_loss_function, has_aux=True)(
                 current_actor_params, 
                 inputs,
                 sample_actions,
+                returns,
             )
-            return loss, grads
+            return loss, actor_loss, critic_loss, grads
         # Compute loss and gradients for actor and critic
-        actor_loss, actor_grads = _compute_loss_and_gradients(actor_params,experiences)
+        actor_critic_loss, actor_loss, critic_loss, actor_critic_grads = _compute_loss_and_gradients(actor_critic_params,experiences)
         # Compute parameter updates
-        actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
+        actor_critic_updates, actor_critic_opt_state = actor_critic_optimizer.update(actor_critic_grads, actor_critic_opt_state)
         # Apply updates
-        updated_actor_params = optax.apply_updates(actor_params, actor_updates)
+        updated_actor_critic_params = optax.apply_updates(actor_critic_params, actor_critic_updates)
         return (
-            updated_actor_params, 
-            actor_opt_state, 
-            actor_loss, 
+            updated_actor_critic_params, 
+            actor_critic_opt_state, 
+            actor_critic_loss, 
+            actor_loss,
+            critic_loss,
         )
     
     @partial(jit, static_argnames=("self","encoder_optimizer"))
