@@ -1,11 +1,11 @@
-from jax import random, vmap
+from jax import random, vmap, jit, lax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 import os
 import pickle
 
 from socialjym.envs.lasernav import LaserNav
-from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward
+from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
 from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 
@@ -25,7 +25,7 @@ env_params = {
     'humans_dt': 0.01,
     'robot_visible': False,
     'scenario': 'hybrid_scenario',
-    'reward_function': DummyReward(robot_radius=0.3),
+    'reward_function': Reward(robot_radius=0.3),
     'kinematics': kinematics,
 }
 
@@ -48,7 +48,12 @@ for i in range(n_episodes):
     max_steps = int(env.reward_function.time_limit/env.robot_dt)+1
     all_states = jnp.array([state])
     all_observations = jnp.array([obs])
+    all_robot_goals = jnp.array([info['robot_goal']])
+    all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
+    all_humans_radii = jnp.array([info['humans_parameters'][:,0]])
     all_actions = jnp.zeros((max_steps, 2))
+    all_rewards = jnp.zeros((max_steps,))
+    all_predicted_state_values = jnp.zeros((max_steps,))
     all_actor_distrs = {
         'alphas': jnp.zeros((max_steps, 3)),
         'vertices': jnp.zeros((max_steps, 3, 2)),
@@ -63,9 +68,6 @@ for i in range(n_episodes):
         "vel_distrs": bigauss,
         "weights": jnp.zeros((max_steps,policy.n_detectable_humans)),
     }
-    all_robot_goals = jnp.array([info['robot_goal']])
-    all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
-    all_humans_radii = jnp.array([info['humans_parameters'][:,0]])
     while outcome["nothing"]:
         # Compute action from trained JESSI
         action, _, _, _, percepion_distr, actor_distr, state_value = policy.act(random.PRNGKey(0), obs, info, encoder_params, actor_params, sample=False)
@@ -75,6 +77,8 @@ for i in range(n_episodes):
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
         # Save data for animation
         all_actions = all_actions.at[step].set(action)
+        all_rewards = all_rewards.at[step].set(reward)
+        all_predicted_state_values = all_predicted_state_values.at[step].set(state_value)
         all_actor_distrs = tree_map(lambda x, y: x.at[step].set(y), all_actor_distrs, actor_distr)
         all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, percepion_distr)
         all_states = jnp.vstack((all_states, jnp.array([state])))
@@ -84,10 +88,22 @@ for i in range(n_episodes):
         all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
         # Increment step
         step += 1
-    print("Outcome: ", [k for k, v in outcome.items() if v][0])
     all_encoder_distrs = tree_map(lambda x: x[:step], all_encoder_distrs)
     all_actor_distrs = tree_map(lambda x: x[:step], all_actor_distrs)
     all_actions = all_actions[:step]
+    all_rewards = all_rewards[:step]
+    all_predicted_state_values = all_predicted_state_values[:step]
+    ## Check predicted state values and actual discounted returns
+    @jit
+    def _discounted_cumsum(rewards):
+        def scan_fun(carry, reward):
+            new_carry = reward + carry * jnp.power(policy.gamma, policy.dt * policy.v_max)
+            return new_carry, new_carry
+        _, discounted_cumsums = lax.scan(scan_fun, 0.0, rewards[::-1])
+        return discounted_cumsums[::-1]
+    discounted_returns = _discounted_cumsum(all_rewards)
+    [print("Step {} -  critic prediction: {:.2f} VS discounted return: {:.2f}".format(i, all_predicted_state_values[i], discounted_returns[i])) for i in range(len(discounted_returns))]
+    print("\nOutcome: ", [k for k, v in outcome.items() if v][0])
     ## Animate only trajectory
     angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
     lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,6:], angles)

@@ -807,12 +807,11 @@ class JESSI(BasePolicy):
                     action = self.dirichlet.mean(predicted_distr)
                     # Compute actor loss
                     actor_loss = jnp.mean(jnp.square(action - sample_action))
+                    actor_loss = jnp.exp(-loss_log_vars[0]) * actor_loss + 0.5 * loss_log_vars[0]
                     # Compute critic loss
                     critic_loss = jnp.square(predicted_state_value - returnn)
-                    # Combine losses with learnable loss weights
-                    total_loss = jnp.exp(-loss_log_vars[0]) * actor_loss + 0.5 * loss_log_vars[0] + \
-                                 jnp.exp(-loss_log_vars[1]) * critic_loss + 0.5 * loss_log_vars[1]
-                    return total_loss, (actor_loss, critic_loss)
+                    critic_loss = jnp.exp(-loss_log_vars[1]) * critic_loss + 0.5 * loss_log_vars[1]
+                    return actor_loss + critic_loss, (actor_loss, critic_loss)
                 
                 total_loss, (actor_losses, critic_losses) = _loss_function(
                     current_actor_params,
