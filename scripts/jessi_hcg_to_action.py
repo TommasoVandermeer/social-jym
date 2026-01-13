@@ -12,8 +12,6 @@ rcParams['pdf.fonttype'] = 42
 rcParams['ps.fonttype'] = 42
 
 from socialjym.policies.jessi import JESSI
-from socialjym.envs.lasernav import LaserNav
-from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward
 
 save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
@@ -39,26 +37,10 @@ lidar_num_rays = 100
 scenario = "hybrid_scenario"
 n_humans = 5
 n_obstacles = 3
-env_params = {
-    'robot_radius': 0.3,
-    'n_humans': n_humans,
-    'n_obstacles': n_obstacles,
-    'robot_dt': robot_dt,
-    'robot_radius': robot_radius, 
-    'humans_dt': 0.01,
-    'robot_visible': robot_visible,
-    'scenario': scenario,
-    'reward_function': DummyReward(0.3), # Don't care about reward for now
-    'kinematics': kinematics,
-    'lidar_angular_range':lidar_angular_range,
-    'lidar_max_dist':lidar_max_dist,
-    'lidar_num_rays':lidar_num_rays,
-}
-env = LaserNav(**env_params)
 # Robot jessi
 jessi = JESSI(
     v_max=robot_vmax, 
-    dt=env_params['robot_dt'], 
+    dt=robot_dt, 
     lidar_num_rays=lidar_num_rays, 
     lidar_max_dist=lidar_max_dist,
     lidar_angular_range=lidar_angular_range,
@@ -159,7 +141,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_networ
         i:int,
         epoch_for_val:tuple,
     ) -> tuple:
-        dataset, actor_critic_params, optimizer_state, losses = epoch_for_val
+        dataset, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses = epoch_for_val
         # Shuffle dataset at the beginning of the epoch
         shuffle_key = random.PRNGKey(random_seed + i)
         indexes = jnp.arange(n_data)
@@ -228,7 +210,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_networ
     avg_losses = jnp.mean(losses, axis=1)
     avg_actor_losses = jnp.mean(actor_losses, axis=1)
     avg_critic_losses = jnp.mean(critic_losses, axis=1)
-    fig, ax = plt.subplots(3, 1, figsize=(18, 6))
+    fig, ax = plt.subplots(1, 3, figsize=(18, 6))
     ax[0].plot(jnp.arange(n_epochs), avg_losses, label="Training Loss")
     ax[1].plot(jnp.arange(n_epochs), avg_actor_losses, label="Actor Loss")
     ax[2].plot(jnp.arange(n_epochs), avg_critic_losses, label="Critic Loss")

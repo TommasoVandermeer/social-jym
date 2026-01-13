@@ -17,7 +17,7 @@ from socialjym.policies.jessi import JESSI
 from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
-from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as LaserNavDummyReward
+from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as LaserNavDummyReward
 from jhsfm.hsfm import vectorized_compute_edge_closest_point
 
 ### TODO: Improve training
@@ -184,13 +184,14 @@ def simulate_n_steps(n_steps):
     # Compute returns
     @jit
     def _discounted_cumsum(rewards, dones):
-        def scan_fun(carry, reward, done):
-            new_carry = reward + carry * pow(jessi.gamma, jessi.dt * jessi.v_max) * (1.0 - done)
+        def scan_fun(carry, x):
+            reward, done = x
+            new_carry = reward + carry * jnp.power(jessi.gamma, jessi.dt * jessi.v_max) * (1.0 - done)
             return new_carry, new_carry
-        _, discounted_cumsums = lax.scan(scan_fun, 0.0, rewards[::-1], dones[::-1])
+        _, discounted_cumsums = lax.scan(scan_fun, 0.0, (rewards[::-1], dones[::-1]))
         return discounted_cumsums[::-1]
     dones = jnp.append(data["episode_starts"][1:,:], jnp.zeros((1, n_parallel_envs), dtype=bool), axis=0)
-    data["returns"] = vmap(_discounted_cumsum, in_axes=(1,1))(data["rewards"], dones)
+    data["returns"] = vmap(_discounted_cumsum, in_axes=(1,1))(data["rewards"], dones).T
     data = tree_map(lambda x: x.reshape((-1,) + x.shape[2:]), data)  # Merge parallel envs
     return data
 

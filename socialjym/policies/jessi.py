@@ -654,7 +654,7 @@ class JESSI(BasePolicy):
         )
         # Compute action
         key, subkey = random.split(key)
-        sampled_action, actor_distr, state_value = self.actor_critic.apply(
+        sampled_action, actor_distr, state_value, _ = self.actor_critic.apply(
             actor_critic_params, 
             None, 
             actor_input,
@@ -794,7 +794,7 @@ class JESSI(BasePolicy):
                 returns:jnp.ndarray,
                 ) -> jnp.ndarray:
                 
-                @partial(vmap, in_axes=(None, 0, 0))
+                @partial(vmap, in_axes=(None, 0, 0, 0))
                 def _loss_function(
                     current_actor_params:dict,
                     input:jnp.ndarray,
@@ -814,12 +814,14 @@ class JESSI(BasePolicy):
                                  jnp.exp(-loss_log_vars[1]) * critic_loss + 0.5 * loss_log_vars[1]
                     return total_loss, (actor_loss, critic_loss)
                 
-                return jnp.mean(_loss_function(
+                total_loss, (actor_losses, critic_losses) = _loss_function(
                     current_actor_params,
                     inputs,
                     sample_actions,
                     returns,
-                ))
+                )
+
+                return jnp.mean(total_loss), (jnp.mean(actor_losses), jnp.mean(critic_losses))
 
             inputs = {
                 "actor_input": experiences["actor_inputs"],

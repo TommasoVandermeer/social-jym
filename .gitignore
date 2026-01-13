@@ -3,6 +3,9 @@
 *.eps
 *.mp4
 
+# Vscode
+.vscode/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
