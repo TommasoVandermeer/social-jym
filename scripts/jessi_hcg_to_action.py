@@ -12,21 +12,16 @@ rcParams['pdf.fonttype'] = 42
 rcParams['ps.fonttype'] = 42
 
 from socialjym.policies.jessi import JESSI
-from socialjym.envs.lasernav import LaserNav
-from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward
 
 save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
-n_steps = 30_000  # Number of labeled examples to train Lidar to GMM network
 n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
-negative_samples_threshold = 0.2 # Distance threshold from objects to consider a sample as negative (in meters)
 learning_rate = 0.005
 batch_size = 200
 n_epochs = 100
-p_visualization_threshold = 0.05
 # Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -39,26 +34,10 @@ lidar_num_rays = 100
 scenario = "hybrid_scenario"
 n_humans = 5
 n_obstacles = 3
-env_params = {
-    'robot_radius': 0.3,
-    'n_humans': n_humans,
-    'n_obstacles': n_obstacles,
-    'robot_dt': robot_dt,
-    'robot_radius': robot_radius, 
-    'humans_dt': 0.01,
-    'robot_visible': robot_visible,
-    'scenario': scenario,
-    'reward_function': DummyReward(0.3), # Don't care about reward for now
-    'kinematics': kinematics,
-    'lidar_angular_range':lidar_angular_range,
-    'lidar_max_dist':lidar_max_dist,
-    'lidar_num_rays':lidar_num_rays,
-}
-env = LaserNav(**env_params)
 # Robot jessi
 jessi = JESSI(
     v_max=robot_vmax, 
-    dt=env_params['robot_dt'], 
+    dt=robot_dt, 
     lidar_num_rays=lidar_num_rays, 
     lidar_max_dist=lidar_max_dist,
     lidar_angular_range=lidar_angular_range,
@@ -117,13 +96,12 @@ with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb
 ### CREATE ACTOR INPUTS DATASET
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_training_dataset.pkl')):
     # Compute actor-critic inputs for the entire dataset
-    actor_actions = raw_data["robot_actions"]
     controller_dataset = {
         "observations": dataset['observations'],
         "rc_robot_goals": robot_centric_data["rc_robot_goals"],
-        "actor_actions": actor_actions,
+        "actor_actions": raw_data["robot_actions"],
+        "returns": raw_data["returns"],
     }
-    # TODO: Add also critic targets (need to save the reward in the first place in lidar_to_gmm raw_data generation)
     # Save actor inputs
     with open(os.path.join(os.path.dirname(__file__), 'controller_training_dataset.pkl'), 'wb') as f:
         pickle.dump(controller_dataset, f)
@@ -140,17 +118,17 @@ del raw_data
 
 ### INITIALIZE ACTOR NETWORK
 # Initialize actor network
-_, actor_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
+_, actor_critic_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
 # Count network parameters
-def count_params(actor_params):
-    return sum(jnp.prod(jnp.array(p.shape)) for layer in actor_params.values() for p in layer.values())
-n_params = count_params(actor_params)
+def count_params(actor_critic_params):
+    return sum(jnp.prod(jnp.array(p.shape)) for layer in actor_critic_params.values() for p in layer.values())
+n_params = count_params(actor_critic_params)
 print(f"# Controller network parameters: {n_params}")
 
 ### TRAINING LOOP
 # Initialize optimizer and its state
 optimizer = optax.sgd(learning_rate=learning_rate, momentum=0.9)
-optimizer_state = optimizer.init(actor_params)
+optimizer_state = optimizer.init(actor_critic_params)
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_network.pkl')):
     n_data = controller_dataset["observations"].shape[0]
     print(f"# Training dataset size: {controller_dataset['observations'].shape[0]} experiences")
@@ -160,7 +138,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_networ
         i:int,
         epoch_for_val:tuple,
     ) -> tuple:
-        dataset, actor_params, optimizer_state, losses = epoch_for_val
+        dataset, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses = epoch_for_val
         # Shuffle dataset at the beginning of the epoch
         shuffle_key = random.PRNGKey(random_seed + i)
         indexes = jnp.arange(n_data)
@@ -172,7 +150,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_networ
             j:int,
             batch_for_val:tuple
         ) -> tuple:
-            epoch_data, actor_params, optimizer_state, losses = batch_for_val
+            epoch_data, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses = batch_for_val
             # Retrieve batch experiences
             indexes = (jnp.arange(batch_size) + j * batch_size).astype(jnp.int32)
             batch = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, epoch_data)
@@ -193,44 +171,54 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_networ
                 "actor_inputs": actor_input,
                 "scan_embeddings": scan_embeddings,
                 "actor_actions": batch["actor_actions"],
+                "returns": batch["returns"],
             }
             # Update parameters
-            actor_params, optimizer_state, loss = jessi.update_il_only_actor(
-                actor_params, 
+            actor_critic_params, optimizer_state, loss, actor_loss, critic_loss = jessi.update_il(
+                actor_critic_params, 
                 optimizer, 
                 optimizer_state,
                 train_batch,
             )
             # Save loss
             losses = losses.at[i,j].set(loss)
-            return epoch_data, actor_params, optimizer_state, losses
+            actor_losses = actor_losses.at[i,j].set(actor_loss)
+            critic_losses = critic_losses.at[i,j].set(critic_loss)
+            return epoch_data, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses
         n_batches = n_data // batch_size
-        _, actor_params, optimizer_state, losses = lax.fori_loop(
+        _, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses = lax.fori_loop(
             0,
             n_batches,
             _batch_loop,
-            (epoch_data, actor_params, optimizer_state, losses)
+            (epoch_data, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses)
         )
-        return dataset, actor_params, optimizer_state, losses
+        return dataset, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses
     # Epoch loop
-    _, actor_params, optimizer_state, losses = lax.fori_loop(
+    _, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses = lax.fori_loop(
         0,
         n_epochs,
         _epoch_loop,
-        (controller_dataset, actor_params, optimizer_state, jnp.zeros((n_epochs, int(n_data // batch_size))))
+        (controller_dataset, actor_critic_params, optimizer_state, jnp.zeros((n_epochs, int(n_data // batch_size))), jnp.zeros((n_epochs, int(n_data // batch_size))), jnp.zeros((n_epochs, int(n_data // batch_size))))
     )
     # Save trained parameters
     with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'wb') as f:
-        pickle.dump(actor_params, f)
+        pickle.dump(actor_critic_params, f)
     # Plot training loss
     avg_losses = jnp.mean(losses, axis=1)
-    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-    ax.plot(jnp.arange(n_epochs), avg_losses, label="Training Loss")
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Loss")
-    ax.set_title("Controller Network Training Loss")
+    avg_actor_losses = jnp.mean(actor_losses, axis=1)
+    avg_critic_losses = jnp.mean(critic_losses, axis=1)
+    fig, ax = plt.subplots(1, 3, figsize=(18, 6))
+    ax[0].plot(jnp.arange(n_epochs), avg_losses, c='red')
+    ax[1].plot(jnp.arange(n_epochs), avg_actor_losses, c='green')
+    ax[2].plot(jnp.arange(n_epochs), avg_critic_losses, c='blue')
+    ax[0].set_xlabel("Epoch")
+    ax[0].set_ylabel("Loss (with regularization)")
+    ax[1].set_xlabel("Epoch")
+    ax[1].set_ylabel("Actor Loss (weighted)")
+    ax[2].set_xlabel("Epoch")
+    ax[2].set_ylabel("Critic Loss (weighted)")
     fig.savefig(os.path.join(os.path.dirname(__file__), 'controller_network_training_loss.eps'), format='eps')
 else:
     # Load trained parameters
     with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
-        actor_params = pickle.load(f)
+        actor_critic_params = pickle.load(f)

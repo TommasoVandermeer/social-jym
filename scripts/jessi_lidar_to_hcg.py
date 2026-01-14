@@ -17,7 +17,7 @@ from socialjym.policies.jessi import JESSI
 from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
-from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as LaserNavDummyReward
+from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as LaserNavDummyReward
 from jhsfm.hsfm import vectorized_compute_edge_closest_point
 
 ### TODO: Improve training
@@ -119,6 +119,24 @@ def simulate_n_steps(n_steps):
         data, state, obs, info, outcome, reset_key, lasernav_obs, lasernav_info = for_val
         ## Compute robot action
         action, _, _, _, _ = dir_safe.batch_act(dummy_policy_keys, obs, info, actor_params, sample=False)
+        ## Simulate one step SOCIALNAV
+        final_state, final_obs, final_info, _, final_outcome, final_reset_key = env.batch_step(
+            state,
+            info,
+            action, 
+            reset_key,
+            test=False,
+            reset_if_done=True,
+        )
+        ## Simulate one step LASERNAV to update stacked observations
+        _, final_lasernav_obs, final_lasernav_info, final_lasernav_reward, _, _ = laser_env.batch_step(
+            state,
+            lasernav_info,
+            action, 
+            reset_key,
+            test=False,
+            reset_if_done=True,
+        )
         ## Save output data
         step_out_data = {
             "episode_starts": ~outcome["nothing"],
@@ -132,28 +150,9 @@ def simulate_n_steps(n_steps):
             "robot_actions": action,
             "robot_goals": info["robot_goal"],
             "static_obstacles": info["static_obstacles"][:,-1],
+            "rewards": final_lasernav_reward,
         }
         data = tree_map(lambda x, y: x.at[i].set(y), data, step_out_data)
-        ## Simulate one step SOCIALNAV
-        final_state, final_obs, final_info, _, final_outcome, final_reset_key = env.batch_step(
-            state,
-            info,
-            action, 
-            reset_key,
-            test=False,
-            reset_if_done=True,
-        )
-        ## Simulate one step LASERNAV to update stacked observations
-        final_lasernav_state, final_lasernav_obs, final_lasernav_info, _, final_lasernav_outcome, _ = laser_env.batch_step(
-            state,
-            lasernav_info,
-            action, 
-            reset_key,
-            test=False,
-            reset_if_done=True,
-        )
-        # debug.print("Equal states: {x}", x=jnp.allclose(final_state, final_lasernav_state))
-        # debug.print("Equal outcomes: {out}", out=(final_lasernav_outcome['nothing'] == final_outcome['nothing']))
         return data, final_state, final_obs, final_info, final_outcome, final_reset_key, final_lasernav_obs, final_lasernav_info
     # Initialize first episode
     reset_keys = random.split(random.PRNGKey(random_seed), n_parallel_envs)
@@ -172,6 +171,7 @@ def simulate_n_steps(n_steps):
         "robot_actions": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,2)),
         "robot_goals": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,2)),
         "static_obstacles": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_obstacles,1,2,2)),
+        "rewards": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs)),
     }
     # Step loop
     data, _, _, _, _, _, _, _ = lax.fori_loop(
@@ -181,6 +181,17 @@ def simulate_n_steps(n_steps):
         (data, state, obs, info, outcome, reset_key, lasernav_obs, lasernav_info)
     )
     data["episode_starts"] = data["episode_starts"].at[0,:].set(True)  # First step is always episode start
+    # Compute returns
+    @jit
+    def _discounted_cumsum(rewards, dones):
+        def scan_fun(carry, x):
+            reward, done = x
+            new_carry = reward + carry * jnp.power(jessi.gamma, jessi.dt * jessi.v_max) * (1.0 - done)
+            return new_carry, new_carry
+        _, discounted_cumsums = lax.scan(scan_fun, 0.0, (rewards[::-1], dones[::-1]))
+        return discounted_cumsums[::-1]
+    dones = jnp.append(data["episode_starts"][1:,:], jnp.zeros((1, n_parallel_envs), dtype=bool), axis=0)
+    data["returns"] = vmap(_discounted_cumsum, in_axes=(1,1))(data["rewards"], dones).T
     data = tree_map(lambda x: x.reshape((-1,) + x.shape[2:]), data)  # Merge parallel envs
     return data
 
