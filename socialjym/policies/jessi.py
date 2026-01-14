@@ -282,7 +282,8 @@ class ActorCritic(hk.Module):
         ### ACTOR
         ## Compute Dirichlet distribution parameters
         delta_alphas = nn.softmax(self.actor_head(context), axis=-1)  # (Batch, 3)
-        alphas = delta_alphas * self.actor_concentration + 1 # (Batch, 3)
+        concentration = nn.softplus(self.actor_concentration) + 1e-6
+        alphas = delta_alphas * concentration + 1 # (Batch, 3)
         ## Compute dirchlet distribution vetices
         zeros = jnp.zeros((batch_size,))
         v1 = jnp.stack([zeros, action_space_params[:, 1] * self.wmax], axis=-1)
@@ -300,7 +301,7 @@ class ActorCritic(hk.Module):
             state_values = state_values[0]
             distributions = tree_map(lambda t: t[0], distributions)
         ### LEARNABLE LOSS VARIANCES
-        return sampled_actions, distributions, delta_alphas, self.actor_concentration, state_values, self.loss_log_vars
+        return sampled_actions, distributions, delta_alphas, concentration, state_values, self.loss_log_vars
 
 class JESSI(BasePolicy):
     def __init__(
