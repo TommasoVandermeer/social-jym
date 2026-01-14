@@ -215,7 +215,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_networ
     ax[1].plot(jnp.arange(n_epochs), avg_actor_losses, c='green')
     ax[2].plot(jnp.arange(n_epochs), avg_critic_losses, c='blue')
     ax[0].set_xlabel("Epoch")
-    ax[0].set_ylabel("Loss")
+    ax[0].set_ylabel("Loss (with regularization)")
     ax[1].set_xlabel("Epoch")
     ax[1].set_ylabel("Actor Loss (weighted)")
     ax[2].set_xlabel("Epoch")

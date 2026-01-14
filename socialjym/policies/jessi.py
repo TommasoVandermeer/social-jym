@@ -175,19 +175,6 @@ class Perception(hk.Module):
             last_scan_embeddings = last_scan_embeddings[0]
         return hum_distr, last_scan_embeddings
 
-class LearnableLossWeights(hk.Module):
-    def __init__(self, name="learnable_losses"):
-        super().__init__(name=name)
-        # Shape [3]: 0 -> Actor, 1 -> Critic, 2 -> Perception
-        self.log_vars = hk.get_parameter(
-            "loss_log_vars", 
-            shape=[3], 
-            init=jnp.zeros
-        )
-
-    def __call__(self):
-        return self.log_vars
-
 class ActorCritic(hk.Module):
     def __init__(
             self,
@@ -203,6 +190,7 @@ class ActorCritic(hk.Module):
                 "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
                 "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             },
+            initial_concentration: float = 10.,
     ) -> None:
         super().__init__(name="actor_network")
         self.n_detectable_humans = n_detectable_humans
@@ -210,6 +198,7 @@ class ActorCritic(hk.Module):
         self.vmax = v_max
         self.wmax = 2 * v_max / wheels_distance
         self.wmin = -2 * v_max / wheels_distance
+        self.initial_concentration = initial_concentration
         # Dimensions
         self.scan_embedding_dim = scan_embedding_dim
         self.attention_dim = attention_dim
@@ -232,13 +221,22 @@ class ActorCritic(hk.Module):
             output_sizes=[150, 100, self.n_outputs], 
             name="actor_head"
         )
+        self.actor_concentration = hk.get_parameter(
+            "actor_concentration", 
+            shape=[], 
+            init=hk.initializers.Constant(self.initial_concentration)
+        )
         self.critic_head = hk.nets.MLP(
             **mlp_params,
             output_sizes=[150, 100, 1],
             name="critic_head"
         )
-        # 4. Learnable Loss Weights
-        self.llw = LearnableLossWeights()
+        # 4. Learnable Loss Variances - shape [3]: 0 -> Actor, 1 -> Critic, 2 -> Perception
+        self.loss_log_vars = hk.get_parameter(
+            "loss_log_vars", 
+            shape=[3], 
+            init=jnp.zeros
+        )
         self.dirichlet = Dirichlet()
 
     def __call__(
@@ -283,8 +281,8 @@ class ActorCritic(hk.Module):
         ], axis=-1)  # (attention_dim + 9 + scan_embedding_dim,)
         ### ACTOR
         ## Compute Dirichlet distribution parameters
-        alphas = self.actor_head(context)
-        alphas = nn.softplus(alphas) + 1
+        delta_alphas = nn.softmax(self.actor_head(context), axis=-1)  # (Batch, 3)
+        alphas = delta_alphas * self.actor_concentration + 1 # (Batch, 3)
         ## Compute dirchlet distribution vetices
         zeros = jnp.zeros((batch_size,))
         v1 = jnp.stack([zeros, action_space_params[:, 1] * self.wmax], axis=-1)
@@ -301,9 +299,8 @@ class ActorCritic(hk.Module):
             sampled_actions = sampled_actions[0]
             state_values = state_values[0]
             distributions = tree_map(lambda t: t[0], distributions)
-        ### LEARNABLE LOSS WEIGHTS
-        loss_log_vars = self.llw()
-        return sampled_actions, distributions, state_values, loss_log_vars
+        ### LEARNABLE LOSS VARIANCES
+        return sampled_actions, distributions, delta_alphas, self.actor_concentration, state_values, self.loss_log_vars
 
 class JESSI(BasePolicy):
     def __init__(
@@ -654,7 +651,7 @@ class JESSI(BasePolicy):
         )
         # Compute action
         key, subkey = random.split(key)
-        sampled_action, actor_distr, state_value, _ = self.actor_critic.apply(
+        sampled_action, actor_distr, _, _, state_value, _ = self.actor_critic.apply(
             actor_critic_params, 
             None, 
             actor_input,
@@ -790,7 +787,7 @@ class JESSI(BasePolicy):
             def _batch_loss_function(
                 current_actor_params:dict,
                 inputs:jnp.ndarray,
-                sample_actions:jnp.ndarray,
+                expert_actions:jnp.ndarray,
                 returns:jnp.ndarray,
                 ) -> jnp.ndarray:
                 
@@ -798,25 +795,38 @@ class JESSI(BasePolicy):
                 def _loss_function(
                     current_actor_params:dict,
                     input:jnp.ndarray,
-                    sample_action:jnp.ndarray,
+                    expert_action:jnp.ndarray,
                     returnn:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                    _, predicted_distr, predicted_state_value, loss_log_vars = self.actor_critic.apply(current_actor_params, None, input['actor_input'], input['scan_embedding'])
-                    # Get mean action
-                    action = self.dirichlet.mean(predicted_distr)
-                    # Compute actor loss
-                    actor_loss = jnp.mean(jnp.square(action - sample_action))
-                    actor_loss = jnp.exp(-loss_log_vars[0]) * actor_loss + 0.5 * loss_log_vars[0]
+                    _, predicted_distr, delta_alphas, _, predicted_state_value, loss_log_vars = self.actor_critic.apply(
+                        current_actor_params, 
+                        None, 
+                        input['actor_input'], 
+                        input['scan_embedding']
+                    )                    
+                    ## Compute actor loss (MSE between expert action and predicted mean action)
+                    # predicted_action = self.dirichlet.mean(predicted_distr)
+                    #actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
+                    ## Compute Cross Entropy Loss between delta_alphas and expert action
+                    a = jnp.vstack([predicted_distr['vertices'].T, jnp.ones((1, 3))])
+                    b = jnp.append(expert_action, 1.0)
+                    raw_delta_alphas = jnp.linalg.solve(a, b)
+                    safe_delta_alphas = jnp.maximum(raw_delta_alphas, 0.0)
+                    target_delta_alphas = safe_delta_alphas / (jnp.sum(safe_delta_alphas) + 1e-6)
+                    actor_loss = -jnp.mean(jnp.sum(target_delta_alphas * jnp.log(delta_alphas + 1e-6), axis=-1))
+                    weighted_actor_loss = 0.5 * jnp.exp(-loss_log_vars[0]) * actor_loss
                     # Compute critic loss
                     critic_loss = jnp.square(predicted_state_value - returnn)
-                    critic_loss = jnp.exp(-loss_log_vars[1]) * critic_loss + 0.5 * loss_log_vars[1]
-                    return actor_loss + critic_loss, (actor_loss, critic_loss)
+                    weighted_critic_loss = 0.5 * jnp.exp(-loss_log_vars[1]) * critic_loss
+                    # Compute total loss
+                    total_loss = weighted_actor_loss + weighted_critic_loss + 0.5 * loss_log_vars[0] + 0.5 * loss_log_vars[1]
+                    return total_loss, (weighted_actor_loss, weighted_critic_loss)
                 
                 total_loss, (actor_losses, critic_losses) = _loss_function(
                     current_actor_params,
                     inputs,
-                    sample_actions,
+                    expert_actions,
                     returns,
                 )
 
@@ -826,13 +836,13 @@ class JESSI(BasePolicy):
                 "actor_input": experiences["actor_inputs"],
                 "scan_embedding": experiences["scan_embeddings"],
             }
-            sample_actions = experiences["actor_actions"]
+            expert_actions = experiences["actor_actions"]
             returns = experiences["returns"]
             # Compute the loss and gradients
             (loss, (actor_loss, critic_loss)), grads = value_and_grad(_batch_loss_function, has_aux=True)(
                 current_actor_params, 
                 inputs,
-                sample_actions,
+                expert_actions,
                 returns,
             )
             return loss, actor_loss, critic_loss, grads
