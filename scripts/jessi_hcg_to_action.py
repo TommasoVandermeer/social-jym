@@ -17,14 +17,11 @@ save_videos = False  # Whether to save videos of the debug inspections
 ### Parameters
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
-n_steps = 30_000  # Number of labeled examples to train Lidar to GMM network
 n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
-negative_samples_threshold = 0.2 # Distance threshold from objects to consider a sample as negative (in meters)
 learning_rate = 0.005
 batch_size = 200
 n_epochs = 100
-p_visualization_threshold = 0.05
 # Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -121,7 +118,7 @@ del raw_data
 
 ### INITIALIZE ACTOR NETWORK
 # Initialize actor network
-_, actor_critic_params = jessi.init_nns(random.PRNGKey(random_seed))
+_, actor_critic_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
 # Count network parameters
 def count_params(actor_critic_params):
     return sum(jnp.prod(jnp.array(p.shape)) for layer in actor_critic_params.values() for p in layer.values())

@@ -410,7 +410,7 @@ else:
 
 ### DEFINE NEURAL NETWORK
 # Initialize network
-params, _ = jessi.init_nns(random.PRNGKey(random_seed))
+params, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
 # Count network parameters
 def count_params(params):
     return sum(jnp.prod(jnp.array(p.shape)) for layer in params.values() for p in layer.values())

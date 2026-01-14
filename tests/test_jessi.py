@@ -38,7 +38,7 @@ with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb
     encoder_params = pickle.load(f)
 with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
     actor_params = pickle.load(f)
-    # _, actor_params, _ = policy.init_nns(random.PRNGKey(0))
+network_params = policy.merge_nns_params(encoder_params, actor_params)
 
 # Simulate some episodes
 for i in range(n_episodes):
@@ -70,9 +70,9 @@ for i in range(n_episodes):
     }
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, _, _, _, percepion_distr, actor_distr, state_value = policy.act(random.PRNGKey(0), obs, info, encoder_params, actor_params, sample=False)
+        action, _, _, _, perception_distr, actor_distr, state_value = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
         print("Dirichlet distribution parameters: ", actor_distr['alphas'])
-        # print("Predicted HCGs scores", [f"{w:.2f}" for w in percepion_distr['weights']])
+        # print("Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']])
         # Step the environment
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
         # Save data for animation
@@ -80,7 +80,7 @@ for i in range(n_episodes):
         all_rewards = all_rewards.at[step].set(reward)
         all_predicted_state_values = all_predicted_state_values.at[step].set(state_value)
         all_actor_distrs = tree_map(lambda x, y: x.at[step].set(y), all_actor_distrs, actor_distr)
-        all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, percepion_distr)
+        all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, perception_distr)
         all_states = jnp.vstack((all_states, jnp.array([state])))
         all_observations = jnp.vstack((all_observations, jnp.array([obs])))
         all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
