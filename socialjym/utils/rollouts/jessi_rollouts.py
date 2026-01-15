@@ -246,7 +246,7 @@ def jessi_multitask_rl_rollout(
                 lax.cond(
                         (debugging) & (upd_idx % debugging_interval == 0) & (upd_idx != 0),   
                         lambda _: debug.print(
-                                "Episodes {w}\nLoss: {l}\nPerception loss: {p}\nActor loss: {y}\nCritic loss: {z}\nLoss log vars: {llv}\nEntropy: {e}\nStd: {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}", 
+                                "Episodes {w}\nLoss: {l}\nPerception loss: {p}\nActor loss: {y}\nCritic loss: {z}\nLoss stds: {llv}\nEntropy: {e}\nActor Std: {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}", 
                                 l=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["losses"])) <= upd_idx), aux_data["losses"], jnp.nan)),
                                 p=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["perception_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["perception_losses"])) <= upd_idx), aux_data["perception_losses"], jnp.nan)),
                                 y=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["actor_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["actor_losses"])) <= upd_idx), jnp.abs(aux_data["actor_losses"]), jnp.nan)),
@@ -318,8 +318,8 @@ def jessi_multitask_rl_rollout(
                 "states",
                 "obses",
                 "infos",
-                "init_outcomes",
-                "initial_network_params", 
+                "outcomes",
+                "network_params", 
                 "network_optimizer_state",
                 "current_buffer_size",
                 "aux_data"
