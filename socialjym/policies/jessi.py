@@ -365,8 +365,8 @@ class E2E(hk.Module):
 
     def __call__(
         self,
-        x: jnp.ndarray, # Perception input
-        y: jnp.ndarray, # Additional actor-critic input
+        x: jnp.ndarray, # Perception input (B, n_stack, num_beams, 7)
+        y: jnp.ndarray, # Additional actor-critic input (B, n_detectable_humans, 9)
         **kwargs: dict,
     ) -> tuple:
         # Extract random key
@@ -517,6 +517,76 @@ class JESSI(BasePolicy):
         ])
         points_robot = jnp.dot(points_world - ref_position, R)
         return points_robot, points_world
+
+    @partial(jit, static_argnames=("self"))
+    def _encoder_loss(
+        self,
+        human_distrs: dict,
+        targets:jnp.ndarray,
+        lambda_pos_reg:float=2.0,
+        lambda_vel_reg:float=1.0,
+        lambda_cls:float=1.0,
+    ) -> jnp.ndarray:
+        # Extract target data
+        human_positions = targets["gt_poses"] # Shape: (B, M, 2)
+        human_velocities = targets["gt_vels"] # Shape: (B, M, 2)
+        human_mask = targets["gt_mask"] # Shape: (B, M) -> 1 if human exists, 0 otherwise
+        # Extract dimensions
+        B, K, _ = human_distrs['pos_distrs']['means'].shape
+        _, M, _ = human_positions.shape
+        ### Bipartite matching
+        ## Cost matrix
+        dist = jnp.linalg.norm( # (B, K, 1, 2) - (B, 1, M, 2)
+            jnp.expand_dims(human_distrs['pos_distrs']['means'], 2) - jnp.expand_dims(human_positions, 1), 
+            axis=-1
+        ) # Shape (B, K, M)
+        prob_cost = -jnp.log(jnp.expand_dims(human_distrs['weights'], 2) + 1e-6) # (B, K, 1)
+        cost_matrix = lambda_pos_reg * dist + lambda_cls * prob_cost # (B, K, M)
+        ## Matching
+        assigned_query_idx, assigned_gt_idx = vmap(optax.assignment.hungarian_algorithm)(cost_matrix) # Shapes: (B, M), (B, M)
+        sort_perm = jnp.argsort(assigned_gt_idx, axis=1) # Shape (B, M)
+        best_pred_idx = jnp.take_along_axis(assigned_query_idx, sort_perm, axis=1) # Shape (B, M)
+        # One-hot mask - shape: (B, K, M) -> 1 if k matches m, 0 otherwise
+        matched_mask = nn.one_hot(best_pred_idx, K, axis=1) # Shape: (B, K, M)
+        # Filter with GT mask
+        valid_matches = matched_mask * jnp.expand_dims(human_mask, 1) # (B, K, M)
+        matched_pos_means = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['pos_distrs']['means']) # (B, M, 2)
+        matched_pos_logsigmas = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['pos_distrs']['logsigmas']) # (B, M, 2)
+        matched_pos_correlations = jnp.einsum('bkm,bk->bm', valid_matches, human_distrs['pos_distrs']['correlation']) # (B, M)
+        matched_pos_distrs = {
+            "means": matched_pos_means,
+            "logsigmas": matched_pos_logsigmas,
+            "correlation": matched_pos_correlations,
+        }
+        matched_vel_means = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['vel_distrs']['means']) # (B, M, 2)
+        matched_vel_logsigmas = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['vel_distrs']['logsigmas']) # (B, M, 2)
+        matched_vel_correlations = jnp.einsum('bkm,bk->bm', valid_matches, human_distrs['vel_distrs']['correlation']) # (B, M)
+        matched_vel_distrs = {
+            "means": matched_vel_means,
+            "logsigmas": matched_vel_logsigmas,
+            "correlation": matched_vel_correlations,
+        }
+        ### REGRESSION LOSS
+        ## NLL loss for position distribution
+        pos_nll_losses = vmap(vmap(self.bivariate_gaussian.neglogp))(
+            matched_pos_distrs, # Shape: (B, M, 1/2)
+            human_positions, # Shape: (B, M, 2)
+        )  # Shape: (B, M)
+        # Mask invalid humans
+        pos_reg_loss = jnp.sum(pos_nll_losses * human_mask) / (jnp.sum(human_mask) + 1e-6)
+        ## NLL loss for velocity distribution
+        vel_nll_losses = vmap(vmap(self.bivariate_gaussian.neglogp))(
+            matched_vel_distrs, # Shape: (B, M, 1/2)
+            human_velocities, # Shape: (B, M, 2)
+        )  # Shape: (B, M)
+        # Mask invalid humans
+        vel_reg_loss = jnp.sum(vel_nll_losses * human_mask) / (jnp.sum(human_mask) + 1e-6)
+        ### CLASSIFICATION LOSS
+        ## Binary cross-entropy loss for classification
+        target_cls = jnp.max(valid_matches, axis=2) # (B, K) -> 0 o 1
+        bce = - (target_cls * jnp.log(human_distrs['weights'] + 1e-6) + (1 - target_cls) * jnp.log(1 - human_distrs['weights'] + 1e-6))
+        cls_loss = jnp.mean(bce) 
+        return lambda_pos_reg * pos_reg_loss + lambda_vel_reg * vel_reg_loss + lambda_cls * cls_loss
 
     # Public methods
 
@@ -756,7 +826,7 @@ class JESSI(BasePolicy):
     def compute_e2e_input(
         self,
         obs:jnp.ndarray,
-        info:dict,
+        robot_goal:jnp.ndarray,
     ) -> jnp.ndarray:
         # Compute encoder input and last lidar point cloud (for action bounding)
         perception_input, last_lidar_point_cloud = self.compute_encoder_input(obs)
@@ -765,7 +835,6 @@ class JESSI(BasePolicy):
             last_lidar_point_cloud,  
         )
         # Prepare input for network
-        robot_goal = info["robot_goal"]  # Shape: (2,)
         robot_position = obs[0,:2]
         robot_orientation = obs[0,2]
         c, s = jnp.cos(-robot_orientation), jnp.sin(-robot_orientation)
@@ -791,7 +860,7 @@ class JESSI(BasePolicy):
         # Compute encoder input and last lidar point cloud (for action bounding)
         perception_input, robot_state_input = self.compute_e2e_input(
             obs,
-            info,
+            info["robot_goal"],
         )
         # Compute action
         key, subkey = random.split(key)
@@ -834,69 +903,16 @@ class JESSI(BasePolicy):
         # B: batch size, K: number of HCGs, M: max number of ground truth humans
         # Compute the prediction
         human_distrs, _ = self.perception.apply(current_params, None, inputs)
-        # Extract target data
-        human_positions = targets["gt_poses"] # Shape: (B, M, 2)
-        human_velocities = targets["gt_vels"] # Shape: (B, M, 2)
-        human_mask = targets["gt_mask"] # Shape: (B, M) -> 1 if human exists, 0 otherwise
-        # Extract dimensions
-        B, K, _ = human_distrs['pos_distrs']['means'].shape
-        _, M, _ = human_positions.shape
-        ### Bipartite matching
-        ## Cost matrix
-        dist = jnp.linalg.norm( # (B, K, 1, 2) - (B, 1, M, 2)
-            jnp.expand_dims(human_distrs['pos_distrs']['means'], 2) - jnp.expand_dims(human_positions, 1), 
-            axis=-1
-        ) # Shape (B, K, M)
-        prob_cost = -jnp.log(jnp.expand_dims(human_distrs['weights'], 2) + 1e-6) # (B, K, 1)
-        cost_matrix = lambda_pos_reg * dist + lambda_cls * prob_cost # (B, K, M)
-        ## Matching
-        assigned_query_idx, assigned_gt_idx = vmap(optax.assignment.hungarian_algorithm)(cost_matrix) # Shapes: (B, M), (B, M)
-        sort_perm = jnp.argsort(assigned_gt_idx, axis=1) # Shape (B, M)
-        best_pred_idx = jnp.take_along_axis(assigned_query_idx, sort_perm, axis=1) # Shape (B, M)
-        # One-hot mask - shape: (B, K, M) -> 1 if k matches m, 0 otherwise
-        matched_mask = nn.one_hot(best_pred_idx, K, axis=1) # Shape: (B, K, M)
-        # Filter with GT mask
-        valid_matches = matched_mask * jnp.expand_dims(human_mask, 1) # (B, K, M)
-        matched_pos_means = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['pos_distrs']['means']) # (B, M, 2)
-        matched_pos_logsigmas = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['pos_distrs']['logsigmas']) # (B, M, 2)
-        matched_pos_correlations = jnp.einsum('bkm,bk->bm', valid_matches, human_distrs['pos_distrs']['correlation']) # (B, M)
-        matched_pos_distrs = {
-            "means": matched_pos_means,
-            "logsigmas": matched_pos_logsigmas,
-            "correlation": matched_pos_correlations,
-        }
-        matched_vel_means = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['vel_distrs']['means']) # (B, M, 2)
-        matched_vel_logsigmas = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['vel_distrs']['logsigmas']) # (B, M, 2)
-        matched_vel_correlations = jnp.einsum('bkm,bk->bm', valid_matches, human_distrs['vel_distrs']['correlation']) # (B, M)
-        matched_vel_distrs = {
-            "means": matched_vel_means,
-            "logsigmas": matched_vel_logsigmas,
-            "correlation": matched_vel_correlations,
-        }
-        ### REGRESSION LOSS
-        ## NLL loss for position distribution
-        pos_nll_losses = vmap(vmap(self.bivariate_gaussian.neglogp))(
-            matched_pos_distrs, # Shape: (B, M, 1/2)
-            human_positions, # Shape: (B, M, 2)
-        )  # Shape: (B, M)
-        # Mask invalid humans
-        pos_reg_loss = jnp.sum(pos_nll_losses * human_mask) / (jnp.sum(human_mask) + 1e-6)
-        ## NLL loss for velocity distribution
-        vel_nll_losses = vmap(vmap(self.bivariate_gaussian.neglogp))(
-            matched_vel_distrs, # Shape: (B, M, 1/2)
-            human_velocities, # Shape: (B, M, 2)
-        )  # Shape: (B, M)
-        # Mask invalid humans
-        vel_reg_loss = jnp.sum(vel_nll_losses * human_mask) / (jnp.sum(human_mask) + 1e-6)
-        ### CLASSIFICATION LOSS
-        ## Binary cross-entropy loss for classification
-        target_cls = jnp.max(valid_matches, axis=2) # (B, K) -> 0 o 1
-        bce = - (target_cls * jnp.log(human_distrs['weights'] + 1e-6) + (1 - target_cls) * jnp.log(1 - human_distrs['weights'] + 1e-6))
-        cls_loss = jnp.mean(bce) 
-        return lambda_pos_reg * pos_reg_loss + lambda_vel_reg * vel_reg_loss + lambda_cls * cls_loss
+        return self._encoder_loss(
+            human_distrs,
+            targets,
+            lambda_pos_reg,
+            lambda_vel_reg,
+            lambda_cls,
+        )
 
     @partial(jit, static_argnames=("self","e2e_network_optimizer"))
-    def update(
+    def update_rl(
         self, 
         e2e_network_params:dict,
         e2e_network_optimizer:optax.GradientTransformation, 
@@ -909,7 +925,164 @@ class JESSI(BasePolicy):
         """
         Update policy network using the provided experiences in RL setting.
         """
-        pass
+        # experiences = {
+        #     "gt_mask": (n_parallel_envs*n_steps, env.n_humans),
+        #     "gt_poses": (n_parallel_envs*n_steps, env.n_humans, 2),
+        #     "gt_vels": (n_parallel_envs*n_steps, env.n_humans, 2),
+        #     "inputs0": (n_parallel_envs*n_steps, policy.n_stack, policy.lidar_num_rays, 7),
+        #     "inputs1": (n_parallel_envs*n_steps, policy.n_detectable_humans, 9),
+        #     "critic_targets": (n_parallel_envs*n_steps,),
+        #     "actions": (n_parallel_envs*n_steps, 2),
+        #     "values": (n_parallel_envs*n_steps,),
+        #     "neglogpdfs": (n_parallel_envs*n_steps,),
+        # }
+        @jit
+        def _compute_rl_loss_and_gradients(
+            current_network_params:dict, 
+            experiences:dict[str:jnp.ndarray],
+            current_beta_entropy:float,
+            clip_range:float,
+            debugging:bool=False,
+        ) -> tuple:
+            @jit
+            def _batch_loss_function(
+                current_network_params:dict,
+                gt_masks:jnp.ndarray,
+                gt_poses:jnp.ndarray,
+                gt_vels:jnp.ndarray,
+                inputs0:jnp.ndarray,
+                inputs1:jnp.ndarray,
+                sample_actions:jnp.ndarray,
+                critic_targets:jnp.ndarray, 
+                advantages:jnp.ndarray,  
+                old_neglogpdfs:jnp.ndarray,
+                old_values:jnp.ndarray, 
+                beta_entropy:float = 0.0001,
+            ) -> tuple:
+                @partial(vmap, in_axes=(None, 0, 0, 0, 0, 0, 0, 0))
+                def _rl_loss_function(
+                    current_network_params:dict,
+                    gt_mask:jnp.ndarray,
+                    gt_poses:jnp.ndarray,
+                    gt_vels:jnp.ndarray,
+                    input0:jnp.ndarray,
+                    input1:jnp.ndarray,
+                    sample_action:jnp.ndarray,
+                    critic_target:jnp.ndarray, 
+                    advantage:jnp.ndarray,  
+                    old_neglogpdf:jnp.ndarray,
+                    old_value:jnp.ndarray,
+                    beta_entropy:float = 0.0001,
+                ) -> tuple:
+                    ## PREDICTION
+                    perception_distr, _, _, actor_distr, _, _, predicted_value, loss_log_vars = self.e2e.apply(current_network_params, None, input0, input1)
+                    ## ACTOR LOSS
+                    neglogpdf = self.dirichlet.neglogp(actor_distr, sample_action)
+                    ratio = jnp.exp(old_neglogpdf - neglogpdf)
+                    lax.cond(
+                        debugging,
+                        lambda _: debug.print(
+                            "Ratio: {x} - Old neglogp: {y} - New neglogp: {z} - distr: {w} - action: {a} - advantage: {b}", 
+                            x=ratio,
+                            y=old_neglogpdf,
+                            z=neglogpdf,
+                            w=actor_distr,
+                            a=sample_action,
+                            b=advantage,
+                        ),
+                        lambda _: None,
+                        None,
+                    )
+                    actor_loss = jnp.maximum(- ratio * advantage, - jnp.clip(ratio, 1-clip_range, 1+clip_range) * advantage)
+                    ## ENTROPY LOSS
+                    entropy_loss = - beta_entropy * self.dirichlet.entropy(actor_distr)
+                    ## CRITIC LOSS
+                    clipped_prediction = jnp.clip(predicted_value, old_value - clip_range, old_value + clip_range)
+                    critic_loss = 0.5 * jnp.maximum(jnp.square(critic_target - predicted_value), jnp.square(critic_target - clipped_prediction))
+                    ## PERCEPTION LOSS
+                    perception_loss = self._encoder_loss(
+                        perception_distr,
+                        {
+                            "gt_mask": gt_mask,
+                            "gt_poses": gt_poses,
+                            "gt_vels": gt_vels,
+                        },
+                    )
+                    loss = 0.5 * jnp.exp(-loss_log_vars[0]) * actor_loss + 0.5 * loss_log_vars[0]\
+                        + 0.5 * jnp.exp(-loss_log_vars[1]) * critic_loss + 0.5 * loss_log_vars[1]\
+                        + 0.5 * jnp.exp(-loss_log_vars[2]) * perception_loss + 0.5 * loss_log_vars[2]\
+                        + entropy_loss
+                    return loss, perception_loss, critic_loss, actor_loss, entropy_loss, loss_log_vars
+                losses, perception_losses, critic_losses, actor_losses, entropy_losses, loss_log_vars = _rl_loss_function(
+                    current_network_params, 
+                    gt_masks,
+                    gt_poses,
+                    gt_vels,
+                    inputs0, 
+                    inputs1, 
+                    sample_actions, 
+                    critic_targets, 
+                    advantages, 
+                    old_neglogpdfs, 
+                    old_values,
+                    beta_entropy,
+                )
+                return jnp.mean(losses), {"actor_loss": jnp.mean(actor_losses), "entropy_loss": jnp.mean(entropy_losses), "perception_loss": jnp.mean(perception_losses), "critic_loss": jnp.mean(critic_losses), "loss_stds": 0.5 * jnp.exp(jnp.mean(loss_log_vars))}
+            gt_mask = experiences["gt_mask"]
+            gt_poses = experiences["gt_poses"]
+            gt_vels = experiences["gt_vels"]
+            inputs0 = experiences["inputs0"]
+            inputs1 = experiences["inputs1"]
+            critic_targets = experiences["critic_targets"]
+            sample_actions = experiences["actions"]
+            old_values = experiences["values"]
+            old_neglogpdfs = experiences["neglogpdfs"]
+            # Compute and normalize advantages
+            advantages = critic_targets - old_values
+            advantages = (advantages - jnp.mean(advantages)) / (jnp.std(advantages) + EPSILON)
+            # Compute actor loss and gradients
+            losses, grads = value_and_grad(_batch_loss_function, has_aux=True)(
+                current_network_params, 
+                gt_mask,
+                gt_poses,
+                gt_vels,
+                inputs0,
+                inputs1,
+                sample_actions, 
+                critic_targets,
+                advantages,
+                old_neglogpdfs,
+                old_values,
+                current_beta_entropy,
+            )
+            overall_loss, all_losses = losses
+            perception_loss = all_losses["perception_loss"]
+            actor_loss = all_losses["actor_loss"]
+            critic_loss = all_losses["critic_loss"]
+            entropy_loss = all_losses["entropy_loss"]
+            loss_stds = all_losses["loss_stds"]
+            return overall_loss, perception_loss, actor_loss, critic_loss, entropy_loss, loss_stds, grads
+        # Compute loss and gradients for actor and critic
+        loss, perception_loss, actor_loss, critic_loss, entropy_loss, loss_stds, e2e_network_grads = _compute_rl_loss_and_gradients(
+            e2e_network_params,
+            experiences,
+            beta_entropy,
+            clip_range,debugging
+        )
+        # Compute parameter updates
+        e2e_network_updates, e2e_network_opt_state = e2e_network_optimizer.update(e2e_network_grads, e2e_network_opt_state)
+        # Apply updates
+        updated_e2e_network_params = optax.apply_updates(e2e_network_params, e2e_network_updates)
+        return (
+            updated_e2e_network_params, 
+            e2e_network_opt_state, 
+            loss,
+            perception_loss, 
+            critic_loss,
+            actor_loss,
+            entropy_loss,
+            loss_stds,
+        )
 
     @partial(jit, static_argnames=("self","actor_critic_optimizer"))
     def update_il(

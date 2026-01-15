@@ -6,6 +6,7 @@ from jax_tqdm import loop_tqdm
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.policies.jessi import JESSI
+from socialjym.envs.base_env import HUMAN_POLICIES
 
 
 def jessi_multitask_rl_rollout(
@@ -29,6 +30,7 @@ def jessi_multitask_rl_rollout(
         # Compute number of steps to simulate per update for each parallel env
         assert total_batch_size % n_parallel_envs == 0, "The buffer capacity must be a multiple of the number of parallel environments. Otherwise you will trow away experiences."
         assert total_batch_size % mini_batch_size == 0, "The total batch size must be a multiple of the mini-batch size."
+        assert env.humans_policy == HUMAN_POLICIES.index("hsfm"), "This training is only compatible with HSFM humans policy."
         n_steps = int(total_batch_size / n_parallel_envs)
         n_batches = int(total_batch_size / mini_batch_size)
 
@@ -42,15 +44,34 @@ def jessi_multitask_rl_rollout(
                 @jit
                 def _step_fori_body(step:int, val:tuple):
                         # Retrieve data from the tuple
-                        network_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_observations, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds = val
-                        ## TODO: Compute visible humans ground truths positions and velocities
-                        #         "gt_mask": jnp.zeros((batch_size, n_humans,)),
-                        #         "gt_poses": jnp.zeros((batch_size, n_humans, 2)),
-                        #         "gt_vels": jnp.zeros((batch_size, n_humans, 2)),
+                        network_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_robot_goals, batch_supervised_target, batch_observations, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds = val
                         ## Step
                         actions, policy_keys, _, sampled_actions, _, actor_distrs, values = policy.batch_act(policy_keys, obses, network_params, sample=True)
-                        states, obses, infos, rewards, outcomes, reset_keys = env.batch_step(states, infos, actions, reset_keys, test=False, reset_if_done=True)
+                        new_states, new_obses, new_infos, rewards, outcomes, reset_keys = env.batch_step(states, infos, actions, reset_keys, test=False, reset_if_done=True)
+                        ## Compute Supervised targets
+                        rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(
+                                obses[:,:-1,:2], # humans_positions,
+                                states[:,:-1,4], # humans_orientations,
+                                obses[:,:-1,2:4], # humans_velocities,
+                                infos["static_obstacles"][:,-1], # static_obstacles,
+                                obses[:,-1,:2], # robot_positions,
+                                obses[:,-1,5], # robot_orientations,
+                                infos["robot_goal"], # robot_goals,
+                        )
+                        humans_visibility, _ = env.batch_object_visibility(
+                                rc_humans_positions,
+                                infos["humans_parameters"][:,:,0],
+                                rc_obstacles,
+                        )
+                        humans_in_range = env.batch_humans_inside_lidar_range(
+                                rc_humans_positions,
+                                infos["humans_parameters"][:,:,0],
+                        )
                         ## Save data to later add to the buffer
+                        batch_robot_goals = batch_robot_goals.at[:,step].set(infos["robot_goal"])
+                        batch_supervised_target["gt_poses"] = batch_supervised_target["gt_poses"].at[:,step].set(rc_humans_positions)
+                        batch_supervised_target["gt_vels"] = batch_supervised_target["gt_vels"].at[:,step].set(rc_humans_velocities)
+                        batch_supervised_target["gt_mask"] = batch_supervised_target["gt_mask"].at[:,step].set(humans_visibility & humans_in_range)
                         batch_observations = batch_observations.at[:,step].set(obses)
                         batch_values = batch_values.at[:,step].set(values)
                         batch_actions = batch_actions.at[:,step].set(sampled_actions)
@@ -62,10 +83,16 @@ def jessi_multitask_rl_rollout(
                         failures += jnp.sum(outcomes["failure"])
                         timeouts += jnp.sum(outcomes["timeout"])
                         # returns = returns.at[:].set(returns + rewards * jnp.power(jnp.broadcast_to(policy.gamma,(n_parallel_envs,)), policy.v_max * (infos["time"] - policy.dt)))  
-                        returns = returns.at[:].set(returns + infos["return"] * (~outcomes["nothing"]))  
+                        returns = returns.at[:].set(returns + new_infos["return"] * (~outcomes["nothing"]))  
                         episode_count += jnp.sum(~(outcomes["nothing"]))
                         batch_stds = batch_stds.at[:,step,:].set(policy.dirichlet.batch_std(actor_distrs))
-                        return (network_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_observations, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds)
+                        return (network_params, new_states, new_obses, new_infos, outcomes, policy_keys, reset_keys, episode_count, batch_robot_goals, batch_supervised_target, batch_observations, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds)
+                batch_robot_goals = jnp.zeros((n_parallel_envs, n_steps, 2))
+                batch_supervised_target = {
+                        "gt_poses": jnp.zeros((n_parallel_envs, n_steps, policy.n_detectable_humans, 2)),
+                        "gt_vels": jnp.zeros((n_parallel_envs, n_steps, policy.n_detectable_humans, 2)),
+                        "gt_mask": jnp.zeros((n_parallel_envs, n_steps, policy.n_detectable_humans), dtype=bool),
+                }
                 batch_observations = jnp.zeros((n_parallel_envs, n_steps, policy.n_stack, policy.lidar_num_rays + 6))
                 batch_values = jnp.zeros((n_parallel_envs, n_steps))
                 batch_actions = jnp.zeros((n_parallel_envs, n_steps, 2))
@@ -73,8 +100,8 @@ def jessi_multitask_rl_rollout(
                 batch_dones = jnp.zeros((n_parallel_envs, n_steps))
                 batch_neglogpdfs = jnp.zeros((n_parallel_envs, n_steps))
                 batch_stds = jnp.zeros((n_parallel_envs, n_steps, 2)) # (WARNING: could be state dependent or not)
-                val_init = (network_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, 0, batch_observations, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, 0, 0, 0, jnp.zeros(n_parallel_envs,), batch_stds)
-                network_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_observations, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, succ_count, fail_count, timeo_count, cum_rewards, batch_stds = lax.fori_loop(
+                val_init = (network_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, 0, batch_robot_goals, batch_supervised_target, batch_observations, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, 0, 0, 0, jnp.zeros(n_parallel_envs,), batch_stds)
+                network_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_robot_goals, batch_supervised_target, batch_observations, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, succ_count, fail_count, timeo_count, cum_rewards, batch_stds = lax.fori_loop(
                         0,
                         n_steps, 
                         _step_fori_body, 
@@ -130,6 +157,10 @@ def jessi_multitask_rl_rollout(
                 # debug.print("Batch neglogp: {x}", x=batch_neglogpdfs[0])
                 # Add all experiences to the buffer
                 training_data = {
+                        "robot_goals": jnp.reshape(batch_robot_goals, (n_parallel_envs*n_steps, 2)),
+                        "gt_mask": jnp.reshape(batch_supervised_target["gt_mask"], (n_parallel_envs*n_steps, env.n_humans)),
+                        "gt_poses": jnp.reshape(batch_supervised_target["gt_poses"], (n_parallel_envs*n_steps, env.n_humans, 2)),
+                        "gt_vels": jnp.reshape(batch_supervised_target["gt_vels"], (n_parallel_envs*n_steps, env.n_humans, 2)),
                         "observations": jnp.reshape(batch_observations, (n_parallel_envs*n_steps, policy.n_stack, policy.lidar_num_rays + 6)),
                         "critic_targets": jnp.reshape(critic_targets, (n_parallel_envs*n_steps,)),
                         "actions": jnp.reshape(batch_actions, (n_parallel_envs*n_steps, 2)),
@@ -154,6 +185,10 @@ def jessi_multitask_rl_rollout(
                                 # Retrieve data from the buffer
                                 indexes = (jnp.arange(mini_batch_size) + batch * mini_batch_size).astype(jnp.int32)
                                 experiences = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, training_data)
+                                experiences["inputs0"], experiences["inputs1"] = vmap(policy.compute_e2e_input, in_axes=(0,0))(
+                                        experiences["observations"],
+                                        experiences["robot_goals"],
+                                )
                                 # Debugging
                                 update_debug = (debugging) & (upd_idx % debugging_interval == 0) & (epoch + batch == 0) & (upd_idx != 0)
                                 lax.cond(
@@ -163,7 +198,7 @@ def jessi_multitask_rl_rollout(
                                         None,
                                 )
                                 # Update the networks
-                                new_network_params, net_opt_state, critic_loss, actor_loss, entropy_loss = policy.update(
+                                new_network_params, net_opt_state, loss, perception_loss, critic_loss, actor_loss, entropy_loss, loss_stds = policy.update_rl(
                                         network_params,
                                         network_optimizer,
                                         net_opt_state,
@@ -173,9 +208,12 @@ def jessi_multitask_rl_rollout(
                                         debugging = False, #(debugging) & (upd_idx % debugging_interval == 0) & (epoch + batch == 0), 
                                 )
                                 # Save aux data
+                                pre_aux_data["losses"] = pre_aux_data["losses"].at[epoch,batch].set(loss)
                                 pre_aux_data["actor_losses"] = pre_aux_data["actor_losses"].at[epoch,batch].set(actor_loss)
                                 pre_aux_data["critic_losses"] = pre_aux_data["critic_losses"].at[epoch,batch].set(critic_loss)
                                 pre_aux_data["entropy_losses"] = pre_aux_data["entropy_losses"].at[epoch,batch].set(entropy_loss)
+                                pre_aux_data["perception_losses"] = pre_aux_data["perception_losses"].at[epoch,batch].set(perception_loss)
+                                pre_aux_data["loss_stds"] = pre_aux_data["loss_stds"].at[epoch,batch].set(loss_stds)
                                 return shuffle_key, new_network_params, net_opt_state, training_data, pre_aux_data
                         epoch_val = lax.fori_loop(
                                 0,
@@ -185,9 +223,12 @@ def jessi_multitask_rl_rollout(
                         )
                         return epoch_val
                 pre_aux_data = {
+                        "losses": jnp.zeros((n_epochs,n_batches), dtype=jnp.float32),
                         "actor_losses": jnp.zeros((n_epochs,n_batches), dtype=jnp.float32),
                         "critic_losses": jnp.zeros((n_epochs,n_batches), dtype=jnp.float32),
                         "entropy_losses": jnp.zeros((n_epochs,n_batches), dtype=jnp.float32),
+                        "perception_losses": jnp.zeros((n_epochs,n_batches), dtype=jnp.float32),
+                        "loss_stds": jnp.zeros((n_epochs,n_batches, 3), dtype=jnp.float32),
                 }
                 shuffle_key, network_params, net_opt_state, training_data, pre_aux_data = lax.fori_loop(
                         0,
@@ -196,16 +237,21 @@ def jessi_multitask_rl_rollout(
                         (shuffle_key, network_params, net_opt_state, training_data, pre_aux_data)
                 )
                 # Save data
+                aux_data["losses"] = aux_data["losses"].at[upd_idx].set(jnp.mean(pre_aux_data["losses"], axis=(0,1)))
                 aux_data["actor_losses"] = aux_data["actor_losses"].at[upd_idx].set(jnp.mean(pre_aux_data["actor_losses"], axis=(0,1)))
                 aux_data["critic_losses"] = aux_data["critic_losses"].at[upd_idx].set(jnp.mean(pre_aux_data["critic_losses"], axis=(0,1)))
                 aux_data["entropy_losses"] = aux_data["entropy_losses"].at[upd_idx].set(jnp.mean(pre_aux_data["entropy_losses"], axis=(0,1)))
-                # DEBUG: print the mean loss for this episode and the return
+                aux_data["perception_losses"] = aux_data["perception_losses"].at[upd_idx].set(jnp.mean(pre_aux_data["perception_losses"], axis=(0,1)))
+                aux_data["loss_stds"] = aux_data["loss_stds"].at[upd_idx].set(jnp.mean(pre_aux_data["loss_stds"], axis=(0,1)))
                 lax.cond(
                         (debugging) & (upd_idx % debugging_interval == 0) & (upd_idx != 0),   
                         lambda _: debug.print(
-                                "Episodes {w}\nActor loss: {y}\nCritic loss: {z}\nEntropy: {e}\nStd: {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}", 
+                                "Episodes {w}\nLoss: {l}\nPerception loss: {p}\nActor loss: {y}\nCritic loss: {z}\nLoss log vars: {llv}\nEntropy: {e}\nStd: {std}\nReturn: {r}\nSucc.Rate: {s}\nFail.Rate: {f}\nTim.Rate: {t}", 
+                                l=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["losses"])) <= upd_idx), aux_data["losses"], jnp.nan)),
+                                p=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["perception_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["perception_losses"])) <= upd_idx), aux_data["perception_losses"], jnp.nan)),
                                 y=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["actor_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["actor_losses"])) <= upd_idx), jnp.abs(aux_data["actor_losses"]), jnp.nan)),
                                 z=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["critic_losses"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["critic_losses"])) <= upd_idx), aux_data["critic_losses"], jnp.nan)), 
+                                llv=jnp.nanmean(jnp.where(((jnp.column_stack([jnp.arange(aux_data["loss_stds"].shape[0]),jnp.arange(aux_data["loss_stds"].shape[0])])) > upd_idx-debugging_interval) & (jnp.column_stack([jnp.arange(aux_data["loss_stds"].shape[0]),jnp.arange(aux_data["loss_stds"].shape[0])]) <= upd_idx), aux_data["loss_stds"], jnp.array([jnp.nan,jnp.nan,jnp.nan])), axis=0),
                                 w=jnp.sum(aux_data["episodes"]),
                                 r=jnp.nanmean(jnp.where((jnp.arange(len(aux_data["returns"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["returns"])) <= upd_idx), aux_data["returns"], jnp.nan)),
                                 s=jnp.nansum(jnp.where((jnp.arange(len(aux_data["successes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["successes"])) <= upd_idx), aux_data["successes"], jnp.nan)) / jnp.nansum(jnp.where((jnp.arange(len(aux_data["episodes"])) > upd_idx-debugging_interval) & (jnp.arange(len(aux_data["episodes"])) <= upd_idx), aux_data["episodes"], jnp.nan)),
@@ -221,9 +267,12 @@ def jessi_multitask_rl_rollout(
 
         # Initialize the auxiliary data array
         aux_data = {
+                "losses": jnp.zeros([train_updates], dtype=jnp.float32),
+                "perception_losses": jnp.zeros([train_updates], dtype=jnp.float32),
                 "actor_losses": jnp.zeros([train_updates], dtype=jnp.float32),
                 "critic_losses": jnp.zeros([train_updates], dtype=jnp.float32),
                 "entropy_losses": jnp.zeros([train_updates], dtype=jnp.float32),
+                "loss_stds": jnp.zeros([train_updates, 3], dtype=jnp.float32),
                 "returns": jnp.zeros([train_updates], dtype=jnp.float32),
                 "successes": jnp.zeros([train_updates], dtype=int),
                 "failures": jnp.zeros([train_updates], dtype=int),
