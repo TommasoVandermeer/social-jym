@@ -1447,11 +1447,11 @@ class BaseEnv(ABC):
             epsilon
         )
 
-    @jit
+    @partial(jit, static_argnames=("self"))
     def humans_inside_lidar_range(self, positions, radii):
         return jnp.linalg.norm(positions, axis=-1) - radii <= self.lidar_max_dist
     
-    @jit
+    @partial(jit, static_argnames=("self"))
     def batch_humans_inside_lidar_range(self, batch_positions, batch_radii):
         return vmap(BaseEnv.humans_inside_lidar_range, in_axes=(None,0,0))(
             self,

@@ -20,8 +20,8 @@ n_humans_for_tests = [5, 10, 15, 20, 25]
 test_robot_visibility = [False, True]
 n_trials = 100
 n_parallel_envs = 2048 
-training_updates = 30_000 # 30_000
-rl_debugging_interval = 10
+training_updates = 1_000
+rl_debugging_interval = 1
 robot_vmax = 1
 training_hyperparams = {
     'random_seed': 0,
@@ -36,14 +36,14 @@ training_hyperparams = {
     'rl_num_epochs': 4,
     'rl_beta_entropy': 1e-4, # 5e-4
     'lambda_gae': 0.95, # 0.95
-    'humans_policy': 'hsfm',
+    # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6], jnp.int32), # Subset of the hybrid scenarios to use for training
     'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 0.5, # Scale the gradient norm by this value
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
-print(f"STARTING RL TRAINING\n{training_hyperparams['rl_parallel_envs']} parallel envs,\ntotal batch size {training_hyperparams['rl_total_batch_size']},\nmini-batch size {training_hyperparams['rl_mini_batch_size']}\n{training_hyperparams['rl_num_batches']} batches per update\nfor a total of {training_hyperparams['rl_training_updates']} updates.")
+print(f"\nSTARTING RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
 
 # Initialize reward function
 if training_hyperparams['reward_function'] == 'lasernav_reward1': 
@@ -62,7 +62,6 @@ env_params = {
     'robot_visible': False,
     'scenario': training_hyperparams['scenario'],
     'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
-    'humans_policy': training_hyperparams['humans_policy'],
     'circle_radius': 7,
     'reward_function': reward_function,
     'kinematics': 'unicycle',
@@ -72,7 +71,7 @@ env = LaserNav(**env_params)
 _, _, obs, info, _ = env.reset(random.PRNGKey(training_hyperparams['random_seed']))
 # Initialize robot policy and vnet params
 policy = JESSI(
-    env.reward_function, 
+    robot_radius=0.3, 
     v_max=robot_vmax, 
     dt=env_params['robot_dt'], 
 )
@@ -95,13 +94,6 @@ network_optimizer = optax.chain(
         ), 
         eps=1e-7, 
         b1=0.9,
-    ),
-)
-critic_optimizer = optax.chain(
-    optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
-    optax.sgd(
-        learning_rate=training_hyperparams['rl_critic_learning_rate'], 
-        momentum=0.9
     ),
 )
 

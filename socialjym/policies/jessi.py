@@ -519,6 +519,82 @@ class JESSI(BasePolicy):
         return points_robot, points_world
 
     @partial(jit, static_argnames=("self"))
+    def _encoder_loss_single(
+        self,
+        human_distrs: dict,
+        targets: dict,
+        lambda_pos_reg: float = 2.0,
+        lambda_vel_reg: float = 1.0,
+        lambda_cls: float = 1.0,
+    ) -> jnp.ndarray:
+        # Extract target data
+        human_positions = targets["gt_poses"]  # Shape: (M, 2)
+        human_velocities = targets["gt_vels"]  # Shape: (M, 2)
+        human_mask = targets["gt_mask"]        # Shape: (M,) -> 1 if human exists, 0 otherwise
+        # Extract dimensions
+        K, _ = human_distrs['pos_distrs']['means'].shape
+        M, _ = human_positions.shape
+        ### Bipartite matching
+        ## Cost matrix
+        # Distance: (K, 1, 2) - (1, M, 2) -> (K, M)
+        dist = jnp.linalg.norm(
+            jnp.expand_dims(human_distrs['pos_distrs']['means'], 1) - jnp.expand_dims(human_positions, 0),
+            axis=-1
+        ) 
+        # Prob cost: (K, 1)
+        prob_cost = -jnp.log(jnp.expand_dims(human_distrs['weights'], 1) + 1e-6)
+        # Cost matrix: (K, M)
+        cost_matrix = lambda_pos_reg * dist + lambda_cls * prob_cost 
+        ## Matching (No vmap needed here, dealing with single matrix)
+        assigned_query_idx, assigned_gt_idx = optax.assignment.hungarian_algorithm(cost_matrix) # Shapes: (M,), (M,)
+        sort_perm = jnp.argsort(assigned_gt_idx) # Shape (M,)
+        best_pred_idx = assigned_query_idx[sort_perm] # Shape (M,)
+        # One-hot mask - shape: (K, M) -> 1 if k matches m, 0 otherwise
+        # axis=0 puts the class dimension (K) first
+        matched_mask = nn.one_hot(best_pred_idx, K, axis=0) 
+        # Filter with GT mask
+        valid_matches = matched_mask * jnp.expand_dims(human_mask, 0) # (K, M)
+        # Einsums simplified: remove 'b' dimension
+        matched_pos_means = jnp.einsum('km,kd->md', valid_matches, human_distrs['pos_distrs']['means']) # (M, 2)
+        matched_pos_logsigmas = jnp.einsum('km,kd->md', valid_matches, human_distrs['pos_distrs']['logsigmas']) # (M, 2)
+        matched_pos_correlations = jnp.einsum('km,k->m', valid_matches, human_distrs['pos_distrs']['correlation']) # (M,)
+        matched_pos_distrs = {
+            "means": matched_pos_means,
+            "logsigmas": matched_pos_logsigmas,
+            "correlation": matched_pos_correlations,
+        }
+        matched_vel_means = jnp.einsum('km,kd->md', valid_matches, human_distrs['vel_distrs']['means']) # (M, 2)
+        matched_vel_logsigmas = jnp.einsum('km,kd->md', valid_matches, human_distrs['vel_distrs']['logsigmas']) # (M, 2)
+        matched_vel_correlations = jnp.einsum('km,k->m', valid_matches, human_distrs['vel_distrs']['correlation']) # (M,)
+        matched_vel_distrs = {
+            "means": matched_vel_means,
+            "logsigmas": matched_vel_logsigmas,
+            "correlation": matched_vel_correlations,
+        }
+
+        ### REGRESSION LOSS
+        ## NLL loss for position distribution
+        pos_nll_losses = vmap(self.bivariate_gaussian.neglogp)(
+            matched_pos_distrs, # Shape: (M, 1/2)
+            human_positions,    # Shape: (M, 2)
+        )  # Shape: (M,)
+        # Mask invalid humans
+        pos_reg_loss = jnp.sum(pos_nll_losses * human_mask) / (jnp.sum(human_mask) + 1e-6)
+        ## NLL loss for velocity distribution
+        vel_nll_losses = vmap(self.bivariate_gaussian.neglogp)(
+            matched_vel_distrs, # Shape: (M, 1/2)
+            human_velocities,   # Shape: (M, 2)
+        )  # Shape: (M,)
+        # Mask invalid humans
+        vel_reg_loss = jnp.sum(vel_nll_losses * human_mask) / (jnp.sum(human_mask) + 1e-6)
+        ### CLASSIFICATION LOSS
+        ## Binary cross-entropy loss
+        target_cls = jnp.max(valid_matches, axis=1) # (K,) -> 0 or 1
+        bce = - (target_cls * jnp.log(human_distrs['weights'] + 1e-6) + (1 - target_cls) * jnp.log(1 - human_distrs['weights'] + 1e-6))
+        cls_loss = jnp.mean(bce) 
+        return lambda_pos_reg * pos_reg_loss + lambda_vel_reg * vel_reg_loss + lambda_cls * cls_loss
+
+    @partial(jit, static_argnames=("self"))
     def _encoder_loss(
         self,
         human_distrs: dict,
@@ -879,13 +955,15 @@ class JESSI(BasePolicy):
         self,
         keys,
         obses,
+        infos,
         e2e_network_params,
         sample,
     ):
-        return vmap(JESSI.act, in_axes=(None, 0, 0, None, None))(
+        return vmap(JESSI.act, in_axes=(None, 0, 0, 0, None, None))(
             self,
             keys, 
             obses, 
+            infos,
             e2e_network_params,
             sample,
         )   
@@ -912,7 +990,7 @@ class JESSI(BasePolicy):
         )
 
     @partial(jit, static_argnames=("self","e2e_network_optimizer"))
-    def update_rl(
+    def update(
         self, 
         e2e_network_params:dict,
         e2e_network_optimizer:optax.GradientTransformation, 
@@ -959,7 +1037,7 @@ class JESSI(BasePolicy):
                 old_values:jnp.ndarray, 
                 beta_entropy:float = 0.0001,
             ) -> tuple:
-                @partial(vmap, in_axes=(None, 0, 0, 0, 0, 0, 0, 0))
+                @partial(vmap, in_axes=(None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None))
                 def _rl_loss_function(
                     current_network_params:dict,
                     gt_mask:jnp.ndarray,
@@ -1000,7 +1078,7 @@ class JESSI(BasePolicy):
                     clipped_prediction = jnp.clip(predicted_value, old_value - clip_range, old_value + clip_range)
                     critic_loss = 0.5 * jnp.maximum(jnp.square(critic_target - predicted_value), jnp.square(critic_target - clipped_prediction))
                     ## PERCEPTION LOSS
-                    perception_loss = self._encoder_loss(
+                    perception_loss = self._encoder_loss_single(
                         perception_distr,
                         {
                             "gt_mask": gt_mask,
@@ -1184,23 +1262,12 @@ class JESSI(BasePolicy):
         experiences:dict[str:jnp.ndarray],
         # Experiences: {"inputs":jnp.ndarray, "targets":dict{"gt_mask","gt_poses","gt_vels"}}
     ) -> tuple:
-        @jit
-        def _compute_loss_and_gradients(
-            current_params:dict,  
-            experiences:dict[str:jnp.ndarray],
-        ) -> tuple:
-
-            inputs = experiences["inputs"]
-            targets = experiences["targets"]
-            # Compute the loss and gradients
-            loss, grads = value_and_grad(self.encoder_loss)(
-                current_params, 
-                inputs,
-                targets,
-            )
-            return loss, grads
         # Compute loss and gradients
-        loss, grads = _compute_loss_and_gradients(current_params, experiences)
+        loss, grads = value_and_grad(self.encoder_loss)(
+            current_params, 
+            experiences["inputs"],
+            experiences["targets"],
+        )
         # Compute parameter updates
         updates, optimizer_state = encoder_optimizer.update(grads, optimizer_state, current_params)
         # Apply updates
