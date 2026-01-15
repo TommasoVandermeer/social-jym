@@ -1447,6 +1447,18 @@ class BaseEnv(ABC):
             epsilon
         )
 
+    @jit
+    def humans_inside_lidar_range(self, positions, radii):
+        return jnp.linalg.norm(positions, axis=-1) - radii <= self.lidar_max_dist
+    
+    @jit
+    def batch_humans_inside_lidar_range(self, batch_positions, batch_radii):
+        return vmap(BaseEnv.humans_inside_lidar_range, in_axes=(None,0,0))(
+            self,
+            batch_positions,
+            batch_radii
+        )
+
     @partial(jit, static_argnames=("self"))
     def robot_centric_transform(
         self, 
@@ -1490,6 +1502,18 @@ class BaseEnv(ABC):
         robot_orientations,
         robot_goals,
     ):
+        """
+        Compute robot-centric transformations for a batch of frames.
+
+        params:
+        - humans_positions: (batch_size, n_humans, 2) array of humans positions
+        - humans_orientations: (batch_size, n_humans) array of humans orientations
+        - humans_velocities: (batch_size, n_humans, 2) array of humans velocities
+        - static_obstacles: (batch_size, n_obstacles, n_segments, 2, 2) array of static obstacle segments
+        - robot_positions: (batch_size, 2) array of robot positions
+        - robot_orientations: (batch_size,) array of robot orientations
+        - robot_goals: (batch_size, 2) array of robot goals
+        """
         return vmap(BaseEnv.robot_centric_transform, in_axes=(None,0,0,0,0,0,0,0))(
             self,
             humans_positions,
