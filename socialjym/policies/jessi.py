@@ -879,13 +879,15 @@ class JESSI(BasePolicy):
         self,
         keys,
         obses,
+        infos,
         e2e_network_params,
         sample,
     ):
-        return vmap(JESSI.act, in_axes=(None, 0, 0, None, None))(
+        return vmap(JESSI.act, in_axes=(None, 0, 0, 0, None, None))(
             self,
             keys, 
             obses, 
+            infos,
             e2e_network_params,
             sample,
         )   
@@ -912,7 +914,7 @@ class JESSI(BasePolicy):
         )
 
     @partial(jit, static_argnames=("self","e2e_network_optimizer"))
-    def update_rl(
+    def update(
         self, 
         e2e_network_params:dict,
         e2e_network_optimizer:optax.GradientTransformation, 
@@ -959,7 +961,7 @@ class JESSI(BasePolicy):
                 old_values:jnp.ndarray, 
                 beta_entropy:float = 0.0001,
             ) -> tuple:
-                @partial(vmap, in_axes=(None, 0, 0, 0, 0, 0, 0, 0))
+                @partial(vmap, in_axes=(None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None))
                 def _rl_loss_function(
                     current_network_params:dict,
                     gt_mask:jnp.ndarray,
@@ -1001,11 +1003,11 @@ class JESSI(BasePolicy):
                     critic_loss = 0.5 * jnp.maximum(jnp.square(critic_target - predicted_value), jnp.square(critic_target - clipped_prediction))
                     ## PERCEPTION LOSS
                     perception_loss = self._encoder_loss(
-                        perception_distr,
+                        tree_map(lambda x: jnp.expand_dims(x, 0), perception_distr),
                         {
-                            "gt_mask": gt_mask,
-                            "gt_poses": gt_poses,
-                            "gt_vels": gt_vels,
+                            "gt_mask": jnp.expand_dims(gt_mask, 0),
+                            "gt_poses": jnp.expand_dims(gt_poses, 0),
+                            "gt_vels": jnp.expand_dims(gt_vels, 0),
                         },
                     )
                     loss = 0.5 * jnp.exp(-loss_log_vars[0]) * actor_loss + 0.5 * loss_log_vars[0]\
@@ -1184,23 +1186,12 @@ class JESSI(BasePolicy):
         experiences:dict[str:jnp.ndarray],
         # Experiences: {"inputs":jnp.ndarray, "targets":dict{"gt_mask","gt_poses","gt_vels"}}
     ) -> tuple:
-        @jit
-        def _compute_loss_and_gradients(
-            current_params:dict,  
-            experiences:dict[str:jnp.ndarray],
-        ) -> tuple:
-
-            inputs = experiences["inputs"]
-            targets = experiences["targets"]
-            # Compute the loss and gradients
-            loss, grads = value_and_grad(self.encoder_loss)(
-                current_params, 
-                inputs,
-                targets,
-            )
-            return loss, grads
         # Compute loss and gradients
-        loss, grads = _compute_loss_and_gradients(current_params, experiences)
+        loss, grads = value_and_grad(self.encoder_loss)(
+            current_params, 
+            experiences["inputs"],
+            experiences["targets"],
+        )
         # Compute parameter updates
         updates, optimizer_state = encoder_optimizer.update(grads, optimizer_state, current_params)
         # Apply updates

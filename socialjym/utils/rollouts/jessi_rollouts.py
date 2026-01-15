@@ -2,11 +2,12 @@ import optax
 from jax import jit, lax, random, vmap, debug
 from jax.tree_util import tree_map
 import jax.numpy as jnp
-from jax_tqdm import loop_tqdm
+from jax_tqdm import loop_tqdm, scan_tqdm
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.policies.jessi import JESSI
 from socialjym.envs.base_env import HUMAN_POLICIES
+from jhsfm.hsfm import get_linear_velocity
 
 
 def jessi_multitask_rl_rollout(
@@ -46,16 +47,16 @@ def jessi_multitask_rl_rollout(
                         # Retrieve data from the tuple
                         network_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_robot_goals, batch_supervised_target, batch_observations, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds = val
                         ## Step
-                        actions, policy_keys, _, sampled_actions, _, actor_distrs, values = policy.batch_act(policy_keys, obses, network_params, sample=True)
+                        actions, policy_keys, _, sampled_actions, _, actor_distrs, values = policy.batch_act(policy_keys, obses, infos, network_params, sample=True)
                         new_states, new_obses, new_infos, rewards, outcomes, reset_keys = env.batch_step(states, infos, actions, reset_keys, test=False, reset_if_done=True)
                         ## Compute Supervised targets
                         rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(
-                                obses[:,:-1,:2], # humans_positions,
+                                states[:,:-1,:2], # humans_positions,
                                 states[:,:-1,4], # humans_orientations,
-                                obses[:,:-1,2:4], # humans_velocities,
+                                vmap(vmap(get_linear_velocity))(states[:,:-1,4], states[:,:-1,2:4]), # humans_velocities,
                                 infos["static_obstacles"][:,-1], # static_obstacles,
-                                obses[:,-1,:2], # robot_positions,
-                                obses[:,-1,5], # robot_orientations,
+                                states[:,-1,:2], # robot_positions,
+                                states[:,-1,4], # robot_orientations,
                                 infos["robot_goal"], # robot_goals,
                         )
                         humans_visibility, _ = env.batch_object_visibility(
@@ -80,7 +81,7 @@ def jessi_multitask_rl_rollout(
                         batch_neglogpdfs = batch_neglogpdfs.at[:,step].set(policy.dirichlet.batch_neglogp(actor_distrs, sampled_actions))
                         ## Compute dones and auxiliary data
                         successes += jnp.sum(outcomes["success"])
-                        failures += jnp.sum(outcomes["failure"])
+                        failures += jnp.sum(outcomes["collision_with_human"] | outcomes["collision_with_obstacle"])
                         timeouts += jnp.sum(outcomes["timeout"])
                         # returns = returns.at[:].set(returns + rewards * jnp.power(jnp.broadcast_to(policy.gamma,(n_parallel_envs,)), policy.v_max * (infos["time"] - policy.dt)))  
                         returns = returns.at[:].set(returns + new_infos["return"] * (~outcomes["nothing"]))  
@@ -89,9 +90,9 @@ def jessi_multitask_rl_rollout(
                         return (network_params, new_states, new_obses, new_infos, outcomes, policy_keys, reset_keys, episode_count, batch_robot_goals, batch_supervised_target, batch_observations, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds)
                 batch_robot_goals = jnp.zeros((n_parallel_envs, n_steps, 2))
                 batch_supervised_target = {
-                        "gt_poses": jnp.zeros((n_parallel_envs, n_steps, policy.n_detectable_humans, 2)),
-                        "gt_vels": jnp.zeros((n_parallel_envs, n_steps, policy.n_detectable_humans, 2)),
-                        "gt_mask": jnp.zeros((n_parallel_envs, n_steps, policy.n_detectable_humans), dtype=bool),
+                        "gt_poses": jnp.zeros((n_parallel_envs, n_steps, env.n_humans, 2)),
+                        "gt_vels": jnp.zeros((n_parallel_envs, n_steps, env.n_humans, 2)),
+                        "gt_mask": jnp.zeros((n_parallel_envs, n_steps, env.n_humans), dtype=bool),
                 }
                 batch_observations = jnp.zeros((n_parallel_envs, n_steps, policy.n_stack, policy.lidar_num_rays + 6))
                 batch_values = jnp.zeros((n_parallel_envs, n_steps))
@@ -119,7 +120,7 @@ def jessi_multitask_rl_rollout(
                 # Compute the value of the last batched_states and dones
                 perception_inputs, robot_state_inputs = vmap(policy.compute_e2e_input, in_axes=(0,0))(
                         obses,
-                        infos
+                        infos['robot_goal']
                 )
                 # Compute the value of the last batch  
                 _, _, _, _, _ , _, last_values, _ = policy.e2e.apply(
@@ -129,7 +130,7 @@ def jessi_multitask_rl_rollout(
                         robot_state_inputs
                 )
                 last_dones = ~(outcomes["nothing"])
-                batch_values = jnp.append(batch_values, last_values, axis=1)
+                batch_values = jnp.append(batch_values, last_values[:,None], axis=1)
                 batch_dones = jnp.column_stack((batch_dones, last_dones))
                 # Compute advatages with GAE
                 @jit
@@ -198,7 +199,7 @@ def jessi_multitask_rl_rollout(
                                         None,
                                 )
                                 # Update the networks
-                                new_network_params, net_opt_state, loss, perception_loss, critic_loss, actor_loss, entropy_loss, loss_stds = policy.update_rl(
+                                new_network_params, net_opt_state, loss, perception_loss, critic_loss, actor_loss, entropy_loss, loss_stds = policy.update(
                                         network_params,
                                         network_optimizer,
                                         net_opt_state,
