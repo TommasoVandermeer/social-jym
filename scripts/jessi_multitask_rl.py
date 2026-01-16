@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import random
+from jax import random, device_count
 import os
 import optax
 import matplotlib.pyplot as plt
@@ -14,6 +14,9 @@ from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
 from socialjym.policies.jessi import JESSI
+
+n_devices = device_count()
+print(f"\nJESSI RL training using {n_devices} devices\n")
 
 ### Hyperparameters
 n_humans_for_tests = [5, 10, 15, 20, 25]
@@ -32,7 +35,7 @@ training_hyperparams = {
     'rl_learning_rate': 5e-4,
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 2_000, # Mini-batch size for each model update
-    'rl_micro_batch_size': 50, # Micro-batch size for gradient accumulation
+    'rl_micro_batch_size': int(50 * n_devices), # Micro-batch size for gradient accumulation (50 = 8GB VRAM approx)
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 4,
     'rl_beta_entropy': 1e-4, # 5e-4
