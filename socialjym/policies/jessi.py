@@ -122,7 +122,8 @@ class Perception(hk.Module):
         self.head_hum = hk.Linear(11, w_init=hk.initializers.VarianceScaling(0.01))
 
     def limit_vector_norm(self, raw_vector:jnp.ndarray, max_norm:float) -> jnp.ndarray:
-        current_norm = jnp.linalg.norm(raw_vector, axis=-1, keepdims=True) + 1e-6
+        sq_sum = jnp.sum(jnp.square(raw_vector), axis=-1, keepdims=True)
+        current_norm = jnp.sqrt(sq_sum + 1e-6)
         target_norm = jnp.tanh(current_norm) * max_norm
         return (raw_vector / current_norm) * target_norm
 
@@ -537,10 +538,8 @@ class JESSI(BasePolicy):
         ### Bipartite matching
         ## Cost matrix
         # Distance: (K, 1, 2) - (1, M, 2) -> (K, M)
-        dist = jnp.linalg.norm(
-            jnp.expand_dims(human_distrs['pos_distrs']['means'], 1) - jnp.expand_dims(human_positions, 0),
-            axis=-1
-        ) 
+        diff = jnp.expand_dims(human_distrs['pos_distrs']['means'], 1) - jnp.expand_dims(human_positions, 0) # (K, 1, 2) - (1, M, 2)
+        dist = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1) + 1e-6) # Shape (K, M)
         # Prob cost: (K, 1)
         prob_cost = -jnp.log(jnp.expand_dims(human_distrs['weights'], 1) + 1e-6)
         # Cost matrix: (K, M)
@@ -612,10 +611,8 @@ class JESSI(BasePolicy):
         _, M, _ = human_positions.shape
         ### Bipartite matching
         ## Cost matrix
-        dist = jnp.linalg.norm( # (B, K, 1, 2) - (B, 1, M, 2)
-            jnp.expand_dims(human_distrs['pos_distrs']['means'], 2) - jnp.expand_dims(human_positions, 1), 
-            axis=-1
-        ) # Shape (B, K, M)
+        diff = jnp.expand_dims(human_distrs['pos_distrs']['means'], 2) - jnp.expand_dims(human_positions, 1) # (B, K, 1, 2) - (B, 1, M, 2)
+        dist = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1) + 1e-6) # Shape (B, K, M)
         prob_cost = -jnp.log(jnp.expand_dims(human_distrs['weights'], 2) + 1e-6) # (B, K, 1)
         cost_matrix = lambda_pos_reg * dist + lambda_cls * prob_cost # (B, K, M)
         ## Matching
