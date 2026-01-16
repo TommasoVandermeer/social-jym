@@ -64,8 +64,10 @@ class Dirichlet(BaseDistribution):
         alphas = distribution["alphas"]
         vertices = distribution["vertices"]
         sample = jnp.linalg.solve(jnp.vstack((vertices.T,jnp.ones((len(vertices),)))), jnp.append(action, 1.))
+        sample_safe = jnp.clip(sample, 1e-6, 1.0)
+        sample_safe = sample_safe / jnp.sum(sample_safe)
         # Avoid inf computation
-        return jnp.clip(-logpdf(sample, alphas), a_min=-8, a_max=20)
+        return -logpdf(sample_safe, alphas)
 
     @partial(jit, static_argnames=("self"))
     def normalize_alphas(self, alphas:jnp.ndarray, concentration:float) -> jnp.ndarray:
