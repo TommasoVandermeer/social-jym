@@ -34,11 +34,13 @@ env = LaserNav(**env_params)
 
 # Initialize the policy
 policy = JESSI()
-with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb') as f:
-    encoder_params = pickle.load(f)
-with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
-    actor_params = pickle.load(f)
-network_params = policy.merge_nns_params(encoder_params, actor_params)
+# with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb') as f:
+#     encoder_params = pickle.load(f)
+# with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
+#     actor_params = pickle.load(f)
+# network_params = policy.merge_nns_params(encoder_params, actor_params)
+with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
+    network_params, _ = pickle.load(f)
 
 # Simulate some episodes
 for i in range(n_episodes):
