@@ -34,6 +34,7 @@ class SocialNav(BaseEnv):
             kinematics='holonomic',
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
+            thick_default_obstacle:bool = False,
             grid_map_computation:bool = False,
             grid_cell_size:float = 0.9, # Such parameter is suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT)
             grid_min_size:float = 18. # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
@@ -64,7 +65,8 @@ class SocialNav(BaseEnv):
             ccso_n_static_humans=ccso_n_static_humans,
             grid_map_computation=grid_map_computation,
             grid_cell_size=grid_cell_size,
-            grid_min_size=grid_min_size
+            grid_min_size=grid_min_size,
+            thick_default_obstacle=thick_default_obstacle,
         )
         ## Args validation
         assert reward_function.kinematics == self.kinematics, "The reward function's kinematics must be the same as the environment's kinematics."

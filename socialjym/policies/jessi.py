@@ -1377,9 +1377,10 @@ class JESSI(BasePolicy):
                     zorder=5,
                 )
                 # Plot static obstacles
-                for o in static_obstacles[frame]:
-                    for s in o:
-                        ax.plot(s[:,0],s[:,1], color='black', linewidth=2, zorder=11, alpha=0.6, linestyle='solid')
+                if static_obstacles[frame].shape[1] > 1: # Polygon obstacles
+                    for o in static_obstacles[frame]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+                else: # One segment obstacles
+                    for o in static_obstacles[frame]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
             ### FIRST ROW AXS: SIMULATION + INPUT VISUALIZATION
             c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
             rot = jnp.array([[c, -s], [s, c]])
@@ -1496,8 +1497,9 @@ class JESSI(BasePolicy):
                 ),
             )
             actor_distr = tree_map(lambda x: x[frame], actor_distrs)
-            test_action_p = self.dirichlet.batch_p(actor_distr, test_action_samples)
-            points_high_p = test_action_samples[test_action_p > p_visualization_threshold_dir]
+            samples = test_action_samples[self.dirichlet.batch_is_in_support(actor_distr, test_action_samples)]
+            test_action_p = self.dirichlet.batch_p(actor_distr, samples)
+            points_high_p = samples[test_action_p > p_visualization_threshold_dir]
             corresponding_colors = test_action_p[test_action_p > p_visualization_threshold_dir]
             axs[4].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[4].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=7,color='red',zorder=51)

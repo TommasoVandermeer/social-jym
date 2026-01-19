@@ -35,9 +35,14 @@ class LaserNav(BaseEnv):
             lidar_angular_range=2*jnp.pi,
             lidar_max_dist=10.,
             lidar_num_rays=100,
+            lidar_noise=False,
+            lidar_noise_fixed_std=0.01,  # 1cm base noise
+            lidar_noise_proportional_std=0.01, # 1% of the distance noise
+            lidar_salt_and_pepper_prob=0.03, # 3% of the rays are affected by salt and pepper noise
             kinematics='unicycle',
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
+            thick_default_obstacle:bool = True,
             grid_map_computation:bool = False,
             grid_cell_size:float = 0.9, # Such parameter is suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT)
             grid_min_size:float = 18. # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
@@ -60,12 +65,17 @@ class LaserNav(BaseEnv):
             lidar_angular_range=lidar_angular_range,
             lidar_max_dist=lidar_max_dist,
             lidar_num_rays=lidar_num_rays,
+            lidar_noise=lidar_noise,
+            lidar_noise_fixed_std=lidar_noise_fixed_std,
+            lidar_noise_proportional_std=lidar_noise_proportional_std,
+            lidar_salt_and_pepper_prob=lidar_salt_and_pepper_prob,
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,
             grid_map_computation=grid_map_computation,
             grid_cell_size=grid_cell_size,
-            grid_min_size=grid_min_size
+            grid_min_size=grid_min_size,
+            thick_default_obstacle=thick_default_obstacle,
             )
         ## Args validation
         assert reward_function.kinematics == self.kinematics, "The reward function's kinematics must be the same as the environment's kinematics."
@@ -89,6 +99,7 @@ class LaserNav(BaseEnv):
         static_obstacles:jnp.ndarray,
         current_scenario:int,
         humans_delay:jnp.ndarray,
+        noise_key:random.PRNGKey,
     ) -> dict:
         """
         OVERRIDES BaseEnv._init_info method.
@@ -115,13 +126,21 @@ class LaserNav(BaseEnv):
             static_obstacles,
             current_scenario,
             humans_delay,
+            noise_key,
         )
         # Previous observation initialization
-        info["previous_obs"] = jnp.stack([self._get_current_obs(initial_state, humans_parameters[:,0], static_obstacles[-1], jnp.zeros((2,)))]*self.n_stack, axis=0)
+        # info["previous_obs"] = jnp.stack([self._get_current_obs(initial_state, humans_parameters[:,0], static_obstacles[-1], jnp.zeros((2,)), random.PRNGKey(0)),]*self.n_stack, axis=0)
+        info["previous_obs"] = vmap(self._get_current_obs, in_axes=(None,None,None,None,0))(
+            initial_state,
+            humans_parameters[:,0],
+            static_obstacles[-1],
+            jnp.zeros((2,)),
+            random.split(noise_key, self.n_stack),
+        )
         return info
 
     @partial(jit, static_argnames=("self"))
-    def _get_current_obs(self, state:jnp.ndarray, humans_radii:jnp.ndarray, static_obstacles:jnp.ndarray, action:jnp.ndarray) -> jnp.ndarray:
+    def _get_current_obs(self, state:jnp.ndarray, humans_radii:jnp.ndarray, static_obstacles:jnp.ndarray, action:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment, and the robot's action,
         this function computes the current observation of the state.
@@ -141,6 +160,7 @@ class LaserNav(BaseEnv):
             state[:-1, :2], # Human positions
             humans_radii,
             static_obstacles, 
+            noise_key=noise_key
         )
         # Compute the current observation
         current_obs = jnp.array([
@@ -153,7 +173,7 @@ class LaserNav(BaseEnv):
         return current_obs
 
     @partial(jit, static_argnames=("self"))
-    def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray) -> jnp.ndarray:
+    def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment, and the robot's action,
         this function computes the observation of the current state (which is a stack of the last n_stack observations).
@@ -168,7 +188,7 @@ class LaserNav(BaseEnv):
         - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
         The first stack is the most recent one.
         """
-        current_obs = self._get_current_obs(state, info["humans_parameters"][:,0], info["static_obstacles"][-1], action)
+        current_obs = self._get_current_obs(state, info["humans_parameters"][:,0], info["static_obstacles"][-1], action, noise_key)
         # Stack the current observation with the previous ones
         obs = jnp.vstack((current_obs,info["previous_obs"][:-1]))
         return obs
@@ -184,6 +204,7 @@ class LaserNav(BaseEnv):
         test:bool=False,
         reset_if_done:bool=False,
         reset_key:random.PRNGKey=random.PRNGKey(0),
+        env_key:random.PRNGKey=random.PRNGKey(0),
     )-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
@@ -202,7 +223,7 @@ class LaserNav(BaseEnv):
         - info: dictionary containing additional information about the environment.
         - reward: reward obtained in the transition.
         - outcome: dictionary indicating whether the episode is in a terminal state or not.
-        - reset_key: random.PRNGKey used to reset the environment. Only used if reset_if_done is True.
+        - (reset_key, env_key): tuple of random.PRNGKey used to reset the environment (only if reset_if_done is True) and to advance the environment key.
         """
         ### Robot goal update (next waypoint, if present)
         if self.scenario != -1: # Custom scenario, no automatic goal update
@@ -215,7 +236,8 @@ class LaserNav(BaseEnv):
                 (info["robot_goal"], info["robot_goal_index"])
             )
         ### Compute reward and outcome
-        obs = self._get_obs(state, info, action)
+        obs = self._get_obs(state, info, action, env_key)
+        new_env_key, _ = random.split(env_key) # Advance the env_key (we do it here to save the replicate the previous obs in previous_obs)
         reward, outcome = self.reward_function(state, action, info, self.robot_dt)
         ### Update state and info
         if self.robot_visible:
@@ -282,7 +304,7 @@ class LaserNav(BaseEnv):
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome, reset_key
+        return new_state, self._get_obs(new_state, new_info, action, new_env_key), new_info, reward, outcome, (reset_key, new_env_key)
 
     @partial(jit, static_argnames=("self"))
     def batch_step(
@@ -291,10 +313,11 @@ class LaserNav(BaseEnv):
         infos:dict, 
         actions:jnp.ndarray, 
         reset_keys:jnp.ndarray, # This is moved upwards because a default value cannot be given.
+        env_keys:jnp.ndarray,
         test:bool=False,
         reset_if_done:bool=False,
     ):
-        return vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0))(
+        return vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0))(
             self, 
             states, 
             infos, 
@@ -302,6 +325,7 @@ class LaserNav(BaseEnv):
             test, 
             reset_if_done,
             reset_keys,
+            env_keys,
         )
     
     @partial(jit, static_argnames=("self"))

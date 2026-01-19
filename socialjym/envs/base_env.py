@@ -90,7 +90,31 @@ def roto_translate_obstacle_segments(obstacle_segments, ref_position, ref_orient
 def roto_translate_obstacles(obstacles, ref_positions, ref_orientations):
     return vmap(roto_translate_obstacle_segments, in_axes=(0, None, None))(obstacles, ref_positions, ref_orientations)
 
-
+@jit
+def thicken_obstacles(obstacles, thickness):
+    """
+    Transform a line segment obstacle into a rectangle with given thickness.
+    args:
+    - obstacles: jnp.ndarray of shape (..., 1, 2, 2), representing line segments defined by start and end points.
+    - thickness: float, thickness of the obstacle rectangle.
+    """
+    p1 = obstacles[..., 0, 0, :] 
+    p2 = obstacles[..., 0, 1, :]
+    v = p2 - p1
+    len_v = jnp.linalg.norm(v, axis=-1, keepdims=True)
+    u = v / (len_v + 1e-6)
+    n = jnp.stack([-u[..., 1], u[..., 0]], axis=-1)
+    offset = n * (thickness / 2.0)
+    c1 = p1 + offset
+    c2 = p1 - offset
+    c3 = p2 - offset
+    c4 = p2 + offset
+    seg1 = jnp.stack([c1, c2], axis=-2)
+    seg2 = jnp.stack([c2, c3], axis=-2)
+    seg3 = jnp.stack([c3, c4], axis=-2)
+    seg4 = jnp.stack([c4, c1], axis=-2)
+    thick_obstacles = jnp.stack([seg1, seg2, seg3, seg4], axis=-3)
+    return thick_obstacles
 
 class BaseEnv(ABC):
     """
@@ -115,12 +139,17 @@ class BaseEnv(ABC):
         lidar_angular_range:float,
         lidar_max_dist:float,
         lidar_num_rays:int,
+        lidar_noise:bool,
+        lidar_noise_fixed_std:float,
+        lidar_noise_proportional_std:float,
+        lidar_salt_and_pepper_prob:float,
         kinematics:str,
         max_cc_delay:float,
         ccso_n_static_humans:int,
         grid_map_computation:bool,
         grid_cell_size:float,
         grid_min_size:float,
+        thick_default_obstacle:bool
     ) -> None:
         ## Args validation
         assert scenario in SCENARIOS or scenario is None, f"Invalid scenario. Choose one of {SCENARIOS}, or None for custom scenario."
@@ -166,9 +195,14 @@ class BaseEnv(ABC):
         self.lidar_angular_range = lidar_angular_range
         self.lidar_max_dist = lidar_max_dist
         self.lidar_num_rays = lidar_num_rays
+        self.lidar_noise = lidar_noise
+        self.lidar_noise_fixed_std = lidar_noise_fixed_std
+        self.lidar_noise_proportional_std = lidar_noise_proportional_std
+        self.lidar_salt_and_pepper_prob = lidar_salt_and_pepper_prob
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
         self.max_cc_delay = max_cc_delay
         self.ccso_n_static_humans = ccso_n_static_humans
+        self.thick_default_obstacle = thick_default_obstacle
         # Global planning parameters
         if grid_map_computation:
             print("\nWARNING: Grid map computation is enabled. This will slow down the simulation, especially if many static obstacles are present.\n")
@@ -234,6 +268,8 @@ class BaseEnv(ABC):
                 [[[0.,self.traffic_length/2+self.traffic_height/2+0.3],[self.traffic_length/2+self.traffic_height/2+0.3, self.traffic_length/2+self.traffic_height/2+0.3]]],
             ],
         ])
+        if thick_default_obstacle:
+            self.static_obstacles_per_scenario = thicken_obstacles(self.static_obstacles_per_scenario, thickness=0.1)
         if n_obstacles > 5:
             assert self.scenario == -1, "Standard scenarios with more than 5 obstacles are not supported yet. Only with custom scenarios."
         ## Robot goals initialization
@@ -302,6 +338,7 @@ class BaseEnv(ABC):
         static_obstacles:jnp.ndarray,
         current_scenario:int,
         humans_delay:jnp.ndarray,
+        noise_key:random.PRNGKey,
     ) -> dict:
         """
         Initializes the info dictionary with the given parameters.
@@ -314,6 +351,7 @@ class BaseEnv(ABC):
         - static_obstacles: array of static obstacles.
         - current_scenario: current scenario index.
         - humans_delay: array of humans' delays.
+        - noise_key: random.PRNGKey for noise generation. (UNUSED HERE)
 
         output:
         - info: dictionary containing the initialized values.
@@ -425,6 +463,7 @@ class BaseEnv(ABC):
             static_obstacles=static_obstacles,
             current_scenario=SCENARIOS.index('circular_crossing'),
             humans_delay=jnp.zeros((self.n_humans,)),
+            noise_key=key,
         )
         return full_state, info
     
@@ -440,6 +479,7 @@ class BaseEnv(ABC):
             static_obstacles=self._init_obstacles(key, SCENARIOS.index('delayed_circular_crossing')),
             current_scenario=SCENARIOS.index('delayed_circular_crossing'),
             humans_delay=jnp.zeros((self.n_humans,)),
+            noise_key=key,
         )
         possible_delays = jnp.arange(0., self.max_cc_delay + self.robot_dt, self.robot_dt)
         info["humans_delay"] = info["humans_delay"].at[:].set(random.choice(subkey, possible_delays, shape=(self.n_humans,)))
@@ -517,6 +557,7 @@ class BaseEnv(ABC):
             static_obstacles=static_obstacles,
             current_scenario=SCENARIOS.index('parallel_traffic'),
             humans_delay=jnp.zeros((self.n_humans,)),
+            noise_key=key,
         )
         return full_state, info
 
@@ -591,6 +632,7 @@ class BaseEnv(ABC):
             static_obstacles=static_obstacles,
             current_scenario=SCENARIOS.index('perpendicular_traffic'),
             humans_delay=jnp.zeros((self.n_humans,)),
+            noise_key=key,
         )
         return full_state, info
 
@@ -666,6 +708,7 @@ class BaseEnv(ABC):
             static_obstacles=static_obstacles,
             current_scenario=SCENARIOS.index('robot_crowding'),
             humans_delay=jnp.zeros((self.n_humans,)),
+            noise_key=key,
         )
         return full_state, info
 
@@ -798,6 +841,7 @@ class BaseEnv(ABC):
             static_obstacles=static_obstacles,
             current_scenario=SCENARIOS.index('circular_crossing_with_static_obstacles'),
             humans_delay=jnp.zeros((self.n_humans,)),
+            noise_key=key,
         )
         return full_state, info
 
@@ -883,6 +927,7 @@ class BaseEnv(ABC):
             static_obstacles=static_obstacles,
             current_scenario=SCENARIOS.index('crowd_navigation'),
             humans_delay=jnp.zeros((self.n_humans,)),
+            noise_key=key,
         )
         return full_state, info
     
@@ -957,6 +1002,7 @@ class BaseEnv(ABC):
             static_obstacles=static_obstacles,
             current_scenario=SCENARIOS.index('corner_traffic'),
             humans_delay=jnp.zeros((self.n_humans,)),
+            noise_key=key,
         )
         return full_state, info
 
@@ -1341,7 +1387,8 @@ class BaseEnv(ABC):
         lidar_yaw:float,  
         human_positions:jnp.ndarray, 
         human_radiuses:jnp.ndarray,
-        static_obstacles:jnp.ndarray
+        static_obstacles:jnp.ndarray,
+        noise_key=random.PRNGKey(0)
     ) -> jnp.ndarray:
         """
         Given the current state of the environment, the robot orientation and the additional information about the environment,
@@ -1360,9 +1407,32 @@ class BaseEnv(ABC):
         """
         angles = jnp.linspace(lidar_yaw - self.lidar_angular_range/2, lidar_yaw + self.lidar_angular_range/2, self.lidar_num_rays)
         measurements, _, _ = self.batch_ray_cast(angles, lidar_position, human_positions, human_radiuses, static_obstacles)
+        if self.lidar_noise:
+            measurements = self.add_lidar_noise(measurements,noise_key)
         lidar_output = jnp.stack((measurements, angles), axis=-1)
         return lidar_output
     
+    @partial(jit, static_argnames=("self"))
+    def add_lidar_noise(self, measurements:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+        """
+        Add noise and salt-and-pepper to the given lidar measurements.
+
+        args:
+        - measurements (self.lidar_num_rays,): jnp.ndarray containing the lidar measurements of the robot.
+        - noise_key: jax.random.PRNGKey for randomness.
+
+        output:
+        - noisy_measurements (self.lidar_num_rays,): jnp.ndarray containing the noisy lidar measurements of the robot.
+        """
+        beam_dropout_key, noise_key = random.split(noise_key)
+        ## Gaussian noise to LiDAR scans + Beam dropout
+        sigma = self.lidar_noise_fixed_std + self.lidar_noise_proportional_std * measurements 
+        noise = random.normal(noise_key, shape=measurements.shape) * sigma 
+        noisy_distances = jnp.clip(measurements + noise, 0., self.lidar_max_dist)
+        is_dropout = random.bernoulli(beam_dropout_key, p=self.lidar_salt_and_pepper_prob, shape=measurements.shape)
+        noisy_distances = jnp.where(is_dropout, self.lidar_max_dist, noisy_distances) 
+        return noisy_distances
+
     @partial(jit, static_argnames=("self"))
     def object_visibility(self, rc_humans_positions, humans_radii, rc_static_obstacles, epsilon=1e-5):
         """
