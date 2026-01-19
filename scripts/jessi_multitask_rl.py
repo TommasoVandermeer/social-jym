@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import random
+from jax import random, device_count
 import os
 import optax
 import matplotlib.pyplot as plt
@@ -15,12 +15,15 @@ from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
 from socialjym.policies.jessi import JESSI
 
+n_devices = device_count()
+print(f"\nJESSI RL training using {n_devices} devices\n")
+
 ### Hyperparameters
 n_humans_for_tests = [5, 10, 15, 20, 25]
 test_robot_visibility = [False, True]
 n_trials = 100
 n_parallel_envs = 1000 
-training_updates = 100
+training_updates = 5000
 rl_debugging_interval = 1
 robot_vmax = 1
 training_hyperparams = {
@@ -29,21 +32,22 @@ training_hyperparams = {
     'n_obstacles': 3,
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_learning_rate': 3e-4,
+    'rl_learning_rate': 2e-4,
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
-    'rl_mini_batch_size': 1000, # Mini-batch size for each model update
+    'rl_mini_batch_size': 10_000, # Mini-batch size for each model update
+    'rl_micro_batch_size': int(50 * n_devices), # Micro-batch size for gradient accumulation (50 = 8GB VRAM approx)
     'rl_clip_frac': 0.2, # 0.2
-    'rl_num_epochs': 4,
-    'rl_beta_entropy': 1e-4, # 5e-4
+    'rl_num_epochs': 2,
+    'rl_beta_entropy': 2e-6,
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
-    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6], jnp.int32), # Subset of the hybrid scenarios to use for training
+    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,7]), # Exclude circular_crossing_with_static_obstacles
     'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 0.5, # Scale the gradient norm by this value
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
-print(f"\nSTARTING RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
+print(f"\nSTARTING RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
 
 # Initialize reward function
 if training_hyperparams['reward_function'] == 'lasernav_reward1': 
@@ -88,7 +92,7 @@ network_optimizer = optax.chain(
     optax.adam(
         learning_rate=optax.schedules.linear_schedule(
             init_value=training_hyperparams['rl_learning_rate'], 
-            end_value=0., 
+            end_value=training_hyperparams['rl_learning_rate']/100, 
             transition_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
             transition_begin=0
         ), 
@@ -106,14 +110,15 @@ rl_rollout_params = {
     'network_optimizer': network_optimizer,
     'total_batch_size': training_hyperparams['rl_total_batch_size'],
     'mini_batch_size': training_hyperparams['rl_mini_batch_size'],
+    'micro_batch_size': training_hyperparams['rl_micro_batch_size'],
     'policy': policy,
     'env': env,
     'clip_range': training_hyperparams['rl_clip_frac'],
     'n_epochs': training_hyperparams['rl_num_epochs'],
     'beta_entropy': training_hyperparams['rl_beta_entropy'],
     'lambda_gae': training_hyperparams['lambda_gae'],
-    'debugging': True,
-    'debugging_interval': rl_debugging_interval,
+    # 'debugging': True,
+    # 'debugging_interval': rl_debugging_interval,
 }
 
 # REINFORCEMENT LEARNING ROLLOUT
@@ -125,24 +130,38 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"rl_out.pkl")):
 else:
     with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'rb') as f:
         rl_out = pickle.load(f)
-print(f"Total episodes simulated: {jnp.sum(rl_out['aux_data']['episodes'])}")
 
-# Save the training returns
-rl_network_params = rl_out['network_params']
-returns_during_rl = rl_out['aux_data']['returns']  
-losses = rl_out['aux_data']['losses']
-perception_losses = rl_out['aux_data']['perception_losses']
-actor_losses = rl_out['aux_data']['actor_losses']
-critic_losses = rl_out['aux_data']['critic_losses']
-entropy_losses = rl_out['aux_data']['entropy_losses']
-loss_stds = rl_out['aux_data']['loss_stds']
-success_during_rl = rl_out['aux_data']['successes']
-failure_during_rl = rl_out['aux_data']['failures']
-timeout_during_rl = rl_out['aux_data']['timeouts']
-episodes_during_rl = rl_out['aux_data']['episodes']
-stds_during_rl = rl_out['aux_data']['stds']
+final_params, metrics = rl_out
+
+processed_metrics = {}
+for key, value in metrics.items():
+    if key == "loss_stds":
+        processed_metrics[key] = jnp.stack(value)
+    else:
+        processed_metrics[key] = jnp.array(value)
+
+# Extraction
+rl_network_params = final_params
+
+# ADDED: Returns
+returns_during_rl = processed_metrics['returns']
+
+# Other metrics
+losses = processed_metrics['losses']
+perception_losses = processed_metrics['perception_losses']
+actor_losses = processed_metrics['actor_losses']
+critic_losses = processed_metrics['critic_losses']
+entropy_losses = processed_metrics['entropy_losses']
+loss_stds = processed_metrics['loss_stds']
+
+success_during_rl = processed_metrics['successes']
+failure_during_rl = processed_metrics['failures']
+timeout_during_rl = processed_metrics['timeouts']
+episodes_during_rl = processed_metrics['episodes']
+stds_during_rl = processed_metrics['stds']
+
 episode_count = jnp.sum(episodes_during_rl)
-window = 500 if training_updates > 1000 else 50
+window = 10 if training_updates > 1000 else 1
 
 ## Plot RL training stats
 from matplotlib import rc
@@ -163,9 +182,9 @@ ax[0,0].plot(
     jnp.convolve(returns_during_rl, jnp.ones(window,), 'valid') / window,
 )
 # Plot success, failure, and timeout rates during RL
-success_rate_during_rl = success_during_rl / rl_out['aux_data']['episodes']
-failure_rate_during_rl = failure_during_rl / rl_out['aux_data']['episodes']
-timeout_rate_during_rl = timeout_during_rl / rl_out['aux_data']['episodes']
+success_rate_during_rl = success_during_rl / episodes_during_rl
+failure_rate_during_rl = failure_during_rl / episodes_during_rl
+timeout_rate_during_rl = timeout_during_rl / episodes_during_rl
 ax[0,1].grid()
 ax[0,1].set(
     xlabel='Training Update', 
@@ -237,16 +256,15 @@ ax[1,2].plot(
     loss_stds[:,0],
 )
 # Plot entropy loss during RL
-entropy_window = window // 10
 ax[2,0].grid()
 ax[2,0].set(
     xlabel='Training Update', 
-    ylabel=f'Loss ({entropy_window} upd. window)', 
+    ylabel=f'Loss ({window} upd. window)', 
     title='Entropy Loss'
 )
 ax[2,0].plot(
-    jnp.arange(len(entropy_losses)-(entropy_window-1))+entropy_window, 
-    jnp.convolve(entropy_losses, jnp.ones(entropy_window,), 'valid') / entropy_window,
+    jnp.arange(len(entropy_losses)-(window-1))+window, 
+    jnp.convolve(entropy_losses, jnp.ones(window,), 'valid') / window,
 )
 # Plot perception loss during RL
 ax[2,1].grid()
