@@ -31,12 +31,12 @@ env = LaserNav(**env_params)
 
 # Simulate some episodes
 for i in range(n_episodes):
-    policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
+    policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
     state, reset_key, obs, info, outcome = env.reset(reset_key)
     all_states = np.array([state])
     all_observations = np.array([obs])
     while outcome["nothing"]:
-        state, obs, info, reward, outcome, _ = env.step(state,info,jnp.array([1.,0.]),test=True)
+        state, obs, info, reward, outcome, (_, env_key) = env.step(state,info,jnp.array([1.,0.]),test=True,env_key=env_key)
         all_states = np.vstack((all_states, [state]))
         all_observations = np.vstack((all_observations, [obs]))
     print(outcome)

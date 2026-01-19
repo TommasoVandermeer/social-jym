@@ -64,7 +64,8 @@ class Dirichlet(BaseDistribution):
         alphas = distribution["alphas"]
         vertices = distribution["vertices"]
         sample = jnp.linalg.solve(jnp.vstack((vertices.T,jnp.ones((len(vertices),)))), jnp.append(action, 1.))
-        # Avoid inf computation
+        # Avoid inf computation 
+        # (WARNING: this will actually give a probability > 0 even to samples outside the simplex! i.e., actions outside the feasible space)
         sample_safe = jnp.clip(sample, 1e-6, 1.0)
         sample_safe = sample_safe / jnp.sum(sample_safe)
         return -logpdf(sample_safe, alphas)
@@ -103,3 +104,13 @@ class Dirichlet(BaseDistribution):
         Compute the standard deviations of a batch of Dirichlet distributions.
         """
         return vmap(Dirichlet.std, in_axes=(None,0))(self, distributions)
+
+    @partial(jit, static_argnames=("self"))
+    def is_in_support(self, distribution:dict, action:jnp.ndarray) -> bool:
+        vertices = distribution["vertices"]
+        sample = jnp.linalg.solve(jnp.vstack((vertices.T,jnp.ones((len(vertices),)))), jnp.append(action, 1.))
+        return jnp.all(sample >= 0) & jnp.isclose(jnp.sum(sample), 1.0)
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_is_in_support(self, distribution:dict, actions:jnp.ndarray) -> jnp.ndarray:
+        return vmap(Dirichlet.is_in_support, in_axes=(None,None,0))(self, distribution, actions) 

@@ -22,11 +22,12 @@ env_params = {
     'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
-    'humans_dt': 0.01,
+    'humans_dt': 0.01,      
     'robot_visible': False,
     'scenario': 'hybrid_scenario',
     'reward_function': Reward(robot_radius=0.3),
     'kinematics': kinematics,
+    'lidar_noise': True,
 }
 
 # Initialize the environment
@@ -44,7 +45,7 @@ with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
 
 # Simulate some episodes
 for i in range(n_episodes):
-    policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
+    policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
     state, reset_key, obs, info, outcome = env.reset(reset_key)
     step = 0
     max_steps = int(env.reward_function.time_limit/env.robot_dt)+1
@@ -76,7 +77,7 @@ for i in range(n_episodes):
         print("Dirichlet distribution parameters: ", actor_distr['alphas'])
         # print("Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']])
         # Step the environment
-        state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
+        state, obs, info, reward, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
         # Save data for animation
         all_actions = all_actions.at[step].set(action)
         all_rewards = all_rewards.at[step].set(reward)
@@ -104,7 +105,7 @@ for i in range(n_episodes):
         _, discounted_cumsums = lax.scan(scan_fun, 0.0, rewards[::-1])
         return discounted_cumsums[::-1]
     discounted_returns = _discounted_cumsum(all_rewards)
-    [print("Step {} -  critic prediction: {:.2f} VS discounted return: {:.2f}".format(i, all_predicted_state_values[i], discounted_returns[i])) for i in range(len(discounted_returns))]
+    # [print("Step {} -  critic prediction: {:.2f} VS discounted return: {:.2f}".format(i, all_predicted_state_values[i], discounted_returns[i])) for i in range(len(discounted_returns))]
     print("\nOutcome: ", [k for k, v in outcome.items() if v][0])
     ## Animate only trajectory
     angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])

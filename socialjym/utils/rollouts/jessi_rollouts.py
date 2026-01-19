@@ -18,6 +18,7 @@ def collect_rollout_step(
     env_state, 
     policy_keys, 
     reset_keys, 
+    env_keys,
     template_outcomes,
     policy, 
     env, 
@@ -25,12 +26,12 @@ def collect_rollout_step(
 ):
     
     def _scan_step(carry, _):
-        (states, obses, infos, p_keys, r_keys, outcomes_acc) = carry
+        (states, obses, infos, p_keys, r_keys, e_keys, outcomes_acc) = carry
         actions, new_p_keys, _, sampled_actions, _, actor_distrs, values = policy.batch_act(
             p_keys, obses, infos, network_params, sample=True
         )
-        new_states, new_obses, new_infos, rewards, outcomes, new_r_keys = env.batch_step(
-            states, infos, actions, r_keys, test=False, reset_if_done=True
+        new_states, new_obses, new_infos, rewards, outcomes, (new_r_keys, new_e_keys) = env.batch_step(
+            states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True
         )
         rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(
             states[:,:-1,:2], 
@@ -61,17 +62,17 @@ def collect_rollout_step(
             "stds": policy.dirichlet.batch_std(actor_distrs)
         }
         new_outcomes_acc = {k: outcomes_acc[k] + outcomes[k] for k in outcomes}
-        return (new_states, new_obses, new_infos, new_p_keys, new_r_keys, new_outcomes_acc), step_data
+        return (new_states, new_obses, new_infos, new_p_keys, new_r_keys, new_e_keys, new_outcomes_acc), step_data
     
     init_outcomes_acc = {
         k: jnp.zeros_like(template_outcomes[k], dtype=jnp.int32) 
         for k in template_outcomes
     }
-    init_carry = (env_state[0], env_state[1], env_state[2], policy_keys, reset_keys, init_outcomes_acc)
+    init_carry = (env_state[0], env_state[1], env_state[2], policy_keys, reset_keys, env_keys, init_outcomes_acc)
     final_carry, history = lax.scan(_scan_step, init_carry, None, length=n_steps)
-    (final_states, final_obses, final_infos, final_p_keys, final_r_keys, sum_outcomes) = final_carry
+    (final_states, final_obses, final_infos, final_p_keys, final_r_keys, final_e_keys, sum_outcomes) = final_carry
     next_env_state = (final_states, final_obses, final_infos)
-    return next_env_state, final_p_keys, final_r_keys, history, sum_outcomes
+    return next_env_state, final_p_keys, final_r_keys, final_e_keys, history, sum_outcomes
 
 @partial(jit, static_argnames=("policy",), donate_argnums=(3,))
 def process_buffer_and_gae(
@@ -145,9 +146,21 @@ def train_one_epoch(
             inputs0, inputs1 = vmap(policy.compute_e2e_input, in_axes=(0,0))(
                 u_mb["observations"], u_mb["robot_goals"]
             )
+            # Lowe input precision to save memory
+            p = tree_map(lambda x: x.astype(jnp.bfloat16), p)
+            inputs0 = inputs0.astype(jnp.bfloat16)
+            inputs1 = inputs1.astype(jnp.bfloat16)
+            # Forward pass
             (perc_dist, _, _, actor_dist, _, _, pred_val, log_vars) = policy.e2e.apply(
                 p, None, inputs0, inputs1
             )
+            # Cast back to higher precision
+            pred_val = pred_val.astype(jnp.float32)
+            log_vars = log_vars.astype(jnp.float32)
+            def dist_to_f32(dist):
+                return tree_map(lambda x: x.astype(jnp.float32), dist)
+            actor_dist = dist_to_f32(actor_dist)
+            perc_dist = dist_to_f32(perc_dist)
             # Actor
             new_neglogp = vmap(policy.dirichlet.neglogp)(actor_dist, u_mb["actions"])
             ratio = jnp.exp(u_mb["neglogpdfs"] - new_neglogp)
@@ -162,15 +175,16 @@ def train_one_epoch(
             # Entropy
             entropy = jnp.mean(policy.dirichlet.entropy(actor_dist))
             entropy_loss = -beta_entropy * entropy
+            policy_loss = actor_loss + entropy_loss
             # Perception
             gt_dict = {"gt_mask": u_mb["gt_mask"], "gt_poses": u_mb["gt_poses"], "gt_vels": u_mb["gt_vels"]}
             batch_perc_loss = policy._encoder_loss(perc_dist, gt_dict)
             perception_loss = jnp.mean(batch_perc_loss)
             # Total
-            w_actor = jnp.exp(-log_vars[0]) * actor_loss + log_vars[0]
+            w_policy = jnp.exp(-log_vars[0]) * policy_loss + log_vars[0]
             w_critic = jnp.exp(-log_vars[1]) * critic_loss + log_vars[1]
             w_perc = jnp.exp(-log_vars[2]) * perception_loss + log_vars[2]
-            total_loss = 0.5 * (w_actor + w_critic + w_perc) + entropy_loss
+            total_loss = 0.5 * (w_policy + w_critic + w_perc)
             return total_loss, (actor_loss, critic_loss, perception_loss, entropy_loss, log_vars)
 
         def _micro_step_scan(carry, u_mb):
@@ -235,6 +249,10 @@ def jessi_multitask_rl_rollout(
     beta_entropy,
     lambda_gae,
 ):
+    assert total_batch_size % n_parallel_envs == 0, "Total batch size must be divisible by number of parallel envs."
+    assert mini_batch_size % micro_batch_size == 0, "Mini-batch size must be divisible by micro-batch size."
+    assert total_batch_size % mini_batch_size == 0, "Total batch size must be divisible by mini-batch size."
+    assert micro_batch_size % device_count() == 0, "Micro-batch size must be divisible by number of devices."
     n_steps = total_batch_size // n_parallel_envs
     devices = mesh_utils.create_device_mesh((device_count(),))
     mesh = Mesh(devices, axis_names=('env_axis',)) 
@@ -243,6 +261,8 @@ def jessi_multitask_rl_rollout(
     key = random.PRNGKey(random_seed)
     key, subkey = random.split(key)
     reset_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
+    key, subkey = random.split(key)
+    env_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
     states, reset_keys, obses, infos, init_outcomes = env.batch_reset(reset_keys)
     states = tree_map(lambda x: device_put(x, sharding_env), states)
     obses = tree_map(lambda x: device_put(x, sharding_env), obses)
@@ -264,8 +284,8 @@ def jessi_multitask_rl_rollout(
     print(f"Rollout distributed across {len(devices)} devices.")
     for update in tqdm(range(train_updates)):
         # A. COLLECT ROLLOUT STEP (Parallel)
-        env_state, policy_keys, reset_keys, history_raw, outcomes_sum = collect_rollout_step(
-            params, env_state, policy_keys, reset_keys, init_outcomes, policy, env, n_steps
+        env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum = collect_rollout_step(
+            params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps
         )
         batch_mean_return = float(jnp.mean(jnp.sum(history_raw["rewards"], axis=0)))
         avg_action_std = device_get(jnp.mean(history_raw["stds"], axis=(0,1)))
@@ -349,6 +369,11 @@ def jessi_multitask_rl_rollout(
         logs["episodes"].append(int(ep_count))
         logs["stds"].append(avg_action_std)
         if update % 1 == 0:
-             print(f"Upd {update} | Ret: {logs['returns'][-1]:.2f} | Loss: {logs['losses'][-1]:.4f} | Succ: {logs['successes'][-1]} | Fail: {logs['failures'][-1]} | Timeouts: {logs['timeouts'][-1]}")
+             print(
+                f"Upd {update}:\n",
+                f"| Ret: {logs['returns'][-1]:.2f} | Loss: {logs['losses'][-1]:.4f} | Succ: {logs['successes'][-1]} | Fail: {logs['failures'][-1]} | Timeouts: {logs['timeouts'][-1]}\n",
+                f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
+                f"| Loss Stds: {logs['loss_stds'][-1]} | Action Stds: {logs['stds'][-1]}"
+             )
     return params, logs 
              

@@ -23,7 +23,7 @@ n_humans_for_tests = [5, 10, 15, 20, 25]
 test_robot_visibility = [False, True]
 n_trials = 100
 n_parallel_envs = 1000 
-training_updates = 5000
+training_updates = 1500
 rl_debugging_interval = 1
 robot_vmax = 1
 training_hyperparams = {
@@ -35,7 +35,7 @@ training_hyperparams = {
     'rl_learning_rate': 2e-4,
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 10_000, # Mini-batch size for each model update
-    'rl_micro_batch_size': int(50 * n_devices), # Micro-batch size for gradient accumulation (50 = 8GB VRAM approx)
+    'rl_micro_batch_size': 2_000, # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 2,
     'rl_beta_entropy': 2e-6,
