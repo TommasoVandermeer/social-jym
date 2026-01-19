@@ -23,7 +23,7 @@ n_humans_for_tests = [5, 10, 15, 20, 25]
 test_robot_visibility = [False, True]
 n_trials = 100
 n_parallel_envs = 1000 
-training_updates = 10
+training_updates = 5000
 rl_debugging_interval = 1
 robot_vmax = 1
 training_hyperparams = {
@@ -32,13 +32,13 @@ training_hyperparams = {
     'n_obstacles': 3,
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_learning_rate': 5e-4,
+    'rl_learning_rate': 2e-4,
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
-    'rl_mini_batch_size': 2_000, # Mini-batch size for each model update
+    'rl_mini_batch_size': 10_000, # Mini-batch size for each model update
     'rl_micro_batch_size': int(50 * n_devices), # Micro-batch size for gradient accumulation (50 = 8GB VRAM approx)
     'rl_clip_frac': 0.2, # 0.2
-    'rl_num_epochs': 4,
-    'rl_beta_entropy': 1e-4, # 5e-4
+    'rl_num_epochs': 2,
+    'rl_beta_entropy': 2e-6,
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
@@ -89,15 +89,15 @@ il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
 # Initialize RL optimizer
 network_optimizer = optax.chain(
     optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
-    optax.sgd(
+    optax.adam(
         learning_rate=optax.schedules.linear_schedule(
             init_value=training_hyperparams['rl_learning_rate'], 
-            end_value=0., 
+            end_value=training_hyperparams['rl_learning_rate']/100, 
             transition_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
             transition_begin=0
         ), 
-        # eps=1e-7, 
-        # b1=0.9,
+        eps=1e-7, 
+        b1=0.9,
     ),
 )
 
@@ -161,7 +161,7 @@ episodes_during_rl = processed_metrics['episodes']
 stds_during_rl = processed_metrics['stds']
 
 episode_count = jnp.sum(episodes_during_rl)
-window = 500 if training_updates > 1000 else 1
+window = 10 if training_updates > 1000 else 1
 
 ## Plot RL training stats
 from matplotlib import rc
