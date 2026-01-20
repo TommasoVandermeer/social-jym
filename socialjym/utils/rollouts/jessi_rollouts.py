@@ -90,7 +90,7 @@ def process_buffer_and_gae(
     perception_inputs, robot_state_inputs = vmap(policy.compute_e2e_input, in_axes=(0,0))(
         last_obs, last_info['robot_goal']
     )
-    _, _, _, _, _ , _, last_values, _ = policy.e2e.apply(
+    _, _, _, _, _, last_values, _ = policy.e2e.apply(
         network_params, None, perception_inputs, robot_state_inputs
     )
     rewards = history["rewards"]
@@ -151,7 +151,7 @@ def train_one_epoch(
             inputs0 = inputs0.astype(jnp.bfloat16)
             inputs1 = inputs1.astype(jnp.bfloat16)
             # Forward pass
-            (perc_dist, _, _, actor_dist, _, _, pred_val, log_vars) = policy.e2e.apply(
+            (perc_dist, _, _, actor_dist, _, pred_val, log_vars) = policy.e2e.apply(
                 p, None, inputs0, inputs1
             )
             # Cast back to higher precision
