@@ -196,7 +196,7 @@ class ActorCritic(hk.Module):
                 "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
                 "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             },
-            initial_concentration: float = 10.,
+            initial_concentration: float = 9.,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -287,9 +287,9 @@ class ActorCritic(hk.Module):
         ], axis=-1)  # (attention_dim + 9 + scan_embedding_dim,)
         ### ACTOR
         ## Compute Dirichlet distribution parameters
-        delta_alphas = nn.softmax(self.actor_head(context), axis=-1)  # (Batch, 3)
-        concentration = nn.softplus(self.actor_concentration) + 1e-6
-        alphas = delta_alphas * concentration + 1 # (Batch, 3)
+        mus = nn.softplus(self.actor_head(context))  # (Batch, 3)
+        concentration = nn.softplus(self.actor_concentration) + 1
+        alphas = concentration * (mus + 1)
         ## Compute dirchlet distribution vetices
         zeros = jnp.zeros((batch_size,))
         v1 = jnp.stack([zeros, action_space_params[:, 1] * self.wmax], axis=-1)
@@ -307,7 +307,7 @@ class ActorCritic(hk.Module):
             state_values = state_values[0]
             distributions = tree_map(lambda t: t[0], distributions)
         ### LEARNABLE LOSS VARIANCES
-        return sampled_actions, distributions, delta_alphas, concentration, state_values, self.loss_log_vars
+        return sampled_actions, distributions, concentration, state_values, self.loss_log_vars
 
 class E2E(hk.Module):
     def __init__(
@@ -329,7 +329,7 @@ class E2E(hk.Module):
             "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
         },
-        initial_concentration: float = 10.,
+        initial_concentration: float = 9.,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -393,12 +393,12 @@ class E2E(hk.Module):
             y,
         ), axis=-1)  # Shape: (B, N, 20)
         ## CONTROL
-        sampled_actions, distributions, delta_alphas, concentration, state_values, loss_log_vars = self.actor_critic(
+        sampled_actions, distributions, concentration, state_values, loss_log_vars = self.actor_critic(
             actor_input,
             scan_embedding,
             random_key=random_key
         )
-        return perception_output, actor_input, sampled_actions, distributions, delta_alphas, concentration, state_values, loss_log_vars
+        return perception_output, actor_input, sampled_actions, distributions, concentration, state_values, loss_log_vars
 
 
 class JESSI(BasePolicy):
@@ -940,7 +940,7 @@ class JESSI(BasePolicy):
         )
         # Compute action
         key, subkey = random.split(key)
-        perception_output, actor_input, sampled_action, actor_distr, delta_alphas, concentration, state_value, loss_log_vars = self.e2e.apply(
+        perception_output, actor_input, sampled_action, actor_distr, concentration, state_value, loss_log_vars = self.e2e.apply(
             e2e_network_params, 
             None, 
             perception_input,
@@ -1053,7 +1053,7 @@ class JESSI(BasePolicy):
                     beta_entropy:float = 0.0001,
                 ) -> tuple:
                     ## PREDICTION
-                    perception_distr, _, _, actor_distr, _, _, predicted_value, loss_log_vars = self.e2e.apply(current_network_params, None, input0, input1)
+                    perception_distr, _, _, actor_distr, _, predicted_value, loss_log_vars = self.e2e.apply(current_network_params, None, input0, input1)
                     ## ACTOR LOSS
                     neglogpdf = self.dirichlet.neglogp(actor_distr, sample_action)
                     ratio = jnp.exp(old_neglogpdf - neglogpdf)
@@ -1192,22 +1192,15 @@ class JESSI(BasePolicy):
                     returnn:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                    _, predicted_distr, delta_alphas, _, predicted_state_value, loss_log_vars = self.actor_critic.apply(
+                    _, predicted_distr, _, predicted_state_value, loss_log_vars = self.actor_critic.apply(
                         current_actor_params, 
                         None, 
                         input['actor_input'], 
                         input['scan_embedding']
                     )                    
                     ## Compute actor loss (MSE between expert action and predicted mean action)
-                    # predicted_action = self.dirichlet.mean(predicted_distr)
-                    #actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
-                    ## Compute Cross Entropy Loss between delta_alphas and expert action
-                    a = jnp.vstack([predicted_distr['vertices'].T, jnp.ones((1, 3))])
-                    b = jnp.append(expert_action, 1.0)
-                    raw_delta_alphas = jnp.linalg.solve(a, b)
-                    safe_delta_alphas = jnp.maximum(raw_delta_alphas, 0.0)
-                    target_delta_alphas = safe_delta_alphas / (jnp.sum(safe_delta_alphas) + 1e-6)
-                    actor_loss = -jnp.mean(jnp.sum(target_delta_alphas * jnp.log(delta_alphas + 1e-6), axis=-1))
+                    predicted_action = self.dirichlet.mean(predicted_distr)
+                    actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
                     weighted_actor_loss = 0.5 * jnp.exp(-loss_log_vars[0]) * actor_loss
                     # Compute critic loss
                     critic_loss = jnp.square(predicted_state_value - returnn)

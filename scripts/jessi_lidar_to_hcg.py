@@ -76,6 +76,7 @@ env_params = {
     'lidar_angular_range':lidar_angular_range,
     'lidar_max_dist':lidar_max_dist,
     'lidar_num_rays':lidar_num_rays,
+    'lidar_noise': False, # Noise is introduced during training as data augmentation
 }
 env = SocialNav(**env_params, humans_policy=humans_policy, reward_function=SocialNavDummyReward(kinematics=kinematics))
 laser_env = LaserNav(**env_params, n_stack=n_stack, reward_function=LaserNavDummyReward(robot_radius=robot_radius))

@@ -131,7 +131,52 @@ optimizer = optax.sgd(learning_rate=learning_rate, momentum=0.9)
 optimizer_state = optimizer.init(actor_critic_params)
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_network.pkl')):
     n_data = controller_dataset["observations"].shape[0]
+    n_train_batches = n_data // batch_size
     print(f"# Training dataset size: {controller_dataset['observations'].shape[0]} experiences")
+    @jit
+    def batch_augment_data(
+        batch:dict,
+        keys:random.PRNGKey,
+        base_lidar_noise_std:float = 0.01, # 1cm base noise
+        proportional_lidar_noise_std:float = 0.01, # 1% proportional noise
+        beam_dropout_prob:float = 0.03, # 3% beams dropout
+    ) -> dict:
+        return vmap(augment_data, in_axes=(0, 0, None, None, None))(batch, keys, base_lidar_noise_std, proportional_lidar_noise_std, beam_dropout_prob)
+    @jit 
+    def augment_data(
+        data:dict,
+        key:random.PRNGKey,
+        base_lidar_noise_std:float,
+        proportional_lidar_noise_std:float,
+        beam_dropout_prob:float,
+    ) -> dict:
+        # data = {
+        #     "inputs": shape (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
+        #               each token: [norm_dist, hit, x, y, sin_fixed_theta, cos_fixed_theta, delta_t]
+        #     "targets": {
+        #         "gt_mask": shape (n_humans,),
+        #         "gt_poses": shape (n_humans, 2),
+        #         "gt_vels": shape (n_humans, 2),
+        #     }
+        # }
+        input_key, beam_dropout_key = random.split(key, 2)
+        ## Gaussian noise to LiDAR scans + Beam dropout
+        raw_distances = data['inputs'][:,:,0] * jessi.max_beam_range  # (n_stack, lidar_num_rays)
+        sigma = base_lidar_noise_std + proportional_lidar_noise_std * raw_distances  # (n_stack, lidar_num_rays)
+        noise = random.normal(input_key, shape=raw_distances.shape) * sigma * data['inputs'][:,:,1]  # (n_stack, lidar_num_rays)
+        noisy_distances = jnp.clip(raw_distances + noise, 0., jessi.max_beam_range) # (n_stack, lidar_num_rays)
+        is_dropout = random.bernoulli(beam_dropout_key, p=beam_dropout_prob, shape=raw_distances.shape)
+        noisy_distances = jnp.where(is_dropout, jessi.max_beam_range, noisy_distances)  # (n_stack, lidar_num_rays)
+        new_hit = jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0) * (1.0 - is_dropout)  # (n_stack, lidar_num_rays)
+        cos = data['inputs'][:,:,2] / (raw_distances + 1e-6)  # (n_stack, lidar_num_rays)
+        sin = data['inputs'][:,:,3] / (raw_distances + 1e-6)  # (n_stack, lidar_num_rays)
+        x = noisy_distances * cos  # (n_stack, lidar_num_rays)
+        y = noisy_distances * sin  # (n_stack, lidar_num_rays)
+        data['inputs'] = data['inputs'].at[:,:,0].set(noisy_distances / jessi.max_beam_range)
+        data['inputs'] = data['inputs'].at[:,:,1].set(new_hit)
+        data['inputs'] = data['inputs'].at[:,:,2].set(x)
+        data['inputs'] = data['inputs'].at[:,:,3].set(y)
+        return data
     @loop_tqdm(n_epochs, desc="Training Lidar->GMM network")
     @jit 
     def _epoch_loop(
@@ -156,10 +201,17 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_networ
             batch = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, epoch_data)
             # Compute training batch
             perception_input, last_lidar_point_clouds = vmap(jessi.compute_encoder_input)(batch["observations"])
+            ## DATA AUGMENTATION
+            noisy_inputs = batch_augment_data(
+                {
+                    "inputs": perception_input,
+                },
+                random.split(random.PRNGKey(i * n_train_batches + j), batch_size),
+            )
             hcgs, scan_embeddings = jessi.perception.apply(
                 encoder_params, 
                 None, 
-                perception_input,
+                noisy_inputs["inputs"],
             )
             bounding_parameters = vmap(jessi.bound_action_space)(last_lidar_point_clouds)
             actor_input = vmap(jessi.compute_actor_input)(
