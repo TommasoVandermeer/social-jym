@@ -3,7 +3,7 @@ from jax import random, jit, lax, debug, vmap
 from functools import partial
 from types import FunctionType
 
-from .base_env import BaseEnv, SCENARIOS, ROBOT_KINEMATICS
+from .base_env import BaseEnv, SCENARIOS, ROBOT_KINEMATICS, ENVIRONMENTS
 
 class LaserNav(BaseEnv):
     """
@@ -83,6 +83,7 @@ class LaserNav(BaseEnv):
         ## Env initialization
         self.n_stack = n_stack
         self.reward_function = reward_function
+        self.environment = ENVIRONMENTS.index('lasernav')
 
     # --- Private methods --- #
 

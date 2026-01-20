@@ -10,8 +10,8 @@ from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
-random_seed = 1
-n_episodes = 50
+random_seed = 0
+n_episodes = 100
 kinematics = 'unicycle'
 env_params = {
     'n_stack': 5,
@@ -23,8 +23,10 @@ env_params = {
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
-    'robot_visible': False,
+    'robot_visible': True,
     'scenario': 'hybrid_scenario',
+    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,7]), # Exclude circular_crossing_with_static_obstacles
+    'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3),
     'kinematics': kinematics,
     'lidar_noise': True,
@@ -42,6 +44,14 @@ policy = JESSI()
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
 with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
     network_params, _ = pickle.load(f)
+
+# Test the trained JESSI policy
+metrics = policy.evaluate(
+    n_episodes,
+    random_seed,
+    env,
+    network_params,
+)
 
 # Simulate some episodes
 for i in range(n_episodes):

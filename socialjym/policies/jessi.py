@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug, nn, value_and_grad
 from jax.tree_util import tree_map
+from jax_tqdm import loop_tqdm
 from functools import partial
 import haiku as hk
 import optax
@@ -14,6 +15,8 @@ from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.utils.distributions.gaussian import BivariateGaussian
 from socialjym.policies.base_policy import BasePolicy
 from jhsfm.hsfm import get_linear_velocity
+from socialjym.envs.lasernav import LaserNav
+from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 
 class SinusoidalPositionalEncoding(hk.Module):
     def __init__(self, d_model, max_len=5000, name=None):
@@ -1270,6 +1273,75 @@ class JESSI(BasePolicy):
         # Apply updates
         updated_params = optax.apply_updates(current_params, updates)
         return updated_params, optimizer_state, loss    
+
+    def evaluate(
+        self,
+        n_trials:int,
+        random_seed:int,
+        env:LaserNav,
+        e2e_network_params:dict,
+    ) -> dict:
+        """
+        Test the trained policy over n_trials episodes.
+        """
+        time_limit = env.reward_function.time_limit
+        @loop_tqdm(n_trials)
+        @jit
+        def _fori_body(i:int, for_val:tuple):   
+            @jit
+            def _while_body(while_val:tuple):
+                # Retrieve data from the tuple
+                state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states = while_val
+                action, policy_key, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
+                state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
+                # Save data
+                all_actions = all_actions.at[steps].set(action)
+                all_states = all_states.at[steps].set(state)
+                # Update step counter
+                steps += 1
+                return state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states
+
+            ## Retrieve data from the tuple
+            seed, metrics = for_val
+            policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
+            env_key = random.PRNGKey(seed + 1_000_000)
+            ## Reset the environment
+            state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            # state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            initial_robot_position = state[-1,:2]
+            ## Episode loop
+            all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+            all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+            while_val_init = (state, obs, info, init_outcome, policy_key, env_key, 0, all_actions, all_states)
+            _, _, end_info, outcome, policy_key, env_key, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            ## Update metrics
+            metrics = compute_episode_metrics(
+                environment=env.environment,
+                metrics=metrics,
+                episode_idx=i, 
+                initial_robot_position=initial_robot_position, 
+                all_states=all_states, 
+                all_actions=all_actions, 
+                outcome=outcome, 
+                episode_steps=episode_steps, 
+                end_info=end_info, 
+                max_steps=int(time_limit/env.robot_dt)+1, 
+                personal_space=0.5,
+                robot_dt=env.robot_dt,
+                robot_radius=env.robot_radius,
+                ccso_n_static_humans=env.ccso_n_static_humans,
+                robot_specs={'kinematics': env.kinematics, 'v_max': self.v_max, 'wheels_distance': self.wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
+            )
+            seed += 1
+            return seed, metrics
+        # Initialize metrics
+        metrics = initialize_metrics_dict(n_trials)
+        # Execute n_trials tests
+        print(f"\nExecuting {n_trials} tests with {env.n_humans} humans...")
+        _, metrics = lax.fori_loop(0, n_trials, _fori_body, (random_seed, metrics))
+        # Print results
+        print_average_metrics(n_trials, metrics)
+        return metrics
 
     def animate_trajectory(
         self,

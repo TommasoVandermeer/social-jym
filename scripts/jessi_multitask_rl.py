@@ -69,6 +69,7 @@ env_params = {
     'circle_radius': 7,
     'reward_function': reward_function,
     'kinematics': 'unicycle',
+    'lidar_noise': True,
 }
 # Initialize environment
 env = LaserNav(**env_params)
