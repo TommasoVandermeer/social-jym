@@ -189,6 +189,7 @@ def test_on_ccso_with_n_agons(
         _, _, end_info, outcome, episode_steps, static_obstacles, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _step_loop, while_val_init)
         ## Update metrics
         metrics = compute_episode_metrics(
+            environment=env.environment,
             metrics=metrics,
             episode_idx=i, 
             initial_robot_position=initial_robot_position, 

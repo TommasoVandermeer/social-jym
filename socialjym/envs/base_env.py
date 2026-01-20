@@ -30,6 +30,10 @@ ROBOT_KINEMATICS = [
     "holonomic",
     "unicycle"
 ]
+ENVIRONMENTS = [
+    "socialnav",
+    "lasernav",
+]
 EPSILON = 1e-5 # Small value to avoid math overflow
 
 @jit

@@ -3,7 +3,7 @@ from jax import random, jit, lax, debug, vmap
 from functools import partial
 from types import FunctionType
 
-from .base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS, wrap_angle
+from .base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS, ENVIRONMENTS, wrap_angle
 
 class SocialNav(BaseEnv):
     """
@@ -72,6 +72,7 @@ class SocialNav(BaseEnv):
         assert reward_function.kinematics == self.kinematics, "The reward function's kinematics must be the same as the environment's kinematics."
         ## Env initialization
         self.reward_function = reward_function
+        self.environment = ENVIRONMENTS.index('socialnav')
 
     # --- Private methods ---
 

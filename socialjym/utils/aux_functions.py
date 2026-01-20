@@ -13,7 +13,7 @@ import pickle as pkl
 import os
 from datetime import date
 
-from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS, wrap_angle
+from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS, ENVIRONMENTS, wrap_angle
 from socialjym.policies.base_policy import BasePolicy
 
 @jit
@@ -210,8 +210,9 @@ def print_average_metrics(n_trials:int, metrics:dict) -> None:
     print(f"Average angular jerk: {round(jnp.nanmean(metrics['average_angular_jerk']),2):.2f} rad/s^3")
     print(f"Average feasible actions rate: {round(jnp.nanmean(metrics['feasible_actions_rate']),2):.2f}")
 
-@partial(jit, static_argnames=["robot_dt", "robot_radius", "ccso_n_static_humans", "max_steps", "personal_space"])
+@partial(jit, static_argnames=["environment","robot_dt", "robot_radius", "ccso_n_static_humans", "max_steps", "personal_space"])
 def compute_episode_metrics(
+    environment:int,
     # Saving variables
     metrics:dict,
     episode_idx:int, # Index of the current episode
@@ -234,7 +235,11 @@ def compute_episode_metrics(
     robot_goal = end_info["robot_goal"]
     ## Update metrics
     metrics["successes"] = lax.cond(outcome["success"], lambda x: x + 1, lambda x: x, metrics["successes"])
-    metrics["collisions"] = lax.cond(outcome["failure"], lambda x: x + 1, lambda x: x, metrics["collisions"])
+    if environment == ENVIRONMENTS.index('socialnav'):
+        failure = outcome['collision']
+    elif environment == ENVIRONMENTS.index('lasernav'):
+        failure = outcome['collision_with_human'] | outcome['collision_with_obstacle']
+    metrics["collisions"] = lax.cond(failure, lambda x: x + 1, lambda x: x, metrics["collisions"])
     metrics["timeouts"] = lax.cond(outcome["timeout"], lambda x: x + 1, lambda x: x, metrics["timeouts"])
     metrics["returns"] = metrics["returns"].at[episode_idx].set(end_info["return"])
     metrics["scenario"] = metrics["scenario"].at[episode_idx].set(end_info["current_scenario"])
@@ -467,6 +472,7 @@ def test_k_trials(
         _, _, end_info, outcome, policy_key, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
         ## Update metrics
         metrics = compute_episode_metrics(
+            environment=env.environment,
             metrics=metrics,
             episode_idx=i, 
             initial_robot_position=initial_robot_position, 
@@ -628,6 +634,7 @@ def test_k_custom_trials(
         ## Update metrics
         metrics["waypoint_reached"] = metrics["waypoint_reached"].at[i].set(end_info["robot_goal_index"])
         metrics = compute_episode_metrics(
+            environment=env.environment,
             metrics=metrics,
             episode_idx=i, 
             initial_robot_position=initial_robot_position, 
@@ -782,6 +789,7 @@ def test_k_trials_dwa(
         _, _, end_info, outcome, episode_steps, all_actions, all_states, _ = while_val
         ## Update metrics
         metrics = compute_episode_metrics(
+            environment=env.environment,
             metrics=metrics,
             episode_idx=i, 
             initial_robot_position=initial_robot_position, 
@@ -941,6 +949,7 @@ def test_k_custom_trials_dwa(
         ## Update metrics
         metrics["waypoint_reached"] = metrics["waypoint_reached"].at[i].set(end_info["robot_goal_index"])
         metrics = compute_episode_metrics(
+            environment=env.environment,
             metrics=metrics,
             episode_idx=i, 
             initial_robot_position=initial_robot_position, 
@@ -1104,6 +1113,7 @@ def test_k_trials_sfm(
         _, _, _, end_info, outcome, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[4]["nothing"] == True, _while_body, while_val_init)
         ## Update metrics
         metrics = compute_episode_metrics(
+            environment=env.environment,
             metrics=metrics,
             episode_idx=i, 
             initial_robot_position=initial_robot_position, 
@@ -1262,6 +1272,7 @@ def test_k_trials_hsfm(
         _, _, _, end_info, outcome, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[4]["nothing"] == True, _while_body, while_val_init)
         ## Update metrics
         metrics = compute_episode_metrics(
+            environment=env.environment,
             metrics=metrics,
             episode_idx=i, 
             initial_robot_position=initial_robot_position, 
