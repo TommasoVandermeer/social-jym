@@ -196,7 +196,7 @@ class ActorCritic(hk.Module):
                 "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
                 "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             },
-            initial_concentration: float = 9.,
+            initial_concentration: float = 0.,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -329,7 +329,7 @@ class E2E(hk.Module):
             "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
         },
-        initial_concentration: float = 9.,
+        initial_concentration: float = 0.,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans

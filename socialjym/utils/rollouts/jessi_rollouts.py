@@ -1,5 +1,5 @@
 import optax
-from jax import jit, lax, random, vmap, device_put, device_get, device_count, eval_shape, ShapeDtypeStruct
+from jax import jit, lax, random, vmap, device_put, device_get, device_count, eval_shape, ShapeDtypeStruct, debug
 from jax.tree_util import tree_map
 import jax.numpy as jnp
 import numpy as np
@@ -26,11 +26,11 @@ def collect_rollout_step(
 ):
     
     def _scan_step(carry, _):
-        (states, obses, infos, p_keys, r_keys, e_keys, outcomes_acc) = carry
+        (states, obses, infos, outcomes, returns, p_keys, r_keys, e_keys, outcomes_acc) = carry
         actions, new_p_keys, _, sampled_actions, _, actor_distrs, values = policy.batch_act(
             p_keys, obses, infos, network_params, sample=True
         )
-        new_states, new_obses, new_infos, rewards, outcomes, (new_r_keys, new_e_keys) = env.batch_step(
+        new_states, new_obses, new_infos, rewards, new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
             states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True
         )
         rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(
@@ -57,31 +57,35 @@ def collect_rollout_step(
             "values": values,
             "actions": sampled_actions,
             "rewards": rewards,
-            "dones": ~(outcomes["nothing"]), 
+            "dones": ~(outcomes["nothing"]),
             "neglogpdfs": policy.dirichlet.batch_neglogp(actor_distrs, sampled_actions),
             "stds": policy.dirichlet.batch_std(actor_distrs)
         }
-        new_outcomes_acc = {k: outcomes_acc[k] + outcomes[k] for k in outcomes}
-        return (new_states, new_obses, new_infos, new_p_keys, new_r_keys, new_e_keys, new_outcomes_acc), step_data
+        new_returns = returns + (~new_outcomes["nothing"]) * infos['return'] + jnp.power(policy.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards
+        new_outcomes_acc = {k: outcomes_acc[k] + new_outcomes[k] for k in new_outcomes}
+        return (new_states, new_obses, new_infos, new_outcomes, new_returns, new_p_keys, new_r_keys, new_e_keys, new_outcomes_acc), step_data
     
     init_outcomes_acc = {
         k: jnp.zeros_like(template_outcomes[k], dtype=jnp.int32) 
         for k in template_outcomes
     }
-    init_carry = (env_state[0], env_state[1], env_state[2], policy_keys, reset_keys, env_keys, init_outcomes_acc)
+    init_carry = (env_state[0], env_state[1], env_state[2], env_state[3], env_state[2]['return'], policy_keys, reset_keys, env_keys, init_outcomes_acc)
     final_carry, history = lax.scan(_scan_step, init_carry, None, length=n_steps)
-    (final_states, final_obses, final_infos, final_p_keys, final_r_keys, final_e_keys, sum_outcomes) = final_carry
-    next_env_state = (final_states, final_obses, final_infos)
-    return next_env_state, final_p_keys, final_r_keys, final_e_keys, history, sum_outcomes
+    (final_states, final_obses, final_infos, final_outcomes, final_returns, final_p_keys, final_r_keys, final_e_keys, sum_outcomes) = final_carry
+    next_env_state = (final_states, final_obses, final_infos, final_outcomes)
+    return next_env_state, final_p_keys, final_r_keys, final_e_keys, history, sum_outcomes, final_returns
 
 @partial(jit, static_argnames=("policy",), donate_argnums=(3,))
 def process_buffer_and_gae(
     network_params, 
     last_obs, 
     last_info, 
+    last_dones,
     history, 
     policy, 
     gamma, 
+    dt,
+    vmax,
     lambda_gae
 ):
     """
@@ -97,11 +101,12 @@ def process_buffer_and_gae(
     values = history["values"]
     dones = history["dones"]
     values_ext = jnp.concatenate([values, last_values[None, :]], axis=0)
+    dones_ext = jnp.concatenate([dones, last_dones[None, :]], axis=0)
     def _gae_step(gae_carry, i):
         adv_next = gae_carry
-        mask = 1.0 - dones[i].astype(jnp.float32)
-        delta = rewards[i] + gamma * values_ext[i+1] * mask - values_ext[i]
-        advantage = delta + gamma * lambda_gae * adv_next * mask
+        mask = 1.0 - dones_ext[i+1].astype(jnp.float32)
+        delta = rewards[i] + jnp.power(gamma,dt*vmax) * values_ext[i+1] * mask - values_ext[i]
+        advantage = delta + jnp.power(gamma*lambda_gae,dt*vmax) * adv_next * mask
         return advantage, advantage # Carry, Output
     n_steps = rewards.shape[0]
     _, advantages = lax.scan(_gae_step, jnp.zeros_like(values[0]), jnp.arange(n_steps)[::-1])
@@ -109,6 +114,8 @@ def process_buffer_and_gae(
     critic_targets = advantages + values
     def flatten(x):
         return jnp.reshape(x, (-1, *x.shape[2:]))
+    flat_adv = flatten(advantages)
+    flattened_normalized_advantages = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
     flattened_buffer = {
         "observations": flatten(history["obs"]),
         "robot_goals": flatten(history["robot_goal"]),
@@ -119,10 +126,9 @@ def process_buffer_and_gae(
         "values": flatten(history["values"]),
         "neglogpdfs": flatten(history["neglogpdfs"]),
         "critic_targets": flatten(critic_targets),
-        "advantages": flatten(advantages),
+        "advantages": flattened_normalized_advantages,
     }
-    flat_adv = flattened_buffer["advantages"]
-    flattened_buffer["advantages"] = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
+    
     return flattened_buffer
 
 @partial(jit,static_argnames=("policy", "optimizer", "clip_range", "beta_entropy"),donate_argnums=(1, 2, 3))
@@ -162,7 +168,7 @@ def train_one_epoch(
             actor_dist = dist_to_f32(actor_dist)
             perc_dist = dist_to_f32(perc_dist)
             # Actor
-            new_neglogp = vmap(policy.dirichlet.neglogp)(actor_dist, u_mb["actions"])
+            new_neglogp = policy.dirichlet.batch_neglogp(actor_dist, u_mb["actions"])
             ratio = jnp.exp(u_mb["neglogpdfs"] - new_neglogp)
             surr1 = ratio * u_mb["advantages"]
             surr2 = jnp.clip(ratio, 1.0 - clip_range, 1.0 + clip_range) * u_mb["advantages"]
@@ -173,7 +179,7 @@ def train_one_epoch(
             v_loss_clipped = jnp.square(v_clipped - u_mb["critic_targets"])
             critic_loss = 0.5 * jnp.mean(jnp.maximum(v_loss, v_loss_clipped))
             # Entropy
-            entropy = jnp.mean(policy.dirichlet.entropy(actor_dist))
+            entropy = jnp.mean(policy.dirichlet.batch_entropy(actor_dist))
             entropy_loss = -beta_entropy * entropy
             policy_loss = actor_loss + entropy_loss
             # Perception
@@ -268,7 +274,7 @@ def jessi_multitask_rl_rollout(
     obses = tree_map(lambda x: device_put(x, sharding_env), obses)
     infos = tree_map(lambda x: device_put(x, sharding_env), infos)
     init_outcomes = tree_map(lambda x: device_put(x, sharding_env), init_outcomes)
-    env_state = (states, obses, infos)
+    env_state = (states, obses, infos, init_outcomes)
     key, subkey = random.split(key)
     policy_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
     params = initial_network_params
@@ -284,15 +290,22 @@ def jessi_multitask_rl_rollout(
     print(f"Rollout distributed across {len(devices)} devices.")
     for update in tqdm(range(train_updates)):
         # A. COLLECT ROLLOUT STEP (Parallel)
-        env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum = collect_rollout_step(
+        env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum, returns = collect_rollout_step(
             params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps
         )
-        batch_mean_return = float(jnp.mean(jnp.sum(history_raw["rewards"], axis=0)))
+        current_obs, current_infos, current_dones = env_state[1], env_state[2], ~(env_state[3]['nothing'])
+        n_succ = jnp.sum(outcomes_sum["success"])
+        n_coll_hum = jnp.sum(outcomes_sum["collision_with_human"])
+        n_coll_obs = jnp.sum(outcomes_sum["collision_with_obstacle"])
+        n_timeout = jnp.sum(outcomes_sum["timeout"])
+        ep_count = n_succ + n_coll_hum + n_coll_obs + n_timeout
+        n_fail = n_coll_hum + n_coll_obs
+        if ep_count == 0: batch_mean_return = 0.0
+        else: batch_mean_return = float(jnp.sum(returns)/ep_count)
         avg_action_std = device_get(jnp.mean(history_raw["stds"], axis=(0,1)))
         # B. PROCESS BUFFER (Parallel)
-        current_obs, current_infos = env_state[1], env_state[2]
         buffer_gpu = process_buffer_and_gae(
-            params, current_obs, current_infos, history_raw, policy, policy.gamma, lambda_gae
+            params, current_obs, current_infos, current_dones, history_raw, policy, policy.gamma, policy.dt, policy.v_max, lambda_gae
         )
         # C. COPY TO CPU (Only for efficient Shuffle)
         buffer_cpu = device_get(buffer_gpu)
@@ -357,12 +370,6 @@ def jessi_multitask_rl_rollout(
         avg_log_vars = jnp.mean(jnp.stack(epoch_metrics_acc["log_vars"]), axis=0)
         logs["loss_stds"].append(jnp.exp(0.5 * avg_log_vars))
         logs["returns"].append(batch_mean_return)
-        n_succ = jnp.sum(outcomes_sum["success"])
-        n_coll_hum = jnp.sum(outcomes_sum["collision_with_human"])
-        n_coll_obs = jnp.sum(outcomes_sum["collision_with_obstacle"])
-        n_timeout = jnp.sum(outcomes_sum["timeout"])
-        ep_count = n_succ + n_coll_hum + n_coll_obs + n_timeout
-        n_fail = n_coll_hum + n_coll_obs
         logs["successes"].append(int(n_succ))
         logs["failures"].append(int(n_fail))
         logs["timeouts"].append(int(n_timeout))
@@ -371,7 +378,7 @@ def jessi_multitask_rl_rollout(
         if update % 1 == 0:
              print(
                 f"Upd {update}:\n",
-                f"| Ret: {logs['returns'][-1]:.2f} | Loss: {logs['losses'][-1]:.4f} | Succ: {logs['successes'][-1]} | Fail: {logs['failures'][-1]} | Timeouts: {logs['timeouts'][-1]}\n",
+                f"| Ret: {logs['returns'][-1]:.2f} | Loss: {logs['losses'][-1]:.4f} | Succ: {logs['successes'][-1]} | Fail: {logs['failures'][-1]} (hum {int(n_coll_hum)}, obs {int(n_coll_obs)}) | Timeouts: {logs['timeouts'][-1]}\n",
                 f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
                 f"| Loss Stds: {logs['loss_stds'][-1]} | Action Stds: {logs['stds'][-1]}"
              )

@@ -21,7 +21,7 @@ n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
 learning_rate = 0.005
 batch_size = 200
-n_epochs = 100
+n_epochs = 10
 # Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25

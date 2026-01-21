@@ -23,7 +23,7 @@ n_humans_for_tests = [5, 10, 15, 20, 25]
 test_robot_visibility = [False, True]
 n_trials = 100
 n_parallel_envs = 1000 
-training_updates = 1500
+training_updates = 3000
 rl_debugging_interval = 1
 robot_vmax = 1
 training_hyperparams = {
@@ -32,13 +32,14 @@ training_hyperparams = {
     'n_obstacles': 3,
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_learning_rate': 2e-4,
+    'rl_learning_rate': 2e-4, # 2e-4
+    'rl_learning_rate_final': 2e-6,
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 10_000, # Mini-batch size for each model update
     'rl_micro_batch_size': 2_000, # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 2,
-    'rl_beta_entropy': 2e-6,
+    'rl_beta_entropy': 1e-4,
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
@@ -93,7 +94,7 @@ network_optimizer = optax.chain(
     optax.adam(
         learning_rate=optax.schedules.linear_schedule(
             init_value=training_hyperparams['rl_learning_rate'], 
-            end_value=training_hyperparams['rl_learning_rate']/100, 
+            end_value=training_hyperparams['rl_learning_rate_final'], 
             transition_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
             transition_begin=0
         ), 
