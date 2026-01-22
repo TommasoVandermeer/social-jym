@@ -227,11 +227,11 @@ class ActorCritic(hk.Module):
             output_sizes=[150, 100, self.n_outputs], 
             name="actor_head"
         )
-        self.actor_concentration = hk.get_parameter(
-            "actor_concentration", 
-            shape=[], 
-            init=hk.initializers.Constant(self.initial_concentration)
-        )
+        # self.actor_concentration = hk.get_parameter(
+        #     "actor_concentration", 
+        #     shape=[], 
+        #     init=hk.initializers.Constant(self.initial_concentration)
+        # )
         self.critic_head = hk.nets.MLP(
             **mlp_params,
             output_sizes=[150, 100, 1],
@@ -287,9 +287,8 @@ class ActorCritic(hk.Module):
         ], axis=-1)  # (attention_dim + 9 + scan_embedding_dim,)
         ### ACTOR
         ## Compute Dirichlet distribution parameters
-        mus = nn.softplus(self.actor_head(context))  # (Batch, 3)
-        concentration = nn.softplus(self.actor_concentration) + 1
-        alphas = concentration * (mus + 1)
+        alphas = nn.softplus(self.actor_head(context)) + 1  # (Batch, 3)
+        concentration = jnp.sum(alphas, axis=-1)  # (Batch,)
         ## Compute dirchlet distribution vetices
         zeros = jnp.zeros((batch_size,))
         v1 = jnp.stack([zeros, action_space_params[:, 1] * self.wmax], axis=-1)

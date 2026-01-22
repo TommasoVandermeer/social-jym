@@ -22,8 +22,8 @@ print(f"\nJESSI RL training using {n_devices} devices\n")
 n_humans_for_tests = [5, 10, 15, 20, 25]
 test_robot_visibility = [False, True]
 n_trials = 100
-n_parallel_envs = 1000 
-training_updates = 3000
+n_parallel_envs = 500 
+training_updates = 500
 rl_debugging_interval = 1
 robot_vmax = 1
 training_hyperparams = {
@@ -33,19 +33,19 @@ training_hyperparams = {
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
     'rl_learning_rate': 2e-4, # 2e-4
-    'rl_learning_rate_final': 2e-6,
+    'rl_learning_rate_final': 2e-8,
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
-    'rl_mini_batch_size': 10_000, # Mini-batch size for each model update
-    'rl_micro_batch_size': 2_000, # Micro-batch size for gradient accumulation 
+    'rl_mini_batch_size': 500, # Mini-batch size for each model update
+    'rl_micro_batch_size': 250, # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
-    'rl_num_epochs': 2,
-    'rl_beta_entropy': 1e-4,
+    'rl_num_epochs': 4,
+    'rl_beta_entropy': 0, #1e-4,
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,7]), # Exclude circular_crossing_with_static_obstacles
     'reward_function': 'lasernav_reward1',
-    'gradient_norm_scale': 0.5, # Scale the gradient norm by this value
+    'gradient_norm_scale': 1, # Scale the gradient norm by this value
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 print(f"\nSTARTING RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")

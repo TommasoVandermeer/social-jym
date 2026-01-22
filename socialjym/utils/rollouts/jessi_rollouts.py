@@ -2,6 +2,7 @@ import optax
 from jax import jit, lax, random, vmap, device_put, device_get, device_count, eval_shape, ShapeDtypeStruct, debug
 from jax.tree_util import tree_map
 import jax.numpy as jnp
+from jax import nn
 import numpy as np
 from tqdm import tqdm
 from functools import partial
@@ -378,7 +379,7 @@ def jessi_multitask_rl_rollout(
         if update % 1 == 0:
              print(
                 f"Upd {update}:\n",
-                f"| Ret: {logs['returns'][-1]:.2f} | Loss: {logs['losses'][-1]:.4f} | Succ: {logs['successes'][-1]} | Fail: {logs['failures'][-1]} (hum {int(n_coll_hum)}, obs {int(n_coll_obs)}) | Timeouts: {logs['timeouts'][-1]}\n",
+                f"| Ret: {logs['returns'][-1]:.2f} | Loss: {logs['losses'][-1]:.4f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.4f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.4f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.4f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.4f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.4f}\n",
                 f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
                 f"| Loss Stds: {logs['loss_stds'][-1]} | Action Stds: {logs['stds'][-1]}"
              )
