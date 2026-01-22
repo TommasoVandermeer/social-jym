@@ -227,21 +227,10 @@ class ActorCritic(hk.Module):
             output_sizes=[150, 100, self.n_outputs], 
             name="actor_head"
         )
-        # self.actor_concentration = hk.get_parameter(
-        #     "actor_concentration", 
-        #     shape=[], 
-        #     init=hk.initializers.Constant(self.initial_concentration)
-        # )
         self.critic_head = hk.nets.MLP(
             **mlp_params,
             output_sizes=[150, 100, 1],
             name="critic_head"
-        )
-        # 4. Learnable Loss Variances - shape [3]: 0 -> Actor, 1 -> Critic, 2 -> Perception
-        self.loss_log_vars = hk.get_parameter(
-            "loss_log_vars", 
-            shape=[3], 
-            init=jnp.zeros
         )
         self.dirichlet = Dirichlet()
 
@@ -306,7 +295,8 @@ class ActorCritic(hk.Module):
             state_values = state_values[0]
             distributions = tree_map(lambda t: t[0], distributions)
         ### LEARNABLE LOSS VARIANCES
-        return sampled_actions, distributions, concentration, state_values, self.loss_log_vars
+
+        return sampled_actions, distributions, concentration, state_values
 
 class E2E(hk.Module):
     def __init__(
@@ -392,12 +382,12 @@ class E2E(hk.Module):
             y,
         ), axis=-1)  # Shape: (B, N, 20)
         ## CONTROL
-        sampled_actions, distributions, concentration, state_values, loss_log_vars = self.actor_critic(
+        sampled_actions, distributions, concentration, state_values = self.actor_critic(
             actor_input,
             scan_embedding,
             random_key=random_key
         )
-        return perception_output, actor_input, sampled_actions, distributions, concentration, state_values, loss_log_vars
+        return perception_output, actor_input, sampled_actions, distributions, concentration, state_values
 
 
 class JESSI(BasePolicy):
@@ -939,7 +929,7 @@ class JESSI(BasePolicy):
         )
         # Compute action
         key, subkey = random.split(key)
-        perception_output, actor_input, sampled_action, actor_distr, concentration, state_value, loss_log_vars = self.e2e.apply(
+        perception_output, actor_input, sampled_action, actor_distr, concentration, state_value = self.e2e.apply(
             e2e_network_params, 
             None, 
             perception_input,
@@ -1052,7 +1042,7 @@ class JESSI(BasePolicy):
                     beta_entropy:float = 0.0001,
                 ) -> tuple:
                     ## PREDICTION
-                    perception_distr, _, _, actor_distr, _, predicted_value, loss_log_vars = self.e2e.apply(current_network_params, None, input0, input1)
+                    perception_distr, _, _, actor_distr, _, predicted_value = self.e2e.apply(current_network_params, None, input0, input1)
                     ## ACTOR LOSS
                     neglogpdf = self.dirichlet.neglogp(actor_distr, sample_action)
                     ratio = jnp.exp(old_neglogpdf - neglogpdf)
@@ -1191,7 +1181,7 @@ class JESSI(BasePolicy):
                     returnn:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                    _, predicted_distr, _, predicted_state_value, loss_log_vars = self.actor_critic.apply(
+                    _, predicted_distr, _, predicted_state_value = self.actor_critic.apply(
                         current_actor_params, 
                         None, 
                         input['actor_input'], 
@@ -1200,13 +1190,11 @@ class JESSI(BasePolicy):
                     ## Compute actor loss (MSE between expert action and predicted mean action)
                     predicted_action = self.dirichlet.mean(predicted_distr)
                     actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
-                    weighted_actor_loss = 0.5 * jnp.exp(-loss_log_vars[0]) * actor_loss
                     # Compute critic loss
                     critic_loss = jnp.square(predicted_state_value - returnn)
-                    weighted_critic_loss = 0.5 * jnp.exp(-loss_log_vars[1]) * critic_loss
                     # Compute total loss
-                    total_loss = weighted_actor_loss + weighted_critic_loss + 0.5 * loss_log_vars[0] + 0.5 * loss_log_vars[1]
-                    return total_loss, (weighted_actor_loss, weighted_critic_loss)
+                    total_loss = actor_loss + .5 *critic_loss
+                    return total_loss, (actor_loss, critic_loss)
                 
                 total_loss, (actor_losses, critic_losses) = _loss_function(
                     current_actor_params,

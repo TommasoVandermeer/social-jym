@@ -32,13 +32,13 @@ training_hyperparams = {
     'n_obstacles': 3,
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_learning_rate': 2e-4, # 2e-4
-    'rl_learning_rate_final': 2e-8,
+    'rl_learning_rate': 1e-3, # 1e-3
+    'rl_learning_rate_final': 2e-8, # Provare ad aumentarlo a 1e-5
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
-    'rl_mini_batch_size': 500, # Mini-batch size for each model update
-    'rl_micro_batch_size': 250, # Micro-batch size for gradient accumulation 
+    'rl_mini_batch_size': 2_000, # Mini-batch size for each model update
+    'rl_micro_batch_size': 1000, # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
-    'rl_num_epochs': 4,
+    'rl_num_epochs': 10,
     'rl_beta_entropy': 0, #1e-4,
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
@@ -87,6 +87,7 @@ with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb
 with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
     il_actor_params = pickle.load(f)
 il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
+# il_network_params['e2e/~/actor_network']['loss_log_vars'] = il_network_params['e2e/~/actor_network']['loss_log_vars'].at[1].set(-1)
 
 # Initialize RL optimizer
 network_optimizer = optax.chain(
@@ -137,10 +138,7 @@ final_params, metrics = rl_out
 
 processed_metrics = {}
 for key, value in metrics.items():
-    if key == "loss_stds":
-        processed_metrics[key] = jnp.stack(value)
-    else:
-        processed_metrics[key] = jnp.array(value)
+    processed_metrics[key] = jnp.array(value)
 
 # Extraction
 rl_network_params = final_params
@@ -154,7 +152,6 @@ perception_losses = processed_metrics['perception_losses']
 actor_losses = processed_metrics['actor_losses']
 critic_losses = processed_metrics['critic_losses']
 entropy_losses = processed_metrics['entropy_losses']
-loss_stds = processed_metrics['loss_stds']
 
 success_during_rl = processed_metrics['successes']
 failure_during_rl = processed_metrics['failures']
@@ -247,16 +244,16 @@ ax[1,1].plot(
     jnp.convolve(critic_losses, jnp.ones(window,), 'valid') / window,
 )
 # Plot actor loss std during RL
-ax[1,2].grid()
-ax[1,2].set(
-    xlabel='Training Update',
-    ylabel=r'$\sigma(\mathcal{L}_{act})$',
-    title='Std actor loss',
-)
-ax[1,2].plot(
-    jnp.arange(len(loss_stds[:,0])),
-    loss_stds[:,0],
-)
+# ax[1,2].grid()
+# ax[1,2].set(
+#     xlabel='Training Update',
+#     ylabel=r'$\sigma(\mathcal{L}_{act})$',
+#     title='Std actor loss',
+# )
+# ax[1,2].plot(
+#     jnp.arange(len(loss_stds[:,0])),
+#     loss_stds[:,0],
+# )
 # Plot entropy loss during RL
 ax[2,0].grid()
 ax[2,0].set(
@@ -280,16 +277,16 @@ ax[2,1].plot(
     jnp.convolve(perception_losses, jnp.ones(window,), 'valid') / window,
 )
 # Plot critic loss std during RL
-ax[2,2].grid()
-ax[2,2].set(
-    xlabel='Training Update',
-    ylabel=r'$\sigma(\mathcal{L}_{crit})$',
-    title='Std critic loss',
-)
-ax[2,2].plot(
-    jnp.arange(len(loss_stds[:,1])),
-    loss_stds[:,1],
-)
+# ax[2,2].grid()
+# ax[2,2].set(
+#     xlabel='Training Update',
+#     ylabel=r'$\sigma(\mathcal{L}_{crit})$',
+#     title='Std critic loss',
+# )
+# ax[2,2].plot(
+#     jnp.arange(len(loss_stds[:,1])),
+#     loss_stds[:,1],
+# )
 # Plot stds[0] during RL
 ax[3,0].grid()
 ax[3,0].set(
@@ -315,14 +312,14 @@ ax[3,1].plot(
     stds_during_rl[:,1],
 )
 # Plot perception loss std during RL
-ax[3,2].grid()
-ax[3,2].set(
-    xlabel='Training Update',
-    ylabel=r'$\sigma(\mathcal{L}_{perc})$',
-    title='Std perception loss',
-)
-ax[3,2].plot(
-    jnp.arange(len(loss_stds[:,2])),
-    loss_stds[:,2],
-)
+# ax[3,2].grid()
+# ax[3,2].set(
+#     xlabel='Training Update',
+#     ylabel=r'$\sigma(\mathcal{L}_{perc})$',
+#     title='Std perception loss',
+# )
+# ax[3,2].plot(
+#     jnp.arange(len(loss_stds[:,2])),
+#     loss_stds[:,2],
+# )
 figure.savefig(os.path.join(os.path.dirname(__file__),"jessi_rl_training_plots.eps"), format='eps')

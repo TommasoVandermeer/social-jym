@@ -27,7 +27,7 @@ def collect_rollout_step(
 ):
     
     def _scan_step(carry, _):
-        (states, obses, infos, outcomes, returns, p_keys, r_keys, e_keys, outcomes_acc) = carry
+        (states, obses, infos, outcomes, returns, times, p_keys, r_keys, e_keys, outcomes_acc) = carry
         actions, new_p_keys, _, sampled_actions, _, actor_distrs, values = policy.batch_act(
             p_keys, obses, infos, network_params, sample=True
         )
@@ -62,19 +62,20 @@ def collect_rollout_step(
             "neglogpdfs": policy.dirichlet.batch_neglogp(actor_distrs, sampled_actions),
             "stds": policy.dirichlet.batch_std(actor_distrs)
         }
+        new_times = times + (~new_outcomes["nothing"]) * infos['time'] + policy.dt
         new_returns = returns + (~new_outcomes["nothing"]) * infos['return'] + jnp.power(policy.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards
         new_outcomes_acc = {k: outcomes_acc[k] + new_outcomes[k] for k in new_outcomes}
-        return (new_states, new_obses, new_infos, new_outcomes, new_returns, new_p_keys, new_r_keys, new_e_keys, new_outcomes_acc), step_data
+        return (new_states, new_obses, new_infos, new_outcomes, new_returns, new_times, new_p_keys, new_r_keys, new_e_keys, new_outcomes_acc), step_data
     
     init_outcomes_acc = {
         k: jnp.zeros_like(template_outcomes[k], dtype=jnp.int32) 
         for k in template_outcomes
     }
-    init_carry = (env_state[0], env_state[1], env_state[2], env_state[3], env_state[2]['return'], policy_keys, reset_keys, env_keys, init_outcomes_acc)
+    init_carry = (env_state[0], env_state[1], env_state[2], env_state[3], env_state[2]['return'], env_state[2]['time'], policy_keys, reset_keys, env_keys, init_outcomes_acc)
     final_carry, history = lax.scan(_scan_step, init_carry, None, length=n_steps)
-    (final_states, final_obses, final_infos, final_outcomes, final_returns, final_p_keys, final_r_keys, final_e_keys, sum_outcomes) = final_carry
+    (final_states, final_obses, final_infos, final_outcomes, final_returns, final_times, final_p_keys, final_r_keys, final_e_keys, sum_outcomes) = final_carry
     next_env_state = (final_states, final_obses, final_infos, final_outcomes)
-    return next_env_state, final_p_keys, final_r_keys, final_e_keys, history, sum_outcomes, final_returns
+    return next_env_state, final_p_keys, final_r_keys, final_e_keys, history, sum_outcomes, final_returns, final_times
 
 @partial(jit, static_argnames=("policy",), donate_argnums=(3,))
 def process_buffer_and_gae(
@@ -95,7 +96,7 @@ def process_buffer_and_gae(
     perception_inputs, robot_state_inputs = vmap(policy.compute_e2e_input, in_axes=(0,0))(
         last_obs, last_info['robot_goal']
     )
-    _, _, _, _, _, last_values, _ = policy.e2e.apply(
+    _, _, _, _, _, last_values = policy.e2e.apply(
         network_params, None, perception_inputs, robot_state_inputs
     )
     rewards = history["rewards"]
@@ -158,12 +159,11 @@ def train_one_epoch(
             inputs0 = inputs0.astype(jnp.bfloat16)
             inputs1 = inputs1.astype(jnp.bfloat16)
             # Forward pass
-            (perc_dist, _, _, actor_dist, _, pred_val, log_vars) = policy.e2e.apply(
+            (perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
                 p, None, inputs0, inputs1
             )
             # Cast back to higher precision
             pred_val = pred_val.astype(jnp.float32)
-            log_vars = log_vars.astype(jnp.float32)
             def dist_to_f32(dist):
                 return tree_map(lambda x: x.astype(jnp.float32), dist)
             actor_dist = dist_to_f32(actor_dist)
@@ -187,41 +187,38 @@ def train_one_epoch(
             gt_dict = {"gt_mask": u_mb["gt_mask"], "gt_poses": u_mb["gt_poses"], "gt_vels": u_mb["gt_vels"]}
             batch_perc_loss = policy._encoder_loss(perc_dist, gt_dict)
             perception_loss = jnp.mean(batch_perc_loss)
-            # Total
-            w_policy = jnp.exp(-log_vars[0]) * policy_loss + log_vars[0]
-            w_critic = jnp.exp(-log_vars[1]) * critic_loss + log_vars[1]
-            w_perc = jnp.exp(-log_vars[2]) * perception_loss + log_vars[2]
-            total_loss = 0.5 * (w_policy + w_critic + w_perc)
-            return total_loss, (actor_loss, critic_loss, perception_loss, entropy_loss, log_vars)
+            total_loss = policy_loss + .5 * critic_loss + .05 * perception_loss
+            return total_loss, (actor_loss, critic_loss, perception_loss, entropy_loss)
 
         def _micro_step_scan(carry, u_mb):
             current_grads_acc, current_metrics_acc = carry
             (loss, aux), grads = value_and_grad(micro_batch_loss_fn, has_aux=True)(params_inner, u_mb)
             new_grads_acc = tree_map(lambda acc, g: acc + g, current_grads_acc, grads)
-            l_act, l_crit, l_perc, l_ent, l_log = aux
-            acc_loss, (acc_act, acc_crit, acc_perc, acc_ent, acc_log) = current_metrics_acc
+            l_act, l_crit, l_perc, l_ent = aux
+            acc_loss, (acc_act, acc_crit, acc_perc, acc_ent) = current_metrics_acc
             new_metrics_acc = (
                 acc_loss + loss,
-                (acc_act + l_act, acc_crit + l_crit, acc_perc + l_perc, acc_ent + l_ent, acc_log + l_log)
+                (acc_act + l_act, acc_crit + l_crit, acc_perc + l_perc, acc_ent + l_ent)
             )
             return (new_grads_acc, new_metrics_acc), None
 
         grads_acc_init = tree_map(jnp.zeros_like, params_inner)
-        metrics_acc_init = (0.0, (0.0, 0.0, 0.0, 0.0, jnp.zeros((3,))))
+        metrics_acc_init = (0.0, (0.0, 0.0, 0.0, 0.0)) # loss, (actor, critic, perc, ent)
         (grads_sum, metrics_sum), _ = lax.scan(
             _micro_step_scan, 
             (grads_acc_init, metrics_acc_init), 
             micro_batches
         )
         grads_avg = tree_map(lambda x: x / n_micro_splits, grads_sum)
-        loss_sum, (act_sum, crit_sum, perc_sum, ent_sum, log_sum) = metrics_sum
+        loss_sum, (act_sum, crit_sum, perc_sum, ent_sum) = metrics_sum
         loss_avg = loss_sum / n_micro_splits
+        grad_norm = optax.global_norm(grads_avg)
         aux_avg = (
             act_sum / n_micro_splits,
             crit_sum / n_micro_splits,
             perc_sum / n_micro_splits,
             ent_sum / n_micro_splits,
-            log_sum / n_micro_splits
+            grad_norm,
         )
         updates, new_opt_st_inner = optimizer.update(grads_avg, opt_st_inner)
         new_params_inner = optax.apply_updates(params_inner, updates)
@@ -236,7 +233,7 @@ def train_one_epoch(
         "critic": jnp.mean(batch_aux[1]),
         "perc": jnp.mean(batch_aux[2]),
         "entropy": jnp.mean(batch_aux[3]),
-        "log_vars": jnp.mean(batch_aux[4], axis=0)
+        "grad_norm": jnp.mean(batch_aux[4]),
     }
     return (key, new_params, new_opt_st), epoch_metrics
 
@@ -284,14 +281,14 @@ def jessi_multitask_rl_rollout(
     opt_state = device_put(opt_state, sharding_replicated)
     logs = {
         "losses": [], "returns": [], "successes": [], "failures": [], "timeouts": [],
-        "episodes": [], "perception_losses": [], "actor_losses": [], "critic_losses": [],
-        "entropy_losses": [], "loss_stds": [], "stds": []
+        "collisions_humans": [], "collisions_obstacles": [], "times_to_goal": [], "episodes": [], 
+        "perception_losses": [], "actor_losses": [], "critic_losses": [], "entropy_losses": [], "stds": []
     }
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
     for update in tqdm(range(train_updates)):
         # A. COLLECT ROLLOUT STEP (Parallel)
-        env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum, returns = collect_rollout_step(
+        env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum, returns, times = collect_rollout_step(
             params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps
         )
         current_obs, current_infos, current_dones = env_state[1], env_state[2], ~(env_state[3]['nothing'])
@@ -301,8 +298,12 @@ def jessi_multitask_rl_rollout(
         n_timeout = jnp.sum(outcomes_sum["timeout"])
         ep_count = n_succ + n_coll_hum + n_coll_obs + n_timeout
         n_fail = n_coll_hum + n_coll_obs
-        if ep_count == 0: batch_mean_return = 0.0
-        else: batch_mean_return = float(jnp.sum(returns)/ep_count)
+        if ep_count == 0: 
+            batch_mean_return = 0.0
+            batch_mean_time = 0.0
+        else: 
+            batch_mean_return = float(jnp.sum(returns)/ep_count)
+            batch_mean_time = float(jnp.sum(times)/ep_count)
         avg_action_std = device_get(jnp.mean(history_raw["stds"], axis=(0,1)))
         # B. PROCESS BUFFER (Parallel)
         buffer_gpu = process_buffer_and_gae(
@@ -340,7 +341,7 @@ def jessi_multitask_rl_rollout(
                 out_shardings=out_shardings_train
             )
         epoch_metrics_acc = {
-            "loss": [], "perc": [], "actor": [], "critic": [], "entropy": [], "log_vars": []
+            "loss": [], "perc": [], "actor": [], "critic": [], "entropy": [], "grad_norm": []
         }
         # E. UPDATE LOOP
         for epoch in range(n_epochs):
@@ -361,6 +362,7 @@ def jessi_multitask_rl_rollout(
             )
             metrics_one_epoch["loss"].block_until_ready() # SYNC
             for k in epoch_metrics_acc:
+                if k not in metrics_one_epoch: continue
                 epoch_metrics_acc[k].append(metrics_one_epoch[k])
         # F. LOGGING
         logs["losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["loss"]))))
@@ -368,20 +370,22 @@ def jessi_multitask_rl_rollout(
         logs["actor_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["actor"]))))
         logs["critic_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["critic"]))))
         logs["entropy_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["entropy"]))))
-        avg_log_vars = jnp.mean(jnp.stack(epoch_metrics_acc["log_vars"]), axis=0)
-        logs["loss_stds"].append(jnp.exp(0.5 * avg_log_vars))
+        grad_norm = float(jnp.mean(jnp.array(epoch_metrics_acc['grad_norm'])))
         logs["returns"].append(batch_mean_return)
+        logs["times_to_goal"].append(batch_mean_time)
         logs["successes"].append(int(n_succ))
         logs["failures"].append(int(n_fail))
         logs["timeouts"].append(int(n_timeout))
+        logs["collisions_humans"].append(int(n_coll_hum))
+        logs["collisions_obstacles"].append(int(n_coll_obs))
         logs["episodes"].append(int(ep_count))
         logs["stds"].append(avg_action_std)
         if update % 1 == 0:
              print(
                 f"Upd {update}:\n",
-                f"| Ret: {logs['returns'][-1]:.2f} | Loss: {logs['losses'][-1]:.4f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.4f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.4f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.4f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.4f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.4f}\n",
+                f"| Ret: {logs['returns'][-1]:.3f} | Loss: {logs['losses'][-1]:.4f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
                 f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
-                f"| Loss Stds: {logs['loss_stds'][-1]} | Action Stds: {logs['stds'][-1]}"
+                f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f} | Grad Norm: {grad_norm:.4f}"
              )
     return params, logs 
              
