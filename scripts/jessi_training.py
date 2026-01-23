@@ -420,7 +420,7 @@ else:
         dataset = pickle.load(f)
 
 ### PRE-TRAIN PERCEPTION NETWORK
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'perception_network.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl')):
     # Initialize network
     params, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
     # Count network parameters
@@ -666,7 +666,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'perception_networ
     params = early_stopping_info['best_params']
     print(f"\nTraining completed in {n_epochs} epochs. - Best val loss: {early_stopping_info['best_val_loss']}\n")
     # Save trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'wb') as f:
         pickle.dump(params, f)
     ## TEST
     n_train_batches = n_train_data // batch_size
@@ -701,11 +701,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'perception_networ
     del test_dataset
 else:
     # Load trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
         encoder_params = pickle.load(f)
 
 ### PRE-TRAIN POLICY NETWORK (IMITATION LEARNING)
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_network.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl')):
     # LOAD DATASETs
     with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'rb') as f:
         raw_data = pickle.load(f)
@@ -868,7 +868,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_networ
         (controller_dataset, actor_critic_params, optimizer_state, jnp.zeros((n_epochs, int(n_data // batch_size))), jnp.zeros((n_epochs, int(n_data // batch_size))), jnp.zeros((n_epochs, int(n_data // batch_size))))
     )
     # Save trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'wb') as f:
         pickle.dump(actor_critic_params, f)
     # FREE MEMORY
     del controller_dataset
@@ -889,7 +889,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_networ
     fig.savefig(os.path.join(os.path.dirname(__file__), 'controller_network_training_loss.eps'), format='eps')
 else:
     # Load trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
         actor_critic_params = pickle.load(f)
 
 ### MULTI-TASK REINFORCEMENT LEARNING
@@ -927,9 +927,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'jessi_rl_out.pkl'
         dt=env_params['robot_dt'], 
     )
     # Load pre-trained weights
-    with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
         il_encoder_params = pickle.load(f)
-    with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
         il_actor_params = pickle.load(f)
     il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
     # Initialize RL optimizer

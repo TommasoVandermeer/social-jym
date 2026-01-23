@@ -18,90 +18,148 @@ from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 
-class SinusoidalPositionalEncoding(hk.Module):
-    def __init__(self, d_model, max_len=5000, name=None):
+class FourierFeatureEncoding(hk.Module):
+    def __init__(self, num_bands, max_resolution, concat_orig=True, name=None):
         super().__init__(name=name)
-        self.d_model = d_model
-        self.max_len = max_len
+        self.num_bands = num_bands
+        self.max_resolution = max_resolution
+        self.concat_orig = concat_orig
 
     def __call__(self, x):
-        # x shape: [Batch, SeqLen, d_model]
-        seq_len = x.shape[1]
-        position = jnp.arange(seq_len, dtype=jnp.float32)[:, jnp.newaxis]
-        div_term = jnp.exp(jnp.arange(0, self.d_model, 2) * -(jnp.log(10000.0) / self.d_model))
-        pe = jnp.zeros((seq_len, self.d_model))
-        pe = pe.at[:, 0::2].set(jnp.sin(position * div_term))
-        pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
-        return x + pe[None, :, :]
+        # x: [..., D] coordinates (e.g. x, y, delta_t)
+        x_proj = x[..., None] * self.max_resolution * jnp.pi
+        bands = jnp.linspace(1.0, self.max_resolution / 2, self.num_bands, dtype=x.dtype)
+        x_proj = x_proj * bands[None, :] # [..., D, num_bands]
+        
+        vals = jnp.concatenate([jnp.sin(x_proj), jnp.cos(x_proj)], axis=-1)
+        vals = vals.reshape(*x.shape[:-1], -1) # Flatten bands
+        
+        if self.concat_orig:
+            return jnp.concatenate([x, vals], axis=-1)
+        return vals
 
-class SpatioTemporalEncoder(hk.Module):
-    def __init__(self, embed_dim=128, name=None): 
+class AngularSpatialPerceiver(hk.Module):
+    """
+    Processes a SINGLE LiDAR stack.
+    Permutation/Cardinality invariant over rays.
+    Uses an Angular Mask to constrain queries to look only at their sector.
+    """
+    def __init__(self, embed_dim, num_sectors=32, mask_margin_deg=15, name=None):
         super().__init__(name=name)
         self.embed_dim = embed_dim
-        # 1. Spatial Feature Extraction
-        self.spatial_net = hk.Sequential([
-            hk.Conv1D(output_channels=64, kernel_shape=5, stride=1, padding="SAME"),
-            nn.gelu,
-            hk.LayerNorm(axis=-1, create_scale=True, create_offset=True),
-            
-            hk.Conv1D(output_channels=128, kernel_shape=3, stride=2, padding="SAME"),
-            nn.gelu,
-            hk.LayerNorm(axis=-1, create_scale=True, create_offset=True),
-            
-            hk.Conv1D(output_channels=embed_dim, kernel_shape=3, stride=1, padding="SAME"),
-            nn.gelu,
-            hk.LayerNorm(axis=-1, create_scale=True, create_offset=True),
-        ])
-        # 2. Positional Encodings
-        self.pos_encoder_space = SinusoidalPositionalEncoding(embed_dim, max_len=2048)
-        self.pos_encoder_time = SinusoidalPositionalEncoding(embed_dim, max_len=100)
-        # 3. Temporal Attention
-        self.temporal_attn = hk.MultiHeadAttention(num_heads=4, key_size=32, w_init_scale=1.0)
-        self.temporal_norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.num_sectors = num_sectors
+        self.mask_margin_rad = jnp.deg2rad(mask_margin_deg)
+        # Queries representing each angular sector
+        angles = jnp.linspace(-jnp.pi, jnp.pi, num_sectors)
+        self.sector_angles = jnp.stack([jnp.sin(angles), jnp.cos(angles)], axis=-1) # [N_sec, 2]
+        self.latents = hk.get_parameter("spatial_latents", [num_sectors, embed_dim], init=hk.initializers.TruncatedNormal())
+        self.fourier_pos = FourierFeatureEncoding(num_bands=6, max_resolution=10)
+        self.input_proj = hk.Linear(embed_dim)
+        self.cross_attn = hk.MultiHeadAttention(num_heads=4, key_size=32, w_init_scale=1.0, model_size=embed_dim)
+        self.norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
-    def __call__(self, x):
-        # x shape: [Batch, Time, Beams, Features]
-        B, T, L, F = x.shape
-        x_flat = x.reshape(B * T, L, F) 
-        h_spatial = self.spatial_net(x_flat) # [B*T, L/2, embed_dim] (nota L/2 per stride)
-        h_spatial = self.pos_encoder_space(h_spatial)
-        L_new = h_spatial.shape[1]
-        h_spatial = h_spatial.reshape(B, T, L_new, self.embed_dim)
-        h_time_in = h_spatial.transpose(0, 2, 1, 3).reshape(B * L_new, T, self.embed_dim)
-        h_time_in = self.pos_encoder_time(h_time_in)
-        t_out = self.temporal_attn(query=h_time_in, key=h_time_in, value=h_time_in)
-        h_time_out = self.temporal_norm(h_time_in + t_out)
-        h_final = h_time_out.reshape(B, L_new, T, self.embed_dim).transpose(0, 2, 1, 3)
-        return h_final
+    def compute_angular_mask(self, input_sin_cos):
+        # input_sin_cos: [Beams, 2] (sin/cos_fixed_theta of LiDAR)
+        # sector_angles: [N_sec, 2]
+        # Dot product to find cosine of angular difference
+        cos_diff = jnp.matmul(self.sector_angles, input_sin_cos.T) # [N_sec, Beams]
+        threshold = jnp.cos(self.mask_margin_rad)
+        return jnp.where(cos_diff > threshold, 0.0, -1e9)
+
+    def __call__(self, x_stack):
+        # x_stack: [Beams, 7] (Features: dist, hit, x, y, sin, cos, dt)
+        # Encoding (x,y)
+        pos_emb = self.fourier_pos(x_stack[:, 2:4])
+        features = jnp.concatenate([x_stack, pos_emb], axis=-1)
+        kv = self.input_proj(features)[None, ...] # [1, Beams, D]
+        # Latents (Queries)
+        q = self.latents[None, ...] # [1, N_sec, D]
+        # Mask
+        input_sin_cos = x_stack[:, 4:6]
+        mask = self.compute_angular_mask(input_sin_cos)[None, None, :, :] # [1, 1, N_sec, Beams]
+        # Cross Attention
+        attn_out = self.cross_attn(query=q, key=kv, value=kv, mask=mask)
+        S_i = self.norm(q + attn_out)[0] # [N_sec, D]
+        return S_i
+
+class TemporalPerceiver(hk.Module):
+    """
+    Fuses the history (S_i) for each angular sector.
+    Permutation/Cardinality invariant over time (thanks to delta_t).
+    Uses a Temporal Mask to ignore events that are too old.
+    """
+    def __init__(self, embed_dim, max_history_seconds=1.0, num_sectors=32, name=None):
+        super().__init__(name=name)
+        self.embed_dim = embed_dim
+        self.max_history = max_history_seconds
+        # Temporal query for each sector
+        self.temporal_latents = hk.get_parameter("temporal_latents", [num_sectors, embed_dim], init=hk.initializers.TruncatedNormal())
+        self.fourier_time = FourierFeatureEncoding(num_bands=4, max_resolution=5)
+        self.time_proj = hk.Linear(embed_dim)
+        self.cross_attn = hk.MultiHeadAttention(num_heads=4, key_size=32, w_init_scale=1.0, model_size=embed_dim)
+        self.norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+
+    def compute_temporal_mask(self, delta_t_array):
+        # delta_t_array: [Time]
+        # Mask valid se delta_t <= max_history_seconds. (1.0 = valido, -1e9 = ignorato)
+        # Nota: delta_t è scalare per stack, ma uguale per tutti i settori dello stesso stack.
+        return jnp.where(delta_t_array <= self.max_history, 0.0, -1e9)
+
+    def __call__(self, S_all, delta_t_all):
+        # S_all: [Time, N_sec, D]
+        # delta_t_all: [Time] (il delta_t medio di ogni stack)
+        Time, N_sec, D = S_all.shape
+        
+        # 1. Fourier Encoding del Tempo (Iniettiamo il timestamp in ogni settore)
+        time_emb = self.fourier_time(delta_t_all[:, None]) # [Time, 1, D_time]
+        time_emb = jnp.tile(time_emb, (1, N_sec, 1)) # [Time, N_sec, D_time]
+        
+        # Combinare S_i con il suo timestamp
+        kv_features = jnp.concatenate([S_all, time_emb], axis=-1)
+        kv = self.time_proj(kv_features) # [Time, N_sec, D]
+        
+        # Riorganizziamo per fare attention "Settore per Settore" nel tempo
+        # Vogliamo che il Settore 0 guardi la storia del Settore 0.
+        kv = kv.transpose(1, 0, 2) # [N_sec, Time, D]
+        q = self.temporal_latents[:, None, :] # [N_sec, 1, D]
+        
+        # 2. Temporal Mask
+        mask = self.compute_temporal_mask(delta_t_all)[None, None, None, :] # [1, 1, 1, Time]
+        mask = jnp.tile(mask, (N_sec, 1, 1, 1)) # [N_sec, 1, 1, Time]
+        
+        # 3. Cross Attention (Comprime il Tempo)
+        attn_out = self.cross_attn(query=q, key=kv, value=kv, mask=mask)
+        T = self.norm(q + attn_out)[:, 0, :] # [N_sec, D]
+        
+        return T
 
 class HCGQueryDecoder(hk.Module):
-    def __init__(self, n_detectable_humans, embed_dim, name=None):
+    """
+    Decoder that queries S_0 (Position) and T (Dynamics) to find humans.
+    """
+    def __init__(self, n_humans, embed_dim, name=None):
         super().__init__(name=name)
-        self.n_detectable_humans = n_detectable_humans
+        self.n_humans = n_humans
         self.embed_dim = embed_dim
-        # LEARNABLE QUERIES: DETR-like.
-        self.query_embeddings = hk.get_parameter(
-            "query_embeddings", 
-            shape=[1, self.n_detectable_humans, embed_dim], 
-            init=hk.initializers.TruncatedNormal(stddev=0.02)
-        )
-        self.cross_attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, value_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
-        self.norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-        self.ffn = hk.nets.MLP([embed_dim * 2, embed_dim], activation=nn.gelu, activate_final=False)
-        self.norm_ffn = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.human_queries = hk.get_parameter("human_queries", [n_humans, embed_dim], init=hk.initializers.TruncatedNormal())
+        # Attention 1: POSITION (Looks at S_0)
+        self.attn_spatial = hk.MultiHeadAttention(num_heads=4, key_size=32, w_init_scale=1.0, model_size=embed_dim)
+        self.norm_spat = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        # Attention 2: DYNAMICS (Looks at T)
+        self.attn_temporal = hk.MultiHeadAttention(num_heads=4, key_size=32, w_init_scale=1.0, model_size=embed_dim)
+        self.norm_temp = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.mlp = hk.nets.MLP([embed_dim*2, embed_dim], activation=nn.gelu)
 
-    def __call__(self, encoder_output):
-        # encoder_output: [B, T, L, D]
-        B, T, L, D = encoder_output.shape
-        kv = encoder_output.reshape(B, T * L, D)
-        q = jnp.tile(self.query_embeddings, (B, 1, 1))
-        # Cross Attention
-        attn_out = self.cross_attn(query=q, key=kv, value=kv)
-        q = self.norm(q + attn_out)
-        ffn_out = self.ffn(q)
-        q = self.norm_ffn(q + ffn_out)
-        
-        return q # [B, n_detectable_humans, D]
+    def __call__(self, S_0, T):
+        # S_0: [Batch, N_sec, D], T: [Batch, N_sec, D]
+        B = S_0.shape[0]
+        q = jnp.tile(self.human_queries[None, ...], (B, 1, 1)) # [B, N_humans, D]
+        # Fetch current geometry
+        q = self.norm_spat(q + self.attn_spatial(query=q, key=S_0, value=S_0))
+        # Fetch dynamics
+        q = self.norm_temp(q + self.attn_temporal(query=q, key=T, value=T))
+        # Final processing
+        return self.mlp(q) # [B, N_humans, D]
 
 class Perception(hk.Module):
     def __init__(
@@ -113,15 +171,15 @@ class Perception(hk.Module):
             embed_dim: int = 128
         ):
         super().__init__(name=name)
-        self.n_detectable_humans = n_detectable_humans
         self.embed_dim = embed_dim
         self.max_humans_velocity = max_humans_velocity
         self.max_lidar_distance = max_lidar_distance
-        # Modules
-        self.input_proj = hk.Linear(embed_dim, name="input_projection")
-        self.perception = SpatioTemporalEncoder(embed_dim=embed_dim, name="spatio_temporal_encoder")
-        self.decoder = HCGQueryDecoder(n_detectable_humans, embed_dim, name="decoder")
-        # Head: 11 params (weight, mu_x, mu_y, log_sig_x, log_sig_y, corr, mu_vx, mu_vy, log_sig_vx, log_sig_vy, corr_v)
+        
+        # Cascade modules
+        self.spatial_perceiver = AngularSpatialPerceiver(embed_dim, num_sectors=32)
+        self.temporal_perceiver = TemporalPerceiver(embed_dim, max_history_seconds=1.0, num_sectors=32)
+        self.decoder = HCGQueryDecoder(n_detectable_humans, embed_dim)
+        # HCG Head
         self.head_hum = hk.Linear(11, w_init=hk.initializers.VarianceScaling(0.01))
 
     def limit_vector_norm(self, raw_vector:jnp.ndarray, max_norm:float) -> jnp.ndarray:
@@ -159,22 +217,30 @@ class Perception(hk.Module):
             },
             "weights": weights
         }
-
+    
     def __call__(self, x):
-        # x input: [batch B, n_stack (T), num_beams (L), 7]
+        # x input: [Batch, Time, Beams, 7]
+        # Features: [dist, hit, x, y, sin_fixed_theta, cos_fixed_theta, delta_t]
         has_batch = x.ndim == 4
         if not has_batch:
-            x = jnp.expand_dims(x, 0) # [1, T, L, F]
-        # 1. Feature Projection
-        x_emb = self.input_proj(x) # [B, T, L, embed_dim]
-        # 2. Spatio-Temporal Encoding
-        encoded_features = self.perception(x_emb) # [B, T, L, embed_dim]
-        last_scan_embeddings = jnp.mean(encoded_features[:, 0, :, :], axis=1) # [B, embed_dim]
-        # 3. Decoding via Queries
-        latents = self.decoder(encoded_features) # [B, n_detectable_humans, embed_dim]        
-        # 4. Heads & Parameter Transformation
-        raw_hum = self.head_hum(latents)
+            x = jnp.expand_dims(x, 0)
+        B, Stacks, Beams, F = x.shape
+        # SPATIAL PERCEIVER (Vmap on Batch and Tempo)
+        batch_spatial_fn = vmap(vmap(self.spatial_perceiver))
+        S_all = batch_spatial_fn(x) # [Batch, Time, 32_sec, D]
+        # The most recent frame (t=0) is "Static Obstacle Feature" for the RL Actor
+        S_0 = S_all[:, 0, :, :] # [Batch, 32_sec, D]
+        # TEMPORAL PERCEIVER (Vmap on Batch)
+        delta_t_all = x[:, :, 0, 6] # [Batch, Time]
+        batch_temporal_fn = vmap(self.temporal_perceiver)
+        T = batch_temporal_fn(S_all, delta_t_all) # [Batch, 32_sec, D]
+        # HCG DECODING
+        human_latents = self.decoder(S_0, T) # [Batch, N_humans, D]
+        raw_hum = self.head_hum(human_latents)
         hum_distr = self._params_to_human_centric_gaussians(raw_hum)
+        # Flattening di S_0 per il Controller (es. media o concatenazione)
+        # Scegliamo mean-pooling dei 32 settori geometrici correnti
+        last_scan_embeddings = jnp.mean(S_0, axis=1) # [Batch, D]
         if not has_batch:
             hum_distr = tree_map(lambda t: t[0], hum_distr)
             last_scan_embeddings = last_scan_embeddings[0]
@@ -388,7 +454,6 @@ class E2E(hk.Module):
             random_key=random_key
         )
         return perception_output, actor_input, sampled_actions, distributions, concentration, state_values
-
 
 class JESSI(BasePolicy):
     def __init__(
@@ -683,9 +748,10 @@ class JESSI(BasePolicy):
         self, 
         key:random.PRNGKey, 
     ) -> tuple:
-        perception_params = self.perception.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7)))
+        # Input is shaped (self.n_stack, self.lidar_num_rays, 7)
+        perception_params = self.perception.init(key, jnp.zeros((2, 2, 7))) # Cardinality invariant for n_stack and lidar_num_rays
         actor_critic_params = self.actor_critic.init(key, jnp.zeros((self.n_detectable_humans, 20)), jnp.zeros((self.embedding_dim,)))
-        e2e_params = self.e2e.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7)), jnp.zeros((self.n_detectable_humans, 9)))
+        e2e_params = self.e2e.init(key, jnp.zeros((2, 2, 7)), jnp.zeros((self.n_detectable_humans, 9))) # Cardinality invariant for n_stack and lidar_num_rays
         return perception_params, actor_critic_params, e2e_params
 
     @partial(jit, static_argnames=("self"))
@@ -847,7 +913,7 @@ class JESSI(BasePolicy):
 
         output:
         - lidar_tokens (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
-        7 features per token: [norm_dist, hit, x, y, sin_fixed_theta, cos_fixed_theta, delta_t].
+        7 features per token: [norm_dist, hit, x, y, sin_fixed_theta (theta of beam in the robot frame), cos_fixed_theta (theta of beam in the robot frame), delta_t (time difference from the most recent scan)].
         - last LiDAR point cloud (lidar_num_rays, 2): in robot frame of the most recent observation.
         """
         # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.
@@ -884,7 +950,7 @@ class JESSI(BasePolicy):
             self.lidar_angles_robot_frame,
         )  # Shape: (n_stack, lidar_num_rays, 7)
         # Optionally select TOP K beams for each stack here to reduce computation
-
+        # First stack is the most recent one!!!
         return encoder_input, last_lidar_point_cloud
 
     @partial(jit, static_argnames=("self"))
