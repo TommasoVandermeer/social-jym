@@ -116,7 +116,7 @@ for i in range(n_episodes):
         return discounted_cumsums[::-1]
     discounted_returns = _discounted_cumsum(all_rewards)
     # [print("Step {} -  critic prediction: {:.2f} VS discounted return: {:.2f}".format(i, all_predicted_state_values[i], discounted_returns[i])) for i in range(len(discounted_returns))]
-    print("\nOutcome: ", [k for k, v in outcome.items() if v][0])
+    print("\nOutcome: ", [k for k, v in outcome.items() if v][0], " - Return: {:.2f}".format(info['return']))
     ## Animate only trajectory
     angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
     lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,6:], angles)

@@ -33,7 +33,7 @@ training_hyperparams = {
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
     'rl_learning_rate': 5e-4, # 1e-3
-    'rl_learning_rate_final': 1e-7, # Provare ad aumentarlo a 1e-5
+    'rl_learning_rate_final': 1e-7,
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 2_000, # Mini-batch size for each model update
     'rl_micro_batch_size': 1000, # Micro-batch size for gradient accumulation 
@@ -87,7 +87,6 @@ with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb
 with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
     il_actor_params = pickle.load(f)
 il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
-# il_network_params['e2e/~/actor_network']['loss_log_vars'] = il_network_params['e2e/~/actor_network']['loss_log_vars'].at[1].set(-1)
 
 # Initialize RL optimizer
 network_optimizer = optax.chain(

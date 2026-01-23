@@ -284,7 +284,8 @@ def jessi_multitask_rl_rollout(
     logs = {
         "losses": [], "returns": [], "successes": [], "failures": [], "timeouts": [],
         "collisions_humans": [], "collisions_obstacles": [], "times_to_goal": [], "episodes": [], 
-        "perception_losses": [], "actor_losses": [], "critic_losses": [], "entropy_losses": [], "stds": []
+        "perception_losses": [], "actor_losses": [], "critic_losses": [], "entropy_losses": [], "stds": [],
+        "grad_norm": []
     }
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
@@ -371,12 +372,12 @@ def jessi_multitask_rl_rollout(
                 if k not in metrics_one_epoch: continue
                 epoch_metrics_acc[k].append(metrics_one_epoch[k])
         # F. LOGGING
+        grad_norm = float(jnp.mean(jnp.array(epoch_metrics_acc['grad_norm'])))
         logs["losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["loss"]))))
         logs["perception_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["perc"]))))
         logs["actor_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["actor"]))))
         logs["critic_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["critic"]))))
         logs["entropy_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["entropy"]))))
-        grad_norm = float(jnp.mean(jnp.array(epoch_metrics_acc['grad_norm'])))
         logs["returns"].append(batch_mean_return)
         logs["times_to_goal"].append(batch_mean_time)
         logs["successes"].append(int(n_succ))
@@ -386,6 +387,7 @@ def jessi_multitask_rl_rollout(
         logs["collisions_obstacles"].append(int(n_coll_obs))
         logs["episodes"].append(int(ep_count))
         logs["stds"].append(avg_action_std)
+        logs["grad_norm"].append(grad_norm)
         if update % 1 == 0:
              print(
                 f"Upd {update}:\n",
