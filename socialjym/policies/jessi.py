@@ -10,7 +10,7 @@ from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
 
-from socialjym.envs.base_env import ROBOT_KINEMATICS, EPSILON
+from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.utils.distributions.gaussian import BivariateGaussian
 from socialjym.policies.base_policy import BasePolicy
@@ -1317,7 +1317,10 @@ class JESSI(BasePolicy):
         # Initialize metrics
         metrics = initialize_metrics_dict(n_trials)
         # Execute n_trials tests
-        print(f"\nExecuting {n_trials} tests with {env.n_humans} humans...")
+        if env.scenario == SCENARIOS.index('circular_crossing_with_static_obstacles'):
+            print(f"\nExecuting {n_trials} tests with {env.n_humans - env.ccso_n_static_humans} humans and {env.ccso_n_static_humans} obstacles...")
+        else:
+            print(f"\nExecuting {n_trials} tests with {env.n_humans} humans and {env.n_obstacles} obstacles...")
         _, metrics = lax.fori_loop(0, n_trials, _fori_body, (random_seed, metrics))
         # Print results
         print_average_metrics(n_trials, metrics)
