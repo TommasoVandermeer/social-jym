@@ -18,7 +18,7 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': 2*jnp.pi,
     'lidar_max_dist': 10.,
-    'n_humans': 7,
+    'n_humans': 5,
     'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,

@@ -276,6 +276,8 @@ def jessi_multitask_rl_rollout(
     key, subkey = random.split(key)
     policy_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
     params = initial_network_params
+    best_params = initial_network_params.copy()
+    best_return = -jnp.inf
     opt_state = network_optimizer.init(params)
     params = device_put(params, sharding_replicated)
     opt_state = device_put(opt_state, sharding_replicated)
@@ -305,6 +307,10 @@ def jessi_multitask_rl_rollout(
             batch_mean_return = float(jnp.sum(returns)/ep_count)
             batch_mean_time = float(jnp.sum(times)/ep_count)
         avg_action_std = device_get(jnp.mean(history_raw["stds"], axis=(0,1)))
+        # A.5 SAVE BEST PARAMS
+        if batch_mean_return > best_return:
+            best_return = batch_mean_return
+            best_params = params.copy()
         # B. PROCESS BUFFER (Parallel)
         buffer_gpu = process_buffer_and_gae(
             params, current_obs, current_infos, current_dones, history_raw, policy, policy.gamma, policy.dt, policy.v_max, lambda_gae
@@ -387,5 +393,5 @@ def jessi_multitask_rl_rollout(
                 f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
                 f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f} | Grad Norm: {grad_norm:.4f}"
              )
-    return params, logs 
+    return best_params, params, logs 
              

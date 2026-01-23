@@ -32,8 +32,8 @@ training_hyperparams = {
     'n_obstacles': 3,
     'rl_training_updates': training_updates,
     'rl_parallel_envs': n_parallel_envs,
-    'rl_learning_rate': 1e-3, # 1e-3
-    'rl_learning_rate_final': 2e-8, # Provare ad aumentarlo a 1e-5
+    'rl_learning_rate': 5e-4, # 1e-3
+    'rl_learning_rate_final': 1e-7, # Provare ad aumentarlo a 1e-5
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 2_000, # Mini-batch size for each model update
     'rl_micro_batch_size': 1000, # Micro-batch size for gradient accumulation 
@@ -45,7 +45,7 @@ training_hyperparams = {
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,7]), # Exclude circular_crossing_with_static_obstacles
     'reward_function': 'lasernav_reward1',
-    'gradient_norm_scale': 1, # Scale the gradient norm by this value
+    'gradient_norm_scale': 10, # Scale the gradient norm by this value
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 print(f"\nSTARTING RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
