@@ -21,84 +21,91 @@ from socialjym.utils.aux_functions import compute_episode_metrics, initialize_me
 class SinusoidalPositionalEncoding(hk.Module):
     def __init__(self, d_model, max_len=5000, name=None):
         super().__init__(name=name)
-        self.d_model = d_model
-        self.max_len = max_len
+        position = jnp.arange(max_len, dtype=jnp.float32)[:, jnp.newaxis]
+        div_term = jnp.exp(jnp.arange(0, d_model, 2) * -(jnp.log(10000.0) / d_model))
+        pe = jnp.zeros((max_len, d_model))
+        pe = pe.at[:, 0::2].set(jnp.sin(position * div_term))
+        pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
+        self.pe_table = pe 
 
     def __call__(self, x):
         # x shape: [Batch, SeqLen, d_model]
         seq_len = x.shape[1]
-        position = jnp.arange(seq_len, dtype=jnp.float32)[:, jnp.newaxis]
-        div_term = jnp.exp(jnp.arange(0, self.d_model, 2) * -(jnp.log(10000.0) / self.d_model))
-        pe = jnp.zeros((seq_len, self.d_model))
-        pe = pe.at[:, 0::2].set(jnp.sin(position * div_term))
-        pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
-        return x + pe[None, :, :]
+        return x + self.pe_table[None, :seq_len, :]
 
-class AngularLocalSelfAttention(hk.Module):
-    def __init__(self, embed_dim, max_angle_deg=5.0, name="angular_local_attn"):
+class AngularLocalCrossAttention(hk.Module):
+    def __init__(self, embed_dim, target_beams=50, max_angle_deg=18.0, name="angular_local_cross_attn"):
         super().__init__(name=name)
         self.embed_dim = embed_dim
-        self.threshold = jnp.cos(jnp.deg2rad(max_angle_deg)) # Es: cos(5 gradi) = 0.996
+        self.target_beams = target_beams 
+        self.threshold = jnp.cos(jnp.deg2rad(max_angle_deg/2)) # Angolo di soglia in radianti (a destra e sinistra)
         
-        self.attn = hk.MultiHeadAttention(num_heads=4, key_size=32, w_init_scale=1.0, model_size=embed_dim)
-        self.norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-        # Una piccola FFN per processare le feature dopo l'attenzione
-        self.ffn = hk.nets.MLP([embed_dim * 2, embed_dim], activation=nn.silu)
-        self.norm_ffn = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        # Le nuove "Query" che riassumeranno la scena spaziale
+        self.spatial_latents = hk.get_parameter("spatial_latents", [target_beams, embed_dim], init=hk.initializers.TruncatedNormal(stddev=0.02))
+        # Anche loro hanno un angolo associato (es. da 0 a 360) per fare la maschera
+        angles = jnp.linspace(0, 2 * jnp.pi, target_beams, endpoint=False)
+        self.latent_sin_cos = jnp.stack([jnp.sin(angles), jnp.cos(angles)], axis=-1)
 
-    def compute_angular_mask(self, sin_cos_feats):
-        # sin_cos_feats: [Batch, Time, Beams, 2]
-        # Calcoliamo il prodotto scalare tra tutti i raggi (dot product)
-        # Risultato: [Batch, Time, Beams, Beams]
-        cos_diff = jnp.einsum('btid,btjd->btij', sin_cos_feats, sin_cos_feats)
-        
-        # Se cos_diff > threshold, siamo entro i 5 gradi (valore 0.0), altrimenti -1e9
-        mask = jnp.where(cos_diff >= self.threshold, 0.0, -1e9)
-        
-        # Aggiungiamo la dimensione per le Heads: [Batch, Time, 1, Beams, Beams]
-        return mask[:, :, None, :, :]
+        self.attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
+        self.norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+
+        self.ffn = hk.nets.MLP([embed_dim, embed_dim], activation=nn.gelu)
+        self.norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+
+    def compute_angular_mask(self, input_sin_cos):
+        # input_sin_cos: [B*T, Beams, 2]
+        # latent_sin_cos: [Target_Beams, 2]
+        cos_diff = jnp.einsum('id,mjd->mij', self.latent_sin_cos, input_sin_cos)
+        mask = cos_diff >= self.threshold
+        return mask[:, None, :, :] # [B*T, 1, Target_Beams, Beams]
 
     def __call__(self, x_emb, x_raw):
-        # x_emb: [Batch, Time, Beams, D] (Le feature da processare)
-        # x_raw: [Batch, Time, Beams, 7] (Per estrarre sin e cos originali)
+        # x_emb: [B*T, Beams, D], x_raw: [B*T, Beams, 7]
+        B_T = x_emb.shape[0]
         
-        # 1. Creiamo la maschera geometrica dinamica usando indici 4 e 5 (sin, cos)
-        sin_cos = x_raw[..., 4:6]
-        mask = self.compute_angular_mask(sin_cos)
+        # 1. Prepariamo le Query Latenti (i "nuovi raggi" ridotti)
+        q = jnp.broadcast_to(self.spatial_latents[None, ...], (B_T, self.target_beams, self.embed_dim))
         
-        # 2. Self-Attention (Solo tra vicini angolari, grazie alla maschera!)
-        attn_out = self.attn(query=x_emb, key=x_emb, value=x_emb, mask=mask)
-        x_emb = self.norm(x_emb + attn_out)
+        # 2. Calcoliamo la maschera tra le 50 Query fisse e i 100 (o 500) raggi variabili in input
+        input_sin_cos = x_raw[..., 4:6]
+        mask = self.compute_angular_mask(input_sin_cos)
         
-        # 3. Feed-Forward
-        ffn_out = self.ffn(x_emb)
-        return self.norm_ffn(x_emb + ffn_out)
+        # 3. Cross Attention: le 50 Query "risucchiano" i dati dai raggi locali vicini
+        attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
+        q = self.norm1(q + attn_out)
+        
+        # 2. FFN (Non-linearità) + Add & Norm
+        ffn_out = self.ffn(q)
+        return self.norm2(q + ffn_out)
 
 class SpatioTemporalEncoder(hk.Module):
-    def __init__(self, embed_dim=128, name=None): 
+    def __init__(self, embed_dim, name=None): 
         super().__init__(name=name)
         self.embed_dim = embed_dim
         # 1. Spatial Feature Extraction
-        self.angular_spatial_attn = AngularLocalSelfAttention(embed_dim, max_angle_deg=5.0)
-        # 2. Positional Encodings
-        self.pos_encoder_space = SinusoidalPositionalEncoding(embed_dim, max_len=2048)
+        self.angular_spatial_attn = AngularLocalCrossAttention(embed_dim, max_angle_deg=18.0)
+        # 2. Temporal Positional Encodings
         self.pos_encoder_time = SinusoidalPositionalEncoding(embed_dim, max_len=100)
         # 3. Temporal Attention
-        self.temporal_attn = hk.MultiHeadAttention(num_heads=4, key_size=32, w_init_scale=1.0)
-        self.temporal_norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.temporal_attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0)
+        self.temporal_norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.temporal_ffn = hk.nets.MLP([embed_dim, embed_dim], activation=nn.gelu)
+        self.temporal_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
     def __call__(self, x, x_raw):
         # x shape: [Batch, Time, Beams, Features]
         B, T, L, F = x.shape
-        h_spatial = self.angular_spatial_attn(x, x_raw) # [B, T, L, embed_dim]
-        h_spatial = h_spatial.reshape(B * T, L, self.embed_dim)
-        h_spatial = self.pos_encoder_space(h_spatial)
+        x_flat = x.reshape(B * T, L, self.embed_dim)
+        x_raw_flat = x_raw.reshape(B * T, L, x_raw.shape[-1])
+        h_spatial = self.angular_spatial_attn(x_flat, x_raw_flat) # [B*T, L, embed_dim]
         L_new = h_spatial.shape[1]
         h_spatial = h_spatial.reshape(B, T, L_new, self.embed_dim)
         h_time_in = h_spatial.transpose(0, 2, 1, 3).reshape(B * L_new, T, self.embed_dim)
         h_time_in = self.pos_encoder_time(h_time_in)
         t_out = self.temporal_attn(query=h_time_in, key=h_time_in, value=h_time_in)
-        h_time_out = self.temporal_norm(h_time_in + t_out)
+        h_time_mid = self.temporal_norm1(h_time_in + t_out)
+        t_ffn_out = self.temporal_ffn(h_time_mid)
+        h_time_out = self.temporal_norm2(h_time_mid + t_ffn_out)
         h_final = h_time_out.reshape(B, L_new, T, self.embed_dim).transpose(0, 2, 1, 3)
         return h_final
 
@@ -138,7 +145,7 @@ class Perception(hk.Module):
             n_detectable_humans: int,
             max_humans_velocity: float,
             max_lidar_distance: float,
-            embed_dim: int = 128
+            embed_dim: int,
         ):
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -337,7 +344,7 @@ class E2E(hk.Module):
         max_lidar_distance: float,
         v_max: float,
         wheels_distance: float,
-        embed_dim: int = 96,
+        embed_dim: int,
         attention_dim: int = 64,
         num_heads: int = 4,
         mlp_params: dict = {
@@ -433,7 +440,7 @@ class JESSI(BasePolicy):
         n_detectable_humans:int=10,
         max_humans_velocity:float=1.5,
         max_beam_range:float=10.0, # This is only used to normalize the LiDAR readings before feeding them to the encoder
-        embedding_dim:int=128,
+        embedding_dim:int=64,
     ) -> None:
         """
         JESSI (JAX-based E2E Safe Social Interpretable autonomous navigation).

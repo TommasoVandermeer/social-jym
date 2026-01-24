@@ -36,13 +36,16 @@ n_humans = 5
 n_obstacles = 3
 humans_policy = 'hsfm'
 ### PRE-TRAIN Hyperparameters
+perception_nn_name = 'pre_perception_network2.pkl'
+policy_nn_name = 'pre_controller_network2.pkl'
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
 n_steps = 500_000  # Number of labeled examples to train Perception network
 n_parallel_envs = 1000  # Number of parallel environments to simulate to generate the dataset
+embeddings_dim = 96  # Dimension of the embeddings used in JESSI policy
 n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
-perception_learning_rate = 0.0005
+perception_learning_rate = 0.001
 perception_batch_size = 100
 policy_learning_rate = 0.005
 policy_batch_size = 200
@@ -85,7 +88,8 @@ jessi = JESSI(
     lidar_angular_range=lidar_angular_range,
     n_stack=n_stack, 
     n_detectable_humans=n_detectable_humans, 
-    max_humans_velocity=max_humans_velocity
+    max_humans_velocity=max_humans_velocity,
+    embedding_dim=embeddings_dim,
 )
 # Plotting settings
 ax_visibility = 2
@@ -423,7 +427,7 @@ else:
         dataset = pickle.load(f)
 
 ### PRE-TRAIN PERCEPTION NETWORK
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name)):
     # Initialize network
     params, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
     # Count network parameters
@@ -670,7 +674,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'pre_perception_ne
     params = early_stopping_info['best_params']
     print(f"\nTraining completed in {n_epochs} epochs. - Best val loss: {early_stopping_info['best_val_loss']}\n")
     # Save trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'wb') as f:
         pickle.dump(params, f)
     ## TEST
     n_train_batches = n_train_data // perception_batch_size
@@ -699,17 +703,17 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'pre_perception_ne
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
     fig.legend()
-    fig.savefig(os.path.join(os.path.dirname(__file__), 'lidar_to_gmm_loss.eps'), format='eps')
+    fig.savefig(os.path.join(os.path.dirname(__file__), perception_nn_name.replace('.pkl', '.eps')), format='eps')
     del train_dataset
     del val_dataset
     del test_dataset
 else:
     # Load trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
         encoder_params = pickle.load(f)
 
 ### PRE-TRAIN POLICY NETWORK (IMITATION LEARNING)
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
     # LOAD DATASETs
     with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'rb') as f:
         raw_data = pickle.load(f)
@@ -872,7 +876,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'pre_controller_ne
         (controller_dataset, actor_critic_params, optimizer_state, jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))), jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))), jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))))
     )
     # Save trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), policy_nn_name), 'wb') as f:
         pickle.dump(actor_critic_params, f)
     # FREE MEMORY
     del controller_dataset
@@ -890,10 +894,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'pre_controller_ne
     ax[1].set_ylabel("Actor Loss (weighted)")
     ax[2].set_xlabel("Epoch")
     ax[2].set_ylabel("Critic Loss (weighted)")
-    fig.savefig(os.path.join(os.path.dirname(__file__), 'controller_network_training_loss.eps'), format='eps')
+    fig.savefig(os.path.join(os.path.dirname(__file__), policy_nn_name.replace('.pkl', '.eps')), format='eps')
 else:
     # Load trained parameters
-    with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), policy_nn_name), 'rb') as f:
         actor_critic_params = pickle.load(f)
 
 ### MULTI-TASK REINFORCEMENT LEARNING
@@ -931,9 +935,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'jessi_rl_out.pkl'
         dt=env_params['robot_dt'], 
     )
     # Load pre-trained weights
-    with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
         il_encoder_params = pickle.load(f)
-    with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), policy_nn_name), 'rb') as f:
         il_actor_params = pickle.load(f)
     il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
     # Initialize RL optimizer
