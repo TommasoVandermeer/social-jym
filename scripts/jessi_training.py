@@ -22,6 +22,9 @@ from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
 from jhsfm.hsfm import vectorized_compute_edge_closest_point
 
 save_videos = False  # Whether to save videos of the debug inspections
+perception_nn_name = 'pre_perception_network.pkl'
+policy_nn_name = 'pre_controller_network.pkl'
+full_network_name = 'jessi_rl_out.pkl'
 ### Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -36,8 +39,6 @@ n_humans = 5
 n_obstacles = 3
 humans_policy = 'hsfm'
 ### PRE-TRAIN Hyperparameters
-perception_nn_name = 'pre_perception_network2.pkl'
-policy_nn_name = 'pre_controller_network2.pkl'
 random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
 n_steps = 500_000  # Number of labeled examples to train Perception network
@@ -45,7 +46,7 @@ n_parallel_envs = 1000  # Number of parallel environments to simulate to generat
 embeddings_dim = 96  # Dimension of the embeddings used in JESSI policy
 n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
-perception_learning_rate = 0.001
+perception_learning_rate = 0.0005
 perception_batch_size = 100
 policy_learning_rate = 0.005
 policy_batch_size = 200
@@ -462,14 +463,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name
     del test_indexes
     # Initialize optimizer and its state
     optimizer = optax.chain(
-        optax.clip_by_global_norm(1.0),
+        optax.clip_by_global_norm(0.5),
         optax.adamw(
             learning_rate=optax.warmup_cosine_decay_schedule(
                 init_value=0.0,
                 peak_value=perception_learning_rate,
                 warmup_steps=n_max_epochs // 100 * (n_train_data // perception_batch_size),
                 decay_steps=n_max_epochs * (n_train_data // perception_batch_size),
-                end_value=perception_learning_rate/500,
+                end_value=perception_learning_rate/100,
             ),
             weight_decay=1e-2,
         ),
@@ -714,6 +715,9 @@ else:
 
 ### PRE-TRAIN POLICY NETWORK (IMITATION LEARNING)
 if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
+    # Load trained perception parameters
+    with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
+        encoder_params = pickle.load(f)
     # LOAD DATASETs
     with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'rb') as f:
         raw_data = pickle.load(f)
@@ -901,7 +905,7 @@ else:
         actor_critic_params = pickle.load(f)
 
 ### MULTI-TASK REINFORCEMENT LEARNING
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'jessi_rl_out.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)):
     print(f"\nSTARTING RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
@@ -974,7 +978,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'jessi_rl_out.pkl'
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)
     # Save RL rollout output
-    with open(os.path.join(os.path.dirname(__file__),"jessi_rl_out.pkl"), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__),full_network_name), 'wb') as f:
         pickle.dump(rl_out, f)
     final_params, _, metrics = rl_out
     processed_metrics = {}
@@ -1166,6 +1170,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'jessi_rl_out.pkl'
         label='Collisions obstacles',
         color='black',
     )
-    figure.savefig(os.path.join(os.path.dirname(__file__),"jessi_rl_training_plots.eps"), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__),full_network_name.replace('.pkl', '.eps')), format='eps')
 else:
-    print("JESSI RL training already done and saved... Remove 'jessi_rl_out.pkl' to retrain.")
+    print(f"JESSI RL training already done and saved... Remove '{full_network_name}' to retrain.")

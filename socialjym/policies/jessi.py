@@ -34,7 +34,7 @@ class SinusoidalPositionalEncoding(hk.Module):
         return x + self.pe_table[None, :seq_len, :]
 
 class AngularLocalCrossAttention(hk.Module):
-    def __init__(self, embed_dim, target_beams=50, max_angle_deg=18.0, name="angular_local_cross_attn"):
+    def __init__(self, embed_dim, target_beams=60, max_angle_deg=18.0, name="angular_local_cross_attn"):
         super().__init__(name=name)
         self.embed_dim = embed_dim
         self.target_beams = target_beams 
@@ -49,7 +49,7 @@ class AngularLocalCrossAttention(hk.Module):
         self.attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
         self.norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
-        self.ffn = hk.nets.MLP([embed_dim, embed_dim], activation=nn.gelu)
+        self.ffn = hk.nets.MLP([embed_dim], activation=nn.gelu, activate_final=True)
         self.norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
     def compute_angular_mask(self, input_sin_cos):
@@ -89,7 +89,7 @@ class SpatioTemporalEncoder(hk.Module):
         # 3. Temporal Attention
         self.temporal_attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0)
         self.temporal_norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-        self.temporal_ffn = hk.nets.MLP([embed_dim, embed_dim], activation=nn.gelu)
+        self.temporal_ffn = hk.nets.MLP([embed_dim * 2, embed_dim], activation=nn.gelu)
         self.temporal_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
     def __call__(self, x, x_raw):
@@ -121,7 +121,9 @@ class HCGQueryDecoder(hk.Module):
             init=hk.initializers.TruncatedNormal(stddev=0.02)
         )
         self.cross_attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, value_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
-        self.norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.norm_cross = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.self_attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
+        self.norm_self = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
         self.ffn = hk.nets.MLP([embed_dim * 2, embed_dim], activation=nn.gelu, activate_final=False)
         self.norm_ffn = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
@@ -132,10 +134,13 @@ class HCGQueryDecoder(hk.Module):
         q = jnp.tile(self.query_embeddings, (B, 1, 1))
         # Cross Attention
         attn_out = self.cross_attn(query=q, key=kv, value=kv)
-        q = self.norm(q + attn_out)
+        q = self.norm_cross(q + attn_out)
+        # Self Attention (avoiding interactions between queries for same human)
+        self_out = self.self_attn(query=q, key=q, value=q)
+        q = self.norm_self(q + self_out)
+        # FFN + Add & Norm
         ffn_out = self.ffn(q)
         q = self.norm_ffn(q + ffn_out)
-        
         return q # [B, n_detectable_humans, D]
 
 class Perception(hk.Module):
