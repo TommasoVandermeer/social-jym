@@ -34,7 +34,7 @@ class SinusoidalPositionalEncoding(hk.Module):
         return x + self.pe_table[None, :seq_len, :]
 
 class AngularLocalCrossAttention(hk.Module):
-    def __init__(self, embed_dim, target_beams=60, max_angle_deg=18.0, name="angular_local_cross_attn"):
+    def __init__(self, embed_dim, target_beams, max_angle_deg=18.0, name="angular_local_cross_attn"):
         super().__init__(name=name)
         self.embed_dim = embed_dim
         self.target_beams = target_beams 
@@ -79,11 +79,12 @@ class AngularLocalCrossAttention(hk.Module):
         return self.norm2(q + ffn_out)
 
 class SpatioTemporalEncoder(hk.Module):
-    def __init__(self, embed_dim, name=None): 
+    def __init__(self, embed_dim, n_sectors, name=None): 
         super().__init__(name=name)
         self.embed_dim = embed_dim
+        self.n_sectors = n_sectors
         # 1. Spatial Feature Extraction
-        self.angular_spatial_attn = AngularLocalCrossAttention(embed_dim, max_angle_deg=18.0)
+        self.angular_spatial_attn = AngularLocalCrossAttention(embed_dim, target_beams=n_sectors, max_angle_deg=18.0)
         # 2. Temporal Positional Encodings
         self.pos_encoder_time = SinusoidalPositionalEncoding(embed_dim, max_len=100)
         # 3. Temporal Attention
@@ -151,15 +152,17 @@ class Perception(hk.Module):
             max_humans_velocity: float,
             max_lidar_distance: float,
             embed_dim: int,
+            n_sectors: int,
         ):
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
         self.embed_dim = embed_dim
         self.max_humans_velocity = max_humans_velocity
         self.max_lidar_distance = max_lidar_distance
+        self.n_sectors = n_sectors
         # Modules
         self.input_proj = hk.Linear(embed_dim, name="input_projection")
-        self.perception = SpatioTemporalEncoder(embed_dim=embed_dim, name="spatio_temporal_encoder")
+        self.perception = SpatioTemporalEncoder(embed_dim=embed_dim, n_sectors=n_sectors, name="spatio_temporal_encoder")
         self.decoder = HCGQueryDecoder(n_detectable_humans, embed_dim, name="decoder")
         # Head: 11 params (weight, mu_x, mu_y, log_sig_x, log_sig_y, corr, mu_vx, mu_vy, log_sig_vx, log_sig_vy, corr_v)
         self.head_hum = hk.Linear(11, w_init=hk.initializers.VarianceScaling(0.01))
@@ -209,7 +212,7 @@ class Perception(hk.Module):
         x_emb = self.input_proj(x) # [B, T, L, embed_dim]
         # 2. Spatio-Temporal Encoding
         encoded_features = self.perception(x_emb, x) # [B, T, L, embed_dim]
-        last_scan_embeddings = jnp.mean(encoded_features[:, 0, :, :], axis=1) # [B, embed_dim]
+        last_scan_embeddings = encoded_features[:, 0, :, :] # [B, N_sectors, embed_dim]
         # 3. Decoding via Queries
         latents = self.decoder(encoded_features) # [B, n_detectable_humans, embed_dim]        
         # 4. Heads & Parameter Transformation
@@ -227,9 +230,7 @@ class ActorCritic(hk.Module):
             n_detectable_humans: int,
             v_max: float,
             wheels_distance: float,
-            scan_embedding_dim: int = 128,
-            attention_dim: int = 64,
-            num_heads: int = 4,
+            n_sectors: int,
             mlp_params: dict = {
                 "activation": nn.relu,
                 "activate_final": False,
@@ -246,30 +247,30 @@ class ActorCritic(hk.Module):
         self.wmin = -2 * v_max / wheels_distance
         self.initial_concentration = initial_concentration
         # Dimensions
-        self.scan_embedding_dim = scan_embedding_dim
-        self.attention_dim = attention_dim
-        self.num_heads = num_heads
+        self.n_sectors = n_sectors
         self.n_outputs = 3  # Dirichlet distribution over 3 action vertices
         self.mlp_params = mlp_params
-        # 1. Input Projection (Projects individual HCG+State row to latent space)
-        self.hcg_projection = hk.Linear(self.attention_dim, name="hcg_projection")
+        # Scan embedding reducer
+        self.scan_reducer = hk.Linear(1, name="scan_reducer")
         # 2. Self Attention Mechanism
         self.attention = hk.MultiHeadAttention(
-            num_heads=self.num_heads,
-            key_size=self.attention_dim // self.num_heads,
+            num_heads=2,
+            key_size=(n_sectors + 20)//2,
             w_init=hk.initializers.VarianceScaling(1.0, "fan_avg", "uniform"),
             name="hcg_self_attention"
         )
-        self.layer_norm = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.layer_norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        self.att_ffn = hk.nets.MLP([n_sectors + 20], activation=nn.gelu, activate_final=True)
+        self.layer_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
         # 3. Final Output MLP
         self.actor_head = hk.nets.MLP(
             **mlp_params,
-            output_sizes=[150, 100, self.n_outputs], 
+            output_sizes=[100, 50, self.n_outputs], 
             name="actor_head"
         )
         self.critic_head = hk.nets.MLP(
             **mlp_params,
-            output_sizes=[150, 100, 1],
+            output_sizes=[100, 50, 1],
             name="critic_head"
         )
         self.dirichlet = Dirichlet()
@@ -286,7 +287,7 @@ class ActorCritic(hk.Module):
                - Index 0-10: HCG parameters (Mean, LogSigma, Corr, Weight)
                - Index 10: HCG Weight (Score)
                - Index 11-19: Tiled Robot Params
-            y: LiDAR embedding. Shape (scan_embedding_dim,) or (batch_size, scan_embedding_dim)
+            y: LiDAR embedding. Shape (n_sectors, scan_embedding_dim,) or (batch_size, n_sectors, scan_embedding_dim)
 
         Returns:
             sampled_actions: Sampled actions from the policy. Shape (2,) or (batch_size, 2)
@@ -304,16 +305,26 @@ class ActorCritic(hk.Module):
         hcg_scores = x[..., 10:11] 
         global_robot_state = x[:, 0, 11:] 
         action_space_params = global_robot_state[:, :3]
-        embeddings = self.hcg_projection(x)  # (Batch, N, attention_dim)
-        att_out = self.attention(embeddings, embeddings, embeddings) # (Batch, N, attention_dim)
-        att_embeddings = self.layer_norm(embeddings + att_out) # (Batch, N, attention_dim)
-        weighted_embeddings = att_embeddings * hcg_scores # (Batch, N, attention_dim)
-        pooled_hcg_context = jnp.sum(weighted_embeddings, axis=1) # (Batch, attention_dim,)
+        ### CONTEXT EXTRACTION
+        scalar_scan = self.scan_reducer(y)  # (Batch, n_sectors, 1)
+        y = jnp.squeeze(scalar_scan, axis=-1) # (Batch, n_sectors)
+        y_tiled = jnp.broadcast_to(y[:, None, :], (batch_size, self.n_detectable_humans, y.shape[-1]))
+        embeddings = jnp.concatenate([x, y_tiled], axis=-1) # [Batch, N_Humans, 20 + n_sectors]
+        # SCENE-ATTENTION MECHANISM
+        att_out = self.attention(embeddings, embeddings, embeddings) # (Batch, N, 20 + n_sectors)
+        att_embeddings = self.layer_norm1(embeddings + att_out) # (Batch, N, 20 + n_sectors)
+        ffn_out = self.att_ffn(att_embeddings)
+        att_embeddings = self.layer_norm2(att_embeddings + ffn_out)
+        summed_embeddings = jnp.sum(att_embeddings * hcg_scores, axis=1) # (Batch, 20 + n_sectors)
+        sum_of_weights = jnp.sum(hcg_scores, axis=1) # (Batch, 1)
+        base_mean = summed_embeddings / (sum_of_weights + 1e-5)  # (Batch, 20 + n_sectors)
+        presence_gate = jnp.tanh(sum_of_weights) # (Batch, 1) Encodes if humans are present in the scene
+        pooled_hcg_context = base_mean * presence_gate # (Batch, 20 + n_sectors)
         context = jnp.concatenate([
             pooled_hcg_context, 
             global_robot_state, 
             y
-        ], axis=-1)  # (attention_dim + 9 + scan_embedding_dim,)
+        ], axis=-1)  # (20 + n_sectors + 9 + n_sectors,)
         ### ACTOR
         ## Compute Dirichlet distribution parameters
         alphas = nn.softplus(self.actor_head(context)) + 1  # (Batch, 3)
@@ -350,8 +361,7 @@ class E2E(hk.Module):
         v_max: float,
         wheels_distance: float,
         embed_dim: int,
-        attention_dim: int = 64,
-        num_heads: int = 4,
+        n_sectors: int,
         mlp_params: dict = {
             "activation": nn.relu,
             "activate_final": False,
@@ -371,8 +381,7 @@ class E2E(hk.Module):
         self.max_lidar_distance = max_lidar_distance
         # Dimensions
         self.embed_dim = embed_dim
-        self.attention_dim = attention_dim
-        self.num_heads = num_heads
+        self.n_sectors = n_sectors
         self.n_outputs = 3  # Dirichlet distribution over 3 action vertices
         self.mlp_params = mlp_params
         # Initialize Perception module
@@ -381,7 +390,8 @@ class E2E(hk.Module):
             n_detectable_humans=n_detectable_humans,
             max_humans_velocity=max_humans_velocity,
             max_lidar_distance=max_lidar_distance,
-            embed_dim=embed_dim
+            embed_dim=embed_dim,
+            n_sectors=n_sectors,
         )
         # Initialize Actor-Critic module
         self.actor_critic = ActorCritic(
@@ -389,9 +399,6 @@ class E2E(hk.Module):
             n_detectable_humans=n_detectable_humans,
             v_max=v_max,
             wheels_distance=wheels_distance,
-            scan_embedding_dim=embed_dim,
-            attention_dim=attention_dim,
-            num_heads=num_heads,
             mlp_params=mlp_params,
             initial_concentration=initial_concentration,
         )
@@ -445,7 +452,8 @@ class JESSI(BasePolicy):
         n_detectable_humans:int=10,
         max_humans_velocity:float=1.5,
         max_beam_range:float=10.0, # This is only used to normalize the LiDAR readings before feeding them to the encoder
-        embedding_dim:int=64,
+        embedding_dim:int=96,
+        n_sectors:int=60,
     ) -> None:
         """
         JESSI (JAX-based E2E Safe Social Interpretable autonomous navigation).
@@ -480,6 +488,7 @@ class JESSI(BasePolicy):
         self.max_humans_velocity = max_humans_velocity
         self.max_beam_range = max_beam_range
         self.embedding_dim = embedding_dim
+        self.n_sectors = n_sectors
         # Default attributes
         self.name = "JESSI"
         self.kinematics = ROBOT_KINEMATICS.index("unicycle")
@@ -489,14 +498,27 @@ class JESSI(BasePolicy):
         self.perception_name = "lidar_perception"
         @hk.transform
         def perception_network(x):
-            net = Perception(self.perception_name, self.n_detectable_humans, self.max_humans_velocity, self.lidar_max_dist, embed_dim=self.embedding_dim)
+            net = Perception(
+                self.perception_name, 
+                self.n_detectable_humans, 
+                self.max_humans_velocity, 
+                self.lidar_max_dist, 
+                embed_dim=self.embedding_dim, 
+                n_sectors=n_sectors
+            )
             return net(x)
         self.perception = perception_network
         # Initialize Actor Critic network
         self.actor_critic_name = "actor_network"
         @hk.transform
         def actor_critic_network(x, y, **kwargs) -> jnp.ndarray:
-            actor_critic = ActorCritic(self.actor_critic_name, self.n_detectable_humans, self.v_max, self.wheels_distance, scan_embedding_dim=self.embedding_dim) 
+            actor_critic = ActorCritic(
+                self.actor_critic_name, 
+                self.n_detectable_humans, 
+                self.v_max, 
+                self.wheels_distance, 
+                n_sectors=self.n_sectors
+            ) 
             return actor_critic(x, y, **kwargs)
         self.actor_critic = actor_critic_network
         # Initialize E2E Actor Critic network
@@ -512,7 +534,8 @@ class JESSI(BasePolicy):
                 max_lidar_distance=self.lidar_max_dist,
                 v_max=self.v_max,
                 wheels_distance=self.wheels_distance,
-                embed_dim=self.embedding_dim
+                embed_dim=self.embedding_dim,
+                n_sectors=self.n_sectors,
             ) 
             return e2e(x, y, **kwargs)
         self.e2e = e2e_network
