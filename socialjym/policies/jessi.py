@@ -401,6 +401,7 @@ class E2E(hk.Module):
             wheels_distance=wheels_distance,
             mlp_params=mlp_params,
             initial_concentration=initial_concentration,
+            n_sectors=n_sectors,
         )
 
     def __call__(
@@ -747,7 +748,7 @@ class JESSI(BasePolicy):
     ) -> tuple:
         # Input is shaped (self.n_stack, self.lidar_num_rays, 7)
         perception_params = self.perception.init(key, jnp.zeros((2, 2, 7))) # Cardinality invariant for n_stack and lidar_num_rays
-        actor_critic_params = self.actor_critic.init(key, jnp.zeros((self.n_detectable_humans, 20)), jnp.zeros((self.embedding_dim,)))
+        actor_critic_params = self.actor_critic.init(key, jnp.zeros((self.n_detectable_humans, 20)), jnp.zeros((self.n_sectors, self.embedding_dim)))
         e2e_params = self.e2e.init(key, jnp.zeros((2, 2, 7)), jnp.zeros((self.n_detectable_humans, 9))) # Cardinality invariant for n_stack and lidar_num_rays
         return perception_params, actor_critic_params, e2e_params
 

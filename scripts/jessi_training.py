@@ -804,7 +804,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
         data['inputs'] = data['inputs'].at[:,:,2].set(x)
         data['inputs'] = data['inputs'].at[:,:,3].set(y)
         return data
-    @loop_tqdm(n_epochs, desc="Training Lidar->HCG network")
+    @loop_tqdm(policy_n_epochs, desc="Training Controller network")
     @jit 
     def _epoch_loop(
         i:int,
