@@ -64,13 +64,13 @@ training_hyperparams = {
     'n_obstacles': n_obstacles,
     'rl_training_updates': rl_training_updates,
     'rl_parallel_envs': rl_n_parallel_envs,
-    'rl_learning_rate': 2e-5, # 3e-4
+    'rl_learning_rate': 3e-4, # 3e-4
     'rl_learning_rate_final': 1e-7,
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 2_000, # Mini-batch size for each model update
     'rl_micro_batch_size': 1000, # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
-    'rl_num_epochs': 5, # 10
+    'rl_num_epochs': 5, # 5
     'rl_beta_entropy': 0, #1e-4,
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
@@ -1034,7 +1034,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
     timeout_during_rl = processed_metrics['timeouts']
     episodes_during_rl = processed_metrics['episodes']
     stds_during_rl = processed_metrics['stds']
-    grad_norms_during_rl = processed_metrics['grad_norms']
+    grad_norms_during_rl = processed_metrics['grad_norm']
     collisions_humans_during_rl = processed_metrics['collisions_humans']
     collisions_obstacles_during_rl = processed_metrics['collisions_obstacles']
     times_to_goal_during_rl = processed_metrics['times_to_goal']
@@ -1176,8 +1176,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
         title='Gradients L2 norm',
     )
     ax[3,0].plot(
-        jnp.arange(len(grad_norms_during_rl[:,0])),
-        grad_norms_during_rl[:,0],
+        jnp.arange(len(grad_norms_during_rl[:])),
+        grad_norms_during_rl,
     )
     # Plot Total Loss during RL
     ax[3,1].grid()
@@ -1199,13 +1199,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
     )
     ax[3,2].plot(
         jnp.arange(len(collisions_humans_during_rl)),
-        collisions_humans_during_rl,
+        collisions_humans_during_rl/episodes_during_rl,
         label='Collisions humans',
         color='blue',
     )
     ax[3,2].plot(
         jnp.arange(len(collisions_obstacles_during_rl)),
-        collisions_obstacles_during_rl,
+        collisions_obstacles_during_rl/episodes_during_rl,
         label='Collisions obstacles',
         color='black',
     )

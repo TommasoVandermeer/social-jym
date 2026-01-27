@@ -189,7 +189,7 @@ def train_one_epoch(
             gt_dict = {"gt_mask": u_mb["gt_mask"], "gt_poses": u_mb["gt_poses"], "gt_vels": u_mb["gt_vels"]}
             batch_perc_loss = policy._encoder_loss(perc_dist, gt_dict)
             perception_loss = jnp.mean(batch_perc_loss)
-            total_loss = policy_loss + .5 * critic_loss + .05 * perception_loss
+            total_loss = policy_loss + .3 * critic_loss + .05 * perception_loss
             return total_loss, (actor_loss, critic_loss, perception_loss, entropy_loss, approx_kl)
 
         def _micro_step_scan(carry, u_mb):
