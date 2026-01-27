@@ -62,8 +62,8 @@ def collect_rollout_step(
             "neglogpdfs": policy.dirichlet.batch_neglogp(actor_distrs, sampled_actions),
             "stds": policy.dirichlet.batch_std(actor_distrs)
         }
-        new_times = times + (~new_outcomes["nothing"]) * infos['time'] + policy.dt
-        new_returns = returns + (~new_outcomes["nothing"]) * infos['return'] + jnp.power(policy.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards
+        new_times = times + (new_outcomes["success"]) * (infos['time'] + policy.dt)
+        new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(policy.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards)
         new_outcomes_acc = {k: outcomes_acc[k] + new_outcomes[k] for k in new_outcomes}
         return (new_states, new_obses, new_infos, new_outcomes, new_returns, new_times, new_p_keys, new_r_keys, new_e_keys, new_outcomes_acc), step_data
     
@@ -71,13 +71,13 @@ def collect_rollout_step(
         k: jnp.zeros_like(template_outcomes[k], dtype=jnp.int32) 
         for k in template_outcomes
     }
-    init_carry = (env_state[0], env_state[1], env_state[2], env_state[3], env_state[2]['return'], env_state[2]['time'], policy_keys, reset_keys, env_keys, init_outcomes_acc)
+    init_carry = (env_state[0], env_state[1], env_state[2], env_state[3], jnp.zeros_like(env_state[2]['return']), jnp.zeros_like(env_state[2]['time']), policy_keys, reset_keys, env_keys, init_outcomes_acc)
     final_carry, history = lax.scan(_scan_step, init_carry, None, length=n_steps)
     (final_states, final_obses, final_infos, final_outcomes, final_returns, final_times, final_p_keys, final_r_keys, final_e_keys, sum_outcomes) = final_carry
     next_env_state = (final_states, final_obses, final_infos, final_outcomes)
     return next_env_state, final_p_keys, final_r_keys, final_e_keys, history, sum_outcomes, final_returns, final_times
 
-@partial(jit, static_argnames=("policy",), donate_argnums=(3,))
+@partial(jit, static_argnames=("policy",))
 def process_buffer_and_gae(
     network_params, 
     last_obs, 
@@ -170,10 +170,12 @@ def train_one_epoch(
             perc_dist = dist_to_f32(perc_dist)
             # Actor
             new_neglogp = policy.dirichlet.batch_neglogp(actor_dist, u_mb["actions"])
-            ratio = jnp.exp(u_mb["neglogpdfs"] - new_neglogp)
+            log_ratio = u_mb["neglogpdfs"] - new_neglogp
+            ratio = jnp.exp(log_ratio)
             surr1 = ratio * u_mb["advantages"]
             surr2 = jnp.clip(ratio, 1.0 - clip_range, 1.0 + clip_range) * u_mb["advantages"]
             actor_loss = -jnp.mean(jnp.minimum(surr1, surr2))
+            approx_kl = jnp.mean((ratio - 1) - log_ratio)
             # Critic
             v_loss = jnp.square(pred_val - u_mb["critic_targets"])
             v_clipped = u_mb["values"] + jnp.clip(pred_val - u_mb["values"], -clip_range, clip_range)
@@ -188,29 +190,29 @@ def train_one_epoch(
             batch_perc_loss = policy._encoder_loss(perc_dist, gt_dict)
             perception_loss = jnp.mean(batch_perc_loss)
             total_loss = policy_loss + .5 * critic_loss + .05 * perception_loss
-            return total_loss, (actor_loss, critic_loss, perception_loss, entropy_loss)
+            return total_loss, (actor_loss, critic_loss, perception_loss, entropy_loss, approx_kl)
 
         def _micro_step_scan(carry, u_mb):
             current_grads_acc, current_metrics_acc = carry
             (loss, aux), grads = value_and_grad(micro_batch_loss_fn, has_aux=True)(params_inner, u_mb)
             new_grads_acc = tree_map(lambda acc, g: acc + g, current_grads_acc, grads)
-            l_act, l_crit, l_perc, l_ent = aux
-            acc_loss, (acc_act, acc_crit, acc_perc, acc_ent) = current_metrics_acc
+            l_act, l_crit, l_perc, l_ent, approx_kl = aux
+            acc_loss, (acc_act, acc_crit, acc_perc, acc_ent, acc_kl) = current_metrics_acc
             new_metrics_acc = (
                 acc_loss + loss,
-                (acc_act + l_act, acc_crit + l_crit, acc_perc + l_perc, acc_ent + l_ent)
+                (acc_act + l_act, acc_crit + l_crit, acc_perc + l_perc, acc_ent + l_ent, acc_kl + approx_kl)
             )
             return (new_grads_acc, new_metrics_acc), None
 
         grads_acc_init = tree_map(jnp.zeros_like, params_inner)
-        metrics_acc_init = (0.0, (0.0, 0.0, 0.0, 0.0)) # loss, (actor, critic, perc, ent)
+        metrics_acc_init = (0.0, (0.0, 0.0, 0.0, 0.0, 0.0)) # loss, (actor, critic, perc, ent, kl)
         (grads_sum, metrics_sum), _ = lax.scan(
             _micro_step_scan, 
             (grads_acc_init, metrics_acc_init), 
             micro_batches
         )
         grads_avg = tree_map(lambda x: x / n_micro_splits, grads_sum)
-        loss_sum, (act_sum, crit_sum, perc_sum, ent_sum) = metrics_sum
+        loss_sum, (act_sum, crit_sum, perc_sum, ent_sum, kl_sum) = metrics_sum
         loss_avg = loss_sum / n_micro_splits
         grad_norm = optax.global_norm(grads_avg)
         aux_avg = (
@@ -218,6 +220,7 @@ def train_one_epoch(
             crit_sum / n_micro_splits,
             perc_sum / n_micro_splits,
             ent_sum / n_micro_splits,
+            kl_sum / n_micro_splits,
             grad_norm,
         )
         updates, new_opt_st_inner = optimizer.update(grads_avg, opt_st_inner)
@@ -233,7 +236,8 @@ def train_one_epoch(
         "critic": jnp.mean(batch_aux[1]),
         "perc": jnp.mean(batch_aux[2]),
         "entropy": jnp.mean(batch_aux[3]),
-        "grad_norm": jnp.mean(batch_aux[4]),
+        "approx_kl": jnp.mean(batch_aux[4]),
+        "grad_norm": jnp.mean(batch_aux[5]),
     }
     return (key, new_params, new_opt_st), epoch_metrics
 
@@ -285,7 +289,7 @@ def jessi_multitask_rl_rollout(
         "losses": [], "returns": [], "successes": [], "failures": [], "timeouts": [],
         "collisions_humans": [], "collisions_obstacles": [], "times_to_goal": [], "episodes": [], 
         "perception_losses": [], "actor_losses": [], "critic_losses": [], "entropy_losses": [], "stds": [],
-        "grad_norm": []
+        "grad_norm": [], "approx_kl": []
     }
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
@@ -301,17 +305,13 @@ def jessi_multitask_rl_rollout(
         n_timeout = jnp.sum(outcomes_sum["timeout"])
         ep_count = n_succ + n_coll_hum + n_coll_obs + n_timeout
         n_fail = n_coll_hum + n_coll_obs
-        if ep_count == 0: 
-            batch_mean_return = 0.0
-            batch_mean_time = 0.0
-        else: 
-            batch_mean_return = float(jnp.sum(returns)/ep_count)
-            batch_mean_time = float(jnp.sum(times)/ep_count)
+        batch_mean_return = float(jnp.sum(returns)/ep_count) if ep_count > 0 else 0.0
+        batch_mean_time = float(jnp.sum(times)/n_succ) if n_succ > 0 else 0.0
         avg_action_std = device_get(jnp.mean(history_raw["stds"], axis=(0,1)))
         # A.5 SAVE BEST PARAMS
         if batch_mean_return > best_return:
             best_return = batch_mean_return
-            best_params = params.copy()
+            best_params = device_get(params)
         # B. PROCESS BUFFER (Parallel)
         buffer_gpu = process_buffer_and_gae(
             params, current_obs, current_infos, current_dones, history_raw, policy, policy.gamma, policy.dt, policy.v_max, lambda_gae
@@ -348,7 +348,7 @@ def jessi_multitask_rl_rollout(
                 out_shardings=out_shardings_train
             )
         epoch_metrics_acc = {
-            "loss": [], "perc": [], "actor": [], "critic": [], "entropy": [], "grad_norm": []
+            "loss": [], "perc": [], "actor": [], "critic": [], "entropy": [], "approx_kl": [], "grad_norm": []
         }
         # E. UPDATE LOOP
         for epoch in range(n_epochs):
@@ -388,12 +388,13 @@ def jessi_multitask_rl_rollout(
         logs["episodes"].append(int(ep_count))
         logs["stds"].append(avg_action_std)
         logs["grad_norm"].append(grad_norm)
+        logs["approx_kl"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["approx_kl"]))))
         if update % 1 == 0:
              print(
                 f"Upd {update}:\n",
                 f"| Ret: {logs['returns'][-1]:.3f} | Loss: {logs['losses'][-1]:.4f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
                 f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
-                f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f} | Grad Norm: {grad_norm:.4f}"
+                f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f}"
              )
-    return best_params, params, logs 
+    return best_params, device_get(params), logs 
              

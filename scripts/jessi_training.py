@@ -64,20 +64,20 @@ training_hyperparams = {
     'n_obstacles': n_obstacles,
     'rl_training_updates': rl_training_updates,
     'rl_parallel_envs': rl_n_parallel_envs,
-    'rl_learning_rate': 5e-4, # 1e-3
+    'rl_learning_rate': 2e-5, # 3e-4
     'rl_learning_rate_final': 1e-7,
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 2_000, # Mini-batch size for each model update
     'rl_micro_batch_size': 1000, # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
-    'rl_num_epochs': 10,
+    'rl_num_epochs': 5, # 10
     'rl_beta_entropy': 0, #1e-4,
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': hybrid_scenario_subset,
     'reward_function': 'lasernav_reward1',
-    'gradient_norm_scale': 10, # Scale the gradient norm by this value
+    'gradient_norm_scale': 1, # Scale the gradient norm by this value
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 # JESSI policy
@@ -945,18 +945,56 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
         il_actor_params = pickle.load(f)
     il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
     # Initialize RL optimizer
-    network_optimizer = optax.chain(
-        optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
-        optax.adam(
-            learning_rate=optax.schedules.linear_schedule(
-                init_value=training_hyperparams['rl_learning_rate'], 
-                end_value=training_hyperparams['rl_learning_rate_final'], 
-                transition_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
-                transition_begin=0
-            ), 
-            eps=1e-7, 
-            b1=0.9,
+    # network_optimizer = optax.chain(
+    #     optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
+    #     optax.adam(
+    #         learning_rate=optax.schedules.linear_schedule(
+    #             init_value=training_hyperparams['rl_learning_rate'], 
+    #             end_value=training_hyperparams['rl_learning_rate_final'], 
+    #             transition_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
+    #             transition_begin=0
+    #         ), 
+    #         eps=1e-7, 
+    #     ),
+    # )
+    def label_params(params):
+        labels = {}
+        for module_name, module_params in params.items():
+            if jessi.perception_name in module_name.lower(): 
+                label = 'perception'
+            elif jessi.actor_critic_name in module_name.lower():
+                label = 'actor_critic'
+            labels[module_name] = {k: label for k in module_params.keys()}
+        return labels
+    network_optimizer = optax.multi_transform(
+        {
+        'perception': optax.chain(
+            optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale'] * 0.5),
+            optax.adam(
+                learning_rate=optax.schedules.warmup_cosine_decay_schedule(
+                    init_value=0.,
+                    peak_value=training_hyperparams['rl_learning_rate'] * 0.5,
+                    end_value=training_hyperparams['rl_learning_rate_final'], 
+                    warmup_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'] // 10,
+                    decay_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
+                ), 
+                eps=1e-7, 
+            ),
         ),
+        'actor_critic': optax.chain(
+            optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
+            optax.adam(
+                learning_rate=optax.schedules.linear_schedule(
+                    init_value=training_hyperparams['rl_learning_rate'], 
+                    end_value=training_hyperparams['rl_learning_rate_final'], 
+                    transition_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
+                    transition_begin=0
+                ), 
+                eps=1e-7, 
+            ),
+        )
+        },
+        label_params(il_network_params)
     )
     # Initialize RL rollout params
     rl_rollout_params = {
@@ -1000,6 +1038,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
     collisions_humans_during_rl = processed_metrics['collisions_humans']
     collisions_obstacles_during_rl = processed_metrics['collisions_obstacles']
     times_to_goal_during_rl = processed_metrics['times_to_goal']
+    approx_kl_during_rl = processed_metrics['approx_kl']
     episode_count = jnp.sum(episodes_during_rl)
     window = 10 if rl_training_updates > 1000 else 1
     ## Plot RL training stats
