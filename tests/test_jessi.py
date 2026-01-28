@@ -24,8 +24,8 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'hybrid_scenario',
-    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,7]), # Exclude circular_crossing_with_static_obstacles
+    'scenario': 'hybrid_scenario', 
+    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3),
     'kinematics': kinematics,
@@ -36,22 +36,27 @@ env_params = {
 env = LaserNav(**env_params)
 
 # Initialize the policy
-policy = JESSI()
+policy = JESSI(
+    lidar_num_rays=env.lidar_num_rays,
+    lidar_angular_range=env.lidar_angular_range,
+    lidar_max_dist=env.lidar_max_dist,
+    n_stack=env.n_stack,
+)
 # with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb') as f:
 #     encoder_params = pickle.load(f)
 # with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
 #     actor_params = pickle.load(f)
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
-with open(os.path.join(os.path.dirname(__file__), 'rl_out.pkl'), 'rb') as f:
-    network_params, _ = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__), 'jessi_rl_out.pkl'), 'rb') as f:
+    network_params, _, _ = pickle.load(f)
 
 # Test the trained JESSI policy
-metrics = policy.evaluate(
-    n_episodes,
-    random_seed,
-    env,
-    network_params,
-)
+# metrics = policy.evaluate(
+#     n_episodes,
+#     random_seed,
+#     env,
+#     network_params,
+# )
 
 # Simulate some episodes
 for i in range(n_episodes):
@@ -141,5 +146,6 @@ for i in range(n_episodes):
         all_encoder_distrs,
         all_robot_goals[:-1],
         all_static_obstacles[:-1],
-        all_humans_radii[:-1]
+        all_humans_radii[:-1],
+        env,
     )

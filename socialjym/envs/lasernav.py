@@ -96,10 +96,13 @@ class LaserNav(BaseEnv):
         initial_state:jnp.ndarray,
         humans_goal:jnp.ndarray,
         robot_goal:jnp.ndarray,
+        robot_goal_list:jnp.ndarray,
         humans_parameters:jnp.ndarray,
         static_obstacles:jnp.ndarray,
         current_scenario:int,
         humans_delay:jnp.ndarray,
+        is_x_flipped:bool,
+        is_y_flipped:bool,
         noise_key:random.PRNGKey,
     ) -> dict:
         """
@@ -123,10 +126,13 @@ class LaserNav(BaseEnv):
             initial_state,
             humans_goal,
             robot_goal,
+            robot_goal_list,
             humans_parameters,
             static_obstacles,
             current_scenario,
             humans_delay,
+            is_x_flipped,
+            is_y_flipped,
             noise_key,
         )
         # Previous observation initialization
@@ -206,6 +212,7 @@ class LaserNav(BaseEnv):
         reset_if_done:bool=False,
         reset_key:random.PRNGKey=random.PRNGKey(0),
         env_key:random.PRNGKey=random.PRNGKey(0),
+        scenarios_prob:jnp.ndarray=None,
     )-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
@@ -230,9 +237,9 @@ class LaserNav(BaseEnv):
         if self.scenario != -1: # Custom scenario, no automatic goal update
             info["robot_goal"], info["robot_goal_index"] = lax.cond(
                 (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= self.robot_radius*3) & # Waypoint reached threshold is set to be higher
-                (info['robot_goal_index'] < len(self.robot_goals_per_scenario[info["current_scenario"]])-1) & # Check if current goal is not the last one
-                (~(jnp.any(jnp.isnan(self.robot_goals_per_scenario[info["current_scenario"]][info['robot_goal_index']+1])))), # Check if next goal is not NaN
-                lambda _: (self.robot_goals_per_scenario[info["current_scenario"]][info['robot_goal_index']+1], info['robot_goal_index']+1),
+                (info['robot_goal_index'] < len(info['robot_goal_list'])-1) & # Check if current goal is not the last one
+                (~(jnp.any(jnp.isnan(info['robot_goal_list'][info['robot_goal_index']+1])))), # Check if next goal is not NaN
+                lambda _: (info['robot_goal_list'][info['robot_goal_index']+1], info['robot_goal_index']+1),
                 lambda x: x,
                 (info["robot_goal"], info["robot_goal_index"])
             )
@@ -300,7 +307,7 @@ class LaserNav(BaseEnv):
         if self.scenario != -1: # Custom scenario, no automatic reset
             new_state, reset_key, new_info = lax.cond(
                 (reset_if_done) & (~(outcome["nothing"])),
-                lambda x: self._reset(x[1]),
+                lambda x: self._reset(x[1], scenarios_prob=scenarios_prob),
                 lambda x: x,
                 (new_state, reset_key, new_info)
             )
@@ -330,8 +337,8 @@ class LaserNav(BaseEnv):
         )
     
     @partial(jit, static_argnames=("self"))
-    def reset(self, key:random.PRNGKey) -> tuple:
-        initial_state, key, info = self._reset(key)
+    def reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None) -> tuple:
+        initial_state, key, info = self._reset(key, scenarios_prob=scenarios_prob)
         return \
             initial_state, \
             key, \

@@ -1394,6 +1394,7 @@ class JESSI(BasePolicy):
         humans_poses, # x, y, theta
         humans_velocities, # vx, vy (in global frame)
         humans_radii,
+        humans_visibility_mask,
         static_obstacles,
         p_visualization_threshold_hcgs,
         p_visualization_threshold_dir,
@@ -1455,12 +1456,16 @@ class JESSI(BasePolicy):
                 ax.set_aspect('equal', adjustable='datalim')
                 # Plot humans
                 for h in range(len(humans_poses[frame])):
-                    head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
+                    color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
+                    alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
+                    head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
                     ax.add_patch(head)
-                    circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                    circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
                     ax.add_patch(circle)
                 # Plot human velocities
                 for h in range(len(humans_poses[frame])):
+                    color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
+                    alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
                     ax.arrow(
                         humans_poses[frame][h,0],
                         humans_poses[frame][h,1],
@@ -1468,9 +1473,9 @@ class JESSI(BasePolicy):
                         humans_velocities[frame][h,1],
                         head_width=0.15,
                         head_length=0.15,
-                        fc="blue",
-                        ec="blue",
-                        alpha=0.6,
+                        fc=color,
+                        ec=color,
+                        alpha=alpha,
                         zorder=30,
                     )
                 # Plot robot
@@ -1530,11 +1535,12 @@ class JESSI(BasePolicy):
             probs = frame_humans_distrs["weights"]
             # AX 1,0 and 1,1: Human-centric Gaussians (HCGs) positions and velocities
             for h in range(self.n_detectable_humans):
+                human_pos_distr = tree_map(lambda x: x[h], pos_distrs)
+                human_vel_distr = tree_map(lambda x: x[h], vel_distrs)
+                pos = rot @ human_pos_distr["means"] + robot_poses[frame,:2]
+                vel = rot @ human_vel_distr["means"] + pos
                 if probs[h] > 0.5:
-                    human_pos_distr = tree_map(lambda x: x[h], pos_distrs)
-                    human_vel_distr = tree_map(lambda x: x[h], vel_distrs)
                     # Position HCG
-                    pos = rot @ human_pos_distr["means"] + robot_poses[frame,:2]
                     test_p = self.bivariate_gaussian.batch_p(human_pos_distr, human_pos_distr["means"] + gauss_samples)
                     points_high_p = gauss_samples[test_p > p_visualization_threshold_hcgs]
                     corresponding_colors = test_p[test_p > p_visualization_threshold_hcgs]
@@ -1542,15 +1548,15 @@ class JESSI(BasePolicy):
                     axs[2].scatter(pos[0], pos[1], c='red', s=10, marker='x', zorder=100)
                     axs[2].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
                     # Velocity HCG
-                    vel = rot @ human_vel_distr["means"] + pos
                     test_p = self.bivariate_gaussian.batch_p(human_vel_distr, human_vel_distr["means"] + gauss_samples)
                     points_high_p = gauss_samples[test_p > p_visualization_threshold_hcgs]
                     corresponding_colors = test_p[test_p > p_visualization_threshold_hcgs]
                     rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + vel
                     axs[3].scatter(vel[0], vel[1], c='red', s=10, marker='x', zorder=100)
                     axs[3].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
-            # axs[2].set_title("HCGs positions")
-            # axs[3].set_title("HCGs velocities")
+                else:
+                    axs[2].scatter(pos[0], pos[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
+                    axs[3].scatter(vel[0], vel[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
             axs[2].text(
                 0.5, -0.13,
                 "HCGs positions",
@@ -1639,6 +1645,7 @@ class JESSI(BasePolicy):
         goals,
         static_obstacles,
         humans_radii,
+        lasernav_env:LaserNav,
         p_visualization_threshold_gmm:float=0.05,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
@@ -1656,6 +1663,25 @@ class JESSI(BasePolicy):
             humans_orientations,
             humans_body_velocities,
         )
+        rc_humans_positions, _, _, rc_static_obstacles, _ = lasernav_env.batch_robot_centric_transform(
+            humans_positions,
+            humans_orientations,
+            humans_velocities,
+            static_obstacles,
+            robot_positions,
+            robot_orientations,
+            goals,
+        )
+        humans_visibility_mask, _ = lasernav_env.batch_object_visibility(
+            rc_humans_positions, 
+            humans_radii, 
+            rc_static_obstacles
+        )
+        humans_in_range = lasernav_env.batch_humans_inside_lidar_range(
+            rc_humans_positions,
+            humans_radii,
+        )
+        humans_visibility_mask = humans_visibility_mask & humans_in_range
         self.animate_trajectory(
             robot_poses,
             actions,
@@ -1666,6 +1692,7 @@ class JESSI(BasePolicy):
             humans_poses,
             humans_velocities,
             humans_radii,
+            humans_visibility_mask,
             static_obstacles,
             p_visualization_threshold_gmm,
             p_visualization_threshold_dir,
