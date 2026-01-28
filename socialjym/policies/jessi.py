@@ -38,11 +38,9 @@ class AngularLocalCrossAttention(hk.Module):
         super().__init__(name=name)
         self.embed_dim = embed_dim
         self.target_beams = target_beams 
-        self.threshold = jnp.cos(jnp.deg2rad(max_angle_deg/2)) # Angolo di soglia in radianti (a destra e sinistra)
-        
-        # Le nuove "Query" che riassumeranno la scena spaziale
+        self.threshold = jnp.cos(jnp.deg2rad(max_angle_deg/2)) 
+    
         self.spatial_latents = hk.get_parameter("spatial_latents", [target_beams, embed_dim], init=hk.initializers.TruncatedNormal(stddev=0.02))
-        # Anche loro hanno un angolo associato (es. da 0 a 360) per fare la maschera
         angles = jnp.linspace(0, 2 * jnp.pi, target_beams, endpoint=False)
         self.latent_sin_cos = jnp.stack([jnp.sin(angles), jnp.cos(angles)], axis=-1)
 
@@ -62,19 +60,15 @@ class AngularLocalCrossAttention(hk.Module):
     def __call__(self, x_emb, x_raw):
         # x_emb: [B*T, Beams, D], x_raw: [B*T, Beams, 7]
         B_T = x_emb.shape[0]
-        
-        # 1. Prepariamo le Query Latenti (i "nuovi raggi" ridotti)
+        # 1. Latent Queries
         q = jnp.broadcast_to(self.spatial_latents[None, ...], (B_T, self.target_beams, self.embed_dim))
-        
-        # 2. Calcoliamo la maschera tra le 50 Query fisse e i 100 (o 500) raggi variabili in input
+        # 2. Mask
         input_sin_cos = x_raw[..., 4:6]
         mask = self.compute_angular_mask(input_sin_cos)
-        
-        # 3. Cross Attention: le 50 Query "risucchiano" i dati dai raggi locali vicini
+        # 3. Cross Attention
         attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
         q = self.norm1(q + attn_out)
-        
-        # 2. FFN (Non-linearità) + Add & Norm
+        # 2. FFN
         ffn_out = self.ffn(q)
         return self.norm2(q + ffn_out)
 
@@ -345,8 +339,6 @@ class ActorCritic(hk.Module):
             sampled_actions = sampled_actions[0]
             state_values = state_values[0]
             distributions = tree_map(lambda t: t[0], distributions)
-        ### LEARNABLE LOSS VARIANCES
-
         return sampled_actions, distributions, concentration, state_values
 
 class E2E(hk.Module):

@@ -11,6 +11,7 @@ from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental import mesh_utils
 
 from jhsfm.hsfm import get_linear_velocity
+from socialjym.envs.base_env import SCENARIOS
 
 
 @partial(jit, static_argnames=("policy", "env", "n_steps"))
@@ -27,7 +28,7 @@ def collect_rollout_step(
 ):
     
     def _scan_step(carry, _):
-        (states, obses, infos, outcomes, returns, times, p_keys, r_keys, e_keys, outcomes_acc) = carry
+        (states, obses, infos, outcomes, returns, times, success_per_scenario, episodes_per_scenario, p_keys, r_keys, e_keys, outcomes_acc) = carry
         actions, new_p_keys, _, sampled_actions, _, actor_distrs, values = policy.batch_act(
             p_keys, obses, infos, network_params, sample=True
         )
@@ -64,18 +65,33 @@ def collect_rollout_step(
         }
         new_times = times + (new_outcomes["success"]) * (infos['time'] + policy.dt)
         new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(policy.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards)
+        new_success_per_scenario = {k: success_per_scenario[k] + (new_outcomes["success"]) * (infos["current_scenario"] == k) for k in success_per_scenario}
+        new_episodes_per_scenario = {k: episodes_per_scenario[k] + (~new_outcomes["nothing"]) * (infos["current_scenario"] == k) for k in episodes_per_scenario}
         new_outcomes_acc = {k: outcomes_acc[k] + new_outcomes[k] for k in new_outcomes}
-        return (new_states, new_obses, new_infos, new_outcomes, new_returns, new_times, new_p_keys, new_r_keys, new_e_keys, new_outcomes_acc), step_data
+        return (new_states, new_obses, new_infos, new_outcomes, new_returns, new_times, new_success_per_scenario, new_episodes_per_scenario, new_p_keys, new_r_keys, new_e_keys, new_outcomes_acc), step_data
     
     init_outcomes_acc = {
         k: jnp.zeros_like(template_outcomes[k], dtype=jnp.int32) 
         for k in template_outcomes
     }
-    init_carry = (env_state[0], env_state[1], env_state[2], env_state[3], jnp.zeros_like(env_state[2]['return']), jnp.zeros_like(env_state[2]['time']), policy_keys, reset_keys, env_keys, init_outcomes_acc)
+    init_carry = (
+        env_state[0], 
+        env_state[1], 
+        env_state[2], 
+        env_state[3], 
+        jnp.zeros_like(env_state[2]['return']), 
+        jnp.zeros_like(env_state[2]['time']),
+        {k: jnp.zeros_like(env_state[2]['return'], dtype=jnp.int32) for k in range(len(SCENARIOS[:-1]))},
+        {k: jnp.zeros_like(env_state[2]['return'], dtype=jnp.int32) for k in range(len(SCENARIOS[:-1]))},
+        policy_keys, 
+        reset_keys, 
+        env_keys, 
+        init_outcomes_acc
+    )
     final_carry, history = lax.scan(_scan_step, init_carry, None, length=n_steps)
-    (final_states, final_obses, final_infos, final_outcomes, final_returns, final_times, final_p_keys, final_r_keys, final_e_keys, sum_outcomes) = final_carry
+    (final_states, final_obses, final_infos, final_outcomes, final_returns, final_times, final_success_per_scenario, final_episodes_per_scenario, final_p_keys, final_r_keys, final_e_keys, sum_outcomes) = final_carry
     next_env_state = (final_states, final_obses, final_infos, final_outcomes)
-    return next_env_state, final_p_keys, final_r_keys, final_e_keys, history, sum_outcomes, final_returns, final_times
+    return next_env_state, final_p_keys, final_r_keys, final_e_keys, history, sum_outcomes, final_returns, final_times, final_success_per_scenario, final_episodes_per_scenario
 
 @partial(jit, static_argnames=("policy",))
 def process_buffer_and_gae(
@@ -176,6 +192,7 @@ def train_one_epoch(
             surr2 = jnp.clip(ratio, 1.0 - clip_range, 1.0 + clip_range) * u_mb["advantages"]
             actor_loss = -jnp.mean(jnp.minimum(surr1, surr2))
             approx_kl = jnp.mean((ratio - 1) - log_ratio)
+            clip_frac = jnp.mean(jnp.abs(ratio - 1.0) > clip_range)
             # Critic
             v_loss = jnp.square(pred_val - u_mb["critic_targets"])
             v_clipped = u_mb["values"] + jnp.clip(pred_val - u_mb["values"], -clip_range, clip_range)
@@ -189,30 +206,30 @@ def train_one_epoch(
             gt_dict = {"gt_mask": u_mb["gt_mask"], "gt_poses": u_mb["gt_poses"], "gt_vels": u_mb["gt_vels"]}
             batch_perc_loss = policy._encoder_loss(perc_dist, gt_dict)
             perception_loss = jnp.mean(batch_perc_loss)
-            total_loss = policy_loss + .3 * critic_loss + .05 * perception_loss
-            return total_loss, (actor_loss, critic_loss, perception_loss, entropy_loss, approx_kl)
+            total_loss = policy_loss + .5 * critic_loss + .05 * perception_loss
+            return total_loss, (actor_loss, critic_loss, perception_loss, entropy_loss, approx_kl, clip_frac)
 
         def _micro_step_scan(carry, u_mb):
             current_grads_acc, current_metrics_acc = carry
             (loss, aux), grads = value_and_grad(micro_batch_loss_fn, has_aux=True)(params_inner, u_mb)
             new_grads_acc = tree_map(lambda acc, g: acc + g, current_grads_acc, grads)
-            l_act, l_crit, l_perc, l_ent, approx_kl = aux
-            acc_loss, (acc_act, acc_crit, acc_perc, acc_ent, acc_kl) = current_metrics_acc
+            l_act, l_crit, l_perc, l_ent, approx_kl, clip_frac = aux
+            acc_loss, (acc_act, acc_crit, acc_perc, acc_ent, acc_kl, acc_clip) = current_metrics_acc
             new_metrics_acc = (
                 acc_loss + loss,
-                (acc_act + l_act, acc_crit + l_crit, acc_perc + l_perc, acc_ent + l_ent, acc_kl + approx_kl)
+                (acc_act + l_act, acc_crit + l_crit, acc_perc + l_perc, acc_ent + l_ent, acc_kl + approx_kl, acc_clip + clip_frac)
             )
             return (new_grads_acc, new_metrics_acc), None
 
         grads_acc_init = tree_map(jnp.zeros_like, params_inner)
-        metrics_acc_init = (0.0, (0.0, 0.0, 0.0, 0.0, 0.0)) # loss, (actor, critic, perc, ent, kl)
+        metrics_acc_init = (0.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)) # loss, (actor, critic, perc, ent, kl, clip)
         (grads_sum, metrics_sum), _ = lax.scan(
             _micro_step_scan, 
             (grads_acc_init, metrics_acc_init), 
             micro_batches
         )
         grads_avg = tree_map(lambda x: x / n_micro_splits, grads_sum)
-        loss_sum, (act_sum, crit_sum, perc_sum, ent_sum, kl_sum) = metrics_sum
+        loss_sum, (act_sum, crit_sum, perc_sum, ent_sum, kl_sum, clip_sum) = metrics_sum
         loss_avg = loss_sum / n_micro_splits
         grad_norm = optax.global_norm(grads_avg)
         aux_avg = (
@@ -221,6 +238,7 @@ def train_one_epoch(
             perc_sum / n_micro_splits,
             ent_sum / n_micro_splits,
             kl_sum / n_micro_splits,
+            clip_sum / n_micro_splits,
             grad_norm,
         )
         updates, new_opt_st_inner = optimizer.update(grads_avg, opt_st_inner)
@@ -237,7 +255,8 @@ def train_one_epoch(
         "perc": jnp.mean(batch_aux[2]),
         "entropy": jnp.mean(batch_aux[3]),
         "approx_kl": jnp.mean(batch_aux[4]),
-        "grad_norm": jnp.mean(batch_aux[5]),
+        "clip_frac": jnp.mean(batch_aux[5]),
+        "grad_norm": jnp.mean(batch_aux[6]),
     }
     return (key, new_params, new_opt_st), epoch_metrics
 
@@ -288,14 +307,23 @@ def jessi_multitask_rl_rollout(
     logs = {
         "losses": [], "returns": [], "successes": [], "failures": [], "timeouts": [],
         "collisions_humans": [], "collisions_obstacles": [], "times_to_goal": [], "episodes": [], 
-        "perception_losses": [], "actor_losses": [], "critic_losses": [], "entropy_losses": [], "stds": [],
-        "grad_norm": [], "approx_kl": []
+        "perception_losses": [], "actor_losses": [], "critic_losses": [], "entropy_losses": [],
+        "stds": [], "grad_norm": [], "approx_kl": [], "clip_frac": [],
+        "successes_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
+        "episodes_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
+        
     }
+    scenarios_labels = {}
+    for i, scenario_name in enumerate(SCENARIOS):
+        words = scenario_name.split('_')
+        prefix = words[0][:2].capitalize()
+        suffix = "".join([w[0] for w in words[1:]]) 
+        scenarios_labels[i] = prefix + suffix
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
     for update in tqdm(range(train_updates)):
         # A. COLLECT ROLLOUT STEP (Parallel)
-        env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum, returns, times = collect_rollout_step(
+        env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum, returns, times, success_per_scenario, episodes_per_scenario = collect_rollout_step(
             params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps
         )
         current_obs, current_infos, current_dones = env_state[1], env_state[2], ~(env_state[3]['nothing'])
@@ -308,6 +336,8 @@ def jessi_multitask_rl_rollout(
         batch_mean_return = float(jnp.sum(returns)/ep_count) if ep_count > 0 else 0.0
         batch_mean_time = float(jnp.sum(times)/n_succ) if n_succ > 0 else 0.0
         avg_action_std = device_get(jnp.mean(history_raw["stds"], axis=(0,1)))
+        success_per_scenario = {k: int(jnp.sum(success_per_scenario[k])) for k in success_per_scenario}
+        episodes_per_scenario = {k: int(jnp.sum(episodes_per_scenario[k])) for k in episodes_per_scenario}
         # A.5 SAVE BEST PARAMS
         if batch_mean_return > best_return:
             best_return = batch_mean_return
@@ -348,7 +378,7 @@ def jessi_multitask_rl_rollout(
                 out_shardings=out_shardings_train
             )
         epoch_metrics_acc = {
-            "loss": [], "perc": [], "actor": [], "critic": [], "entropy": [], "approx_kl": [], "grad_norm": []
+            "loss": [], "perc": [], "actor": [], "critic": [], "entropy": [], "approx_kl": [], "grad_norm": [], "clip_frac": []
         }
         # E. UPDATE LOOP
         for epoch in range(n_epochs):
@@ -389,12 +419,18 @@ def jessi_multitask_rl_rollout(
         logs["stds"].append(avg_action_std)
         logs["grad_norm"].append(grad_norm)
         logs["approx_kl"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["approx_kl"]))))
+        logs["clip_frac"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["clip_frac"]))))
+        logs["successes_per_scenario"] = {k: logs["successes_per_scenario"][k] + [success_per_scenario[k]] for k in logs["successes_per_scenario"]}
+        logs["episodes_per_scenario"] = {k: logs["episodes_per_scenario"][k] + [episodes_per_scenario[k]] for k in logs["episodes_per_scenario"]}
+        # G. PRINT LOGS
         if update % 1 == 0:
              print(
                 f"Upd {update}:\n",
-                f"| Ret: {logs['returns'][-1]:.3f} | Loss: {logs['losses'][-1]:.4f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
+                f"| Ret: {logs['returns'][-1]:.3f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
+                f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
+                f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {logs['successes_per_scenario'][k][-1]/logs['episodes_per_scenario'][k][-1]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
                 f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
-                f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f}"
+                f"| Loss: {logs['losses'][-1]:.4f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f} | Clip frac: {logs['clip_frac'][-1]:.4f} \n",
              )
     return best_params, device_get(params), logs 
              
