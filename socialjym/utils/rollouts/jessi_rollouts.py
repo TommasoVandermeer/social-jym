@@ -24,7 +24,8 @@ def collect_rollout_step(
     template_outcomes,
     policy, 
     env, 
-    n_steps
+    n_steps,
+    scenarios_prob,
 ):
     
     def _scan_step(carry, _):
@@ -33,7 +34,7 @@ def collect_rollout_step(
             p_keys, obses, infos, network_params, sample=True
         )
         new_states, new_obses, new_infos, rewards, new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
-            states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True
+            states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True, scenarios_prob=scenarios_prob
         )
         rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(
             states[:,:-1,:2], 
@@ -260,6 +261,27 @@ def train_one_epoch(
     }
     return (key, new_params, new_opt_st), epoch_metrics
 
+def get_dynamic_probabilities(success_rates, min_prob=0.05):
+    """
+    Computes dynamic sampling probabilities for scenarios based on their success rates.
+    
+    Args:
+        success_rates (jnp.array): Array float [N_scenarios] with values between 0 and 1.
+        min_prob (float): Minimum guaranteed probability for each scenario.
+        
+    Returns:
+        jnp.array: Normalized probabilities that sum to 1.0.
+    """
+    n_scenarios = success_rates.shape[0]
+    residual_budget = 1.0 - (n_scenarios * min_prob)
+    residual_budget = jnp.maximum(residual_budget, 0.0)
+    difficulties = (1.0 - success_rates)
+    sum_difficulties = jnp.sum(difficulties) + 1e-6 
+    variable_share = difficulties / sum_difficulties
+    probs = min_prob + (variable_share * residual_budget)
+    probs = probs / jnp.sum(probs)
+    return probs
+
 def jessi_multitask_rl_rollout(
     initial_network_params,
     n_parallel_envs,
@@ -319,12 +341,13 @@ def jessi_multitask_rl_rollout(
         prefix = words[0][:2].capitalize()
         suffix = "".join([w[0] for w in words[1:]]) 
         scenarios_labels[i] = prefix + suffix
+    scenarios_prob = jnp.array([1.0 / (len(env.hybrid_scenario_subset))] * len(env.hybrid_scenario_subset))
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
     for update in tqdm(range(train_updates)):
         # A. COLLECT ROLLOUT STEP (Parallel)
         env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum, returns, times, success_per_scenario, episodes_per_scenario = collect_rollout_step(
-            params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps
+            params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps, scenarios_prob
         )
         current_obs, current_infos, current_dones = env_state[1], env_state[2], ~(env_state[3]['nothing'])
         n_succ = jnp.sum(outcomes_sum["success"])
@@ -338,6 +361,7 @@ def jessi_multitask_rl_rollout(
         avg_action_std = device_get(jnp.mean(history_raw["stds"], axis=(0,1)))
         success_per_scenario = {k: int(jnp.sum(success_per_scenario[k])) for k in success_per_scenario}
         episodes_per_scenario = {k: int(jnp.sum(episodes_per_scenario[k])) for k in episodes_per_scenario}
+        success_rate_per_scenario = {k: (success_per_scenario[k] / episodes_per_scenario[k]) if episodes_per_scenario[k] > 0 else 0.0 for k in logs["successes_per_scenario"]}
         # A.5 SAVE BEST PARAMS
         if batch_mean_return > best_return:
             best_return = batch_mean_return
@@ -424,13 +448,16 @@ def jessi_multitask_rl_rollout(
         logs["episodes_per_scenario"] = {k: logs["episodes_per_scenario"][k] + [episodes_per_scenario[k]] for k in logs["episodes_per_scenario"]}
         # G. PRINT LOGS
         if update % 1 == 0:
-             print(
+            print(
                 f"Upd {update}:\n",
                 f"| Ret: {logs['returns'][-1]:.3f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
                 f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
-                f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {logs['successes_per_scenario'][k][-1]/logs['episodes_per_scenario'][k][-1]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
+                f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
+                f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
                 f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
                 f"| Loss: {logs['losses'][-1]:.4f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f} | Clip frac: {logs['clip_frac'][-1]:.4f} \n",
-             )
+            )
+        # H. UPDATE SCENARIO PROBS
+        scenarios_prob = get_dynamic_probabilities(jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)]))
     return best_params, device_get(params), logs 
              

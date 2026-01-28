@@ -57,7 +57,7 @@ delta_improvement = 0.001  # Minimum validation improvement to reset early stopp
 data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
 ### MULTI-TASK RL Hyperparameters
 rl_n_parallel_envs = 500 
-rl_training_updates = 1000
+rl_training_updates = 500
 training_hyperparams = {
     'random_seed': 0,
     'n_humans': n_humans, 
@@ -71,7 +71,7 @@ training_hyperparams = {
     'rl_micro_batch_size': 1000, # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 5, # 5
-    'rl_beta_entropy': 5e-4, #1e-4,
+    'rl_beta_entropy': 2e-4, #1e-4,
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
@@ -1023,7 +1023,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
     final_params, _, metrics = rl_out
     processed_metrics = {}
     for key, value in metrics.items():
-        processed_metrics[key] = jnp.array(value)
+        if isinstance(value, list):
+            processed_metrics[key] = jnp.array(value)
+        if isinstance(value, dict):
+            processed_metrics[key] = tree_map(lambda x: jnp.array(x), value)
     # Other metrics
     losses = processed_metrics['losses']
     perception_losses = processed_metrics['perception_losses']

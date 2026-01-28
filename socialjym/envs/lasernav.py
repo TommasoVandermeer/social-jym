@@ -324,8 +324,9 @@ class LaserNav(BaseEnv):
         env_keys:jnp.ndarray,
         test:bool=False,
         reset_if_done:bool=False,
+        scenarios_prob:jnp.ndarray=None,
     ):
-        return vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0))(
+        return vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0, None))(
             self, 
             states, 
             infos, 
@@ -334,6 +335,7 @@ class LaserNav(BaseEnv):
             reset_if_done,
             reset_keys,
             env_keys,
+            scenarios_prob,
         )
     
     @partial(jit, static_argnames=("self"))
