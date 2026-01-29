@@ -134,7 +134,8 @@ def process_buffer_and_gae(
     def flatten(x):
         return jnp.reshape(x, (-1, *x.shape[2:]))
     flat_adv = flatten(advantages)
-    flattened_normalized_advantages = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
+    # THIS IS DONE AT THE MICRO-BATCH LEVEL NOW!!!
+    # flattened_normalized_advantages = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
     flattened_buffer = {
         "observations": flatten(history["obs"]),
         "robot_goals": flatten(history["robot_goal"]),
@@ -145,7 +146,7 @@ def process_buffer_and_gae(
         "values": flatten(history["values"]),
         "neglogpdfs": flatten(history["neglogpdfs"]),
         "critic_targets": flatten(critic_targets),
-        "advantages": flattened_normalized_advantages,
+        "advantages": flat_adv,
     }
     
     return flattened_buffer
@@ -167,14 +168,21 @@ def train_one_epoch(
 
     def _batch_step(carry_inner, micro_batches): 
         params_inner, opt_st_inner = carry_inner 
+
+        # Normalize advantages within mini-batch
+        all_mb_advantages = micro_batches["advantages"]
+        norm_advantages = (all_mb_advantages - jnp.mean(all_mb_advantages)) / (jnp.std(all_mb_advantages) + 1e-8)
+        # We clip the normalized advantages to avoid too large policy updates
+        micro_batches["advantages"] = jnp.clip(norm_advantages, -5, 5)
+
         def micro_batch_loss_fn(p, u_mb):
             inputs0, inputs1 = vmap(policy.compute_e2e_input, in_axes=(0,0))(
                 u_mb["observations"], u_mb["robot_goals"]
             )
             # Lowe input precision to save memory
-            p = tree_map(lambda x: x.astype(jnp.bfloat16), p)
-            inputs0 = inputs0.astype(jnp.bfloat16)
-            inputs1 = inputs1.astype(jnp.bfloat16)
+            p = tree_map(lambda x: x.astype(jnp.float16), p)
+            inputs0 = inputs0.astype(jnp.float16)
+            inputs1 = inputs1.astype(jnp.float16)
             # Forward pass
             (perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
                 p, None, inputs0, inputs1
@@ -261,7 +269,7 @@ def train_one_epoch(
     }
     return (key, new_params, new_opt_st), epoch_metrics
 
-def get_dynamic_probabilities(success_rates, min_prob=0.05):
+def get_dynamic_probabilities(success_rates, min_prob=0.03):
     """
     Computes dynamic sampling probabilities for scenarios based on their success rates.
     
@@ -307,6 +315,7 @@ def jessi_multitask_rl_rollout(
     mesh = Mesh(devices, axis_names=('env_axis',)) 
     sharding_env = NamedSharding(mesh, PartitionSpec('env_axis'))
     sharding_replicated = NamedSharding(mesh, PartitionSpec())
+    sharding_train = NamedSharding(mesh, PartitionSpec(None, None, 'env_axis'))
     key = random.PRNGKey(random_seed)
     key, subkey = random.split(key)
     reset_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
@@ -376,14 +385,12 @@ def jessi_multitask_rl_rollout(
         total_samples = buffer_cpu["actions"].shape[0]
         n_minibatches = total_samples // mini_batch_size
         n_micro_splits = mini_batch_size // micro_batch_size
-        def reshape_helper_np(x):
-            return x.reshape((n_minibatches, n_micro_splits, micro_batch_size, *x.shape[1:]))
-        sharding_train = NamedSharding(mesh, PartitionSpec(None, None, 'env_axis')) 
+
+        def get_batched_shape_struct(x):
+            target_shape = (n_minibatches, n_micro_splits, micro_batch_size, *x.shape[1:])
+            return ShapeDtypeStruct(target_shape, x.dtype)
         if update == 0:
-            dummy_buffer_struct = tree_map(
-                lambda x: ShapeDtypeStruct(x.shape, x.dtype), 
-                tree_map(reshape_helper_np, buffer_cpu)
-            )
+            dummy_buffer_struct = tree_map(get_batched_shape_struct, buffer_gpu)
             train_pure = partial(
                 train_one_epoch, 
                 policy=policy,
@@ -393,7 +400,7 @@ def jessi_multitask_rl_rollout(
             )
             abstract_train_out = eval_shape(
                 train_pure,
-                key, params, opt_state, dummy_buffer_struct # Passiamo strutture astratte
+                key, params, opt_state, dummy_buffer_struct 
             )
             out_shardings_train = tree_map(lambda x: sharding_replicated, abstract_train_out)
             train_one_epoch_sharded = jit(
@@ -407,10 +414,13 @@ def jessi_multitask_rl_rollout(
         # E. UPDATE LOOP
         for epoch in range(n_epochs):
             key, subkey = random.split(key)
-            perm = np.random.permutation(total_samples)
-            shuffled_buffer_cpu = tree_map(lambda x: x[perm], buffer_cpu)
-            batched_buffer_cpu = tree_map(reshape_helper_np, shuffled_buffer_cpu)
-            batched_buffer_gpu = device_put(batched_buffer_cpu, sharding_train)
+            perm = random.permutation(subkey, total_samples)
+            def shuffle_and_reshape(x):
+                # x[perm] crea una copia permutata sulla GPU
+                shuffled = x[perm]
+                return jnp.reshape(shuffled, (n_minibatches, n_micro_splits, micro_batch_size, *x.shape[1:]))
+            batched_buffer_gpu = tree_map(shuffle_and_reshape, buffer_gpu)
+            batched_buffer_gpu = tree_map(lambda x: device_put(x, sharding_train), batched_buffer_gpu)
             (key, params, opt_state), metrics_one_epoch = train_one_epoch_sharded(
                 key, 
                 params, 

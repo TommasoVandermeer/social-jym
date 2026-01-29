@@ -579,7 +579,7 @@ class BaseEnv(ABC):
                 disturbed_points, key, valid = while_val
                 key, subkey = random.split(key)
                 normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1)
-                new_point = jnp.array([-self.traffic_length/2 + 1 + normalized_point[0] * self.traffic_length, -self.traffic_height/2 + normalized_point[1] * self.traffic_height])
+                new_point = jnp.array([-self.traffic_length/2 + 3 + normalized_point[0] * (self.traffic_length - 1), -self.traffic_height/2 + normalized_point[1] * self.traffic_height])
                 differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
                 valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
                 disturbed_points = lax.cond(

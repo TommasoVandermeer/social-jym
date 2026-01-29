@@ -68,10 +68,10 @@ training_hyperparams = {
     'rl_learning_rate_final': 2e-4,
     'rl_total_batch_size': 50_000, # Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 2_000, # Mini-batch size for each model update
-    'rl_micro_batch_size': 1000, # Micro-batch size for gradient accumulation 
+    'rl_micro_batch_size': 1_000, # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
-    'rl_num_epochs': 5, # 5
-    'rl_beta_entropy': 2e-4, #1e-4,
+    'rl_num_epochs': 6, # 5
+    'rl_beta_entropy': 1e-4, # 1e-3
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
@@ -971,13 +971,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
     network_optimizer = optax.multi_transform(
         {
         'perception': optax.chain(
-            optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale'] * 0.0125),
+            optax.clip_by_global_norm(0.5),
             optax.adam(
                 learning_rate=optax.schedules.warmup_cosine_decay_schedule(
                     init_value=0.,
-                    peak_value=training_hyperparams['rl_learning_rate'] * 0.5,
-                    end_value=training_hyperparams['rl_learning_rate_final'], 
-                    warmup_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'] // 10,
+                    peak_value=training_hyperparams['rl_learning_rate'] * 0.1,
+                    end_value=training_hyperparams['rl_learning_rate_final'] * 0.05, 
+                    warmup_steps=(training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches']) // 10,
                     decay_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
                 ), 
                 eps=1e-7, 
