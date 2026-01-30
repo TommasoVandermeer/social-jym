@@ -45,6 +45,8 @@ n_stack_for_action_space_bounding = [1, 3, 5] # For final tests with heavily red
 metrics = {
     "successes": {"label": "Success Rate", "episodic": False}, 
     "collisions": {"label": "Collision Rate", "episodic": False}, 
+    "collisions_with_human": {"label": "Coll. w/ Hum. Rate", "episodic": False},
+    "collisions_with_obstacle": {"label": "Coll. w/ Obs. Rate", "episodic": False},
     "timeouts": {"label": "Timeout Rate", "episodic": False}, 
     "returns": {"label": "Return ($\gamma = 0.9$)", "episodic": True},
     "times_to_goal": {"label": "Time to goal ($s$)", "episodic": True},
@@ -159,7 +161,7 @@ for m, metric in enumerate(metrics_to_plot):
     ax[i,j].set_xticks(jnp.arange(len(tests_n_humans)))
     ax[i,j].set_xticklabels(tests_n_humans)
     for s in range(len(all_metrics[metric])):
-        if metric in ['successes', 'collisions', 'timeouts']:
+        if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
             y_data = jnp.nanmean(all_metrics[metric][s, :, :], axis=1) / n_trials
             ax[i, j].set_ylim(-0.05, 1.05)
         else:
@@ -198,7 +200,7 @@ figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_preliminary_tests_
 if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_configuration_tests.pkl")):
     metrics_dims = (len(lidar_configurations),len(tests_n_humans))
     all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
-    inference_times = jnp.zeros(len(lidar_configurations))
+    inference_times = jnp.zeros((len(lidar_configurations), len(tests_n_humans)))
     for i, lidar_config in enumerate(lidar_configurations):
         for j, n_human in enumerate(tests_n_humans):
             policy = JESSI(
@@ -228,11 +230,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_config
             }
             env = LaserNav(**env_params)
             # Measure inference time
-            _, _, obs, info, _ = env.reset(random_seed)
+            _, _, obs, info, _ = env.reset(random.PRNGKey(random_seed))
             start_time = time.time()
             for i in range(100): policy.act(random.PRNGKey(random_seed+i), obs, info, network_params)
             end_time = time.time()
-            inference_times = inference_times.at[i].set((end_time - start_time)/100)
+            inference_times = inference_times.at[i,j].set((end_time - start_time)/100)
             # Test performance
             metrics = policy.evaluate(
                 n_trials,
@@ -241,6 +243,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_config
                 network_params,
             )
             all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics)
+    inference_times = jnp.mean(inference_times, axis=1)
     with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_configuration_tests.pkl"), 'wb') as f:
         pickle.dump((all_metrics, inference_times), f)
 else:
@@ -263,7 +266,7 @@ for m, metric in enumerate(metrics_to_plot):
     ax[i,j].set_xticks(jnp.arange(len(tests_n_humans)))
     ax[i,j].set_xticklabels(tests_n_humans)
     for l in range(len(all_metrics[metric])):
-        if metric in ['successes', 'collisions', 'timeouts']:
+        if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
             y_data = all_metrics[metric][l] / n_trials
             ax[i, j].set_ylim(-0.05, 1.05)
         else:
@@ -280,4 +283,92 @@ figure.legend(h, l, loc='center right', title='(rays, range, stacks) - time[ms]'
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_lidar_config_tests.eps"), format='eps')
 
 
-### TEST HEAVILY REDUCED LIDAR ANGULAR RANGE WITH DIFFERENT N_STACK FOR ACTION SPACE BOUNDING ###
+### TEST HEAVILY REDUCED LIDAR ANGULAR RANGE WITH DIFFERENT N_STACK FOR ACTION SPACE BOUNDING (AND ITS INFERENCE TIME) ###
+if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduced_range_tests.pkl")):
+    metrics_dims = (len(n_stack_for_action_space_bounding),len(tests_n_humans))
+    all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
+    inference_times = jnp.zeros(len(n_stack_for_action_space_bounding),len(tests_n_humans))
+    for i, nstack_asb in enumerate(n_stack_for_action_space_bounding):
+        for j, n_human in enumerate(tests_n_humans):
+            policy = JESSI(
+                lidar_num_rays=lidar_configurations[-1][0],
+                lidar_angular_range=lidar_configurations[-1][1],
+                lidar_max_dist=lidar_max_dist,
+                n_stack=lidar_configurations[-1][2],
+                n_stack_for_action_space_bounding=nstack_asb,
+            )
+            env_params = {
+                'n_stack':lidar_configurations[-1][2],
+                'lidar_num_rays':lidar_configurations[-1][0],
+                'lidar_angular_range':lidar_configurations[-1][1],
+                'lidar_max_dist': lidar_max_dist,
+                'n_humans': n_human,
+                'n_obstacles': 3,
+                'robot_radius': 0.3,
+                'robot_dt': 0.25,
+                'humans_dt': 0.01,      
+                'robot_visible': True,
+                'scenario': 'hybrid_scenario', 
+                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'ccso_n_static_humans': 0,
+                'reward_function': Reward(robot_radius=0.3,collision_with_humans_penalty=-.5),
+                'kinematics': 'unicycle',
+                'lidar_noise': True,
+            }
+            env = LaserNav(**env_params)
+            # Measure inference time
+            _, _, obs, info, _ = env.reset(random.PRNGKey(random_seed))
+            start_time = time.time()
+            for i in range(100): policy.act(random.PRNGKey(random_seed+i), obs, info, network_params)
+            end_time = time.time()
+            inference_times = inference_times.at[i,j].set((end_time - start_time)/100)
+            # Test performance
+            metrics = policy.evaluate(
+                n_trials,
+                random_seed,
+                env,
+                network_params,
+            )
+            all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics)
+    inference_times = jnp.mean(inference_times, axis=1)
+    with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduced_range_tests.pkl"), 'wb') as f:
+        pickle.dump((all_metrics, inference_times), f)
+else:
+    with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduced_range_tests.pkl"), 'rb') as f:
+        all_metrics, inference_times = pickle.load(f)           
+## PLOTS
+# Plot metrics for each test scenario against number of humans
+metrics_to_plot = ["successes","collisions","timeouts","collisions_with_obstacle","collisions_with_human","times_to_goal", "path_length", "average_speed", "average_angular_speed","episodic_spl", "space_compliance","returns"]
+colors = ["green", "red", "blue", "orange", "purple", "brown", "pink"]
+figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 3
+    j = m % 3
+    ax[i,j].set(
+        xlabel='N° humans',
+        title=metrics[metric]['label'],
+    )
+    ax[i,j].grid(zorder=0)
+    ax[i,j].set_xticks(jnp.arange(len(tests_n_humans)))
+    ax[i,j].set_xticklabels(tests_n_humans)
+    for l in range(len(all_metrics[metric])):
+        if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
+            y_data = all_metrics[metric][l] / n_trials
+            ax[i, j].set_ylim(-0.05, 1.05)
+        else:
+            y_data = jnp.nanmean(all_metrics[metric][l, :, :], axis=(1))
+        ax[i, j].plot(
+            jnp.arange(len(tests_n_humans)), 
+            y_data, 
+            label=f"{n_stack_for_action_space_bounding[l]} - {inference_times[l]*1000:.2f}ms", 
+            color=colors[l], 
+            linewidth=2.5
+        )
+h, l = ax[0,0].get_legend_handles_labels()
+figure.legend(h, l, loc='center right', title=f'Bounding stacks - time[ms]\n(rays: {lidar_configurations[-1][0]}, range: {jnp.rad2deg(lidar_configurations[-1][1]):.2f}° , stacks: {lidar_configurations[-1][2]})')
+figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_lidar_reduced_range_tests.eps"), format='eps')
+
+
+### TEST PERCEPTION ACCURACY WITH TRAINING CONDITIONS BEFORE AND AFTER RL (ON SEEN AND UNSEEN SCENARIOS) ###
+# Accuracy in terms of Probabilistic Coverage for HCGs with scores > 1. For position and velocity.
