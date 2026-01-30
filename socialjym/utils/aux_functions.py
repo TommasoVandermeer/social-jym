@@ -173,6 +173,8 @@ def initialize_metrics_dict(n_trials:int, dims:tuple=()) -> dict:
     metrics = {
         "successes": 0 if len(dims) == 0 else jnp.zeros(dims),
         "collisions": 0 if len(dims) == 0 else jnp.zeros(dims),
+        "collisions_with_human": 0 if len(dims) == 0 else jnp.zeros(dims),
+        "collisions_with_obstacle": 0 if len(dims) == 0 else jnp.zeros(dims),
         "timeouts": 0 if len(dims) == 0 else jnp.zeros(dims),
         "returns": jnp.empty((*dims, n_trials,)),
         "times_to_goal": jnp.empty((*dims, n_trials,)),
@@ -195,6 +197,8 @@ def print_average_metrics(n_trials:int, metrics:dict) -> None:
     print("RESULTS")
     print(f"Success rate: {round(metrics['successes']/n_trials,2):.2f}")
     print(f"Collision rate: {round(metrics['collisions']/n_trials,2):.2f}")
+    print(f" - of which with humans: {round(metrics['collisions_with_human']/n_trials,2):.2f}")
+    print(f" - of which with obstacles: {round(metrics['collisions_with_obstacle']/n_trials,2):.2f}")
     print(f"Timeout rate: {round(metrics['timeouts']/n_trials,2):.2f}")
     print(f"Average return: {round(jnp.mean(metrics['returns']),2):.2f}")
     print(f"SPL: {round(jnp.mean(metrics['episodic_spl']),2):.2f}")
@@ -237,8 +241,11 @@ def compute_episode_metrics(
     metrics["successes"] = lax.cond(outcome["success"], lambda x: x + 1, lambda x: x, metrics["successes"])
     if environment == ENVIRONMENTS.index('socialnav'):
         failure = outcome['collision']
+        metrics["collisions_with_human"] = lax.cond(failure, lambda x: x + 1, lambda x: x, metrics["collisions_with_human"])
     elif environment == ENVIRONMENTS.index('lasernav'):
         failure = outcome['collision_with_human'] | outcome['collision_with_obstacle']
+        metrics["collisions_with_human"] = lax.cond(outcome['collision_with_human'], lambda x: x + 1, lambda x: x, metrics["collisions_with_human"])
+        metrics["collisions_with_obstacle"] = lax.cond(outcome['collision_with_obstacle'], lambda x: x + 1, lambda x: x, metrics["collisions_with_obstacle"])
     metrics["collisions"] = lax.cond(failure, lambda x: x + 1, lambda x: x, metrics["collisions"])
     metrics["timeouts"] = lax.cond(outcome["timeout"], lambda x: x + 1, lambda x: x, metrics["timeouts"])
     metrics["returns"] = metrics["returns"].at[episode_idx].set(end_info["return"])
