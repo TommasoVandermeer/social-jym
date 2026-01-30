@@ -1535,7 +1535,10 @@ class BaseEnv(ABC):
 
     @partial(jit, static_argnames=("self"))
     def humans_inside_lidar_range(self, positions, radii):
-        return jnp.linalg.norm(positions, axis=-1) - radii <= self.lidar_max_dist
+        # Two conditions: 
+        #   distance to origin minus radius less than lidar max distance
+        #   angle within lidar angular range (assumed to be centered at 0, i.e., robot facing right of the robot along x-axis)
+        return (jnp.linalg.norm(positions, axis=-1) - radii <= self.lidar_max_dist) & (jnp.abs(jnp.arctan2(positions[:,1], positions[:,0])) <= self.lidar_angular_range / 2)
     
     @partial(jit, static_argnames=("self"))
     def batch_humans_inside_lidar_range(self, batch_rc_positions, batch_radii):

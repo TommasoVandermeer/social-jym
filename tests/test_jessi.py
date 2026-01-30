@@ -13,10 +13,11 @@ from socialjym.utils.aux_functions import animate_trajectory
 random_seed = 0
 n_episodes = 100
 kinematics = 'unicycle'
+n_stack_for_action_space_bounding = 1
 env_params = {
     'n_stack': 5,
     'lidar_num_rays': 100,
-    'lidar_angular_range': 2*jnp.pi,
+    'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
     'n_humans': 5,
     'n_obstacles': 5,
@@ -41,22 +42,23 @@ policy = JESSI(
     lidar_angular_range=env.lidar_angular_range,
     lidar_max_dist=env.lidar_max_dist,
     n_stack=env.n_stack,
+    n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
 )
-# with open(os.path.join(os.path.dirname(__file__), 'perception_network.pkl'), 'rb') as f:
+# with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
 #     encoder_params = pickle.load(f)
-# with open(os.path.join(os.path.dirname(__file__), 'controller_network.pkl'), 'rb') as f:
+# with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
 #     actor_params = pickle.load(f)
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
 with open(os.path.join(os.path.dirname(__file__), 'jessi_rl_out.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # Test the trained JESSI policy
-# metrics = policy.evaluate(
-#     n_episodes,
-#     random_seed,
-#     env,
-#     network_params,
-# )
+metrics = policy.evaluate(
+    n_episodes,
+    random_seed,
+    env,
+    network_params,
+)
 
 # Simulate some episodes
 for i in range(n_episodes):

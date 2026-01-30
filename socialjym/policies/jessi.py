@@ -447,6 +447,7 @@ class JESSI(BasePolicy):
         max_beam_range:float=10.0, # This is only used to normalize the LiDAR readings before feeding them to the encoder
         embedding_dim:int=96,
         n_sectors:int=60,
+        n_stack_for_action_space_bounding:int=1,
     ) -> None:
         """
         JESSI (JAX-based E2E Safe Social Interpretable autonomous navigation).
@@ -462,6 +463,7 @@ class JESSI(BasePolicy):
         assert lidar_max_dist > 1, "LiDAR maximum distance must be greater than 1 meter"
         assert lidar_num_rays >= 10, "LiDAR number of rays must be at least 10"
         assert n_detectable_humans >= 2, "Number of detectable humans must be at least 2"
+        assert n_stack_for_action_space_bounding <= n_stack, "n_stack_for_action_space_bounding must be less than or equal to n_stack"
         # Configurable attributes
         super().__init__(discount=gamma)
         self.robot_radius = robot_radius
@@ -469,6 +471,7 @@ class JESSI(BasePolicy):
         self.dt = dt
         self.wheels_distance = wheels_distance
         self.n_stack = n_stack
+        self.n_stack_for_action_space_bounding = n_stack_for_action_space_bounding
         self.lidar_angular_range = lidar_angular_range
         self.lidar_max_dist = lidar_max_dist
         self.lidar_num_rays = lidar_num_rays
@@ -760,7 +763,7 @@ class JESSI(BasePolicy):
         intersection_points = jnp.where(
             is_inside_frontal_rect[:, None],
             lidar_point_cloud,
-            jnp.full(shape=(self.lidar_num_rays, 2), fill_value=jnp.nan)
+            jnp.full(shape=(self.n_stack_for_action_space_bounding*self.lidar_num_rays, 2), fill_value=jnp.nan)
         )
         min_x = jnp.nanmin(intersection_points[:,0])
         new_alpha = lax.cond(
@@ -782,7 +785,7 @@ class JESSI(BasePolicy):
             intersection_points = jnp.where(
                 is_inside_left_rect[:, None],
                 lidar_point_cloud,
-                jnp.full(shape=(self.lidar_num_rays, 2), fill_value=jnp.nan)
+                jnp.full(shape=(self.n_stack_for_action_space_bounding*self.lidar_num_rays, 2), fill_value=jnp.nan)
             )
             min_y = jnp.nanmin(intersection_points[:,1])
             new_beta = lax.cond(
@@ -801,7 +804,7 @@ class JESSI(BasePolicy):
             intersection_points = jnp.where(
                 is_inside_right_rect[:, None],
                 lidar_point_cloud,
-                jnp.full(shape=(self.lidar_num_rays, 2), fill_value=jnp.nan)
+                jnp.full(shape=(self.n_stack_for_action_space_bounding*self.lidar_num_rays, 2), fill_value=jnp.nan)
             )
             max_y = jnp.nanmax(intersection_points[:,1])
             new_gamma = lax.cond(
@@ -908,7 +911,11 @@ class JESSI(BasePolicy):
         """
         # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.
         aligned_lidar_scans = self.align_lidar(obs)[0]  # Shape: (n_stack, lidar_num_rays, 2)
-        last_lidar_point_cloud = aligned_lidar_scans[0,:, :]  # Shape: (lidar_num_rays, 2)
+        point_cloud_for_bounding = aligned_lidar_scans[:self.n_stack_for_action_space_bounding,:, :]  # Shape: (n_stack_for_action_space_bounding, lidar_num_rays, 2)
+        point_cloud_for_bounding = jnp.reshape(
+            point_cloud_for_bounding,
+            (self.n_stack_for_action_space_bounding * self.lidar_num_rays, 2)
+        )  # Shape: (n_stack_for_action_space_bounding * lidar_num_rays, 2)
         # Compute LiDAR tokens
         @jit
         def compute_beam_token(
@@ -941,7 +948,7 @@ class JESSI(BasePolicy):
         )  # Shape: (n_stack, lidar_num_rays, 7)
         # Optionally select TOP K beams for each stack here to reduce computation
         # First stack is the most recent one!!!
-        return encoder_input, last_lidar_point_cloud
+        return encoder_input, point_cloud_for_bounding
 
     @partial(jit, static_argnames=("self"))
     def compute_e2e_input(
@@ -950,10 +957,10 @@ class JESSI(BasePolicy):
         robot_goal:jnp.ndarray,
     ) -> jnp.ndarray:
         # Compute encoder input and last lidar point cloud (for action bounding)
-        perception_input, last_lidar_point_cloud = self.compute_encoder_input(obs)
+        perception_input, point_cloud_for_bounding = self.compute_encoder_input(obs)
         # Compute bounded action space parameters and add it to the input
         bounding_parameters = self.bound_action_space(
-            last_lidar_point_cloud,  
+            point_cloud_for_bounding,  
         )
         # Prepare input for network
         robot_position = obs[0,:2]
