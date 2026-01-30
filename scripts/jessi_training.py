@@ -77,7 +77,7 @@ training_hyperparams = {
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': hybrid_scenario_subset,
     'reward_function': 'lasernav_reward1',
-    'gradient_norm_scale': 40, # Scale the gradient norm by this value
+    'gradient_norm_scale': 1, # Scale the gradient norm by this value
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 # JESSI policy
@@ -911,7 +911,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
-            # goal_reward=2.0,
             collision_with_humans_penalty=-.5,
         )
     else:

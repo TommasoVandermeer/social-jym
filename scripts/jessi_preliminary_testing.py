@@ -162,10 +162,10 @@ for m, metric in enumerate(metrics_to_plot):
     ax[i,j].set_xticklabels(tests_n_humans)
     for s in range(len(all_metrics[metric])):
         if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
-            y_data = jnp.nanmean(all_metrics[metric][s, :, :], axis=1) / n_trials
+            y_data = jnp.nanmean(all_metrics[metric][s, :, :], axis=0) / n_trials
             ax[i, j].set_ylim(-0.05, 1.05)
         else:
-            y_data = jnp.nanmean(all_metrics[metric][s, :, :, :], axis=(1,2))
+            y_data = jnp.nanmean(all_metrics[metric][s, :, :, :], axis=(0,2))
         ax[i, j].plot(jnp.arange(len(tests_n_humans)), y_data, label="SEEN" if s == 0 else "UNSEEN", color=colors[s], linewidth=2.5)
 h, l = ax[0,0].get_legend_handles_labels()
 figure.legend(h, l, loc='center right', title='Scenarios')
@@ -186,10 +186,10 @@ for m, metric in enumerate(metrics_to_plot):
     ax[i,j].set_xticklabels(tests_n_obstacles)
     for s in range(len(all_metrics[metric])):
         if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
-            y_data = jnp.nanmean(all_metrics[metric][s, :, :], axis=0) / n_trials
+            y_data = jnp.nanmean(all_metrics[metric][s, :, :], axis=1) / n_trials
             ax[i, j].set_ylim(-0.05, 1.05)
         else:
-            y_data = jnp.nanmean(all_metrics[metric][s, :, :, :], axis=(0,2))
+            y_data = jnp.nanmean(all_metrics[metric][s, :, :, :], axis=(1,2))
         ax[i, j].plot(jnp.arange(len(tests_n_obstacles)), y_data, label="SEEN" if s == 0 else "UNSEEN", color=colors[s], linewidth=2)
 h, l = ax[0,0].get_legend_handles_labels()
 figure.legend(h, l, loc='center right', title='Scenarios')
@@ -244,14 +244,15 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_config
             )
             all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics)
     inference_times = jnp.mean(inference_times, axis=1)
+    all_metrics['inference_times'] = inference_times
     with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_configuration_tests.pkl"), 'wb') as f:
-        pickle.dump((all_metrics, inference_times), f)
+        pickle.dump(all_metrics, f)
 else:
     with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_configuration_tests.pkl"), 'rb') as f:
-        all_metrics, inference_times = pickle.load(f)           
+        all_metrics = pickle.load(f)   
 ## PLOTS
 # Plot metrics for each test scenario against number of humans
-metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
+metrics_to_plot = ["successes","collisions","timeouts","collisions_with_obstacle","collisions_with_human","times_to_goal", "path_length", "average_speed", "average_angular_speed","episodic_spl", "space_compliance","returns"]
 colors = ["green", "red", "blue", "orange", "purple", "brown", "pink"]
 figure, ax = plt.subplots(4, 3, figsize=(15, 20))
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
@@ -267,14 +268,14 @@ for m, metric in enumerate(metrics_to_plot):
     ax[i,j].set_xticklabels(tests_n_humans)
     for l in range(len(all_metrics[metric])):
         if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
-            y_data = all_metrics[metric][l] / n_trials
+            y_data = all_metrics[metric][l, :] / n_trials
             ax[i, j].set_ylim(-0.05, 1.05)
         else:
             y_data = jnp.nanmean(all_metrics[metric][l, :, :], axis=(1))
         ax[i, j].plot(
             jnp.arange(len(tests_n_humans)), 
             y_data, 
-            label=f"({lidar_configurations[l][0]}, {jnp.rad2deg(lidar_configurations[l][1]):.2f}°, {lidar_configurations[l][2]}) - {inference_times[l]*1000:.2f}ms", 
+            label=f"({lidar_configurations[l][0]}, {jnp.rad2deg(lidar_configurations[l][1]):.2f}°, {lidar_configurations[l][2]}) - {all_metrics['inference_times'][l]*1000:.2f}ms", 
             color=colors[l], 
             linewidth=2.5
         )
@@ -287,7 +288,7 @@ figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_lidar_config_tests
 if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduced_range_tests.pkl")):
     metrics_dims = (len(n_stack_for_action_space_bounding),len(tests_n_humans))
     all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
-    inference_times = jnp.zeros(len(n_stack_for_action_space_bounding),len(tests_n_humans))
+    inference_times = jnp.zeros((len(n_stack_for_action_space_bounding),len(tests_n_humans)))
     for i, nstack_asb in enumerate(n_stack_for_action_space_bounding):
         for j, n_human in enumerate(tests_n_humans):
             policy = JESSI(
@@ -331,11 +332,12 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduce
             )
             all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics)
     inference_times = jnp.mean(inference_times, axis=1)
+    all_metrics['inference_times'] = inference_times
     with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduced_range_tests.pkl"), 'wb') as f:
-        pickle.dump((all_metrics, inference_times), f)
+        pickle.dump(all_metrics, f)
 else:
     with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduced_range_tests.pkl"), 'rb') as f:
-        all_metrics, inference_times = pickle.load(f)           
+        all_metrics = pickle.load(f)           
 ## PLOTS
 # Plot metrics for each test scenario against number of humans
 metrics_to_plot = ["successes","collisions","timeouts","collisions_with_obstacle","collisions_with_human","times_to_goal", "path_length", "average_speed", "average_angular_speed","episodic_spl", "space_compliance","returns"]
@@ -361,7 +363,7 @@ for m, metric in enumerate(metrics_to_plot):
         ax[i, j].plot(
             jnp.arange(len(tests_n_humans)), 
             y_data, 
-            label=f"{n_stack_for_action_space_bounding[l]} - {inference_times[l]*1000:.2f}ms", 
+            label=f"{n_stack_for_action_space_bounding[l]} - {all_metrics['inference_times'][l]*1000:.2f}ms", 
             color=colors[l], 
             linewidth=2.5
         )
