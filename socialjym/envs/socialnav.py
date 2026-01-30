@@ -28,9 +28,13 @@ class SocialNav(BaseEnv):
             traffic_length=14,
             crowding_square_side=14,
             hybrid_scenario_subset=jnp.arange(0, len(SCENARIOS)-1, dtype=jnp.int32),
-            lidar_angular_range=jnp.pi,
+            lidar_angular_range=2*jnp.pi,
             lidar_max_dist=10.,
-            lidar_num_rays=60,
+            lidar_num_rays=100,
+            lidar_noise=False,
+            lidar_noise_fixed_std=0.01,  # 1cm base noise
+            lidar_noise_proportional_std=0.01, # 1% of the distance noise
+            lidar_salt_and_pepper_prob=0.03, # 3% of the rays are affected by salt and pepper noise
             kinematics='holonomic',
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
@@ -60,6 +64,10 @@ class SocialNav(BaseEnv):
             lidar_angular_range=lidar_angular_range, 
             lidar_max_dist=lidar_max_dist, 
             lidar_num_rays=lidar_num_rays,
+            lidar_noise=lidar_noise,
+            lidar_noise_fixed_std=lidar_noise_fixed_std,
+            lidar_noise_proportional_std=lidar_noise_proportional_std,
+            lidar_salt_and_pepper_prob=lidar_salt_and_pepper_prob,
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,
@@ -134,9 +142,9 @@ class SocialNav(BaseEnv):
         ### Robot goal update (next waypoint, if present)
         info["robot_goal"], info["robot_goal_index"] = lax.cond(
             (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= self.robot_radius*3) & # Waypoint reached threshold is set to be higher
-            (info['robot_goal_index'] < len(self.robot_goals_per_scenario[info["current_scenario"]])-1) & # Check if current goal is not the last one
-            (~(jnp.any(jnp.isnan(self.robot_goals_per_scenario[info["current_scenario"]][info['robot_goal_index']+1])))), # Check if next goal is not NaN
-            lambda _: (self.robot_goals_per_scenario[info["current_scenario"]][info['robot_goal_index']+1], info['robot_goal_index']+1),
+            (info['robot_goal_index'] < len(info['robot_goal_list'])-1) & # Check if current goal is not the last one
+            (~(jnp.any(jnp.isnan(info['robot_goal_list'][info['robot_goal_index']+1])))), # Check if next goal is not NaN
+            lambda _: (info['robot_goal_list'][info['robot_goal_index']+1], info['robot_goal_index']+1),
             lambda x: x,
             (info["robot_goal"], info["robot_goal_index"])
         )
@@ -206,9 +214,9 @@ class SocialNav(BaseEnv):
         if self.scenario != -1: # Custom scenario, no automatic goal update
             info["robot_goal"], info["robot_goal_index"] = lax.cond(
                 (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= self.robot_radius*3) & # Waypoint reached threshold is set to be higher
-                (info['robot_goal_index'] < len(self.robot_goals_per_scenario[info["current_scenario"]])-1) & # Check if current goal is not the last one
-                (~(jnp.any(jnp.isnan(self.robot_goals_per_scenario[info["current_scenario"]][info['robot_goal_index']+1])))), # Check if next goal is not NaN
-                lambda _: (self.robot_goals_per_scenario[info["current_scenario"]][info['robot_goal_index']+1], info['robot_goal_index']+1),
+                (info['robot_goal_index'] < len(info['robot_goal_list'])-1) & # Check if current goal is not the last one
+                (~(jnp.any(jnp.isnan(info['robot_goal_list'][info['robot_goal_index']+1])))), # Check if next goal is not NaN
+                lambda _: (info['robot_goal_list'][info['robot_goal_index']+1], info['robot_goal_index']+1),
                 lambda x: x,
                 (info["robot_goal"], info["robot_goal_index"])
             )

@@ -28,6 +28,10 @@ class Dirichlet(BaseDistribution):
         return dirichlet_entropy
 
     @partial(jit, static_argnames=("self"))
+    def batch_entropy(self, distributions:dict) -> jnp.ndarray:
+        return vmap(Dirichlet.entropy, in_axes=(None,0))(self, distributions)
+
+    @partial(jit, static_argnames=("self"))
     def sample(self, distribution:dict, key:random.PRNGKey):
         alphas = distribution["alphas"]
         vertices = distribution["vertices"]

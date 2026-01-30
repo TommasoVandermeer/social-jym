@@ -287,6 +287,8 @@ class BaseEnv(ABC):
             [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Crowd navigation
             [[self.traffic_length/2-self.traffic_height/4, self.traffic_length/2-self.traffic_height/4],[self.traffic_length/2, 1.]], # Corner traffic
         ])
+        ## Possible delays for delayed circular crossing scenario
+        self.possible_delays = jnp.arange(0., self.max_cc_delay + self.robot_dt, self.robot_dt)
 
     # --- Abstract methods --- #
 
@@ -305,16 +307,16 @@ class BaseEnv(ABC):
     # --- Private methods --- #
 
     @partial(jit, static_argnames=("self"))
-    def _reset(self, key:random.PRNGKey) -> tuple[jnp.ndarray, random.PRNGKey, dict]:
-        key, subkey = random.split(key)
+    def _reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None) -> tuple[jnp.ndarray, random.PRNGKey, dict]:
+        key, scen_key, flip_key, noise_key = random.split(key, 4)
         if self.scenario == SCENARIOS.index('hybrid_scenario'):
             # Randomly choose a scenario between all then ones included in the hybrid_scenario subset
-            randint = random.randint(subkey, shape=(), minval=0, maxval=len(self.hybrid_scenario_subset))
+            randint = random.choice(scen_key, a=len(self.hybrid_scenario_subset), p=scenarios_prob)
             scenario = self.hybrid_scenario_subset[randint]
-            key, subkey = random.split(key)
+            key, scen_key = random.split(key)
         else:
             scenario = self.scenario
-        full_state, info = lax.switch(
+        full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, humans_delay = lax.switch(
             scenario, 
             [
                 self._generate_circular_crossing_episode, 
@@ -326,11 +328,95 @@ class BaseEnv(ABC):
                 self._generate_crowd_navigation_episode,
                 self._generate_corner_traffic_episode,
             ], 
-            subkey
+            scen_key
+        )
+        full_state, humans_goal, robot_goal, robot_goal_list, static_obstacles, is_x_flipped, is_y_flipped = self._random_flip(
+            full_state, 
+            humans_goal, 
+            robot_goal, 
+            static_obstacles, 
+            self.robot_goals_per_scenario[scenario],
+            flip_key
+        )
+        info = self._init_info(
+            full_state,
+            humans_goal=humans_goal,
+            robot_goal=robot_goal,
+            robot_goal_list=robot_goal_list,
+            humans_parameters=humans_parameters,
+            static_obstacles=static_obstacles,
+            current_scenario=scenario,
+            humans_delay=humans_delay,
+            is_x_flipped=is_x_flipped,
+            is_y_flipped=is_y_flipped,
+            noise_key=noise_key,
         )
         if self.grid_map_computation: # Compute the grid map of static obstacles for global planning
             info['grid_cells'], info['occupancy_grid'] = self.build_grid_map_and_occupancy(full_state, info)
         return full_state, key, info
+
+    @partial(jit, static_argnames=("self"))
+    def _random_flip(
+        self, 
+        full_state:jnp.ndarray, 
+        humans_goal:jnp.ndarray,
+        robot_goal:jnp.ndarray,
+        static_obstacles:jnp.ndarray,
+        robot_goal_list:jnp.ndarray,
+        key:random.PRNGKey
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, bool, bool]:
+        """
+        Randomly flips the environment along the x-axis and y-axis with 50% probability.
+
+        args:
+        - full_state: array of shape (n_humans+1, 5) representing the state of the robot and humans.
+        - humans_goal: array of shape (n_humans, 2) representing the goals of the humans.
+        - robot_goal: array of shape (2,) representing the goal of the robot.
+        - robot_goal_list: array of shape (n_waypoints, 2) representing the list of waypoints for the robot.
+        - static_obstacles: array of shape (n_humans+1, n_obstacles, 1, 2, 2) representing the static obstacles.
+        - key: random.PRNGKey for randomness.
+
+        output:
+        - full_state: possibly flipped full_state.
+        - humans_goal: possibly flipped humans_goal.
+        - robot_goal: possibly flipped robot_goal.
+        - robot_goal_list: possibly flipped robot_goal_list.
+        - static_obstacles: possibly flipped static_obstacles.
+        - flip_x: boolean indicating if a flip along the x-axis was performed.
+        - flip_y: boolean indicating if a flip along the y-axis was performed.
+        """
+        def _flip_y(state, humans_goal, robot_goal, robot_goal_list, static_obstacles):
+            state = state.at[:, 1].set(-state[:, 1]) # Flip y position
+            state = state.at[:, 4].set(-state[:, 4]) # Flip orientation
+            humans_goal = humans_goal.at[:, 1].set(-humans_goal[:, 1]) # Flip humans' goals
+            robot_goal = robot_goal.at[1].set(-robot_goal[1]) # Flip robot's goal
+            robot_goal_list = robot_goal_list.at[:, 1].set(-robot_goal_list[:, 1]) # Flip robot's waypoint list
+            static_obstacles = static_obstacles.at[:, :, :, :, 1].set(-static_obstacles[:, :, :, :, 1]) # Flip static obstacles
+            return state, humans_goal, robot_goal, robot_goal_list, static_obstacles
+        def _flip_x(state, humans_goal, robot_goal, robot_goal_list, static_obstacles):
+            state = state.at[:, 0].set(-state[:, 0]) # Flip x position
+            state = state.at[:, 4].set(vmap(wrap_angle)(jnp.pi - state[:, 4])) # Flip orientation
+            humans_goal = humans_goal.at[:, 0].set(-humans_goal[:, 0]) # Flip humans' goals
+            robot_goal = robot_goal.at[0].set(-robot_goal[0]) # Flip robot's goal
+            robot_goal_list = robot_goal_list.at[:, 0].set(-robot_goal_list[:, 0]) # Flip robot's waypoint list
+            static_obstacles = static_obstacles.at[:, :, :, :, 0].set(-static_obstacles[:, :, :, :, 0]) # Flip static obstacles
+            return state, humans_goal, robot_goal, robot_goal_list, static_obstacles
+        x_key, y_key = random.split(key)
+        flip_x = random.bernoulli(y_key, p=0.5)
+        full_state, humans_goal, robot_goal, robot_goal_list, static_obstacles = lax.cond(
+            flip_x,
+            _flip_x,
+            lambda s, h, r, rl, so: (s, h, r, rl, so),
+            full_state, humans_goal, robot_goal, robot_goal_list, static_obstacles
+        )
+        flip_y = random.bernoulli(x_key, p=0.5)
+        full_state, humans_goal, robot_goal, robot_goal_list, static_obstacles = lax.cond(
+            flip_y,
+            _flip_y,
+            lambda s, h, r, rl, so: (s, h, r, rl, so),
+            full_state, humans_goal, robot_goal, robot_goal_list, static_obstacles
+        )
+        return full_state, humans_goal, robot_goal, robot_goal_list, static_obstacles, flip_x, flip_y
 
     @partial(jit, static_argnames=("self"))
     def _init_info(
@@ -338,10 +424,13 @@ class BaseEnv(ABC):
         full_state:jnp.ndarray,
         humans_goal:jnp.ndarray,
         robot_goal:jnp.ndarray,
+        robot_goal_list:jnp.ndarray,
         humans_parameters:jnp.ndarray,
         static_obstacles:jnp.ndarray,
         current_scenario:int,
         humans_delay:jnp.ndarray,
+        is_x_flipped:bool,
+        is_y_flipped:bool,
         noise_key:random.PRNGKey,
     ) -> dict:
         """
@@ -364,6 +453,7 @@ class BaseEnv(ABC):
             "humans_goal": humans_goal, 
             "robot_goal": robot_goal, 
             "robot_goal_index": 0, # If robot has a waypoint list, this is the index of the next waypoint to reach
+            "robot_goal_list": robot_goal_list, # If robot has a waypoint list, this is the list of waypoints
             "humans_parameters": humans_parameters, 
             "static_obstacles": static_obstacles, 
             "time": 0.,
@@ -371,6 +461,8 @@ class BaseEnv(ABC):
             "humans_delay": humans_delay,
             "step": 0,
             "return": 0.,
+            "is_x_flipped": is_x_flipped,
+            "is_y_flipped": is_y_flipped,
         }
 
     @partial(jit, static_argnames=("self"))
@@ -458,36 +550,16 @@ class BaseEnv(ABC):
 
         # Obstacles
         static_obstacles = self._init_obstacles(key, SCENARIOS.index('circular_crossing'))
-        # Info
-        info = self._init_info(
-            full_state,
-            humans_goal=humans_goal,
-            robot_goal=robot_goal,
-            humans_parameters=humans_parameters,
-            static_obstacles=static_obstacles,
-            current_scenario=SCENARIOS.index('circular_crossing'),
-            humans_delay=jnp.zeros((self.n_humans,)),
-            noise_key=key,
-        )
-        return full_state, info
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
     
     @partial(jit, static_argnames=("self"))
     def _generate_delayed_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
         key, subkey = random.split(key)
-        full_state, info = self._generate_circular_crossing_episode(key)
-        info = self._init_info(
-            full_state,
-            humans_goal=-info["humans_goal"],
-            robot_goal=self._init_robot_goal(SCENARIOS.index('delayed_circular_crossing')),
-            humans_parameters=info["humans_parameters"],
-            static_obstacles=self._init_obstacles(key, SCENARIOS.index('delayed_circular_crossing')),
-            current_scenario=SCENARIOS.index('delayed_circular_crossing'),
-            humans_delay=jnp.zeros((self.n_humans,)),
-            noise_key=key,
-        )
-        possible_delays = jnp.arange(0., self.max_cc_delay + self.robot_dt, self.robot_dt)
-        info["humans_delay"] = info["humans_delay"].at[:].set(random.choice(subkey, possible_delays, shape=(self.n_humans,)))
-        return full_state, info
+        full_state, humans_goal, _, humans_parameters, _, _ = self._generate_circular_crossing_episode(key)
+        robot_goal = self._init_robot_goal(SCENARIOS.index('delayed_circular_crossing'))
+        static_obstacles=self._init_obstacles(key, SCENARIOS.index('delayed_circular_crossing'))
+        humans_delay = random.choice(subkey, self.possible_delays, shape=(self.n_humans,))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, humans_delay
 
     @partial(jit, static_argnames=("self"))
     def _generate_parallel_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
@@ -507,7 +579,7 @@ class BaseEnv(ABC):
                 disturbed_points, key, valid = while_val
                 key, subkey = random.split(key)
                 normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1)
-                new_point = jnp.array([-self.traffic_length/2 + 1 + normalized_point[0] * self.traffic_length, -self.traffic_height/2 + normalized_point[1] * self.traffic_height])
+                new_point = jnp.array([-self.traffic_length/2 + 3 + normalized_point[0] * (self.traffic_length - 1), -self.traffic_height/2 + normalized_point[1] * self.traffic_height])
                 differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
                 valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
                 disturbed_points = lax.cond(
@@ -552,18 +624,7 @@ class BaseEnv(ABC):
 
         # Obstacles
         static_obstacles = self._init_obstacles(key, SCENARIOS.index('parallel_traffic'))
-        # Info
-        info = self._init_info(
-            full_state,
-            humans_goal=humans_goal,
-            robot_goal=robot_goal,
-            humans_parameters=humans_parameters,
-            static_obstacles=static_obstacles,
-            current_scenario=SCENARIOS.index('parallel_traffic'),
-            humans_delay=jnp.zeros((self.n_humans,)),
-            noise_key=key,
-        )
-        return full_state, info
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
     def _generate_perpendicular_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
@@ -627,18 +688,7 @@ class BaseEnv(ABC):
 
         # Obstacles
         static_obstacles = self._init_obstacles(key, SCENARIOS.index('perpendicular_traffic'))
-        # Info
-        info = self._init_info(
-            full_state,
-            humans_goal=humans_goal,
-            robot_goal=robot_goal,
-            humans_parameters=humans_parameters,
-            static_obstacles=static_obstacles,
-            current_scenario=SCENARIOS.index('perpendicular_traffic'),
-            humans_delay=jnp.zeros((self.n_humans,)),
-            noise_key=key,
-        )
-        return full_state, info
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
     def _generate_robot_crowding_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
@@ -703,18 +753,7 @@ class BaseEnv(ABC):
 
         # Obstacles
         static_obstacles = self._init_obstacles(key, SCENARIOS.index('robot_crowding'))
-        # Info
-        info = self._init_info(
-            full_state,
-            humans_goal=humans_goal,
-            robot_goal=robot_goal,
-            humans_parameters=humans_parameters,
-            static_obstacles=static_obstacles,
-            current_scenario=SCENARIOS.index('robot_crowding'),
-            humans_delay=jnp.zeros((self.n_humans,)),
-            noise_key=key,
-        )
-        return full_state, info
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
     def _generate_circular_crossing_with_static_obstacles_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
@@ -837,17 +876,7 @@ class BaseEnv(ABC):
         # Obstacles
         static_obstacles = self._init_obstacles(key, SCENARIOS.index('circular_crossing_with_static_obstacles'))
         # Info
-        info = self._init_info(
-            full_state,
-            humans_goal=humans_goal,
-            robot_goal=robot_goal,
-            humans_parameters=humans_parameters,
-            static_obstacles=static_obstacles,
-            current_scenario=SCENARIOS.index('circular_crossing_with_static_obstacles'),
-            humans_delay=jnp.zeros((self.n_humans,)),
-            noise_key=key,
-        )
-        return full_state, info
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
     def _generate_crowd_navigation_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
@@ -922,18 +951,7 @@ class BaseEnv(ABC):
 
         # Obstacles
         static_obstacles = self._init_obstacles(key, SCENARIOS.index('crowd_navigation'))
-        # Info
-        info = self._init_info(
-            full_state,
-            humans_goal=humans_goal,
-            robot_goal=robot_goal,
-            humans_parameters=humans_parameters,
-            static_obstacles=static_obstacles,
-            current_scenario=SCENARIOS.index('crowd_navigation'),
-            humans_delay=jnp.zeros((self.n_humans,)),
-            noise_key=key,
-        )
-        return full_state, info
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
     
     @partial(jit, static_argnames=("self"))
     def _generate_corner_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
@@ -997,18 +1015,7 @@ class BaseEnv(ABC):
 
         # Obstacles
         static_obstacles = self._init_obstacles(key, SCENARIOS.index('corner_traffic'))
-        # Info
-        info = self._init_info(
-            full_state,
-            humans_goal=humans_goal,
-            robot_goal=robot_goal,
-            humans_parameters=humans_parameters,
-            static_obstacles=static_obstacles,
-            current_scenario=SCENARIOS.index('corner_traffic'),
-            humans_delay=jnp.zeros((self.n_humans,)),
-            noise_key=key,
-        )
-        return full_state, info
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
     def _human_ray_intersect(self, direction:jnp.ndarray, human_position:jnp.ndarray, lidar_position:jnp.ndarray, human_radius:float) -> float:
@@ -1137,14 +1144,15 @@ class BaseEnv(ABC):
         @jit
         def _update_traffic_scenarios(val:tuple):
             @jit
-            def _update_human_state_and_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray) -> tuple:
+            def _update_human_state_and_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray, is_x_flipped:bool) -> tuple:
+                flip_x = lax.cond(is_x_flipped,lambda _: -1.,lambda _: 1.,None)
                 position, goal = lax.cond(
                     # jnp.linalg.norm(position - goal) <= radius + 2,
                     jnp.linalg.norm(position - goal) <= 3, # Compliant with Social-Navigation-PyEnvs
                     lambda _: (
                         jnp.array([
-                        # jnp.max(jnp.append(positions[:,0]+(jnp.max(jnp.append(radiuses,self.robot_radius))*2)+(jnp.max(safety_spaces)*2)+0.05, self.traffic_length/2+1)), 
-                        jnp.max(jnp.append(positions[:,0] + (jnp.max(jnp.append(radiuses, self.robot_radius))*2)+(jnp.max(safety_spaces)*2), self.traffic_length/2)), # Compliant with Social-Navigation-PyEnvs
+                        # flip_x * jnp.max(jnp.append(positions[:,0]+(jnp.max(jnp.append(radiuses,self.robot_radius))*2)+(jnp.max(safety_spaces)*2)+0.05, self.traffic_length/2+1)), 
+                        flip_x * jnp.max(jnp.append(positions[:,0] + (jnp.max(jnp.append(radiuses, self.robot_radius))*2)+(jnp.max(safety_spaces)*2), self.traffic_length/2)), # Compliant with Social-Navigation-PyEnvs
                         jnp.clip(position[1], -self.traffic_height/2, self.traffic_height/2)]
                         ),
                         jnp.array([goal[0], position[1]]),
@@ -1153,13 +1161,15 @@ class BaseEnv(ABC):
                     (position, goal))
                 return position, goal
             info, state = val
-            new_positions, new_goals = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None))(
+            new_positions, new_goals = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None, None))(
                 state[:-1,0:2], 
                 info["humans_goal"], 
                 info["humans_parameters"][:,0], 
                 state[:,0:2], 
                 info["humans_parameters"][:,0], 
-                info["humans_parameters"][:,-1])
+                info["humans_parameters"][:,-1],
+                info['is_x_flipped']
+            )
             state = state.at[:-1,0:2].set(new_positions)
             info["humans_goal"] = info["humans_goal"].at[:].set(new_goals)
             return info, state
@@ -1208,25 +1218,27 @@ class BaseEnv(ABC):
         @jit
         def _update_corner_traffic(val:tuple):
             @jit
-            def _update_human_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float) -> jnp.ndarray:
+            def _update_human_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, is_x_flipped:bool, is_y_flipped:bool) -> jnp.ndarray:
+                flip_x = lax.cond(is_x_flipped,lambda _: -1.,lambda _: 1.,None)
+                flip_y = lax.cond(is_y_flipped,lambda _: -1.,lambda _: 1.,None)
                 goal = lax.cond(
                     jnp.linalg.norm(position - goal) <= radius+0.1,
                     lambda x: lax.cond(
-                        x[0]==x[1],
+                        jnp.abs(x[0])==jnp.abs(x[1]),
                         lambda y: lax.cond(
-                            position[1] < position[0],
-                            lambda z: jnp.array([0., jnp.max(z)]),
-                            lambda z: jnp.array([jnp.max(z), 0.]),
+                            position[1] * flip_y < position[0] * flip_x,
+                            lambda z: jnp.array([0., jnp.max(jnp.abs(z)) * flip_y]),
+                            lambda z: jnp.array([jnp.max(jnp.abs(z)) * flip_x, 0.]),
                             y,
                         ),
-                        lambda y: jnp.array([jnp.max(y),jnp.max(y)]),
+                        lambda y: jnp.array([jnp.max(jnp.abs(y)) * flip_x, jnp.max(jnp.abs(y)) * flip_y]),
                         x,
                     ),
                     lambda x: x,
                     goal)
                 return goal
             info, state = val
-            info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0))(state[:-1,0:2], info["humans_goal"], info["humans_parameters"][:,0])
+            info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0,None,None))(state[:-1,0:2], info["humans_goal"], info["humans_parameters"][:,0], info["is_x_flipped"], info["is_y_flipped"])
             return (info, state)
 
         if self.scenario != -1:  # If not custom scenario
@@ -1526,10 +1538,10 @@ class BaseEnv(ABC):
         return jnp.linalg.norm(positions, axis=-1) - radii <= self.lidar_max_dist
     
     @partial(jit, static_argnames=("self"))
-    def batch_humans_inside_lidar_range(self, batch_positions, batch_radii):
+    def batch_humans_inside_lidar_range(self, batch_rc_positions, batch_radii):
         return vmap(BaseEnv.humans_inside_lidar_range, in_axes=(None,0,0))(
             self,
-            batch_positions,
+            batch_rc_positions,
             batch_radii
         )
 

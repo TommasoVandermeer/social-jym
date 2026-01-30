@@ -50,7 +50,7 @@ def ppo_rl_rollout(
                 @jit
                 def _step_fori_body(step:int, val:tuple):
                         # Retrieve data from the tuple
-                        actor_params, critic_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds = val
+                        actor_params, critic_params, states, obses, init_infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds = val
                         ## Step
                         # Update state of Batch Norm layer
                         if policy.normalize_and_clip_obs:
@@ -58,21 +58,21 @@ def ppo_rl_rollout(
                                 ins = vmap(policy.batch_compute_vnet_input, in_axes=(0,0,0))(
                                         obses[:,-1], 
                                         obses[:,:-1], 
-                                        infos,
+                                        init_infos,
                                 ),
                                 updated_norm_state = policy.update_norm_state(
                                         jnp.reshape(*ins, (n_parallel_envs * env.n_humans, policy.vnet_input_size)),
                                         norm_state,
                                 )
                                 actor_params["norm_state"] = updated_norm_state
-                        actions, policy_keys, inputs, sampled_actions, distrs = policy.batch_act(policy_keys, obses, infos, actor_params, sample=True)
+                        actions, policy_keys, inputs, sampled_actions, distrs = policy.batch_act(policy_keys, obses, init_infos, actor_params, sample=True)
                         # Compute state values
                         values = vmap(policy.critic.apply, in_axes=(None,None,0))(
                                 critic_params, 
                                 None, 
                                 inputs, 
                         ) 
-                        states, obses, infos, rewards, outcomes, reset_keys = env.batch_step(states, infos, actions, reset_keys, test=False, reset_if_done=True)
+                        states, obses, infos, rewards, outcomes, reset_keys = env.batch_step(states, init_infos, actions, reset_keys, test=False, reset_if_done=True)
                         ## Save data to later add to the buffer
                         batch_inputs = batch_inputs.at[:,step].set(inputs)
                         batch_values = batch_values.at[:,step].set(jnp.squeeze(values))
@@ -85,7 +85,7 @@ def ppo_rl_rollout(
                         failures += jnp.sum(outcomes["failure"])
                         timeouts += jnp.sum(outcomes["timeout"])
                         # returns = returns.at[:].set(returns + rewards * jnp.power(jnp.broadcast_to(policy.gamma,(n_parallel_envs,)), policy.v_max * (infos["time"] - policy.dt)))  
-                        returns = returns.at[:].set(returns + infos["return"] * (~outcomes["nothing"]))  
+                        returns = returns.at[:].set(returns + (~outcomes["nothing"]) * init_infos['return'] + jnp.power(policy.gamma, (init_infos['step']+1) * policy.dt * policy.v_max) * rewards)  
                         episode_count += jnp.sum(~(outcomes["nothing"]))
                         batch_stds = batch_stds.at[:,step,:].set(policy.distr.batch_std(distrs))
                         return (actor_params, critic_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds)
