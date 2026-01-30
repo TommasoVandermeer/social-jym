@@ -232,30 +232,32 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_config
             # Measure inference time
             _, _, obs, info, _ = env.reset(random.PRNGKey(random_seed))
             start_time = time.time()
-            for i in range(100): policy.act(random.PRNGKey(random_seed+i), obs, info, network_params)
+            for k in range(100): 
+                action, _, _, _, _, _, _, = policy.act(random.PRNGKey(random_seed+k), obs, info, network_params)
+                action.block_until_ready()
             end_time = time.time()
             inference_times = inference_times.at[i,j].set((end_time - start_time)/100)
             # Test performance
-            metrics = policy.evaluate(
+            metrics_lidar = policy.evaluate(
                 n_trials,
                 random_seed,
                 env,
                 network_params,
             )
-            all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics)
+            all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics_lidar)
     inference_times = jnp.mean(inference_times, axis=1)
     all_metrics['inference_times'] = inference_times
     with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_configuration_tests.pkl"), 'wb') as f:
         pickle.dump(all_metrics, f)
 else:
     with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_configuration_tests.pkl"), 'rb') as f:
-        all_metrics = pickle.load(f)   
+        all_metrics = pickle.load(f)  
 ## PLOTS
 # Plot metrics for each test scenario against number of humans
 metrics_to_plot = ["successes","collisions","timeouts","collisions_with_obstacle","collisions_with_human","times_to_goal", "path_length", "average_speed", "average_angular_speed","episodic_spl", "space_compliance","returns"]
 colors = ["green", "red", "blue", "orange", "purple", "brown", "pink"]
 figure, ax = plt.subplots(4, 3, figsize=(15, 20))
-figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.7)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
     j = m % 3
@@ -275,12 +277,12 @@ for m, metric in enumerate(metrics_to_plot):
         ax[i, j].plot(
             jnp.arange(len(tests_n_humans)), 
             y_data, 
-            label=f"({lidar_configurations[l][0]}, {jnp.rad2deg(lidar_configurations[l][1]):.2f}°, {lidar_configurations[l][2]}) - {all_metrics['inference_times'][l]*1000:.2f}ms", 
+            label=f"({lidar_configurations[l][0]}, {jnp.rad2deg(lidar_configurations[l][1]):.0f}°, {lidar_configurations[l][2]}) - {all_metrics['inference_times'][l]*1000:.1f}", 
             color=colors[l], 
             linewidth=2.5
         )
 h, l = ax[0,0].get_legend_handles_labels()
-figure.legend(h, l, loc='center right', title='(rays, range, stacks) - time[ms]')
+figure.legend(h, l, loc='center right', title='(rays, range, stacks)\ntime[ms]')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_lidar_config_tests.eps"), format='eps')
 
 
@@ -320,17 +322,19 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduce
             # Measure inference time
             _, _, obs, info, _ = env.reset(random.PRNGKey(random_seed))
             start_time = time.time()
-            for i in range(100): policy.act(random.PRNGKey(random_seed+i), obs, info, network_params)
+            for k in range(100): 
+                action, _, _, _, _, _, _, = policy.act(random.PRNGKey(random_seed+k), obs, info, network_params)
+                action.block_until_ready()
             end_time = time.time()
             inference_times = inference_times.at[i,j].set((end_time - start_time)/100)
             # Test performance
-            metrics = policy.evaluate(
+            metrics_low_range_lidar = policy.evaluate(
                 n_trials,
                 random_seed,
                 env,
                 network_params,
             )
-            all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics)
+            all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics_low_range_lidar)
     inference_times = jnp.mean(inference_times, axis=1)
     all_metrics['inference_times'] = inference_times
     with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduced_range_tests.pkl"), 'wb') as f:
@@ -343,7 +347,7 @@ else:
 metrics_to_plot = ["successes","collisions","timeouts","collisions_with_obstacle","collisions_with_human","times_to_goal", "path_length", "average_speed", "average_angular_speed","episodic_spl", "space_compliance","returns"]
 colors = ["green", "red", "blue", "orange", "purple", "brown", "pink"]
 figure, ax = plt.subplots(4, 3, figsize=(15, 20))
-figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.75)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
     j = m % 3
@@ -363,12 +367,12 @@ for m, metric in enumerate(metrics_to_plot):
         ax[i, j].plot(
             jnp.arange(len(tests_n_humans)), 
             y_data, 
-            label=f"{n_stack_for_action_space_bounding[l]} - {all_metrics['inference_times'][l]*1000:.2f}ms", 
+            label=f"{n_stack_for_action_space_bounding[l]} - {all_metrics['inference_times'][l]*1000:.1f}ms", 
             color=colors[l], 
             linewidth=2.5
         )
 h, l = ax[0,0].get_legend_handles_labels()
-figure.legend(h, l, loc='center right', title=f'Bounding stacks - time[ms]\n(rays: {lidar_configurations[-1][0]}, range: {jnp.rad2deg(lidar_configurations[-1][1]):.2f}° , stacks: {lidar_configurations[-1][2]})')
+figure.legend(h, l, loc='center right', title=f'Bounding stacks - time[ms]\nrays: {lidar_configurations[-1][0]},\nrange: {jnp.rad2deg(lidar_configurations[-1][1]):.0f}°,\nstacks: {lidar_configurations[-1][2]}')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_lidar_reduced_range_tests.eps"), format='eps')
 
 
