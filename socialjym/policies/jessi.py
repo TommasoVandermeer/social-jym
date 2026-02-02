@@ -637,6 +637,104 @@ class JESSI(BasePolicy):
         cls_loss = jnp.mean(bce) 
         return lambda_pos_reg * pos_reg_loss + lambda_vel_reg * vel_reg_loss + lambda_cls * cls_loss
 
+    @partial(jit, static_argnames=("self"))
+    def _safety_loss(
+        self,
+        actor_distributions: dict,
+        # {alphas (B, 3), vertices (B, 3, 2)}
+        human_distrs: dict,
+        # {
+        #   pos_distrs: {means (B, M, 2), logsigmas (B, M, 2), correlation (B, M)}, 
+        #   vel_distrs: {means (B, M, 2), logsigmas (B, M, 2), correlation (B, M)}, 
+        #   weights (B, M)
+        # }
+        score_threshold: float = 0.5,
+        dt: float = 0.5, # Time horizon to evaluate safety
+        uncertainty_sensitivity: float = 10.0,
+    ) -> jnp.ndarray:
+        """
+        Computes a safety loss that penalizes MEAN actions that bring the robot too close to a collision
+        in the next time interval in the relative position space, considering the uncertainty in human positions.
+        """
+        ### Compute distance threshold
+        distance_threshold = self.v_max * dt * 2
+        ### Extract human distribution parameters (STOP GRADIENTS)
+        human_weights = lax.stop_gradient(human_distrs['weights'][..., 0]) # (B, M)
+        h_pos_0 = lax.stop_gradient(human_distrs['pos_distrs']['means']) # (B, M, 2)
+        h_vel = lax.stop_gradient(human_distrs['vel_distrs']['means'])   # (B, M, 2)
+        def get_cov_matrix(logsig, corr):
+            sig = jnp.exp(logsig) # (B, M, 2)
+            sig_x = sig[..., 0]
+            sig_y = sig[..., 1]
+            rho = corr[..., 0]    # (B, M) 
+            var_x = jnp.square(sig_x)
+            var_y = jnp.square(sig_y)
+            cov_xy = rho * sig_x * sig_y
+            row1 = jnp.stack([var_x, cov_xy], axis=-1)
+            row2 = jnp.stack([cov_xy, var_y], axis=-1)
+            return jnp.stack([row1, row2], axis=-2)
+        sigma_pos = get_cov_matrix(
+            lax.stop_gradient(human_distrs['pos_distrs']['logsigmas']),
+            lax.stop_gradient(human_distrs['pos_distrs']['correlations'])
+        )
+        sigma_vel = get_cov_matrix(
+            lax.stop_gradient(human_distrs['vel_distrs']['logsigmas']),
+            lax.stop_gradient(human_distrs['vel_distrs']['correlations'])
+        )
+        B, M, _ = h_pos_0.shape
+        ### Filter HCGs by score threshold and distance threshold
+        score_mask = human_weights >= score_threshold  # Shape: (B, M)
+        distance_mask = jnp.linalg.norm(h_pos_0, axis=-1) <= distance_threshold
+        final_mask = score_mask & distance_mask  # Shape: (B, M)
+        ### Compute mean actions
+        mean_actions = vmap(self.dirichlet.mean)(actor_distributions)  # Shape: (B, 2)
+        v_cmd = mean_actions[:, 0]
+        w_cmd = mean_actions[:, 1]
+        ### Compute next positions
+        theta = w_cmd * dt
+        eps = 1e-6
+        small_angle = jnp.abs(w_cmd) < eps
+        r_dx_linear = v_cmd * dt
+        r_dy_linear = 0.0
+        r_dx_curved = (v_cmd / w_cmd) * jnp.sin(theta)
+        r_dy_curved = (v_cmd / w_cmd) * (1.0 - jnp.cos(theta))
+        r_disp_x = jnp.where(small_angle, r_dx_linear, r_dx_curved)
+        r_disp_y = jnp.where(small_angle, r_dy_linear, r_dy_curved) 
+        r_disp = jnp.stack([r_disp_x, r_disp_y], axis=-1) # (B, 2)
+        h_pos_next = h_pos_0 + (h_vel * dt) # (B, M, 2)
+        ### Compute minimum distance between robot path and human predicted positions
+        P_start = h_pos_0
+        P_end = h_pos_next - jnp.expand_dims(r_disp, 1) # (B, M, 2)
+        u = P_end - P_start
+        u_sq_norm = jnp.sum(u**2, axis=-1)
+        u_sq_norm = jnp.maximum(u_sq_norm, 1e-6)
+        dot_prod = jnp.sum(P_start * u, axis=-1)
+        t_star = -dot_prod / u_sq_norm
+        t_clip = jnp.clip(t_star, 0.0, 1.0) # (B, M)
+        closest_point = P_start + jnp.expand_dims(t_clip, -1) * u # (B, M, 2)
+        min_dist_sq = jnp.sum(closest_point**2, axis=-1) # (B, M)
+        min_dist = jnp.sqrt(min_dist_sq + 1e-6)
+        ### Compute uncertainty at time t-clip
+        time_real = t_clip * dt  # (B, M)
+        time_sq = jnp.square(time_real) # (B, M)
+        time_sq_bd = time_sq[..., None, None]
+        sigma_tot = sigma_pos + (time_sq_bd * sigma_vel) # (B, M, 2, 2)
+        d = closest_point # (B, M, 2)
+        d_norm_sq = min_dist_sq # (B, M)
+        safe_denominator = jnp.maximum(d_norm_sq, 1e-6)
+        d_expanded = d[..., None, :] # (B, M, 1, 2)
+        d_T_expanded = d[..., :, None] # (B, M, 2, 1)
+        sigma_proj_sq_unnormalized = jnp.einsum('bmi,bmij,bmj->bm', d, sigma_tot, d)
+        variance_along_collision = sigma_proj_sq_unnormalized / safe_denominator
+        confidence_weight = 1.0 / (1.0 + uncertainty_sensitivity * variance_along_collision)
+        ### Compute safety loss
+        required_safety_dist = self.robot_radius * 2 + 0.05
+        violations = jnp.maximum(0.0, required_safety_dist - min_dist) # (B, M)
+        weighted_loss = jnp.square(violations) * confidence_weight * final_mask # (B, M)
+        frame_safety_loss = jnp.sum(weighted_loss, axis=-1) # (B,)
+        scalar_loss = jnp.mean(frame_safety_loss) # ()
+        return scalar_loss
+    
     # Public methods
 
     def merge_nns_params(
@@ -1098,8 +1196,8 @@ class JESSI(BasePolicy):
         # }
         targets:dict, 
         # {"gt_mask","gt_poses","gt_vels"}
-        distance_thresholds:jnp.ndarray = jnp.arange(0.1, 1.01, 0.01), # Distance threshold to consider a correct detection
-        score_thresholds:jnp.ndarray = jnp.arange(0.1, 1.01, 0.01), # Minimum score to consider a detection
+        distance_thresholds:jnp.ndarray = jnp.arange(0.1, 1.02, 0.02), # Distance threshold to consider a correct detection
+        score_thresholds:jnp.ndarray = jnp.arange(0.05, 0.97, 0.02), # Minimum score to consider a detection
     ) -> dict:
         """
         Compute perception metrics for a batch of predictions and targets on the threshold grid given by 
@@ -1201,7 +1299,7 @@ class JESSI(BasePolicy):
         
         ## CALCULATE METRICS ---
         # TRUE POSITIVES (D, S)
-        is_tp = (e_gt_mask > 0.5) & (e_pos_error < t_dist) & (e_scores > t_score)
+        is_tp = (e_gt_mask == 1) & (e_pos_error < t_dist) & (e_scores > t_score)
         tp_count = jnp.sum(is_tp, axis=(0, 1))
         # FALSE NEGATIVES (D, S)
         total_gt = jnp.sum(gt_mask)
@@ -1239,7 +1337,9 @@ class JESSI(BasePolicy):
             "mahalanobis_pos": mean_md_pos,
             "mahalanobis_vel": mean_md_vel,
             # Utilities useful for debugging
-            "total_gt_objects": total_gt
+            "total_gt_objects": total_gt,
+            "distance_thresholds": distance_thresholds,
+            "score_thresholds": score_thresholds,
         }
         return metrics
 

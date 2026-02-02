@@ -61,6 +61,12 @@ metrics = {
     "space_compliance": {"label": "Space compliance", "episodic": True},
     "episodic_spl": {"label": "Episodic SPL", "episodic": True},
     "path_length": {"label": "Path length ($m$)", "episodic": True},
+    "precision": {"label": "Precision (%)"},
+    "recall": {"label": "Recall (%) "},
+    "ADE": {"label": "Displacement Error ($m$)"},
+    "AVE": {"label": "Velocity Error ($m/s$)"},
+    "mahalanobis_pos": {"label": "Mahalanobis Dist. Pos."},
+    "mahalanobis_vel": {"label": "Mahalanobis Dist. Vel."},
 }
 scenarios = {
     "parallel_traffic": {"label": "PaT"},
@@ -386,6 +392,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_perception_t
         n_stack=lidar_configurations[0][2],
         n_stack_for_action_space_bounding=1,
     )
+    with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
+        perception_network_params = pickle.load(f)
+    with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
+        controller_network_params = pickle.load(f)
+    network_params_pre_rl = policy.merge_nns_params(
+        perception_network_params,
+        controller_network_params,
+    )
     seen_env_params = {
         'n_stack': lidar_configurations[0][2],
         'lidar_num_rays': lidar_configurations[0][0],
@@ -410,6 +424,18 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_perception_t
     seen_env = LaserNav(**seen_env_params)
     ct_env = LaserNav(**ct_env_params) # Unseen scenario
     # Test the trained JESSI policy
+    metrics_seen_scenarios_pre_rl = policy.evaluate_perception(
+        n_steps_perception,
+        random_seed,
+        seen_env,
+        network_params_pre_rl,
+    )
+    metrics_unseen_scenarios_pre_rl = policy.evaluate_perception(
+        n_steps_perception,
+        random_seed,
+        ct_env,
+        network_params_pre_rl,
+    )
     metrics_seen_scenarios = policy.evaluate_perception(
         n_steps_perception,
         random_seed,
@@ -423,11 +449,152 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_perception_t
         network_params,
     )
     with open(os.path.join(os.path.dirname(__file__),"jessi_perception_tests.pkl"), 'wb') as f:
-        pickle.dump((metrics_seen_scenarios, metrics_unseen_scenarios), f)
+        pickle.dump((metrics_seen_scenarios_pre_rl, metrics_unseen_scenarios_pre_rl, metrics_seen_scenarios, metrics_unseen_scenarios), f)
 else:
     with open(os.path.join(os.path.dirname(__file__),"jessi_perception_tests.pkl"), 'rb') as f:
-        metrics_seen_scenarios, metrics_unseen_scenarios = pickle.load(f) 
+        metrics_seen_scenarios_pre_rl, metrics_unseen_scenarios_pre_rl, metrics_seen_scenarios, metrics_unseen_scenarios = pickle.load(f) 
 ## PLOTS
-# Plot metrics on SEEN scenarios
-
-# Plot metrics on UNSEEN scenarios
+# Plot metrics on SEEN scenarios PRE RL
+metrics_to_plot = ["precision","recall","ADE","AVE","mahalanobis_pos","mahalanobis_vel"]
+figure, ax = plt.subplots(3, 2, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.95)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 2
+    j = m % 2
+    ax[i,j].set(
+        xlabel='Distance Threshold',
+        ylabel='Score Threshold',
+        title=metrics[metric]['label'],
+    )
+    ax[i,j].grid(zorder=0)
+    if metric in ['precision', 'recall']:
+        l_min, l_max = 0.0, 1.0
+        colormap = 'RdYlGn'
+    else:
+        combined_data = jnp.concatenate([
+            metrics_seen_scenarios[metric].ravel(), 
+            metrics_unseen_scenarios[metric].ravel(),
+            metrics_seen_scenarios_pre_rl[metric].ravel(), 
+            metrics_unseen_scenarios_pre_rl[metric].ravel(),
+        ])
+        l_min, l_max = jnp.min(combined_data), jnp.max(combined_data)
+        colormap = 'RdYlGn_r'
+    ax[i,j].contourf(
+        metrics_seen_scenarios_pre_rl['distance_thresholds'], 
+        metrics_seen_scenarios_pre_rl['score_thresholds'],
+        metrics_seen_scenarios_pre_rl[metric].T, 
+        levels=jnp.linspace(l_min, l_max, 31),
+        cmap=colormap,
+        vmin=l_min,
+        vmax=l_max,
+    )
+    cbar = figure.colorbar(ax[i,j].collections[0], ax=ax[i,j], format='%.2f')
+figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_perception_pre_rl_seen_scenarios.eps"), format='eps')
+# Plot metrics on UNSEEN scenarios PRE RL
+metrics_to_plot = ["precision","recall","ADE","AVE","mahalanobis_pos","mahalanobis_vel"]
+figure, ax = plt.subplots(3, 2, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.95)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 2
+    j = m % 2
+    ax[i,j].set(
+        xlabel='Distance Threshold',
+        ylabel='Score Threshold',
+        title=metrics[metric]['label'],
+    )
+    ax[i,j].grid(zorder=0)
+    if metric in ['precision', 'recall']:
+        l_min, l_max = 0.0, 1.0
+        colormap = 'RdYlGn'
+    else:
+        combined_data = jnp.concatenate([
+            metrics_seen_scenarios[metric].ravel(), 
+            metrics_unseen_scenarios[metric].ravel(),
+            metrics_seen_scenarios_pre_rl[metric].ravel(), 
+            metrics_unseen_scenarios_pre_rl[metric].ravel(),
+        ])
+        l_min, l_max = jnp.min(combined_data), jnp.max(combined_data)
+        colormap = 'RdYlGn_r'
+    ax[i,j].contourf(
+        metrics_unseen_scenarios_pre_rl['distance_thresholds'], 
+        metrics_unseen_scenarios_pre_rl['score_thresholds'],
+        metrics_unseen_scenarios_pre_rl[metric].T, 
+        levels=jnp.linspace(l_min, l_max, 31),
+        cmap=colormap,
+        vmin=l_min,
+        vmax=l_max,
+    )
+    cbar = figure.colorbar(ax[i,j].collections[0], ax=ax[i,j], format='%.2f')
+figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_perception_pre_rl_unseen_scenarios.eps"), format='eps')
+# Plot metrics on SEEN scenarios POST RL
+metrics_to_plot = ["precision","recall","ADE","AVE","mahalanobis_pos","mahalanobis_vel"]
+figure, ax = plt.subplots(3, 2, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.95)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 2
+    j = m % 2
+    ax[i,j].set(
+        xlabel='Distance Threshold',
+        ylabel='Score Threshold',
+        title=metrics[metric]['label'],
+    )
+    ax[i,j].grid(zorder=0)
+    if metric in ['precision', 'recall']:
+        l_min, l_max = 0.0, 1.0
+        colormap = 'RdYlGn'
+    else:
+        combined_data = jnp.concatenate([
+            metrics_seen_scenarios[metric].ravel(), 
+            metrics_unseen_scenarios[metric].ravel(),
+            metrics_seen_scenarios_pre_rl[metric].ravel(), 
+            metrics_unseen_scenarios_pre_rl[metric].ravel(),
+        ])
+        l_min, l_max = jnp.min(combined_data), jnp.max(combined_data)
+        colormap = 'RdYlGn_r'
+    ax[i,j].contourf(
+        metrics_seen_scenarios['distance_thresholds'], 
+        metrics_seen_scenarios['score_thresholds'],
+        metrics_seen_scenarios[metric].T, 
+        levels=jnp.linspace(l_min, l_max, 31),
+        cmap=colormap,
+        vmin=l_min,
+        vmax=l_max,
+    )
+    cbar = figure.colorbar(ax[i,j].collections[0], ax=ax[i,j], format='%.2f')
+figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_perception_post_rl_seen_scenarios.eps"), format='eps')
+# Plot metrics on UNSEEN scenarios POST RL
+metrics_to_plot = ["precision","recall","ADE","AVE","mahalanobis_pos","mahalanobis_vel"]
+figure, ax = plt.subplots(3, 2, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.95)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 2
+    j = m % 2
+    ax[i,j].set(
+        xlabel='Distance Threshold',
+        ylabel='Score Threshold',
+        title=metrics[metric]['label'],
+    )
+    ax[i,j].grid(zorder=0)
+    if metric in ['precision', 'recall']:
+        l_min, l_max = 0.0, 1.0
+        colormap = 'RdYlGn'
+    else:
+        combined_data = jnp.concatenate([
+            metrics_seen_scenarios[metric].ravel(), 
+            metrics_unseen_scenarios[metric].ravel(),
+            metrics_seen_scenarios_pre_rl[metric].ravel(), 
+            metrics_unseen_scenarios_pre_rl[metric].ravel(),
+        ])
+        l_min, l_max = jnp.min(combined_data), jnp.max(combined_data)
+        colormap = 'RdYlGn_r'
+    ax[i,j].contourf(
+        metrics_unseen_scenarios['distance_thresholds'], 
+        metrics_unseen_scenarios['score_thresholds'],
+        metrics_unseen_scenarios[metric].T, 
+        levels=jnp.linspace(l_min, l_max, 31),
+        cmap=colormap,
+        vmin=l_min,
+        vmax=l_max,
+    )
+    cbar = figure.colorbar(ax[i,j].collections[0], ax=ax[i,j], format='%.2f')
+figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_perception_post_rl_unseen_scenarios.eps"), format='eps')
