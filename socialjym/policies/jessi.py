@@ -659,14 +659,21 @@ class JESSI(BasePolicy):
         ### Compute distance threshold
         distance_threshold = self.v_max * dt * 2
         ### Extract human distribution parameters (STOP GRADIENTS)
-        human_weights = lax.stop_gradient(human_distrs['weights'][..., 0]) # (B, M)
+        raw_weights = lax.stop_gradient(human_distrs['weights']) # (B, M)
+        if raw_weights.ndim == 3:
+            human_weights = raw_weights[..., 0]
+        else:
+            human_weights = raw_weights
         h_pos_0 = lax.stop_gradient(human_distrs['pos_distrs']['means']) # (B, M, 2)
         h_vel = lax.stop_gradient(human_distrs['vel_distrs']['means'])   # (B, M, 2)
         def get_cov_matrix(logsig, corr):
             sig = jnp.exp(logsig) # (B, M, 2)
             sig_x = sig[..., 0]
             sig_y = sig[..., 1]
-            rho = corr[..., 0]    # (B, M) 
+            if corr.ndim == 3:
+                rho = corr[..., 0]
+            else:
+                rho = corr # (B, M)
             var_x = jnp.square(sig_x)
             var_y = jnp.square(sig_y)
             cov_xy = rho * sig_x * sig_y
@@ -675,11 +682,11 @@ class JESSI(BasePolicy):
             return jnp.stack([row1, row2], axis=-2)
         sigma_pos = get_cov_matrix(
             lax.stop_gradient(human_distrs['pos_distrs']['logsigmas']),
-            lax.stop_gradient(human_distrs['pos_distrs']['correlations'])
+            lax.stop_gradient(human_distrs['pos_distrs']['correlation'])
         )
         sigma_vel = get_cov_matrix(
             lax.stop_gradient(human_distrs['vel_distrs']['logsigmas']),
-            lax.stop_gradient(human_distrs['vel_distrs']['correlations'])
+            lax.stop_gradient(human_distrs['vel_distrs']['correlation'])
         )
         B, M, _ = h_pos_0.shape
         ### Filter HCGs by score threshold and distance threshold

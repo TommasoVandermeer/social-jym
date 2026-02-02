@@ -78,6 +78,7 @@ training_hyperparams = {
     'hybrid_scenario_subset': hybrid_scenario_subset,
     'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
+    'safety_loss': True,  # Whether to include safety loss in the RL training
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 # JESSI policy
@@ -1013,6 +1014,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
         'n_epochs': training_hyperparams['rl_num_epochs'],
         'beta_entropy': training_hyperparams['rl_beta_entropy'],
         'lambda_gae': training_hyperparams['lambda_gae'],
+        'safety_loss': training_hyperparams['safety_loss'],
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)

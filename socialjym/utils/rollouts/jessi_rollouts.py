@@ -236,7 +236,7 @@ def train_one_epoch(
             else:
                 safety_loss = 0.0
             # Total loss
-            total_loss = policy_loss + .5 * critic_loss + .05 * perception_loss + .5 * safety_loss
+            total_loss = policy_loss + .5 * critic_loss + .05 * perception_loss + 2 * safety_loss
             return total_loss, (actor_loss, critic_loss, perception_loss, safety_loss, entropy_loss, approx_kl, clip_frac)
 
         def _micro_step_scan(carry, u_mb):
@@ -422,7 +422,7 @@ def jessi_multitask_rl_rollout(
                 optimizer=network_optimizer, 
                 clip_range=clip_range, 
                 beta_entropy=beta_entropy,
-                safety_loss=safety_loss,
+                compute_safety_loss=safety_loss,
                 full_network_training=full_network_training,
             )
             abstract_train_out = eval_shape(
