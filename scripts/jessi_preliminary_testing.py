@@ -22,6 +22,7 @@ from socialjym.utils.aux_functions import initialize_metrics_dict
 # Hyperparameters
 random_seed = 0
 n_trials = 200
+n_steps_perception = 10_000
 # Tests
 tests_n_humans = [1, 3, 5, 10]
 tests_n_obstacles = [1, 3, 5]
@@ -35,7 +36,7 @@ lidar_configurations = [ # (num_rays, angular_range, n_stack) #
     (50, jnp.pi * 2, 5), # Reduced resolution
     (100, jnp.pi, 5), # Reduced angular range
     (100, jnp.pi * 2, 3), # Reduced n_stack
-    (200, jnp.pi * 2, 3), # Augmented resolution
+    (200, jnp.pi * 2, 5), # Augmented resolution
     (100, jnp.pi * 2, 8), # Augmented n_stack
     # Keep this as last tests
     (100, (jnp.pi / 180) * 70, 5), # Heavily reduced angular range (70°, LOOMO-like)
@@ -377,4 +378,56 @@ figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_lidar_reduced_rang
 
 
 ### TEST PERCEPTION ACCURACY WITH TRAINING CONDITIONS BEFORE AND AFTER RL (ON SEEN AND UNSEEN SCENARIOS) ###
-# Accuracy in terms of Probabilistic Coverage for HCGs with scores > 1. For position and velocity.
+if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_perception_tests.pkl")):
+    policy = JESSI(
+        lidar_num_rays=lidar_configurations[0][0],
+        lidar_angular_range=lidar_configurations[0][1],
+        lidar_max_dist=lidar_max_dist,
+        n_stack=lidar_configurations[0][2],
+        n_stack_for_action_space_bounding=1,
+    )
+    seen_env_params = {
+        'n_stack': lidar_configurations[0][2],
+        'lidar_num_rays': lidar_configurations[0][0],
+        'lidar_angular_range': lidar_configurations[0][1],
+        'lidar_max_dist': lidar_max_dist,
+        'n_humans': 5,
+        'n_obstacles': 3,
+        'robot_radius': 0.3,
+        'robot_dt': 0.25,
+        'humans_dt': 0.01,      
+        'robot_visible': True,
+        'scenario': 'hybrid_scenario', 
+        'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+        'ccso_n_static_humans': 0,
+        'reward_function': Reward(robot_radius=0.3,collision_with_humans_penalty=-.5),
+        'kinematics': 'unicycle',
+        'lidar_noise': True,
+    }
+    ct_env_params = seen_env_params.copy()
+    ct_env_params['scenario'] = 'corner_traffic'
+    # Initialize the environments
+    seen_env = LaserNav(**seen_env_params)
+    ct_env = LaserNav(**ct_env_params) # Unseen scenario
+    # Test the trained JESSI policy
+    metrics_seen_scenarios = policy.evaluate_perception(
+        n_steps_perception,
+        random_seed,
+        seen_env,
+        network_params,
+    )
+    metrics_unseen_scenarios = policy.evaluate_perception(
+        n_steps_perception,
+        random_seed,
+        ct_env,
+        network_params,
+    )
+    with open(os.path.join(os.path.dirname(__file__),"jessi_perception_tests.pkl"), 'wb') as f:
+        pickle.dump((metrics_seen_scenarios, metrics_unseen_scenarios), f)
+else:
+    with open(os.path.join(os.path.dirname(__file__),"jessi_perception_tests.pkl"), 'rb') as f:
+        metrics_seen_scenarios, metrics_unseen_scenarios = pickle.load(f) 
+## PLOTS
+# Plot metrics on SEEN scenarios
+
+# Plot metrics on UNSEEN scenarios
