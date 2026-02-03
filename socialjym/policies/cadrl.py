@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, debug, nn, value_and_grad, tree_map
+from jax import random, jit, vmap, lax, nn, value_and_grad
 from functools import partial
 import haiku as hk
 from types import FunctionType

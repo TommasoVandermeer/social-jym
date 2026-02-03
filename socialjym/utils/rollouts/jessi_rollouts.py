@@ -236,7 +236,7 @@ def train_one_epoch(
             else:
                 safety_loss = 0.0
             # Total loss
-            total_loss = policy_loss + .5 * critic_loss + .05 * perception_loss + 2 * safety_loss
+            total_loss = policy_loss + .5 * critic_loss + .05 * perception_loss + 10 * safety_loss
             return total_loss, (actor_loss, critic_loss, perception_loss, safety_loss, entropy_loss, approx_kl, clip_frac)
 
         def _micro_step_scan(carry, u_mb):

@@ -701,10 +701,11 @@ class JESSI(BasePolicy):
         theta = w_cmd * dt
         eps = 1e-6
         small_angle = jnp.abs(w_cmd) < eps
+        safe_w_cmd = jnp.where(small_angle, 1.0, w_cmd) # JUST FOR NUMERICAL STABILITY OF GRADIENTS (the where later will discard the value 1.0 if small_angle is True)
         r_dx_linear = v_cmd * dt
         r_dy_linear = 0.0
-        r_dx_curved = (v_cmd / w_cmd) * jnp.sin(theta)
-        r_dy_curved = (v_cmd / w_cmd) * (1.0 - jnp.cos(theta))
+        r_dx_curved = (v_cmd / safe_w_cmd) * jnp.sin(theta)
+        r_dy_curved = (v_cmd / safe_w_cmd) * (1.0 - jnp.cos(theta))
         r_disp_x = jnp.where(small_angle, r_dx_linear, r_dx_curved)
         r_disp_y = jnp.where(small_angle, r_dy_linear, r_dy_curved) 
         r_disp = jnp.stack([r_disp_x, r_disp_y], axis=-1) # (B, 2)
@@ -734,11 +735,16 @@ class JESSI(BasePolicy):
         sigma_proj_sq_unnormalized = jnp.einsum('bmi,bmij,bmj->bm', d, sigma_tot, d)
         variance_along_collision = sigma_proj_sq_unnormalized / safe_denominator
         confidence_weight = 1.0 / (1.0 + uncertainty_sensitivity * variance_along_collision)
+        ### Compute alignement factor (if collision is frontal, penalize more)
+        cos_impact = closest_point[..., 0] / (min_dist + 1e-6)
+        alignment_factor = 1.0 + 5.0 * jnp.maximum(0.0, cos_impact)
         ### Compute safety loss
         required_safety_dist = self.robot_radius * 2 + 0.05
         violations = jnp.maximum(0.0, required_safety_dist - min_dist) # (B, M)
         weighted_loss = jnp.square(violations) * confidence_weight * final_mask # (B, M)
-        frame_safety_loss = jnp.sum(weighted_loss, axis=-1) # (B,)
+        frame_safety_loss = jnp.sum(weighted_loss, axis=-1)
+        # directional_loss = weighted_loss * alignment_factor
+        # frame_safety_loss = jnp.sum(directional_loss, axis=-1) # (B,)
         scalar_loss = jnp.mean(frame_safety_loss) # ()
         return scalar_loss
     
