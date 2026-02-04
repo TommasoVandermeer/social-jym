@@ -190,15 +190,9 @@ def train_one_epoch(
             inputs0 = inputs0.astype(jnp.float16)
             inputs1 = inputs1.astype(jnp.float16)
             # Forward pass
-            if full_network_training:
-                (perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
-                    p, None, inputs0, inputs1
-                )
-            else:
-                pass
-                # Somewhere you need to split the parameters of the networks to freeze the encoder
-                # Then stop the gradient on the encoder outputs
-                # Then compute the action distribution and value prediction as usual
+            (perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
+                p, None, inputs0, inputs1, stop_perception_gradient=~(full_network_training)
+            )
             # Cast back to higher precision
             pred_val = pred_val.astype(jnp.float32)
             def dist_to_f32(dist):
@@ -224,9 +218,12 @@ def train_one_epoch(
             entropy_loss = -beta_entropy * entropy
             policy_loss = actor_loss + entropy_loss
             # Perception
-            gt_dict = {"gt_mask": u_mb["gt_mask"], "gt_poses": u_mb["gt_poses"], "gt_vels": u_mb["gt_vels"]}
-            batch_perc_loss = policy._encoder_loss(perc_dist, gt_dict)
-            perception_loss = jnp.mean(batch_perc_loss)
+            if full_network_training:
+                gt_dict = {"gt_mask": u_mb["gt_mask"], "gt_poses": u_mb["gt_poses"], "gt_vels": u_mb["gt_vels"]}
+                batch_perc_loss = policy._encoder_loss(perc_dist, gt_dict)
+                perception_loss = jnp.mean(batch_perc_loss)
+            else:
+                perception_loss = 0.0
             # Safety loss (optional)
             if compute_safety_loss:
                 safety_loss = policy._safety_loss(

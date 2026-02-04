@@ -197,7 +197,7 @@ class Perception(hk.Module):
             "weights": weights
         }
 
-    def __call__(self, x):
+    def __call__(self, x, stop_gradient=False):
         # x input: [batch B, n_stack (T), num_beams (L), 7]
         has_batch = x.ndim == 4
         if not has_batch:
@@ -215,6 +215,9 @@ class Perception(hk.Module):
         if not has_batch:
             hum_distr = tree_map(lambda t: t[0], hum_distr)
             last_scan_embeddings = last_scan_embeddings[0]
+        if stop_gradient:
+            hum_distr = tree_map(lambda t: lax.stop_gradient(t), hum_distr)
+            last_scan_embeddings = lax.stop_gradient(last_scan_embeddings)
         return hum_distr, last_scan_embeddings
     
 class ActorCritic(hk.Module):
@@ -400,12 +403,13 @@ class E2E(hk.Module):
         self,
         x: jnp.ndarray, # Perception input (B, n_stack, num_beams, 7)
         y: jnp.ndarray, # Additional actor-critic input (B, n_detectable_humans, 9)
+        stop_perception_gradient: bool = False,
         **kwargs: dict,
     ) -> tuple:
         # Extract random key
         random_key = kwargs.get("random_key", random.PRNGKey(0))
         ## PERCEPTION
-        perception_output, scan_embedding = self.perception(x) # perception_output: (B, N, 11), scan_embedding: (B, E)
+        perception_output, scan_embedding = self.perception(x, stop_gradient=stop_perception_gradient) # perception_output: (B, N, 11), scan_embedding: (B, E)
         # Prepare actor-critic input
         hcgs = jnp.concatenate((
             perception_output["pos_distrs"]["means"],
@@ -493,7 +497,7 @@ class JESSI(BasePolicy):
         # Initialize Perception network
         self.perception_name = "lidar_perception"
         @hk.transform
-        def perception_network(x):
+        def perception_network(x, stop_gradient=False) -> jnp.ndarray:
             net = Perception(
                 self.perception_name, 
                 self.n_detectable_humans, 
@@ -502,7 +506,7 @@ class JESSI(BasePolicy):
                 embed_dim=self.embedding_dim, 
                 n_sectors=n_sectors
             )
-            return net(x)
+            return net(x, stop_gradient=stop_gradient)
         self.perception = perception_network
         # Initialize Actor Critic network
         self.actor_critic_name = "actor_network"
@@ -520,7 +524,7 @@ class JESSI(BasePolicy):
         # Initialize E2E Actor Critic network
         self.e2e_name = "e2e"
         @hk.transform
-        def e2e_network(x, y, **kwargs) -> jnp.ndarray:
+        def e2e_network(x, y, stop_perception_gradient=False, **kwargs) -> jnp.ndarray:
             e2e = E2E(
                 self.e2e_name,
                 self.perception_name,
@@ -533,8 +537,9 @@ class JESSI(BasePolicy):
                 embed_dim=self.embedding_dim,
                 n_sectors=self.n_sectors,
             ) 
-            return e2e(x, y, **kwargs)
+            return e2e(x, y, stop_perception_gradient=stop_perception_gradient, **kwargs)
         self.e2e = e2e_network
+
     # Private methods
 
     @partial(jit, static_argnames=("self"))
