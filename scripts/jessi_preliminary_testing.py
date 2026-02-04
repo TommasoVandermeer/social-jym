@@ -28,8 +28,10 @@ tests_n_humans = [1, 3, 5, 10]
 tests_n_obstacles = [1, 3, 5]
 # Policy parameters
 lidar_max_dist = 10.0
-with open(os.path.join(os.path.dirname(__file__), 'jessi_rl_out.pkl'), 'rb') as f:
-    network_params, _, _ = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__), 'jessi_e2e_rl_out.pkl'), 'rb') as f:
+    jessi_e2e_params, _, _ = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__), 'jessi_modular_rl_out.pkl'), 'rb') as f:
+    jessi_modular_params, _, _ = pickle.load(f)
 # Lidar configurations
 lidar_configurations = [ # (num_rays, angular_range, n_stack) #
     (100, jnp.pi * 2, 5), # Training conditions (used for main tests)
@@ -79,6 +81,204 @@ scenarios = {
     "crowd_navigation": {"label": "CN"},
 }
 
+### TEST JESSI-E2E vs JESSI-MODULAR WITH DIFFERENT ENVIRONMENT CONFIGURATIONS ON SEEN VS UNSEEN SCENARIOS ###
+if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_e2e_vs_jessi_modular_preliminary_testing.pkl")):
+    metrics_dims = (2,2,len(tests_n_obstacles),len(tests_n_humans))
+    all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
+    policy = JESSI(
+        lidar_num_rays=lidar_configurations[0][0],
+        lidar_angular_range=lidar_configurations[0][1],
+        lidar_max_dist=lidar_max_dist,
+        n_stack=lidar_configurations[0][2],
+        n_stack_for_action_space_bounding=1,
+    )
+    for i, n_obstacle in enumerate(tests_n_obstacles):
+        for j, n_human in enumerate(tests_n_humans):
+            seen_env_params = {
+                'n_stack': lidar_configurations[0][2],
+                'lidar_num_rays': lidar_configurations[0][0],
+                'lidar_angular_range': lidar_configurations[0][1],
+                'lidar_max_dist': lidar_max_dist,
+                'n_humans': n_human,
+                'n_obstacles': n_obstacle,
+                'robot_radius': 0.3,
+                'robot_dt': 0.25,
+                'humans_dt': 0.01,      
+                'robot_visible': True,
+                'scenario': 'hybrid_scenario', 
+                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'ccso_n_static_humans': 0,
+                'reward_function': Reward(robot_radius=0.3,collision_with_humans_penalty=-.5),
+                'kinematics': 'unicycle',
+                'lidar_noise': True,
+            }
+            ct_env_params = seen_env_params.copy()
+            ct_env_params['scenario'] = 'corner_traffic'
+            ccso_env_params = seen_env_params.copy()
+            ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
+            ccso_env_params['ccso_n_static_humans'] = n_obstacle
+            ccso_env_params['n_humans'] = n_human + n_obstacle
+            # Initialize the environments
+            seen_env = LaserNav(**seen_env_params)
+            ct_env = LaserNav(**ct_env_params) # Unseen scenario
+            ccso_env = LaserNav(**ccso_env_params) # Unseen scenario
+            # Test the trained JESSI-E2E policy
+            metrics_seen_scenarios = policy.evaluate(
+                n_trials,
+                random_seed,
+                seen_env,
+                jessi_e2e_params,
+            )
+            metrics_ct = policy.evaluate(
+                n_trials//2,
+                random_seed,
+                ct_env,
+                jessi_e2e_params,
+            )
+            metrics_ccso = policy.evaluate(
+                n_trials//2,
+                random_seed,
+                ccso_env,
+                jessi_e2e_params,
+            )
+            metrics_unseen_scenarios = tree_map(
+                lambda x, y: x + y if len(x.shape)==0 else jnp.append(x, y), 
+                metrics_ct, 
+                metrics_ccso
+            )
+            all_metrics = tree_map(lambda x, y: x.at[0,0,i,j].set(y), all_metrics, metrics_seen_scenarios)
+            all_metrics = tree_map(lambda x, y: x.at[0,1,i,j].set(y), all_metrics, metrics_unseen_scenarios)
+            # Test the trained JESSI-MODULAR policy
+            metrics_seen_scenarios = policy.evaluate(
+                n_trials,
+                random_seed,
+                seen_env,
+                jessi_modular_params,
+            )
+            metrics_ct = policy.evaluate(
+                n_trials//2,
+                random_seed,
+                ct_env,
+                jessi_modular_params,
+            )
+            metrics_ccso = policy.evaluate(
+                n_trials//2,
+                random_seed,
+                ccso_env,
+                jessi_modular_params,
+            )
+            metrics_unseen_scenarios = tree_map(
+                lambda x, y: x + y if len(x.shape)==0 else jnp.append(x, y), 
+                metrics_ct, 
+                metrics_ccso
+            )
+            all_metrics = tree_map(lambda x, y: x.at[1,0,i,j].set(y), all_metrics, metrics_seen_scenarios)
+            all_metrics = tree_map(lambda x, y: x.at[1,1,i,j].set(y), all_metrics, metrics_unseen_scenarios)
+    with open(os.path.join(os.path.dirname(__file__),"jessi_e2e_vs_jessi_modular_preliminary_testing.pkl"), 'wb') as f:
+        pickle.dump(all_metrics, f)
+else:
+    with open(os.path.join(os.path.dirname(__file__),"jessi_e2e_vs_jessi_modular_preliminary_testing.pkl"), 'rb') as f:
+        all_metrics = pickle.load(f)          
+## PLOTS
+# Plot metrics of JESSI-E2E vs JESSI-MODULAR against number of humans on SEEN scenarios
+metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
+colors = ["green", "red"]
+figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 3
+    j = m % 3
+    ax[i,j].set(
+        xlabel='N° humans',
+        title=metrics[metric]['label'],
+    )
+    ax[i,j].grid(zorder=0)
+    ax[i,j].set_xticks(jnp.arange(len(tests_n_humans)))
+    ax[i,j].set_xticklabels(tests_n_humans)
+    for s in range(len(all_metrics[metric])):
+        if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
+            y_data = jnp.nanmean(all_metrics[metric][s, 0, :, :], axis=0) / n_trials
+            ax[i, j].set_ylim(-0.05, 1.05)
+        else:
+            y_data = jnp.nanmean(all_metrics[metric][s, 0, :, :, :], axis=(0,2))
+        ax[i, j].plot(jnp.arange(len(tests_n_humans)), y_data, label="E2E" if s == 0 else "MODULAR", color=colors[s], linewidth=2.5)
+h, l = ax[0,0].get_legend_handles_labels()
+figure.legend(h, l, loc='center right', title='Scenarios')
+figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_e2e_vs_jessi_modular_preliminary_tests_1.eps"), format='eps')
+# Plot metrics of JESSI-E2E vs JESSI-MODULAR against number of obstacles on SEEN scenarios
+metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
+colors = ["green", "red"]
+figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 3
+    j = m % 3
+    ax[i,j].set(
+        xlabel='N° obstacles',
+        title=metrics[metric]['label'],)
+    ax[i,j].grid(zorder=0)
+    ax[i,j].set_xticks(jnp.arange(len(tests_n_obstacles)))
+    ax[i,j].set_xticklabels(tests_n_obstacles)
+    for s in range(len(all_metrics[metric])):
+        if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
+            y_data = jnp.nanmean(all_metrics[metric][s, 0, :, :], axis=1) / n_trials
+            ax[i, j].set_ylim(-0.05, 1.05)
+        else:
+            y_data = jnp.nanmean(all_metrics[metric][s, 0, :, :, :], axis=(1,2))
+        ax[i, j].plot(jnp.arange(len(tests_n_obstacles)), y_data, label="E2E" if s == 0 else "MODULAR", color=colors[s], linewidth=2)
+h, l = ax[0,0].get_legend_handles_labels()
+figure.legend(h, l, loc='center right', title='Scenarios')
+figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_e2e_vs_jessi_modular_preliminary_tests_2.eps"), format='eps')
+# Plot metrics of JESSI-E2E vs JESSI-MODULAR against number of humans on UNSEEN scenarios
+metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
+colors = ["green", "red"]
+figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 3
+    j = m % 3
+    ax[i,j].set(
+        xlabel='N° humans',
+        title=metrics[metric]['label'],
+    )
+    ax[i,j].grid(zorder=0)
+    ax[i,j].set_xticks(jnp.arange(len(tests_n_humans)))
+    ax[i,j].set_xticklabels(tests_n_humans)
+    for s in range(len(all_metrics[metric])):
+        if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
+            y_data = jnp.nanmean(all_metrics[metric][s, 1, :, :], axis=0) / n_trials
+            ax[i, j].set_ylim(-0.05, 1.05)
+        else:
+            y_data = jnp.nanmean(all_metrics[metric][s, 1, :, :, :], axis=(0,2))
+        ax[i, j].plot(jnp.arange(len(tests_n_humans)), y_data, label="E2E" if s == 0 else "MODULAR", color=colors[s], linewidth=2.5)
+h, l = ax[0,0].get_legend_handles_labels()
+figure.legend(h, l, loc='center right', title='Scenarios')
+figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_e2e_vs_jessi_modular_preliminary_tests_3.eps"), format='eps')
+# Plot metrics of JESSI-E2E vs JESSI-MODULAR against number of obstacles on UNSEEN scenarios
+metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
+colors = ["green", "red"]
+figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+for m, metric in enumerate(metrics_to_plot):
+    i = m // 3
+    j = m % 3
+    ax[i,j].set(
+        xlabel='N° obstacles',
+        title=metrics[metric]['label'],)
+    ax[i,j].grid(zorder=0)
+    ax[i,j].set_xticks(jnp.arange(len(tests_n_obstacles)))
+    ax[i,j].set_xticklabels(tests_n_obstacles)
+    for s in range(len(all_metrics[metric])):
+        if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
+            y_data = jnp.nanmean(all_metrics[metric][s, 1, :, :], axis=1) / n_trials
+            ax[i, j].set_ylim(-0.05, 1.05)
+        else:
+            y_data = jnp.nanmean(all_metrics[metric][s, 1, :, :, :], axis=(1,2))
+        ax[i, j].plot(jnp.arange(len(tests_n_obstacles)), y_data, label="E2E" if s == 0 else "MODULAR", color=colors[s], linewidth=2)
+h, l = ax[0,0].get_legend_handles_labels()
+figure.legend(h, l, loc='center right', title='Scenarios')
+figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_e2e_vs_jessi_modular_preliminary_tests_4.eps"), format='eps')
+
 ### TEST JESSI WITH DIFFERENT ENVIRONMENT CONFIGURATIONS ON SEEN VS UNSEEN SCENARIOS ###
 if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_preliminary_tests.pkl")):
     metrics_dims = (2,len(tests_n_obstacles),len(tests_n_humans))
@@ -125,19 +325,19 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_preliminary_
                 n_trials,
                 random_seed,
                 seen_env,
-                network_params,
+                jessi_e2e_params,
             )
             metrics_ct = policy.evaluate(
                 n_trials//2,
                 random_seed,
                 ct_env,
-                network_params,
+                jessi_e2e_params,
             )
             metrics_ccso = policy.evaluate(
                 n_trials//2,
                 random_seed,
                 ccso_env,
-                network_params,
+                jessi_e2e_params,
             )
             metrics_unseen_scenarios = tree_map(
                 lambda x, y: x + y if len(x.shape)==0 else jnp.append(x, y), 
@@ -153,52 +353,48 @@ else:
         all_metrics = pickle.load(f)          
 ## PLOTS
 # Plot metrics for each test scenario against number of humans
-metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
+metrics_to_plot = ["successes","collisions","timeouts","returns"]
 colors = ["green", "red"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
-figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+figure, ax = plt.subplots(1, 4, figsize=(16, 5))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.15, top=0.92, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
-    i = m // 3
-    j = m % 3
-    ax[i,j].set(
+    ax[m].set(
         xlabel='N° humans',
         title=metrics[metric]['label'],
     )
-    ax[i,j].grid(zorder=0)
-    ax[i,j].set_xticks(jnp.arange(len(tests_n_humans)))
-    ax[i,j].set_xticklabels(tests_n_humans)
+    ax[m].grid(zorder=0)
+    ax[m].set_xticks(jnp.arange(len(tests_n_humans)))
+    ax[m].set_xticklabels(tests_n_humans)
     for s in range(len(all_metrics[metric])):
         if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
             y_data = jnp.nanmean(all_metrics[metric][s, :, :], axis=0) / n_trials
-            ax[i, j].set_ylim(-0.05, 1.05)
+            ax[m].set_ylim(-0.05, 1.05)
         else:
             y_data = jnp.nanmean(all_metrics[metric][s, :, :, :], axis=(0,2))
-        ax[i, j].plot(jnp.arange(len(tests_n_humans)), y_data, label="SEEN" if s == 0 else "UNSEEN", color=colors[s], linewidth=2.5)
-h, l = ax[0,0].get_legend_handles_labels()
+        ax[m].plot(jnp.arange(len(tests_n_humans)), y_data, label="SEEN" if s == 0 else "UNSEEN", color=colors[s], linewidth=2.5)
+h, l = ax[m].get_legend_handles_labels()
 figure.legend(h, l, loc='center right', title='Scenarios')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_preliminary_tests_1.eps"), format='eps')
 # Plot metrics for each test scenario against number of obstacles
-metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
+metrics_to_plot = ["successes","collisions","timeouts","returns"]
 colors = ["green", "red"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
-figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
+figure, ax = plt.subplots(1, 4, figsize=(16, 5))
+figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.15, top=0.92, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
-    i = m // 3
-    j = m % 3
-    ax[i,j].set(
+    ax[m].set(
         xlabel='N° obstacles',
         title=metrics[metric]['label'],)
-    ax[i,j].grid(zorder=0)
-    ax[i,j].set_xticks(jnp.arange(len(tests_n_obstacles)))
-    ax[i,j].set_xticklabels(tests_n_obstacles)
+    ax[m].grid(zorder=0)
+    ax[m].set_xticks(jnp.arange(len(tests_n_obstacles)))
+    ax[m].set_xticklabels(tests_n_obstacles)
     for s in range(len(all_metrics[metric])):
         if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
             y_data = jnp.nanmean(all_metrics[metric][s, :, :], axis=1) / n_trials
-            ax[i, j].set_ylim(-0.05, 1.05)
+            ax[m].set_ylim(-0.05, 1.05)
         else:
             y_data = jnp.nanmean(all_metrics[metric][s, :, :, :], axis=(1,2))
-        ax[i, j].plot(jnp.arange(len(tests_n_obstacles)), y_data, label="SEEN" if s == 0 else "UNSEEN", color=colors[s], linewidth=2)
-h, l = ax[0,0].get_legend_handles_labels()
+        ax[m].plot(jnp.arange(len(tests_n_obstacles)), y_data, label="SEEN" if s == 0 else "UNSEEN", color=colors[s], linewidth=2)
+h, l = ax[m].get_legend_handles_labels()
 figure.legend(h, l, loc='center right', title='Scenarios')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_preliminary_tests_2.eps"), format='eps')
 
@@ -240,7 +436,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_config
             _, _, obs, info, _ = env.reset(random.PRNGKey(random_seed))
             start_time = time.time()
             for k in range(100): 
-                action, _, _, _, _, _, _, = policy.act(random.PRNGKey(random_seed+k), obs, info, network_params)
+                action, _, _, _, _, _, _, = policy.act(random.PRNGKey(random_seed+k), obs, info, jessi_e2e_params)
                 action.block_until_ready()
             end_time = time.time()
             inference_times = inference_times.at[i,j].set((end_time - start_time)/100)
@@ -249,7 +445,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_config
                 n_trials,
                 random_seed,
                 env,
-                network_params,
+                jessi_e2e_params,
             )
             all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics_lidar)
     inference_times = jnp.mean(inference_times, axis=1)
@@ -330,7 +526,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduce
             _, _, obs, info, _ = env.reset(random.PRNGKey(random_seed))
             start_time = time.time()
             for k in range(100): 
-                action, _, _, _, _, _, _, = policy.act(random.PRNGKey(random_seed+k), obs, info, network_params)
+                action, _, _, _, _, _, _, = policy.act(random.PRNGKey(random_seed+k), obs, info, jessi_e2e_params)
                 action.block_until_ready()
             end_time = time.time()
             inference_times = inference_times.at[i,j].set((end_time - start_time)/100)
@@ -339,7 +535,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduce
                 n_trials,
                 random_seed,
                 env,
-                network_params,
+                jessi_e2e_params,
             )
             all_metrics = tree_map(lambda x, y: x.at[i,j].set(y), all_metrics, metrics_low_range_lidar)
     inference_times = jnp.mean(inference_times, axis=1)
@@ -440,13 +636,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_perception_t
         n_steps_perception,
         random_seed,
         seen_env,
-        network_params,
+        jessi_e2e_params,
     )
     metrics_unseen_scenarios = policy.evaluate_perception(
         n_steps_perception,
         random_seed,
         ct_env,
-        network_params,
+        jessi_e2e_params,
     )
     with open(os.path.join(os.path.dirname(__file__),"jessi_perception_tests.pkl"), 'wb') as f:
         pickle.dump((metrics_seen_scenarios_pre_rl, metrics_unseen_scenarios_pre_rl, metrics_seen_scenarios, metrics_unseen_scenarios), f)

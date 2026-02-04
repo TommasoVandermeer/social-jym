@@ -58,7 +58,7 @@ delta_improvement = 0.001  # Minimum validation improvement to reset early stopp
 data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
 ### MULTI-TASK RL Hyperparameters
 rl_n_parallel_envs = 500 
-rl_training_updates = 1000
+rl_training_updates = 500
 training_hyperparams = {
     'random_seed': 0,
     'n_humans': n_humans, 
@@ -79,7 +79,7 @@ training_hyperparams = {
     'hybrid_scenario_subset': hybrid_scenario_subset,
     'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
-    'safety_loss': True,  # Whether to include safety loss in the RL training
+    'safety_loss': False,  # Whether to include safety loss in the RL training
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 # JESSI policy
@@ -908,7 +908,7 @@ else:
 
 ### JESSI-E2E: MULTI-TASK REINFORCEMENT LEARNING
 if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)):
-    print(f"\nSTARTING RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
+    print(f"\nSTARTING JESSI-E2E RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
@@ -1210,7 +1210,7 @@ else:
 
 ### JESSI-MODULAR REINFORCEMENT LEARNING
 if not os.path.exists(os.path.join(os.path.dirname(__file__), modular_network_name)):
-    print(f"\nSTARTING RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
+    print(f"\nSTARTING JESSI-MODULAR RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
