@@ -70,7 +70,7 @@ class Dirichlet(BaseDistribution):
         sample = jnp.linalg.solve(jnp.vstack((vertices.T,jnp.ones((len(vertices),)))), jnp.append(action, 1.))
         # Avoid inf computation 
         # (WARNING: this will actually give a probability > 0 even to samples outside the simplex! i.e., actions outside the feasible space)
-        sample_safe = jnp.clip(sample, 1e-6, 1.0)
+        sample_safe = jnp.clip(sample, 1e-4, 1.0)
         sample_safe = sample_safe / jnp.sum(sample_safe)
         return -logpdf(sample_safe, alphas)
 

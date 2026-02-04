@@ -44,13 +44,13 @@ policy = JESSI(
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
 )
-# with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
-#     encoder_params = pickle.load(f)
-# with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
-#     actor_params = pickle.load(f)
-# network_params = policy.merge_nns_params(encoder_params, actor_params)
-with open(os.path.join(os.path.dirname(__file__), 'jessi_rl_out.pkl'), 'rb') as f:
-    network_params, _, _ = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
+    encoder_params = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network2.pkl'), 'rb') as f:
+    actor_params = pickle.load(f)
+network_params = policy.merge_nns_params(encoder_params, actor_params)
+# with open(os.path.join(os.path.dirname(__file__), 'jessi_rl_out.pkl'), 'rb') as f:
+#     network_params, _, _ = pickle.load(f)
 
 # Test the trained JESSI policy
 # metrics = policy.evaluate(

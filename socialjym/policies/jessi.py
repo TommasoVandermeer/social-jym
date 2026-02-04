@@ -717,7 +717,8 @@ class JESSI(BasePolicy):
         u_sq_norm = jnp.sum(u**2, axis=-1)
         u_sq_norm = jnp.maximum(u_sq_norm, 1e-6)
         dot_prod = jnp.sum(P_start * u, axis=-1)
-        t_star = -dot_prod / u_sq_norm
+        valid_motion = u_sq_norm > 1e-4
+        t_star = jnp.where(valid_motion, -dot_prod / u_sq_norm, 0.0) # If no relative motion, set t-star to 0
         t_clip = jnp.clip(t_star, 0.0, 1.0) # (B, M)
         closest_point = P_start + jnp.expand_dims(t_clip, -1) * u # (B, M, 2)
         min_dist_sq = jnp.sum(closest_point**2, axis=-1) # (B, M)
@@ -730,21 +731,18 @@ class JESSI(BasePolicy):
         d = closest_point # (B, M, 2)
         d_norm_sq = min_dist_sq # (B, M)
         safe_denominator = jnp.maximum(d_norm_sq, 1e-6)
-        d_expanded = d[..., None, :] # (B, M, 1, 2)
-        d_T_expanded = d[..., :, None] # (B, M, 2, 1)
         sigma_proj_sq_unnormalized = jnp.einsum('bmi,bmij,bmj->bm', d, sigma_tot, d)
         variance_along_collision = sigma_proj_sq_unnormalized / safe_denominator
         confidence_weight = 1.0 / (1.0 + uncertainty_sensitivity * variance_along_collision)
         ### Compute alignement factor (if collision is frontal, penalize more)
-        cos_impact = closest_point[..., 0] / (min_dist + 1e-6)
+        safe_den = lax.stop_gradient(min_dist) + 1e-3 # To avoid division by zero (it is just a normalization factor)
+        cos_impact = closest_point[..., 0] / safe_den
         alignment_factor = 1.0 + 5.0 * jnp.maximum(0.0, cos_impact)
         ### Compute safety loss
         required_safety_dist = self.robot_radius * 2 + 0.05
         violations = jnp.maximum(0.0, required_safety_dist - min_dist) # (B, M)
-        weighted_loss = jnp.square(violations) * confidence_weight * final_mask # (B, M)
-        frame_safety_loss = jnp.sum(weighted_loss, axis=-1)
-        # directional_loss = weighted_loss * alignment_factor
-        # frame_safety_loss = jnp.sum(directional_loss, axis=-1) # (B,)
+        weighted_loss = jnp.square(violations) * alignment_factor * confidence_weight * final_mask # (B, M)
+        frame_safety_loss = jnp.sum(weighted_loss, axis=-1) # (B,)
         scalar_loss = jnp.mean(frame_safety_loss) # ()
         return scalar_loss
     
@@ -1077,22 +1075,6 @@ class JESSI(BasePolicy):
             lambda_vel_reg,
             lambda_cls,
         )
-
-    @partial(jit, static_argnames=("self","e2e_network_optimizer"))
-    def update(
-        self, 
-        e2e_network_params:dict,
-        e2e_network_optimizer:optax.GradientTransformation, 
-        e2e_network_opt_state: jnp.ndarray, 
-        experiences:dict[str:jnp.ndarray], 
-        beta_entropy:float,
-        clip_range:float,
-        debugging:bool=False,
-    ):
-        """
-        Update policy network using the provided experiences in RL setting.
-        """
-        pass
 
     @partial(jit, static_argnames=("self","actor_critic_optimizer"))
     def update_il(

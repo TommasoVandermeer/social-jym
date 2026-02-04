@@ -57,7 +57,7 @@ delta_improvement = 0.001  # Minimum validation improvement to reset early stopp
 data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
 ### MULTI-TASK RL Hyperparameters
 rl_n_parallel_envs = 500 
-rl_training_updates = 500
+rl_training_updates = 1000
 training_hyperparams = {
     'random_seed': 0,
     'n_humans': n_humans, 
