@@ -34,15 +34,22 @@ class SinusoidalPositionalEncoding(hk.Module):
         return x + self.pe_table[None, :seq_len, :]
 
 class AngularLocalCrossAttention(hk.Module):
-    def __init__(self, embed_dim, target_beams, max_angle_deg=18.0, name="angular_local_cross_attn"):
+    def __init__(self, embed_dim, target_beams, input_angles, max_angle_deg=18.0, name="angular_local_cross_attn"):
         super().__init__(name=name)
         self.embed_dim = embed_dim
         self.target_beams = target_beams 
         self.threshold = jnp.cos(jnp.deg2rad(max_angle_deg/2)) 
+        self.input_angles = input_angles
     
         self.spatial_latents = hk.get_parameter("spatial_latents", [target_beams, embed_dim], init=hk.initializers.TruncatedNormal(stddev=0.02))
-        angles = jnp.linspace(0, 2 * jnp.pi, target_beams, endpoint=False)
-        self.latent_sin_cos = jnp.stack([jnp.sin(angles), jnp.cos(angles)], axis=-1)
+        query_angles = jnp.linspace(0, 2 * jnp.pi, target_beams, endpoint=False)
+
+        self.latent_vecs = jnp.stack([jnp.sin(query_angles), jnp.cos(query_angles)], axis=-1)
+        self.input_vecs = jnp.stack([jnp.sin(input_angles), jnp.cos(input_angles)], axis=-1)
+        cos_diff = jnp.einsum('id,jd->ij', self.latent_vecs, self.input_vecs) # [Target, Input]
+        threshold = jnp.cos(jnp.deg2rad(max_angle_deg/2))
+        self.fixed_mask = cos_diff >= threshold 
+        self.fixed_mask = self.fixed_mask[None, None, :, :]
 
         self.attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
         self.norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
@@ -53,7 +60,7 @@ class AngularLocalCrossAttention(hk.Module):
     def compute_angular_mask(self, input_sin_cos):
         # input_sin_cos: [B*T, Beams, 2]
         # latent_sin_cos: [Target_Beams, 2]
-        cos_diff = jnp.einsum('id,mjd->mij', self.latent_sin_cos, input_sin_cos)
+        cos_diff = jnp.einsum('id,mjd->mij', self.latent_vecs, input_sin_cos)
         mask = cos_diff >= self.threshold
         return mask[:, None, :, :] # [B*T, 1, Target_Beams, Beams]
 
@@ -62,23 +69,24 @@ class AngularLocalCrossAttention(hk.Module):
         B_T = x_emb.shape[0]
         # 1. Latent Queries
         q = jnp.broadcast_to(self.spatial_latents[None, ...], (B_T, self.target_beams, self.embed_dim))
-        # 2. Mask
-        input_sin_cos = x_raw[..., 4:6]
-        mask = self.compute_angular_mask(input_sin_cos)
-        # 3. Cross Attention
-        attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
+        # 2. Cross Attention
+        # input_sin_cos = x_raw[..., 4:6]
+        # mask = self.compute_angular_mask(input_sin_cos)
+        # attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
+        attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=self.fixed_mask) # Using fixed mask because numerical errors change the mask dynamically
         q = self.norm1(q + attn_out)
-        # 2. FFN
+        # 3. FFN
         ffn_out = self.ffn(q)
         return self.norm2(q + ffn_out)
 
 class SpatioTemporalEncoder(hk.Module):
-    def __init__(self, embed_dim, n_sectors, name=None): 
+    def __init__(self, embed_dim, n_sectors, lidar_angles_robot_frame, name=None): 
         super().__init__(name=name)
         self.embed_dim = embed_dim
         self.n_sectors = n_sectors
+        self.lidar_angles_robot_frame = lidar_angles_robot_frame
         # 1. Spatial Feature Extraction
-        self.angular_spatial_attn = AngularLocalCrossAttention(embed_dim, target_beams=n_sectors, max_angle_deg=18.0)
+        self.angular_spatial_attn = AngularLocalCrossAttention(embed_dim, target_beams=n_sectors, input_angles=lidar_angles_robot_frame, max_angle_deg=18.0)
         # 2. Temporal Positional Encodings
         self.pos_encoder_time = SinusoidalPositionalEncoding(embed_dim, max_len=100)
         # 3. Temporal Attention
@@ -147,16 +155,18 @@ class Perception(hk.Module):
             max_lidar_distance: float,
             embed_dim: int,
             n_sectors: int,
+            lidar_angles_robot_frame: jnp.ndarray,
         ):
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
         self.embed_dim = embed_dim
         self.max_humans_velocity = max_humans_velocity
         self.max_lidar_distance = max_lidar_distance
+        self.lidar_angles_robot_frame = lidar_angles_robot_frame
         self.n_sectors = n_sectors
         # Modules
         self.input_proj = hk.Linear(embed_dim, name="input_projection")
-        self.perception = SpatioTemporalEncoder(embed_dim=embed_dim, n_sectors=n_sectors, name="spatio_temporal_encoder")
+        self.perception = SpatioTemporalEncoder(embed_dim=embed_dim, n_sectors=n_sectors, name="spatio_temporal_encoder", lidar_angles_robot_frame=lidar_angles_robot_frame)
         self.decoder = HCGQueryDecoder(n_detectable_humans, embed_dim, name="decoder")
         # Head: 11 params (weight, mu_x, mu_y, log_sig_x, log_sig_y, corr, mu_vx, mu_vy, log_sig_vx, log_sig_vy, corr_v)
         self.head_hum = hk.Linear(11, w_init=hk.initializers.VarianceScaling(0.01))
@@ -350,6 +360,7 @@ class E2E(hk.Module):
         name: str,
         perception_name: str,
         controller_name: str,
+        lidar_angles_robot_frame: jnp.ndarray,
         n_detectable_humans: int,
         max_humans_velocity: float,
         max_lidar_distance: float,
@@ -379,6 +390,7 @@ class E2E(hk.Module):
         self.n_sectors = n_sectors
         self.n_outputs = 3  # Dirichlet distribution over 3 action vertices
         self.mlp_params = mlp_params
+        self.lidar_angles_robot_frame = lidar_angles_robot_frame
         # Initialize Perception module
         self.perception = Perception(
             perception_name,
@@ -387,6 +399,7 @@ class E2E(hk.Module):
             max_lidar_distance=max_lidar_distance,
             embed_dim=embed_dim,
             n_sectors=n_sectors,
+            lidar_angles_robot_frame=lidar_angles_robot_frame,
         )
         # Initialize Actor-Critic module
         self.actor_critic = ActorCritic(
@@ -504,7 +517,8 @@ class JESSI(BasePolicy):
                 self.max_humans_velocity, 
                 self.lidar_max_dist, 
                 embed_dim=self.embedding_dim, 
-                n_sectors=n_sectors
+                n_sectors=n_sectors,
+                lidar_angles_robot_frame=self.lidar_angles_robot_frame,
             )
             return net(x, stop_gradient=stop_gradient)
         self.perception = perception_network
@@ -529,6 +543,7 @@ class JESSI(BasePolicy):
                 self.e2e_name,
                 self.perception_name,
                 self.actor_critic_name,
+                self.lidar_angles_robot_frame,
                 n_detectable_humans=self.n_detectable_humans,
                 max_humans_velocity=self.max_humans_velocity,
                 max_lidar_distance=self.lidar_max_dist,
@@ -1040,7 +1055,7 @@ class JESSI(BasePolicy):
             random_key=subkey
         )
         action = lax.cond(sample, lambda _: sampled_action, lambda _: self.dirichlet.mean(actor_distr), None)
-        return action, key, actor_input, sampled_action, perception_output, actor_distr, state_value
+        return action, key, perception_input, robot_state_input, actor_input, sampled_action, perception_output, actor_distr, state_value
     
     @partial(jit, static_argnames=("self"))
     def batch_act(
@@ -1361,7 +1376,7 @@ class JESSI(BasePolicy):
             def _while_body(while_val:tuple):
                 # Retrieve data from the tuple
                 state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states = while_val
-                action, policy_key, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
+                action, policy_key, _, _, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
                 state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
                 # Save data
                 all_actions = all_actions.at[steps].set(action)
@@ -1453,7 +1468,7 @@ class JESSI(BasePolicy):
             # Retrieve data from the tuple
             state, obs, info, outcome, policy_key, reset_key, env_key, steps, perception_distrs, gt_targets = for_val
             # Compute action and perception out
-            action, policy_key, _, _, perception_out, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
+            action, policy_key, _, _, _, _, perception_out, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
             # Save perception outputs and ground truth
             rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.robot_centric_transform(
                 state[:-1,:2], 

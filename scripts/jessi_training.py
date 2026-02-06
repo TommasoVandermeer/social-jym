@@ -1280,6 +1280,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), modular_network_na
         'lambda_gae': training_hyperparams['lambda_gae'],
         'safety_loss': training_hyperparams['safety_loss'],
         'full_network_training': False,
+        'debugging': True,
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)

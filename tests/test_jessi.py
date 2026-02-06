@@ -90,7 +90,7 @@ for i in range(n_episodes):
     }
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, _, _, _, perception_distr, actor_distr, state_value = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
+        action, _, _, _, _, _, perception_distr, actor_distr, state_value = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
         print("Dirichlet distribution parameters: ", actor_distr['alphas'])
         # print("Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']])
         # Step the environment
