@@ -64,16 +64,24 @@ class AngularLocalCrossAttention(hk.Module):
         mask = cos_diff >= self.threshold
         return mask[:, None, :, :] # [B*T, 1, Target_Beams, Beams]
 
-    def __call__(self, x_emb, x_raw):
+    def __call__(self, x_emb, x_raw, is_training=False):
         # x_emb: [B*T, Beams, D], x_raw: [B*T, Beams, 7]
         B_T = x_emb.shape[0]
         # 1. Latent Queries
         q = jnp.broadcast_to(self.spatial_latents[None, ...], (B_T, self.target_beams, self.embed_dim))
         # 2. Cross Attention
         # input_sin_cos = x_raw[..., 4:6]
-        # mask = self.compute_angular_mask(input_sin_cos)
-        # attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
-        attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=self.fixed_mask) # Using fixed mask because numerical errors change the mask dynamically
+        if is_training:
+            # Compute dynamic mask based on input angles for regularization during training. During inference, use fixed precomputed mask for stability.
+            # Computing the mask dinamically based on input angles during training allows for regularization by exposing the model to varying attention patterns, 
+            # which can improve generalization. During inference, using a fixed precomputed mask ensures stability and consistency in the attention mechanism, 
+            # as numerical errors in angle computations could lead to fluctuating masks and thus unstable behavior.
+            input_sin_cos = x_raw[..., 4:6]
+            mask = self.compute_angular_mask(input_sin_cos)
+            attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
+        else:
+            mask = self.fixed_mask
+        attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask) # Using fixed mask because numerical errors change the mask dynamically
         q = self.norm1(q + attn_out)
         # 3. FFN
         ffn_out = self.ffn(q)
@@ -95,12 +103,12 @@ class SpatioTemporalEncoder(hk.Module):
         self.temporal_ffn = hk.nets.MLP([embed_dim * 2, embed_dim], activation=nn.gelu)
         self.temporal_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
-    def __call__(self, x, x_raw):
+    def __call__(self, x, x_raw, is_training=False):
         # x shape: [Batch, Time, Beams, Features]
         B, T, L, F = x.shape
         x_flat = x.reshape(B * T, L, self.embed_dim)
         x_raw_flat = x_raw.reshape(B * T, L, x_raw.shape[-1])
-        h_spatial = self.angular_spatial_attn(x_flat, x_raw_flat) # [B*T, L, embed_dim]
+        h_spatial = self.angular_spatial_attn(x_flat, x_raw_flat, is_training) # [B*T, L, embed_dim]
         L_new = h_spatial.shape[1]
         h_spatial = h_spatial.reshape(B, T, L_new, self.embed_dim)
         h_time_in = h_spatial.transpose(0, 2, 1, 3).reshape(B * L_new, T, self.embed_dim)
@@ -207,7 +215,7 @@ class Perception(hk.Module):
             "weights": weights
         }
 
-    def __call__(self, x, stop_gradient=False):
+    def __call__(self, x, stop_gradient=False, is_training=False):
         # x input: [batch B, n_stack (T), num_beams (L), 7]
         has_batch = x.ndim == 4
         if not has_batch:
@@ -215,7 +223,7 @@ class Perception(hk.Module):
         # 1. Feature Projection
         x_emb = self.input_proj(x) # [B, T, L, embed_dim]
         # 2. Spatio-Temporal Encoding
-        encoded_features = self.perception(x_emb, x) # [B, T, L, embed_dim]
+        encoded_features = self.perception(x_emb, x, is_training=is_training) # [B, T, L, embed_dim]
         last_scan_embeddings = encoded_features[:, 0, :, :] # [B, N_sectors, embed_dim]
         # 3. Decoding via Queries
         latents = self.decoder(encoded_features) # [B, n_detectable_humans, embed_dim]        
@@ -417,12 +425,14 @@ class E2E(hk.Module):
         x: jnp.ndarray, # Perception input (B, n_stack, num_beams, 7)
         y: jnp.ndarray, # Additional actor-critic input (B, n_detectable_humans, 9)
         stop_perception_gradient: bool = False,
+        only_perception: bool = False,
+        is_training: bool = False,
         **kwargs: dict,
     ) -> tuple:
         # Extract random key
         random_key = kwargs.get("random_key", random.PRNGKey(0))
         ## PERCEPTION
-        perception_output, scan_embedding = self.perception(x, stop_gradient=stop_perception_gradient) # perception_output: (B, N, 11), scan_embedding: (B, E)
+        perception_output, scan_embedding = self.perception(x, stop_gradient=stop_perception_gradient, is_training=is_training) # perception_output: (B, N, 11), scan_embedding: (B, E)
         # Prepare actor-critic input
         hcgs = jnp.concatenate((
             perception_output["pos_distrs"]["means"],
@@ -438,12 +448,18 @@ class E2E(hk.Module):
             hcgs,
             y,
         ), axis=-1)  # Shape: (B, N, 20)
-        ## CONTROL
-        sampled_actions, distributions, concentration, state_values = self.actor_critic(
-            actor_input,
-            scan_embedding,
-            random_key=random_key
-        )
+        if only_perception:
+            sampled_actions = None
+            distributions = None
+            concentration = None
+            state_values = None
+        else:
+            ## CONTROL
+            sampled_actions, distributions, concentration, state_values = self.actor_critic(
+                actor_input,
+                scan_embedding,
+                random_key=random_key
+            )
         return perception_output, actor_input, sampled_actions, distributions, concentration, state_values
 
 class JESSI(BasePolicy):
@@ -510,7 +526,7 @@ class JESSI(BasePolicy):
         # Initialize Perception network
         self.perception_name = "lidar_perception"
         @hk.transform
-        def perception_network(x, stop_gradient=False) -> jnp.ndarray:
+        def perception_network(x, stop_gradient=False, is_training=False) -> jnp.ndarray:
             net = Perception(
                 self.perception_name, 
                 self.n_detectable_humans, 
@@ -520,7 +536,7 @@ class JESSI(BasePolicy):
                 n_sectors=n_sectors,
                 lidar_angles_robot_frame=self.lidar_angles_robot_frame,
             )
-            return net(x, stop_gradient=stop_gradient)
+            return net(x, stop_gradient=stop_gradient, is_training=is_training)
         self.perception = perception_network
         # Initialize Actor Critic network
         self.actor_critic_name = "actor_network"
@@ -538,7 +554,7 @@ class JESSI(BasePolicy):
         # Initialize E2E Actor Critic network
         self.e2e_name = "e2e"
         @hk.transform
-        def e2e_network(x, y, stop_perception_gradient=False, **kwargs) -> jnp.ndarray:
+        def e2e_network(x, y, stop_perception_gradient=False, only_perception=False, is_training=False, **kwargs) -> jnp.ndarray:
             e2e = E2E(
                 self.e2e_name,
                 self.perception_name,
@@ -552,7 +568,7 @@ class JESSI(BasePolicy):
                 embed_dim=self.embedding_dim,
                 n_sectors=self.n_sectors,
             ) 
-            return e2e(x, y, stop_perception_gradient=stop_perception_gradient, **kwargs)
+            return e2e(x, y, stop_perception_gradient=stop_perception_gradient, only_perception=only_perception, is_training=is_training, **kwargs)
         self.e2e = e2e_network
 
     # Private methods
@@ -1084,10 +1100,11 @@ class JESSI(BasePolicy):
         lambda_pos_reg:float=2.0,
         lambda_vel_reg:float=1.0,
         lambda_cls:float=1.0,
+        is_training:bool = False,
         ) -> jnp.ndarray:
         # B: batch size, K: number of HCGs, M: max number of ground truth humans
         # Compute the prediction
-        human_distrs, _ = self.perception.apply(current_params, None, inputs)
+        human_distrs, _ = self.perception.apply(current_params, None, inputs, is_training=is_training)
         return self._encoder_loss(
             human_distrs,
             targets,
@@ -1192,6 +1209,7 @@ class JESSI(BasePolicy):
             current_params, 
             experiences["inputs"],
             experiences["targets"],
+            is_training=True
         )
         grad_norm = optax.global_norm(grads)
         # Compute parameter updates

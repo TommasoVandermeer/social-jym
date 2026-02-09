@@ -65,21 +65,22 @@ training_hyperparams = {
     'n_obstacles': n_obstacles,
     'rl_training_updates': rl_training_updates,
     'rl_parallel_envs': rl_n_parallel_envs,
-    'rl_learning_rate': 3e-4, # 3e-4
-    'rl_learning_rate_final': 2e-4, # 2e-4
+    'rl_learning_rate': 1e-4, # 3e-4
+    'rl_learning_rate_final': 1e-5, # 2e-4
     'rl_total_batch_size': 50_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 2_000, # 2_000 Mini-batch size for each model update
     'rl_micro_batch_size': 1_000, # 1_000 # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 6, # 6
-    'rl_beta_entropy': 1e-4, # 1e-4
+    'rl_beta_entropy': 5e-4, # 1e-4
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': hybrid_scenario_subset,
     'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
-    'safety_loss': False,  # Whether to include safety loss in the RL training
+    'safety_loss': True,  # Whether to include safety loss in the RL training
+    'target_kl': 0.01,  # Target KL divergence for early stopping in each update
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 # JESSI policy
@@ -959,7 +960,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
     network_optimizer = optax.multi_transform(
         {
         'perception': optax.chain(
-            optax.clip_by_global_norm(0.5),
+            optax.clip_by_global_norm(1),
             optax.adam(
                 learning_rate=optax.schedules.warmup_cosine_decay_schedule(
                     init_value=0.,
@@ -1004,6 +1005,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), full_network_name)
         'lambda_gae': training_hyperparams['lambda_gae'],
         'safety_loss': training_hyperparams['safety_loss'],
         'full_network_training': True,
+        'target_kl': training_hyperparams['target_kl'],
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)
@@ -1279,8 +1281,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), modular_network_na
         'beta_entropy': training_hyperparams['rl_beta_entropy'],
         'lambda_gae': training_hyperparams['lambda_gae'],
         'safety_loss': training_hyperparams['safety_loss'],
+        'target_kl': training_hyperparams['target_kl'],
         'full_network_training': False,
-        'debugging': True,
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)

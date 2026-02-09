@@ -174,7 +174,7 @@ def train_one_epoch(
     n_micro_splits = batched_buffer["actions"].shape[1]
 
     def _batch_step(carry_inner, micro_batches): 
-        params_inner, opt_st_inner, batch_idx = carry_inner 
+        params_inner, opt_st_inner, batch_idx, batch_key = carry_inner 
 
         # Normalize advantages within mini-batch
         all_mb_advantages = micro_batches["advantages"]
@@ -182,27 +182,24 @@ def train_one_epoch(
         # We clip the normalized advantages to avoid too large policy updates
         micro_batches["advantages"] = micro_batches["advantages"].at[:].set(jnp.clip(norm_advantages, -5, 5))
 
-        def micro_batch_loss_fn(p, u_mb):
-            # inputs0, inputs1 = vmap(policy.compute_e2e_input, in_axes=(0,0))(
-            #     u_mb["observations"], u_mb["robot_goals"]
-            # )
+        def micro_batch_loss_fn(p, u_mb, micro_batch_key):
             inputs0, inputs1 = u_mb["inputs0"], u_mb["inputs1"]
             # Lowe input precision to save memory
             if full_network_training:
                 p = tree_map(lambda x: x.astype(jnp.float16), p)
-                inputs0 = inputs0.astype(jnp.float16)
-                inputs1 = inputs1.astype(jnp.float16)
-            # Forward pass
-            (perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
-                p, None, inputs0, inputs1, stop_perception_gradient=~(full_network_training)
+                inputs0_f16 = inputs0.astype(jnp.float16)
+                inputs1_f16 = inputs1.astype(jnp.float16)
+            # Forward pass (For Actor/Critic)
+            (safety_perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
+                p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(full_network_training)
             )
-            # Cast back to higher precision
+            # Cast back to higher precision for loss computation
             if full_network_training:
                 pred_val = pred_val.astype(jnp.float32)
                 def dist_to_f32(dist):
                     return tree_map(lambda x: x.astype(jnp.float32), dist)
-                actor_dist = dist_to_f32(actor_dist)
-                perc_dist = dist_to_f32(perc_dist)
+                actor_dist = dist_to_f32(actor_dist)  
+                safety_perc_dist = dist_to_f32(safety_perc_dist)
             # Actor
             new_neglogp = policy.dirichlet.batch_neglogp(actor_dist, u_mb["actions"])
             log_ratio = u_mb["neglogpdfs"] - new_neglogp
@@ -234,6 +231,31 @@ def train_one_epoch(
             # Perception
             if full_network_training:
                 gt_dict = {"gt_mask": u_mb["gt_mask"], "gt_poses": u_mb["gt_poses"], "gt_vels": u_mb["gt_vels"]}
+                # Data augmentation (random rotations, angular mask dropout) for regularization
+                def augment_data(inputs0, gt_dict, key):
+                    # Input shape is (B, n_stack, num_beams, 7) and gt_poses/gt_vels shape is (B, n_stack, num_beams, 2)
+                    # Random rotation
+                    alpha = random.uniform(key, minval=-jnp.pi, maxval=jnp.pi)
+                    ca, sa = jnp.cos(alpha), jnp.sin(alpha)
+                    rot_mat = jnp.array([[ca, -sa], [sa, ca]])
+                    s_new = inputs0[..., 4] * ca + inputs0[..., 5] * sa
+                    c_new = inputs0[..., 5] * ca - inputs0[..., 4] * sa
+                    xy_rotated = inputs0[..., 2:4]  @ rot_mat.T
+                    inputs0 = inputs0.at[..., 2:4].set(xy_rotated)
+                    inputs0 = inputs0.at[..., 4].set(s_new) 
+                    inputs0 = inputs0.at[..., 5].set(c_new) 
+                    gt_dict['gt_poses'] = gt_dict['gt_poses'] @ rot_mat.T
+                    gt_dict['gt_vels'] = gt_dict['gt_vels'] @ rot_mat.T
+                    return inputs0, gt_dict
+                inputs0_corrupt, gt_dict = augment_data(inputs0, gt_dict, micro_batch_key)
+                # Cast corrupted input to float16 to save memory during forward pass
+                inputs0_corrupt_f16 = inputs0_corrupt.astype(jnp.float16)
+                # Forward pass through perception head
+                (perc_dist, _, _, _, _, _) = policy.e2e.apply(
+                    p, None, inputs0_corrupt_f16, inputs1_f16, stop_perception_gradient=False, only_perception=True, is_training=True
+                )
+                # Compute perception loss
+                perc_dist = dist_to_f32(perc_dist)
                 batch_perc_loss = policy._encoder_loss(perc_dist, gt_dict)
                 perception_loss = jnp.mean(batch_perc_loss)
             else:
@@ -242,17 +264,18 @@ def train_one_epoch(
             if compute_safety_loss:
                 safety_loss = policy._safety_loss(
                     actor_dist,
-                    perc_dist,
+                    safety_perc_dist,
                 )
             else:
                 safety_loss = 0.0
             # Total loss
-            total_loss = policy_loss + .5 * critic_loss + .05 * perception_loss + 100 * safety_loss
+            total_loss = policy_loss + .5 * critic_loss + .05 * perception_loss + safety_loss
             return total_loss, (actor_loss, critic_loss, perception_loss, safety_loss, entropy_loss, approx_kl, clip_frac, explained_var)
 
         def _micro_step_scan(carry, u_mb):
-            current_grads_acc, current_metrics_acc = carry
-            (loss, aux), grads = value_and_grad(micro_batch_loss_fn, has_aux=True)(params_inner, u_mb)
+            current_grads_acc, current_metrics_acc, batch_key = carry
+            batch_key, sub_key = random.split(batch_key)
+            (loss, aux), grads = value_and_grad(micro_batch_loss_fn, has_aux=True)(params_inner, u_mb, sub_key)
             new_grads_acc = tree_map(lambda acc, g: acc + g, current_grads_acc, grads)
             l_act, l_crit, l_perc, l_safety, l_ent, approx_kl, clip_frac, explained_var = aux
             acc_loss, (acc_act, acc_crit, acc_perc, acc_safety, acc_ent, acc_kl, acc_clip, acc_explained_var) = current_metrics_acc
@@ -260,13 +283,13 @@ def train_one_epoch(
                 acc_loss + loss,
                 (acc_act + l_act, acc_crit + l_crit, acc_perc + l_perc, acc_safety + l_safety, acc_ent + l_ent, acc_kl + approx_kl, acc_clip + clip_frac, acc_explained_var + explained_var)
             )
-            return (new_grads_acc, new_metrics_acc), None
+            return (new_grads_acc, new_metrics_acc, batch_key), None
 
         grads_acc_init = tree_map(jnp.zeros_like, params_inner)
         metrics_acc_init = (0.0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)) # loss, (actor, critic, perc, safety, ent, kl, clip, explained_var)
-        (grads_sum, metrics_sum), _ = lax.scan(
+        (grads_sum, metrics_sum, batch_key), _ = lax.scan(
             _micro_step_scan, 
-            (grads_acc_init, metrics_acc_init), 
+            (grads_acc_init, metrics_acc_init, batch_key), 
             micro_batches
         )
         grads_avg = tree_map(lambda x: x / n_micro_splits, grads_sum)
@@ -286,10 +309,10 @@ def train_one_epoch(
         )
         updates, new_opt_st_inner = optimizer.update(grads_avg, opt_st_inner)
         new_params_inner = optax.apply_updates(params_inner, updates)
-        return (new_params_inner, new_opt_st_inner, batch_idx + 1), (loss_avg, aux_avg)
+        return (new_params_inner, new_opt_st_inner, batch_idx + 1, batch_key), (loss_avg, aux_avg)
 
-    (new_params, new_opt_st, _), (batch_losses, batch_aux) = lax.scan(
-        _batch_step, (network_params, opt_state, 0), batched_buffer
+    (new_params, new_opt_st, _, _), (batch_losses, batch_aux) = lax.scan(
+        _batch_step, (network_params, opt_state, 0, key), batched_buffer
     )
     epoch_metrics = {
         "loss": jnp.mean(batch_losses),
@@ -303,7 +326,7 @@ def train_one_epoch(
         "explained_var": jnp.mean(batch_aux[7]),
         "grad_norm": jnp.mean(batch_aux[8]),
     }
-    return (key, new_params, new_opt_st), epoch_metrics
+    return (new_params, new_opt_st), epoch_metrics
 
 def get_dynamic_probabilities(success_rates, min_prob=0.03):
     """
@@ -450,14 +473,14 @@ def jessi_multitask_rl_rollout(
         }
         # E. UPDATE LOOP
         for epoch in range(n_epochs):
-            key, subkey = random.split(key)
-            perm = random.permutation(subkey, total_batch_size)
+            key, shuffle_key, data_aug_key = random.split(key, 3)
+            perm = random.permutation(shuffle_key, total_batch_size)
             def shuffle_and_reshape_gpu(x):
                 shuffled = jnp.take(x, perm, axis=0) 
                 return jnp.reshape(shuffled, (n_minibatches, n_micro_splits, micro_batch_size, *x.shape[1:]))
             batched_buffer_gpu = tree_map(shuffle_and_reshape_gpu, buffer_gpu)
-            (key, params, opt_state), metrics_one_epoch = train_one_epoch_sharded(
-                key, 
+            (params, opt_state), metrics_one_epoch = train_one_epoch_sharded(
+                data_aug_key, 
                 params, 
                 opt_state, 
                 batched_buffer_gpu, 
@@ -494,16 +517,15 @@ def jessi_multitask_rl_rollout(
         logs["successes_per_scenario"] = {k: logs["successes_per_scenario"][k] + [success_per_scenario[k]] for k in logs["successes_per_scenario"]}
         logs["episodes_per_scenario"] = {k: logs["episodes_per_scenario"][k] + [episodes_per_scenario[k]] for k in logs["episodes_per_scenario"]}
         # G. PRINT LOGS
-        if update % 1 == 0:
-            print(
-                f"Upd {update}:\n",
-                f"| Ret: {logs['returns'][-1]:.3f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
-                f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
-                f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
-                f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
-                f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} | Safety Loss: {logs['safety_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
-                f"| Loss: {logs['losses'][-1]:.4f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f} | Clip frac: {logs['clip_frac'][-1]:.4f} | Explained Var: {logs['explained_var'][-1]:.4f} \n",
-            )
+        print(
+            f"Upd {update}:\n",
+            f"| Ret: {logs['returns'][-1]:.3f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
+            f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
+            f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
+            f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
+            f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} | Safety Loss: {logs['safety_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
+            f"| Loss: {logs['losses'][-1]:.4f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f} | Clip frac: {logs['clip_frac'][-1]:.4f} | Explained Var: {logs['explained_var'][-1]:.4f} \n",
+        )
         # H. UPDATE SCENARIO PROBS
         scenarios_prob = get_dynamic_probabilities(jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)]))
     return best_params, device_get(params), logs 
