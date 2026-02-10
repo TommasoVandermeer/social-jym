@@ -4,7 +4,6 @@ import jax.numpy as jnp
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as Reward
 from socialjym.policies.dwa import DWA
-from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
 random_seed = 0
@@ -22,7 +21,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'hybrid_scenario', 
+    'scenario': 'parallel_traffic', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3),
@@ -40,14 +39,16 @@ policy = DWA(
     lidar_max_dist=env.lidar_max_dist,
     n_stack=env.n_stack,
     lidar_n_stack_to_use=lidar_n_stack_to_use,
+    predict_time_horizon=2,
+    actions_discretization=16,
 )
 
-# Execute tests
-metrics = policy.evaluate(
-    n_episodes,
-    random_seed,
-    env,
-)
+# # Execute tests
+# metrics = policy.evaluate(
+#     n_episodes,
+#     random_seed,
+#     env,
+# )
 
 # Simulate some episodes
 for i in range(n_episodes):
@@ -58,31 +59,36 @@ for i in range(n_episodes):
     all_states = jnp.array([state])
     all_observations = jnp.array([obs])
     all_robot_goals = jnp.array([info['robot_goal']])
+    all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
+    all_humans_radii = jnp.array([info['humans_parameters'][:,0]])
+    all_actions = jnp.zeros((max_steps, 2))
+    all_actions_costs = jnp.zeros((max_steps,len(policy.action_space)))
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, action_cost = policy.act(obs, info)
-        # print(f"Episode {i}, Step {step}, Action: {action}, Cost: {action_cost}")
+        action, cost, actions_cost = policy.act(obs, info)
+        # print(f"Episode {i}, Step {step}, Action: {action}, Cost: {cost}")
         # Step the environment
         state, obs, info, reward, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
         # Save data for animation
         all_states = jnp.vstack((all_states, jnp.array([state])))
         all_observations = jnp.vstack((all_observations, jnp.array([obs])))
         all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
+        all_static_obstacles = jnp.vstack((all_static_obstacles, jnp.array([info['static_obstacles'][-1]])))
+        all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
+        all_actions = all_actions.at[step].set(action)
+        all_actions_costs = all_actions_costs.at[step].set(actions_cost)
         # Increment step
         step += 1
+    all_actions = all_actions[:step]
+    all_actions_costs = all_actions_costs[:step]
     print("\nOutcome: ", [k for k, v in outcome.items() if v][0])
-    ## Animate only trajectory
-    angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
-    lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,6:], angles)
-    animate_trajectory(
-        all_states, 
-        info['humans_parameters'][:,0], 
-        env.robot_radius, 
-        'hsfm',
-        info['robot_goal'],
-        info['current_scenario'],
-        static_obstacles=info['static_obstacles'][-1],
-        robot_dt=env_params['robot_dt'],
-        lidar_measurements=lidar_measurements,
-        kinematics=kinematics,
+    policy.animate_lasernav_trajectory(
+        all_states[:-1],
+        all_observations[:-1],
+        all_actions,
+        all_actions_costs,
+        all_robot_goals[:-1],
+        all_static_obstacles[:-1],
+        all_humans_radii[:-1],
+        env,
     )

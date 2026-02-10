@@ -10,7 +10,7 @@ from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
 
-from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON
+from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, HUMAN_POLICIES
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.utils.distributions.gaussian import BivariateGaussian
 from socialjym.policies.base_policy import BasePolicy
@@ -1818,9 +1818,13 @@ class JESSI(BasePolicy):
         humans_orientations = states[:,:-1,4]
         humans_poses = jnp.dstack((humans_positions, humans_orientations))
         humans_body_velocities = states[:,:-1,2:4]
-        humans_velocities = vmap(vmap(get_linear_velocity, in_axes=(0,0)), in_axes=(0,0))(
-            humans_orientations,
-            humans_body_velocities,
+        humans_velocities = lax.cond(
+            lasernav_env.humans_policy == HUMAN_POLICIES.index('hsfm'),
+            lambda: vmap(vmap(get_linear_velocity, in_axes=(0,0)), in_axes=(0,0))(
+                    humans_orientations,
+                    humans_body_velocities,
+                ),
+            lambda: humans_body_velocities,
         )
         rc_humans_positions, _, _, rc_static_obstacles, _ = lasernav_env.batch_robot_centric_transform(
             humans_positions,

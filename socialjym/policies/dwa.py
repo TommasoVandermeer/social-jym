@@ -2,22 +2,26 @@ from jax import jit, lax, vmap, debug, random
 from jax_tqdm import loop_tqdm
 import jax.numpy as jnp
 from functools import partial
+from matplotlib import rc, rcParams
+from matplotlib.animation import FuncAnimation, FFMpegWriter
+import matplotlib.pyplot as plt
+import os
 
-from socialjym.envs.base_env import SCENARIOS, ROBOT_KINEMATICS
+from socialjym.envs.base_env import SCENARIOS, ROBOT_KINEMATICS, HUMAN_POLICIES
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
+from jhsfm.hsfm import get_linear_velocity
 
 class DWA(BasePolicy):
     def __init__(
         self,
         actions_discretization = 9,
-        predict_time_horizon = .75,
+        predict_time_horizon = 2.,
         heading_cost_coeff = 0.2,
         clearance_cost_coeff = 0.2,
         velocity_cost_coeff = 0.2,
-        distance_cost_coeff = 0.1,
         robot_radius:float=0.3,
         v_max:float=1., 
         gamma:float=0.9, 
@@ -55,7 +59,6 @@ class DWA(BasePolicy):
         self.heading_cost_coeff = heading_cost_coeff
         self.clearance_cost_coeff = clearance_cost_coeff
         self.velocity_cost_coeff = velocity_cost_coeff
-        self.distance_cost_coeff = distance_cost_coeff
         self.robot_radius = robot_radius
         self.v_max = v_max
         self.dt = dt
@@ -136,16 +139,6 @@ class DWA(BasePolicy):
         goal_direction = jnp.atan2(robot_goal[1] - next_robot_pose[1], robot_goal[0] - next_robot_pose[0])
         heading_error = wrap_angle(goal_direction - next_robot_pose[2])
         return jnp.abs(heading_error) / jnp.pi  # Prefer smaller heading error
-
-    @partial(jit, static_argnames=("self"))
-    def _distance_cost(self, robot_pose, action, robot_goal):
-        next_robot_pose = self.motion(robot_pose, action, self.predict_time_horizon)
-        distance_to_goal = jnp.linalg.norm(robot_goal - next_robot_pose[:2])
-        return lax.cond(
-            distance_to_goal <= 1.5,
-            lambda: distance_to_goal/1.5,  # Prefer smaller distance to goal when close to it
-            lambda: 0.,  # Ignore distance to goal when far from it, to prioritize obstacle avoidance
-        )
     
     @partial(jit, static_argnames=("self"))
     def _clearance_cost(self, pose, action, point_cloud):
@@ -175,12 +168,10 @@ class DWA(BasePolicy):
         velocity_cost = self._velocity_cost(action)
         heading_cost = self._heading_cost(robot_pose, action, robot_goal)
         clearance_cost = self._clearance_cost(robot_pose, action, point_cloud)
-        distance_cost = self._distance_cost(robot_pose, action, robot_goal)
         total_cost = (
             self.velocity_cost_coeff * velocity_cost +
             self.heading_cost_coeff * heading_cost +
-            self.clearance_cost_coeff * clearance_cost + 
-            self.distance_cost_coeff * distance_cost
+            self.clearance_cost_coeff * clearance_cost
         )
         return total_cost
 
@@ -256,7 +247,7 @@ class DWA(BasePolicy):
         actions_costs = vmap(self._dwa_cost, in_axes=(None, 0, None, None))(robot_pose, self.action_space, robot_goal, point_cloud)
         best_action_idx = jnp.nanargmin(actions_costs)
         best_action = self.action_space[best_action_idx]
-        return best_action, actions_costs[best_action_idx]
+        return best_action, actions_costs[best_action_idx], actions_costs
     
     def evaluate(
         self,
@@ -281,7 +272,7 @@ class DWA(BasePolicy):
             def _while_body(while_val:tuple):
                 # Retrieve data from the tuple
                 state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states = while_val
-                action, _ = self.act(obs, info)
+                action, _, actions_costs = self.act(obs, info)
                 state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
                 # Save data
                 all_actions = all_actions.at[steps].set(action)
@@ -334,3 +325,240 @@ class DWA(BasePolicy):
         # Print results
         print_average_metrics(n_trials, metrics)
         return metrics
+
+    def animate_trajectory(
+        self,
+        robot_poses, # x, y, theta
+        robot_actions,
+        robot_actions_costs,
+        robot_goals,
+        observations,
+        humans_poses, # x, y, theta
+        humans_velocities, # vx, vy (in global frame)
+        humans_radii,
+        static_obstacles,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+    ):
+        # Validate input args
+        assert \
+            len(robot_poses) == \
+            len(robot_actions) == \
+            len(robot_goals) == \
+            len(observations) == \
+            len(humans_poses) == \
+            len(humans_velocities) == \
+            len(humans_radii) == \
+            len(static_obstacles), "All inputs must have the same length"
+        # Set matplotlib fonts
+        rc('font', weight='regular', size=20)
+        rcParams['pdf.fonttype'] = 42
+        rcParams['ps.fonttype'] = 42
+        # Compute informations for visualization
+        n_steps = len(robot_poses)
+        def compute_trajectory(action):
+            return lax.fori_loop(
+                1,
+                self.n_steps+1,
+                lambda i, x: x.at[i].set(self.motion(x[i-1], action, self.dt)),
+                jnp.zeros((self.n_steps+1, 3)),
+            )
+        delta_trajectories = vmap(compute_trajectory)(self.action_space)
+        # Animate trajectory
+        fig = plt.figure(figsize=(21.43,13.57))
+        fig.subplots_adjust(left=0.05, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
+        outer_gs = fig.add_gridspec(1, 2, width_ratios=[2, 0.4], wspace=0.09)
+        gs_left = outer_gs[0].subgridspec(1, 2, wspace=0.0, hspace=0.0)
+        axs = [
+            fig.add_subplot(gs_left[0]), # Simulation + LiDAR ranges (Top-Left)
+            fig.add_subplot(gs_left[1]), # Simulation + Point cloud (Top-Right)
+            fig.add_subplot(outer_gs[1]),   # Action space (Right, tall)
+        ]
+        def animate(frame):
+            actions_cost = robot_actions_costs[frame]
+            feasible_actions_idxs = ~jnp.isinf(actions_cost)
+            feasible_actions = self.action_space[feasible_actions_idxs]
+            feasible_actions_cost = actions_cost[feasible_actions_idxs]
+            for i, ax in enumerate(axs):
+                ax.clear()
+                if i == len(axs) - 1: continue
+                ax.set(xlim=x_lims if x_lims is not None else [-10,10], ylim=y_lims if y_lims is not None else [-10,10])
+                ax.set_xlabel('X', labelpad=-5)
+                if i % 2 == 0:
+                    ax.set_ylabel('Y', labelpad=-13)
+                else:
+                    ax.set_yticks([])
+                ax.set_aspect('equal', adjustable='datalim')
+                # Plot humans
+                for h in range(len(humans_poses[frame])):
+                    head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
+                    ax.add_patch(head)
+                    circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                    ax.add_patch(circle)
+                # Plot human velocities
+                for h in range(len(humans_poses[frame])):
+                    ax.arrow(
+                        humans_poses[frame][h,0],
+                        humans_poses[frame][h,1],
+                        humans_velocities[frame][h,0],
+                        humans_velocities[frame][h,1],
+                        head_width=0.15,
+                        head_length=0.15,
+                        fc='blue',
+                        ec='blue',
+                        alpha=0.6,
+                        zorder=30,
+                    )
+                # Plot robot
+                robot_position = robot_poses[frame,:2]
+                head = plt.Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
+                ax.add_patch(head)
+                circle = plt.Circle((robot_position[0], robot_position[1]), self.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+                ax.add_patch(circle)
+                # Plot robot goal
+                ax.plot(
+                    robot_goals[frame][0],
+                    robot_goals[frame][1],
+                    marker='*',
+                    markersize=7,
+                    color='red',
+                    zorder=5,
+                )
+                # Plot static obstacles
+                if static_obstacles[frame].shape[1] > 1: # Polygon obstacles
+                    for o in static_obstacles[frame]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+                else: # One segment obstacles
+                    for o in static_obstacles[frame]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+            ### FIRST ROW AXS: SIMULATION + INPUT VISUALIZATION
+            c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
+            rot = jnp.array([[c, -s], [s, c]])
+            # AX 0,0: Simulation with LiDAR ranges
+            lidar_scan = observations[frame,0,6:]
+            for ray in range(len(lidar_scan)):
+                axs[0].plot(
+                    [robot_poses[frame,0], robot_poses[frame,0] + lidar_scan[ray] * jnp.cos(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
+                    [robot_poses[frame,1], robot_poses[frame,1] + lidar_scan[ray] * jnp.sin(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
+                    color="black", 
+                    linewidth=0.5, 
+                    zorder=0
+                )
+            axs[0].set_title("Trajectory")
+            # AX 0,1: Simulation with LiDAR point cloud stack and DWA possible paths
+            point_cloud = self.align_lidar(observations[frame])[1][:self.lidar_n_stack_to_use].reshape(-1, 2)
+            if len(point_cloud.shape) == 2:
+                point_cloud = point_cloud[None, ...]
+            for i, cloud in enumerate(point_cloud):
+                # color/alpha fade with i (smaller i -> less faded)
+                t = (1 - i / (self.n_stack - 1))  # in [0,1]
+                axs[1].scatter(
+                    cloud[:,0],
+                    cloud[:,1],
+                    c=0.3 + 0.7 * jnp.ones((self.lidar_num_rays,)) * t,
+                    cmap='Reds',
+                    vmin=0.0,
+                    vmax=1.0,
+                    alpha=0.3 + 0.7 * t,
+                    zorder=20 + self.n_stack - i,
+                )
+            axs[1].set_title("Pointcloud & Paths")
+            for i, action in enumerate(self.action_space):
+                if feasible_actions_idxs[i]:
+                    trajectory =  robot_poses[frame,:2] + jnp.dot(delta_trajectories[i,:,:2], rot.T)
+                    is_best_action = jnp.array_equal(action, robot_actions[frame])
+                    color = 'blue' if is_best_action else 'green'
+                    s = 3 if is_best_action else 1
+                    alpha = 1 if is_best_action else 0.5
+                    axs[1].plot(trajectory[:,0], trajectory[:,1], color=color, alpha=alpha, linewidth=s, zorder=10)
+            # AX :,2: Feasible and bounded action space + action space distribution and action taken
+            axs[2].set_xlabel("$v$ (m/s)")
+            axs[2].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
+            axs[2].set_xlim(-0.1, self.v_max + 0.1)
+            axs[2].set_ylim(-2*self.v_max/self.wheels_distance - 0.3, 2*self.v_max/self.wheels_distance + 0.3)
+            axs[2].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
+            axs[2].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
+            axs[2].set_yticks(jnp.arange(-2,3,1).tolist() + [2*self.v_max/self.wheels_distance,-2*self.v_max/self.wheels_distance])
+            axs[2].set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+            axs[2].grid()
+            axs[2].add_patch(
+                plt.Polygon(
+                    [   
+                        [0,2*self.v_max/self.wheels_distance],
+                        [0,-2*self.v_max/self.wheels_distance],
+                        [self.v_max,0],
+                    ],
+                    closed=True,
+                    fill=True,
+                    edgecolor='green',
+                    facecolor='lightgreen',
+                    linewidth=2,
+                    zorder=2,
+                ),
+            )
+            axs[2].scatter(
+                feasible_actions[:,0],
+                feasible_actions[:,1],
+                c=1/feasible_actions_cost,
+                cmap='Reds',
+                s=20,
+                alpha=0.7,
+                label='Feasible actions',
+                zorder=3,
+            )
+            axs[2].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51)
+        anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
+        if save_video:
+            save_path = os.path.join(os.path.dirname(__file__), f'jessi_trajectory.mp4')
+            writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
+            anim.save(save_path, writer=writer_video, dpi=300)
+        anim.paused = False
+        def toggle_pause(self, *args, **kwargs):
+            if anim.paused: anim.resume()
+            else: anim.pause()
+            anim.paused = not anim.paused
+        fig.canvas.mpl_connect('button_press_event', toggle_pause)
+        plt.show()
+
+    def animate_lasernav_trajectory(
+        self,
+        states,
+        observations,
+        actions,
+        actions_costs,
+        goals,
+        static_obstacles,
+        humans_radii,
+        lasernav_env:LaserNav,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+    ):
+        robot_positions = states[:,-1,:2]
+        robot_orientations = states[:,-1,4]
+        robot_poses = jnp.hstack((robot_positions, robot_orientations.reshape(-1,1)))
+        humans_positions = states[:,:-1,:2]
+        humans_orientations = states[:,:-1,4]
+        humans_poses = jnp.dstack((humans_positions, humans_orientations))
+        humans_body_velocities = states[:,:-1,2:4]
+        humans_velocities = lax.cond(
+            lasernav_env.humans_policy == HUMAN_POLICIES.index('hsfm'),
+            lambda: vmap(vmap(get_linear_velocity, in_axes=(0,0)), in_axes=(0,0))(
+                    humans_orientations,
+                    humans_body_velocities,
+                ),
+            lambda: humans_body_velocities,
+        )
+        self.animate_trajectory(
+            robot_poses,
+            actions,
+            actions_costs,
+            goals,
+            observations,
+            humans_poses,
+            humans_velocities,
+            humans_radii,
+            static_obstacles,
+            x_lims,
+            y_lims,
+            save_video,
+        )

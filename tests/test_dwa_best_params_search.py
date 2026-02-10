@@ -1,10 +1,9 @@
-from jax import random, vmap, lax
+from jax import random
 import jax.numpy as jnp
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as Reward
 from socialjym.policies.dwa import DWA
-from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
 random_seed = 0
@@ -34,7 +33,6 @@ time_horizons = jnp.array([.25, .5, .75, 1.])
 heading_coeffs = jnp.array([0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.])
 velocity_coeffs = jnp.array([0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.])
 clearence_coeffs = jnp.array([0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.])
-distance_coeffs = jnp.array([0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.])
 
 # Initialize the environment
 env = LaserNav(**env_params)
@@ -52,8 +50,7 @@ for trial in range(n_trials):
     heading_coeff = random.choice(keys[1], heading_coeffs)
     velocity_coeff = random.choice(keys[2], velocity_coeffs)
     clearence_coeff = random.choice(keys[3], clearence_coeffs)
-    distance_coeff = random.choice(keys[4], distance_coeffs)
-    print(f"Sampled hyperparameters: Time Horizon={time_horizon}, Heading Coeff={heading_coeff}, Velocity Coeff={velocity_coeff}, Clearence Coeff={clearence_coeff}, Distance Coeff={distance_coeff}")
+    print(f"Sampled hyperparameters: Time Horizon={time_horizon}, Heading Coeff={heading_coeff}, Velocity Coeff={velocity_coeff}, Clearence Coeff={clearence_coeff}")
     # Initialize the policy
     policy = DWA(
         lidar_num_rays=env.lidar_num_rays,
@@ -65,7 +62,6 @@ for trial in range(n_trials):
         heading_cost_coeff=heading_coeff,
         velocity_cost_coeff=velocity_coeff,
         clearance_cost_coeff=clearence_coeff,
-        distance_cost_coeff=distance_coeff,
     )
     # Execute tests
     metrics = policy.evaluate(
@@ -75,9 +71,9 @@ for trial in range(n_trials):
     )
     success_rate = metrics['successes'] / n_episodes_per_trial
     success_rates_trials.append(success_rate)
-    parameter_combinations.append((time_horizon, heading_coeff, velocity_coeff, clearence_coeff, distance_coeff))
+    parameter_combinations.append((time_horizon, heading_coeff, velocity_coeff, clearence_coeff))
 
 # Find the best hyperparameters
 best_index = jnp.argmax(jnp.array(success_rates_trials))
 best_parameters = parameter_combinations[best_index]
-print(f"Best hyperparameters: Time Horizon={best_parameters[0]}, Heading Coeff={best_parameters[1]}, Velocity Coeff={best_parameters[2]}, Clearence Coeff={best_parameters[3]}, Distance Coeff={best_parameters[4]} with Success Rate={success_rates_trials[best_index]:.2f}")
+print(f"Best hyperparameters: Time Horizon={best_parameters[0]}, Heading Coeff={best_parameters[1]}, Velocity Coeff={best_parameters[2]}, Clearence Coeff={best_parameters[3]} with Success Rate={success_rates_trials[best_index]:.2f}")
