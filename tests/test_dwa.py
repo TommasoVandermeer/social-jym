@@ -26,7 +26,7 @@ env_params = {
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3),
     'kinematics': kinematics,
-    'lidar_noise': False,
+    'lidar_noise': True,
 }
 
 # Initialize the environment

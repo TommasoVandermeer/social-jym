@@ -308,7 +308,6 @@ class ActorCritic(hk.Module):
             sampled_actions: Sampled actions from the policy. Shape (2,) or (batch_size, 2)
             distributions: Dict containing the Dirichlet distribution parameters.
             state_values: State value estimates from the critic. Shape (,) or (batch_size,)
-            loss_log_vars: Learnable loss weights log variances. Shape (3,)
         """
         random_key = kwargs.get("random_key", random.PRNGKey(0))
         has_batch = x.ndim == 3
