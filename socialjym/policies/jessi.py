@@ -1386,6 +1386,13 @@ class JESSI(BasePolicy):
         """
         Test the trained policy over n_trials episodes and compute relative metrics.
         """
+        assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
+        assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "JESSI policy can only be evaluated on unicycle kinematics"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        assert env.lidar_angular_range == self.lidar_angular_range, f"Environment LiDAR angular range (lidar_angular_range={env.lidar_angular_range}) must be equal to policy LiDAR angular range (lidar_angular_range={self.lidar_angular_range}) for evaluation"
+        assert env.lidar_max_dist == self.lidar_max_dist, f"Environment LiDAR max distance (lidar_max_dist={env.lidar_max_dist}) must be equal to policy LiDAR max distance (lidar_max_dist={self.lidar_max_dist}) for evaluation"
+        assert env.lidar_num_rays == self.lidar_num_rays, f"Environment LiDAR number of rays (lidar_num_rays={env.lidar_num_rays}) must be equal to policy LiDAR number of rays (lidar_num_rays={self.lidar_num_rays}) for evaluation"
+        assert env.n_stack == self.n_stack, f"Environment observation stack size (n_stack={env.n_stack}) must be equal to policy observation stack size (n_stack={self.n_stack}) for evaluation"
         time_limit = env.reward_function.time_limit
         @loop_tqdm(n_trials)
         @jit

@@ -1,17 +1,23 @@
-from jax import jit, lax, vmap, debug
+from jax import jit, lax, vmap, debug, random
+from jax_tqdm import loop_tqdm
 import jax.numpy as jnp
 from functools import partial
 
+from socialjym.envs.base_env import SCENARIOS, ROBOT_KINEMATICS
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.envs.base_env import wrap_angle
+from socialjym.envs.lasernav import LaserNav
+from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 
 class DWA(BasePolicy):
     def __init__(
         self,
-        predict_time_horizon = 0.5,
-        heading_cost_coeff = 0.04,
+        actions_discretization = 9,
+        predict_time_horizon = .75,
+        heading_cost_coeff = 0.2,
         clearance_cost_coeff = 0.2,
         velocity_cost_coeff = 0.2,
+        distance_cost_coeff = 0.1,
         robot_radius:float=0.3,
         v_max:float=1., 
         gamma:float=0.9, 
@@ -42,15 +48,18 @@ class DWA(BasePolicy):
         assert lidar_n_stack_to_use <= n_stack, "Number of lidar scans to use cannot be greater than n_stack"
         assert predict_time_horizon > 0, "Predict time horizon must be positive"
         assert predict_time_horizon % dt == 0, "Predict time horizon must be a multiple of dt"
+        assert actions_discretization >= 3, "Actions discretization must be at least 2"
         # Initialize policy parameters
         super().__init__(discount=gamma)
         self.predict_time_horizon = predict_time_horizon
         self.heading_cost_coeff = heading_cost_coeff
         self.clearance_cost_coeff = clearance_cost_coeff
         self.velocity_cost_coeff = velocity_cost_coeff
+        self.distance_cost_coeff = distance_cost_coeff
         self.robot_radius = robot_radius
         self.v_max = v_max
         self.dt = dt
+        self.n_steps = int(predict_time_horizon // dt)
         self.wheels_distance = wheels_distance
         self.n_stack = n_stack
         self.lidar_angular_range = lidar_angular_range
@@ -63,8 +72,9 @@ class DWA(BasePolicy):
             self.lidar_angles_robot_frame = lidar_angles_robot_frame
         self.lidar_n_stack_to_use = lidar_n_stack_to_use
         # Compute action space
-        angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 2*9-1)
-        speeds = jnp.linspace(0, self.v_max, 9)
+        self.actions_discretization = actions_discretization
+        angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 2*actions_discretization-1)
+        speeds = jnp.linspace(0, self.v_max, actions_discretization)
         unconstrained_action_space = jnp.empty((len(angular_speeds)*len(speeds),2))
         unconstrained_action_space = lax.fori_loop(
             0,
@@ -124,28 +134,37 @@ class DWA(BasePolicy):
     def _heading_cost(self, robot_pose, action, robot_goal):
         next_robot_pose = self.motion(robot_pose, action, self.predict_time_horizon)
         goal_direction = jnp.atan2(robot_goal[1] - next_robot_pose[1], robot_goal[0] - next_robot_pose[0])
-        heading_error = goal_direction - next_robot_pose[2]
-        return jnp.abs(heading_error)  # Prefer smaller heading error
+        heading_error = wrap_angle(goal_direction - next_robot_pose[2])
+        return jnp.abs(heading_error) / jnp.pi  # Prefer smaller heading error
 
+    @partial(jit, static_argnames=("self"))
+    def _distance_cost(self, robot_pose, action, robot_goal):
+        next_robot_pose = self.motion(robot_pose, action, self.predict_time_horizon)
+        distance_to_goal = jnp.linalg.norm(robot_goal - next_robot_pose[:2])
+        return lax.cond(
+            distance_to_goal <= 1.5,
+            lambda: distance_to_goal/1.5,  # Prefer smaller distance to goal when close to it
+            lambda: 0.,  # Ignore distance to goal when far from it, to prioritize obstacle avoidance
+        )
+    
     @partial(jit, static_argnames=("self"))
     def _clearance_cost(self, pose, action, point_cloud):
         # Predict robot trajectory for the given action
-        n_steps = int(self.predict_time_horizon // self.dt)
-        robot_poses = jnp.empty((n_steps, 3))
+        robot_poses = jnp.empty((self.n_steps+1, 3))
         robot_poses = robot_poses.at[0].set(pose)
         robot_poses = lax.fori_loop(
             1,
-            n_steps,
+            self.n_steps+1,
             lambda i, x: x.at[i].set(self.motion(x[i-1], action, self.dt)),
             robot_poses)
         # Compute distance from predicted trajectory to each point in the point cloud
         def min_distance_to_trajectory(point):
-            distances = jnp.linalg.norm(robot_poses[:, :2] - point[None, :], axis=1) - self.robot_radius
+            distances = jnp.linalg.norm(robot_poses[1:, :2] - point[None, :], axis=1)
             return jnp.min(distances)
         distances = vmap(min_distance_to_trajectory)(point_cloud)
         min_distance = jnp.min(distances)
         clearance_cost = lax.cond(
-            min_distance <= 0,
+            min_distance - self.robot_radius <= 0,
             lambda: jnp.inf,  # Collision, assign infinite cost
             lambda: 1/min_distance,  # Prefer larger clearance (i.e. smaller cost)
         )
@@ -156,10 +175,12 @@ class DWA(BasePolicy):
         velocity_cost = self._velocity_cost(action)
         heading_cost = self._heading_cost(robot_pose, action, robot_goal)
         clearance_cost = self._clearance_cost(robot_pose, action, point_cloud)
+        distance_cost = self._distance_cost(robot_pose, action, robot_goal)
         total_cost = (
             self.velocity_cost_coeff * velocity_cost +
             self.heading_cost_coeff * heading_cost +
-            self.clearance_cost_coeff * clearance_cost
+            self.clearance_cost_coeff * clearance_cost + 
+            self.distance_cost_coeff * distance_cost
         )
         return total_cost
 
@@ -202,7 +223,7 @@ class DWA(BasePolicy):
             lambda _: jnp.array([
                 pose[0]+action[0]*dt*jnp.cos(pose[2]),
                 pose[1]+action[0]*dt*jnp.sin(pose[2]),
-                wrap_angle(pose[2]+action[1]*dt),
+                pose[2],
             ]),
             None)
         return new_pose
@@ -236,3 +257,80 @@ class DWA(BasePolicy):
         best_action_idx = jnp.nanargmin(actions_costs)
         best_action = self.action_space[best_action_idx]
         return best_action, actions_costs[best_action_idx]
+    
+    def evaluate(
+        self,
+        n_trials:int,
+        random_seed:int,
+        env:LaserNav,
+    ) -> dict:
+        """
+        Test DWA over n_trials episodes and compute relative metrics.
+        """
+        assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
+        assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "DWA policy can only be evaluated on unicycle kinematics"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        assert env.lidar_angular_range == self.lidar_angular_range, f"Environment LiDAR angular range (lidar_angular_range={env.lidar_angular_range}) must be equal to policy LiDAR angular range (lidar_angular_range={self.lidar_angular_range}) for evaluation"
+        assert env.lidar_max_dist == self.lidar_max_dist, f"Environment LiDAR max distance (lidar_max_dist={env.lidar_max_dist}) must be equal to policy LiDAR max distance (lidar_max_dist={self.lidar_max_dist}) for evaluation"
+        assert env.lidar_num_rays == self.lidar_num_rays, f"Environment LiDAR number of rays (lidar_num_rays={env.lidar_num_rays}) must be equal to policy LiDAR number of rays (lidar_num_rays={self.lidar_num_rays}) for evaluation"
+        time_limit = env.reward_function.time_limit
+        @loop_tqdm(n_trials)
+        @jit
+        def _fori_body(i:int, for_val:tuple):   
+            @jit
+            def _while_body(while_val:tuple):
+                # Retrieve data from the tuple
+                state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states = while_val
+                action, _ = self.act(obs, info)
+                state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
+                # Save data
+                all_actions = all_actions.at[steps].set(action)
+                all_states = all_states.at[steps].set(state)
+                # Update step counter
+                steps += 1
+                return state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states
+
+            ## Retrieve data from the tuple
+            seed, metrics = for_val
+            policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
+            env_key = random.PRNGKey(seed + 1_000_000)
+            ## Reset the environment
+            state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            # state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            initial_robot_position = state[-1,:2]
+            ## Episode loop
+            all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+            all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+            while_val_init = (state, obs, info, init_outcome, policy_key, env_key, 0, all_actions, all_states)
+            _, _, end_info, outcome, policy_key, env_key, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            ## Update metrics
+            metrics = compute_episode_metrics(
+                environment=env.environment,
+                metrics=metrics,
+                episode_idx=i, 
+                initial_robot_position=initial_robot_position, 
+                all_states=all_states, 
+                all_actions=all_actions, 
+                outcome=outcome, 
+                episode_steps=episode_steps, 
+                end_info=end_info, 
+                max_steps=int(time_limit/env.robot_dt)+1, 
+                personal_space=0.5,
+                robot_dt=env.robot_dt,
+                robot_radius=env.robot_radius,
+                ccso_n_static_humans=env.ccso_n_static_humans,
+                robot_specs={'kinematics': env.kinematics, 'v_max': self.v_max, 'wheels_distance': self.wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
+            )
+            seed += 1
+            return seed, metrics
+        # Initialize metrics
+        metrics = initialize_metrics_dict(n_trials)
+        # Execute n_trials tests
+        if env.scenario == SCENARIOS.index('circular_crossing_with_static_obstacles'):
+            print(f"\nExecuting {n_trials} tests with {env.n_humans - env.ccso_n_static_humans} humans and {env.ccso_n_static_humans} obstacles...")
+        else:
+            print(f"\nExecuting {n_trials} tests with {env.n_humans} humans and {env.n_obstacles} obstacles...")
+        _, metrics = lax.fori_loop(0, n_trials, _fori_body, (random_seed, metrics))
+        # Print results
+        print_average_metrics(n_trials, metrics)
+        return metrics

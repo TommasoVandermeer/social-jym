@@ -1,8 +1,5 @@
-from jax import random, vmap, jit, lax
+from jax import random, vmap, lax
 import jax.numpy as jnp
-from jax.tree_util import tree_map
-import os
-import pickle
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as Reward
@@ -43,6 +40,13 @@ policy = DWA(
     lidar_max_dist=env.lidar_max_dist,
     n_stack=env.n_stack,
     lidar_n_stack_to_use=lidar_n_stack_to_use,
+)
+
+# Execute tests
+metrics = policy.evaluate(
+    n_episodes,
+    random_seed,
+    env,
 )
 
 # Simulate some episodes

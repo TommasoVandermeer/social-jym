@@ -19,13 +19,13 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
-    'n_humans': 5,
+    'n_humans': 10,
     'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'parallel_traffic', 
+    'scenario': 'hybrid_scenario', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3),
@@ -53,12 +53,12 @@ with open(os.path.join(os.path.dirname(__file__), 'jessi_e2e_rl_out.pkl'), 'rb')
     network_params, _, _ = pickle.load(f)
 
 # Test the trained JESSI policy
-# metrics = policy.evaluate(
-#     n_episodes,
-#     random_seed,
-#     env,
-#     network_params,
-# )
+metrics = policy.evaluate(
+    n_episodes,
+    random_seed,
+    env,
+    network_params,
+)
 
 # Simulate some episodes
 for i in range(n_episodes):
