@@ -33,6 +33,7 @@ class DWA(BasePolicy):
         lidar_num_rays=100,
         lidar_angles_robot_frame=None, # If not specified, rays are evenly distributed in the angular range
         lidar_n_stack_to_use=1, # Number of lidar scans to use to compute the action. If 1, only the most recent scan is used. If >1, the most recent n_stack_to_use scans are used and stacked together (e.g. if n_stack_to_use=3 and lidar_num_rays=100, the input point cloud will have 300 points).
+        use_box_action_space=False, # If True, the action space for which the DWA cost is computed is the box action space (i.e. all combinations of linear and angular speeds up to the maximum) but then the action is bounded in the triangle, otherwise it is the discretized action space (i.e. a subset of the box action space). Using the box action space is more computationally expensive, but allows to find better actions.
     ):
         """
         Dynamic Window Approach (DWA) policy for navigation.
@@ -68,12 +69,16 @@ class DWA(BasePolicy):
         self.lidar_angular_range = lidar_angular_range
         self.lidar_max_dist = lidar_max_dist
         self.lidar_num_rays = lidar_num_rays
+        self.use_box_action_space = use_box_action_space
         if lidar_angles_robot_frame is None:
             self.lidar_angles_robot_frame = jnp.linspace(-lidar_angular_range/2, lidar_angular_range/2, lidar_num_rays)
         else:
             assert len(lidar_angles_robot_frame) == lidar_num_rays, "Length of lidar_angles_robot_frame must be equal to lidar_num_rays"
             self.lidar_angles_robot_frame = lidar_angles_robot_frame
         self.lidar_n_stack_to_use = lidar_n_stack_to_use
+        # Default attributes
+        self.name = "DWA"
+        self.kinematics = ROBOT_KINEMATICS.index("unicycle")
         # Compute action space
         self.actions_discretization = actions_discretization
         angular_speeds = jnp.linspace(-self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2), 2*actions_discretization-1)
@@ -93,7 +98,43 @@ class DWA(BasePolicy):
                 x),
             unconstrained_action_space)
         self.action_space = unconstrained_action_space[~jnp.isnan(unconstrained_action_space).any(axis=1)]
-
+        self.box_action_space = lax.fori_loop(
+            0,
+            len(angular_speeds),
+            lambda i, x: lax.fori_loop(
+                0,
+                len(speeds),
+                lambda j, z: z.at[i*len(speeds)+j].set(jnp.array([speeds[j],angular_speeds[i]])),
+                x
+            ),
+            unconstrained_action_space
+        )
+        # Compute delta trajectories for each action in the action space, to speed up computations in the critics
+        def compute_trajectory(action):
+            return lax.fori_loop(
+                1,
+                self.n_steps+1,
+                lambda i, x: x.at[i].set(self.motion(x[i-1], action, self.dt)),
+                jnp.zeros((self.n_steps+1, 3)),
+            )
+        if self.use_box_action_space:
+            self.delta_trajectories = vmap(compute_trajectory)(self.box_action_space)
+            self.action_idxs = jnp.arange(len(self.box_action_space))
+        else:
+            self.delta_trajectories = vmap(compute_trajectory)(self.action_space)
+            self.action_idxs = jnp.arange(len(self.action_space))
+        # Initialize critics and weights for the cost function
+        self.critics = {
+            # Inputs are (current_robot_pose, action, action_idx, robot_goal, point_cloud)
+            'velocity':  lambda p, a, aidx, g, pc: self._velocity_critic(a),
+            'goal_heading':   lambda p, a, aidx, g, pc: self._goal_heading_critic(p, a, g),
+            'clearance': lambda p, a, aidx, g, pc: self._clearance_critic(p, aidx, pc),
+        }
+        self.weights = {
+            'velocity': velocity_cost_coeff,
+            'goal_heading': heading_cost_coeff,
+            'clearance': clearance_cost_coeff,
+        }
            
     # Private methods
 
@@ -130,26 +171,22 @@ class DWA(BasePolicy):
         return points_robot, points_world
 
     @partial(jit, static_argnames=("self"))
-    def _velocity_cost(self, action):
-        return self.v_max - action[0]  # Prefer higher speeds
+    def _velocity_critic(self, action):
+        return (self.v_max - action[0]) / self.v_max  # Prefer higher speeds
     
     @partial(jit, static_argnames=("self"))
-    def _heading_cost(self, robot_pose, action, robot_goal):
+    def _goal_heading_critic(self, robot_pose, action, robot_goal):
         next_robot_pose = self.motion(robot_pose, action, self.predict_time_horizon)
         goal_direction = jnp.atan2(robot_goal[1] - next_robot_pose[1], robot_goal[0] - next_robot_pose[0])
         heading_error = wrap_angle(goal_direction - next_robot_pose[2])
         return jnp.abs(heading_error) / jnp.pi  # Prefer smaller heading error
     
     @partial(jit, static_argnames=("self"))
-    def _clearance_cost(self, pose, action, point_cloud):
+    def _clearance_critic(self, robot_pose, action_idx, point_cloud):
         # Predict robot trajectory for the given action
-        robot_poses = jnp.empty((self.n_steps+1, 3))
-        robot_poses = robot_poses.at[0].set(pose)
-        robot_poses = lax.fori_loop(
-            1,
-            self.n_steps+1,
-            lambda i, x: x.at[i].set(self.motion(x[i-1], action, self.dt)),
-            robot_poses)
+        c, s = jnp.cos(robot_pose[2]), jnp.sin(robot_pose[2])
+        rot = jnp.array([[c, -s], [s, c]])
+        robot_poses =  robot_pose[:2] + jnp.dot(self.delta_trajectories[action_idx,:,:2], rot.T)
         # Compute distance from predicted trajectory to each point in the point cloud
         def min_distance_to_trajectory(point):
             distances = jnp.linalg.norm(robot_poses[1:, :2] - point[None, :], axis=1)
@@ -163,19 +200,16 @@ class DWA(BasePolicy):
         )
         return clearance_cost  # Prefer larger clearance (i.e. smaller cost)
 
-    @partial(jit, static_argnames=("self"))
-    def _dwa_cost(self, robot_pose, action, robot_goal, point_cloud):
-        velocity_cost = self._velocity_cost(action)
-        heading_cost = self._heading_cost(robot_pose, action, robot_goal)
-        clearance_cost = self._clearance_cost(robot_pose, action, point_cloud)
-        total_cost = (
-            self.velocity_cost_coeff * velocity_cost +
-            self.heading_cost_coeff * heading_cost +
-            self.clearance_cost_coeff * clearance_cost
-        )
-        return total_cost
-
     # Public methods
+
+    @partial(jit, static_argnames=("self"))
+    def cost(self, robot_pose, action, action_idx, robot_goal, point_cloud):
+        total_cost = 0.0
+        for name, critic_fn in self.critics.items():
+            weight = self.weights.get(name, 0.0)
+            cost_val = critic_fn(robot_pose, action, action_idx, robot_goal, point_cloud)
+            total_cost = total_cost + (weight * cost_val) 
+        return total_cost
 
     @partial(jit, static_argnames=("self"))
     def align_lidar(
@@ -243,11 +277,17 @@ class DWA(BasePolicy):
         # Compute point cloud 
         aligned_lidar = self.align_lidar(obs[:self.lidar_n_stack_to_use])[1]
         point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
-        # Compute action using DWA          
-        actions_costs = vmap(self._dwa_cost, in_axes=(None, 0, None, None))(robot_pose, self.action_space, robot_goal, point_cloud)
-        best_action_idx = jnp.nanargmin(actions_costs)
-        best_action = self.action_space[best_action_idx]
-        return best_action, actions_costs[best_action_idx], actions_costs
+        # Compute action using DWA
+        if self.use_box_action_space:          
+            actions_costs = vmap(self.cost, in_axes=(None, 0, 0, None, None))(robot_pose, self.box_action_space, self.action_idxs, robot_goal, point_cloud)
+            best_action_box_idx = jnp.nanargmin(actions_costs)
+            best_action_box = self.box_action_space[best_action_box_idx]
+            best_action = self.action_space[jnp.nanargmin(jnp.linalg.norm(self.action_space - best_action_box, axis=1))]
+        else:
+            actions_costs = vmap(self.cost, in_axes=(None, 0, 0, None, None))(robot_pose, self.action_space, self.action_idxs, robot_goal, point_cloud)
+            best_action_idx = jnp.nanargmin(actions_costs)
+            best_action = self.action_space[best_action_idx]
+        return best_action, actions_costs
     
     def evaluate(
         self,
@@ -272,7 +312,7 @@ class DWA(BasePolicy):
             def _while_body(while_val:tuple):
                 # Retrieve data from the tuple
                 state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states = while_val
-                action, _, actions_costs = self.act(obs, info)
+                action, _ = self.act(obs, info)
                 state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
                 # Save data
                 all_actions = all_actions.at[steps].set(action)
@@ -377,8 +417,11 @@ class DWA(BasePolicy):
         ]
         def animate(frame):
             actions_cost = robot_actions_costs[frame]
-            feasible_actions_idxs = ~jnp.isinf(actions_cost)
-            feasible_actions = self.action_space[feasible_actions_idxs]
+            feasible_actions_idxs = ~jnp.isinf(actions_cost) 
+            if self.use_box_action_space:
+                feasible_actions = self.box_action_space[feasible_actions_idxs]
+            else:
+                feasible_actions = self.action_space[feasible_actions_idxs]
             feasible_actions_cost = actions_cost[feasible_actions_idxs]
             for i, ax in enumerate(axs):
                 ax.clear()
@@ -448,9 +491,9 @@ class DWA(BasePolicy):
             point_cloud = self.align_lidar(observations[frame])[1][:self.lidar_n_stack_to_use].reshape(-1, 2)
             if len(point_cloud.shape) == 2:
                 point_cloud = point_cloud[None, ...]
-            for i, cloud in enumerate(point_cloud):
-                # color/alpha fade with i (smaller i -> less faded)
-                t = (1 - i / (self.n_stack - 1))  # in [0,1]
+            for j, cloud in enumerate(point_cloud):
+                # color/alpha fade with j (smaller j -> less faded)
+                t = (1 - j / (self.n_stack - 1))  # in [0,1]
                 axs[1].scatter(
                     cloud[:,0],
                     cloud[:,1],
@@ -459,12 +502,13 @@ class DWA(BasePolicy):
                     vmin=0.0,
                     vmax=1.0,
                     alpha=0.3 + 0.7 * t,
-                    zorder=20 + self.n_stack - i,
+                    zorder=20 + self.n_stack - j,
                 )
             axs[1].set_title("Pointcloud & Paths")
-            for i, action in enumerate(self.action_space):
-                if feasible_actions_idxs[i]:
-                    trajectory =  robot_poses[frame,:2] + jnp.dot(delta_trajectories[i,:,:2], rot.T)
+            for action in feasible_actions:
+                if (action == self.action_space).all(axis=1).any():
+                    idx = jnp.argmax((action == self.action_space).all(axis=1))
+                    trajectory =  robot_poses[frame,:2] + jnp.dot(delta_trajectories[idx,:,:2], rot.T)
                     is_best_action = jnp.array_equal(action, robot_actions[frame])
                     color = 'blue' if is_best_action else 'green'
                     s = 3 if is_best_action else 1
@@ -505,7 +549,11 @@ class DWA(BasePolicy):
                 label='Feasible actions',
                 zorder=3,
             )
-            axs[2].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51)
+            axs[2].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51) # Action taken
+            if self.use_box_action_space:
+                min_cost_box_action = feasible_actions[jnp.nanargmin(feasible_actions_cost)]
+                axs[2].plot(min_cost_box_action[0], min_cost_box_action[1], marker='^',markersize=9,color='darkorange',zorder=50) # Best action in the box action space
+                axs[2].plot([robot_actions[frame,0], min_cost_box_action[0]], [robot_actions[frame,1], min_cost_box_action[1]], color='darkorange', linestyle='--', zorder=49) # Line between best box action and action taken
         anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
         if save_video:
             save_path = os.path.join(os.path.dirname(__file__), f'jessi_trajectory.mp4')

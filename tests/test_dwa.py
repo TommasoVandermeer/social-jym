@@ -10,6 +10,11 @@ random_seed = 0
 n_episodes = 100
 kinematics = 'unicycle'
 lidar_n_stack_to_use = 1
+use_box_action_space = True
+prediction_time_horizon = .5
+velocity_cost_weight = 0.2
+heading_cost_weight = 0.126
+clearance_cost_weight = 0.2
 env_params = {
     'n_stack': 5,
     'lidar_num_rays': 100,
@@ -26,7 +31,7 @@ env_params = {
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3),
     'kinematics': kinematics,
-    'lidar_noise': True,
+    'lidar_noise': False,
 }
 
 # Initialize the environment
@@ -39,11 +44,15 @@ policy = DWA(
     lidar_max_dist=env.lidar_max_dist,
     n_stack=env.n_stack,
     lidar_n_stack_to_use=lidar_n_stack_to_use,
-    predict_time_horizon=2,
+    predict_time_horizon=prediction_time_horizon,
+    heading_cost_coeff=heading_cost_weight,
+    clearance_cost_coeff=clearance_cost_weight,
+    velocity_cost_coeff=velocity_cost_weight,
     actions_discretization=16,
+    use_box_action_space=use_box_action_space,
 )
 
-# # Execute tests
+# Execute tests
 # metrics = policy.evaluate(
 #     n_episodes,
 #     random_seed,
@@ -62,11 +71,10 @@ for i in range(n_episodes):
     all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
     all_humans_radii = jnp.array([info['humans_parameters'][:,0]])
     all_actions = jnp.zeros((max_steps, 2))
-    all_actions_costs = jnp.zeros((max_steps,len(policy.action_space)))
+    all_actions_costs = jnp.zeros((max_steps,len(policy.action_space) if not policy.use_box_action_space else len(policy.box_action_space)))
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, cost, actions_cost = policy.act(obs, info)
-        # print(f"Episode {i}, Step {step}, Action: {action}, Cost: {cost}")
+        action, actions_cost = policy.act(obs, info)
         # Step the environment
         state, obs, info, reward, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
         # Save data for animation
