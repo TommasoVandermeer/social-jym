@@ -14,11 +14,11 @@ from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.utils.aux_functions import animate_trajectory, interpolate_humans_boundaries, interpolate_obstacle_segments
 
 ### Hyperparameters
-policy = 'dir-safe' # 'dir-safe' or 'dwa'
-trial = 15 # 23
-n_humans = 9
+policy = 'dwa' # 'dir-safe' or 'dwa'
+trial = 0 # 23
+n_humans = 5
 n_obstacles = 5
-scenario = 'circular_crossing_with_static_obstacles'
+scenario = 'parallel_traffic'
 reward_function = Reward2(
     target_reached_reward = True,
     collision_penalty_reward = True,
@@ -44,6 +44,7 @@ test_env_params = {
     'reward_function': reward_function,
     'kinematics': 'unicycle',
     'ccso_n_static_humans': 5,
+    'thick_default_obstacle': True,
 }
 test_env = SocialNav(**test_env_params)
 

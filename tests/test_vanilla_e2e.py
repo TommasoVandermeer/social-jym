@@ -6,13 +6,14 @@ import pickle
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
-from socialjym.policies.jessi import JESSI
+from socialjym.policies.vanilla_e2e import VanillaE2E
 from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
 random_seed = 0
 n_episodes = 100
 kinematics = 'unicycle'
+action_space_bounding = False
 n_stack_for_action_space_bounding = 1
 env_params = {
     'n_stack': 5,
@@ -37,20 +38,15 @@ env_params = {
 env = LaserNav(**env_params)
 
 # Initialize the policy
-policy = JESSI(
+policy = VanillaE2E(
     lidar_num_rays=env.lidar_num_rays,
     lidar_angular_range=env.lidar_angular_range,
     lidar_max_dist=env.lidar_max_dist,
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
+    action_space_bounding=action_space_bounding,
 )
-# with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
-#     encoder_params = pickle.load(f)
-# with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
-#     actor_params = pickle.load(f)
-# network_params = policy.merge_nns_params(encoder_params, actor_params)
-with open(os.path.join(os.path.dirname(__file__), 'jessi_e2e_rl_out.pkl'), 'rb') as f:
-    network_params, _, _ = pickle.load(f)
+network_params = policy.init_nn(random.PRNGKey(random_seed))
 
 # Test the trained JESSI policy
 metrics = policy.evaluate(
@@ -78,19 +74,9 @@ for i in range(n_episodes):
         'alphas': jnp.zeros((max_steps, 3)),
         'vertices': jnp.zeros((max_steps, 3, 2)),
     }
-    bigauss = {
-        "means": jnp.zeros((max_steps,policy.n_detectable_humans,2)),
-        "logsigmas": jnp.zeros((max_steps,policy.n_detectable_humans,2)),
-        "correlation": jnp.zeros((max_steps,policy.n_detectable_humans)),
-    }
-    all_encoder_distrs = {
-        "pos_distrs": bigauss,
-        "vel_distrs": bigauss,
-        "weights": jnp.zeros((max_steps,policy.n_detectable_humans)),
-    }
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, _, _, _, _, _, perception_distr, actor_distr, state_value = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
+        action, key, aligned_lidar_readings, robot_state_input, sampled_action, actor_distr, state_value = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
         print("Dirichlet distribution parameters: ", actor_distr['alphas'])
         # print("Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']])
         # Step the environment
@@ -100,7 +86,6 @@ for i in range(n_episodes):
         all_rewards = all_rewards.at[step].set(reward)
         all_predicted_state_values = all_predicted_state_values.at[step].set(state_value)
         all_actor_distrs = tree_map(lambda x, y: x.at[step].set(y), all_actor_distrs, actor_distr)
-        all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, perception_distr)
         all_states = jnp.vstack((all_states, jnp.array([state])))
         all_observations = jnp.vstack((all_observations, jnp.array([obs])))
         all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
@@ -108,7 +93,6 @@ for i in range(n_episodes):
         all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
         # Increment step
         step += 1
-    all_encoder_distrs = tree_map(lambda x: x[:step], all_encoder_distrs)
     all_actor_distrs = tree_map(lambda x: x[:step], all_actor_distrs)
     all_actions = all_actions[:step]
     all_rewards = all_rewards[:step]
@@ -127,27 +111,27 @@ for i in range(n_episodes):
     ## Animate only trajectory
     angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
     lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,6:], angles)
-    # animate_trajectory(
-    #     all_states, 
-    #     info['humans_parameters'][:,0], 
-    #     env.robot_radius, 
-    #     'hsfm',
-    #     info['robot_goal'],
-    #     info['current_scenario'],
-    #     static_obstacles=info['static_obstacles'][-1],
-    #     robot_dt=env_params['robot_dt'],
-    #     # lidar_measurements=lidar_measurements,
-    #     kinematics=kinematics,
-    # )
-    ## Animate trajectory with JESSI's perception and action distribution
-    policy.animate_lasernav_trajectory(
-        all_states[:-1],
-        all_observations[:-1],
-        all_actions,
-        all_actor_distrs,
-        all_encoder_distrs,
-        all_robot_goals[:-1],
-        all_static_obstacles[:-1],
-        all_humans_radii[:-1],
-        env,
+    animate_trajectory(
+        all_states, 
+        info['humans_parameters'][:,0], 
+        env.robot_radius, 
+        'hsfm',
+        info['robot_goal'],
+        info['current_scenario'],
+        static_obstacles=info['static_obstacles'][-1],
+        robot_dt=env_params['robot_dt'],
+        # lidar_measurements=lidar_measurements,
+        kinematics=kinematics,
     )
+    # ## Animate trajectory with JESSI's perception and action distribution
+    # policy.animate_lasernav_trajectory(
+    #     all_states[:-1],
+    #     all_observations[:-1],
+    #     all_actions,
+    #     all_actor_distrs,
+    #     all_encoder_distrs,
+    #     all_robot_goals[:-1],
+    #     all_static_obstacles[:-1],
+    #     all_humans_radii[:-1],
+    #     env,
+    # )

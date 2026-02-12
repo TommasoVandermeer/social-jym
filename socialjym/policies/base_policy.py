@@ -97,10 +97,6 @@ class BasePolicy(ABC):
     def act(self):
         pass
 
-    @abstractmethod
-    def update(self):
-        pass
-
     @partial(jit, static_argnames=("self","n_edges"))
     def batch_compute_disk_circumscribing_n_agon(self, positions, radii, n_edges=10):
         return vmap(BasePolicy._compute_disk_circumscribing_n_agon, in_axes=(None, 0, 0, None))(

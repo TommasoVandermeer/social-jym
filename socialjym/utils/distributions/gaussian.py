@@ -224,3 +224,23 @@ class BivariateGaussian(BaseDistribution):
         means = distribution["means"]
         covariance = self.covariance(distribution)
         return random.multivariate_normal(key, means, covariance)
+
+    @partial(jit, static_argnames=("self"))
+    def mahalanobis(self, distribution:dict, sample:jnp.ndarray) -> float:
+        """
+        Computes the Mahalanobis distance: sqrt((x-mu)^T * Sigma^-1 * (x-mu))
+        Efficiently implemented using the Cholesky factor L, avoiding explicit matrix inversion.
+        """
+        mean = distribution["means"]      # shape: (2,)
+        cholesky = self.cholesky(distribution) # shape: (2, 2)
+        diff = sample - mean              # shape: (2,)
+        y = solve_triangular(cholesky, diff, lower=True)
+        return jnp.sqrt(jnp.sum(y**2))
+
+    @partial(jit, static_argnames=("self"))
+    def batch_mahalanobis(self, distribution:dict, samples:jnp.ndarray) -> jnp.ndarray:
+        """
+        Vectorized version of mahalanobis distance.
+        distribution keys shape: (Batch, ...) matches samples shape: (Batch, 2)
+        """
+        return vmap(self.mahalanobis, in_axes=(0, 0))(distribution, samples)
