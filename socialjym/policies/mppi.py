@@ -230,7 +230,7 @@ class MPPI(DWA):
             all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
             all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
             while_val_init = (state, obs, info, init_outcome, self.init_u_mean(), policy_key, env_key, 0, all_actions, all_states)
-            _, _, end_info, outcome, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            _, _, end_info, outcome, _, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
             ## Update metrics
             metrics = compute_episode_metrics(
                 environment=env.environment,
