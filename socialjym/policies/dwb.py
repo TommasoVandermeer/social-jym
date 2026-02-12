@@ -94,6 +94,7 @@ class DWB(DWA):
             'rotate_to_goal': rotate_to_goal_weight,
             #'twirling': twirling_weight,
         }
+        raise NotImplementedError("DWB policy is not implemented yet!")
     
     @partial(jit, static_argnames=("self"))
     def _base_obstacle_critic(self, robot_pose, action_idx, point_cloud):
