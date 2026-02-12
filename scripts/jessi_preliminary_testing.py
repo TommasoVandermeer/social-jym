@@ -436,7 +436,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_config
             _, _, obs, info, _ = env.reset(random.PRNGKey(random_seed))
             start_time = time.time()
             for k in range(100): 
-                action, _, _, _, _, _, _, = policy.act(random.PRNGKey(random_seed+k), obs, info, jessi_e2e_params)
+                action, _, _, _, _, _, _, _, _ = policy.act(random.PRNGKey(random_seed+k), obs, info, jessi_e2e_params)
                 action.block_until_ready()
             end_time = time.time()
             inference_times = inference_times.at[i,j].set((end_time - start_time)/100)
@@ -526,7 +526,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_reduce
             _, _, obs, info, _ = env.reset(random.PRNGKey(random_seed))
             start_time = time.time()
             for k in range(100): 
-                action, _, _, _, _, _, _, = policy.act(random.PRNGKey(random_seed+k), obs, info, jessi_e2e_params)
+                action, _, _, _, _, _, _, _, _ = policy.act(random.PRNGKey(random_seed+k), obs, info, jessi_e2e_params)
                 action.block_until_ready()
             end_time = time.time()
             inference_times = inference_times.at[i,j].set((end_time - start_time)/100)

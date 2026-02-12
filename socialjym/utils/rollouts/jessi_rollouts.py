@@ -14,6 +14,8 @@ from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.base_env import SCENARIOS
 
 
+TRAINING_TYPES = ["multitask", "modular", "policy"]
+
 @partial(jit, static_argnames=("policy", "env", "n_steps"))
 def collect_rollout_step(
     network_params, 
@@ -153,7 +155,7 @@ def process_buffer_and_gae(
 
 @partial(
     jit,
-    static_argnames=("policy", "optimizer", "clip_range", "beta_entropy", "compute_safety_loss", "full_network_training"),
+    static_argnames=("policy", "optimizer", "clip_range", "beta_entropy", "compute_safety_loss", "training_type"),
     donate_argnums=(1, 2, 3)
 )
 def train_one_epoch(
@@ -166,9 +168,12 @@ def train_one_epoch(
     clip_range,
     beta_entropy,
     compute_safety_loss,
-    full_network_training,
+    training_type,
     debugging=False,
 ):
+    multitask_training = (training_type == TRAINING_TYPES.index("multitask"))
+    modular_training = (training_type == TRAINING_TYPES.index("modular"))
+    policy_training = (training_type == TRAINING_TYPES.index("policy"))
 
     n_minibatches = batched_buffer["actions"].shape[0]
     n_micro_splits = batched_buffer["actions"].shape[1]
@@ -185,16 +190,21 @@ def train_one_epoch(
         def micro_batch_loss_fn(p, u_mb, micro_batch_key):
             inputs0, inputs1 = u_mb["inputs0"], u_mb["inputs1"]
             # Lowe input precision to save memory
-            if full_network_training:
+            if multitask_training or modular_training:
                 p = tree_map(lambda x: x.astype(jnp.float16), p)
                 inputs0_f16 = inputs0.astype(jnp.float16)
                 inputs1_f16 = inputs1.astype(jnp.float16)
-            # Forward pass (For Actor/Critic)
-            (safety_perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
-                p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(full_network_training)
-            )
+                # Forward pass (For Actor/Critic)
+                (safety_perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
+                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training)
+                )
+            else:
+                # Forward pass (For Actor/Critic)
+                (safety_perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
+                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training)
+                )
             # Cast back to higher precision for loss computation
-            if full_network_training:
+            if multitask_training or modular_training:
                 pred_val = pred_val.astype(jnp.float32)
                 def dist_to_f32(dist):
                     return tree_map(lambda x: x.astype(jnp.float32), dist)
@@ -229,8 +239,9 @@ def train_one_epoch(
             entropy_loss = -beta_entropy * entropy
             policy_loss = actor_loss + entropy_loss
             # Perception
-            if full_network_training:
+            if multitask_training or modular_training:
                 gt_dict = {"gt_mask": u_mb["gt_mask"], "gt_poses": u_mb["gt_poses"], "gt_vels": u_mb["gt_vels"]}
+                augment_key, mask_drop_key = random.split(micro_batch_key)
                 # Data augmentation (random rotations, angular mask dropout) for regularization
                 def augment_data(inputs0, gt_dict, key):
                     # Input shape is (B, n_stack, num_beams, 7) and gt_poses/gt_vels shape is (B, n_stack, num_beams, 2)
@@ -247,16 +258,16 @@ def train_one_epoch(
                     gt_dict['gt_poses'] = gt_dict['gt_poses'] @ rot_mat.T
                     gt_dict['gt_vels'] = gt_dict['gt_vels'] @ rot_mat.T
                     return inputs0, gt_dict
-                inputs0_corrupt, gt_dict = augment_data(inputs0, gt_dict, micro_batch_key)
+                inputs0_corrupt, gt_dict = augment_data(inputs0, gt_dict, augment_key)
                 # Cast corrupted input to float16 to save memory during forward pass
                 inputs0_corrupt_f16 = inputs0_corrupt.astype(jnp.float16)
                 # Forward pass through perception head
                 (perc_dist, _, _, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0_corrupt_f16, inputs1_f16, stop_perception_gradient=False, only_perception=True, is_training=True
+                    p, None, inputs0_corrupt_f16, inputs1_f16, stop_perception_gradient=False, only_perception=True, perception_key=mask_drop_key
                 )
                 # Compute perception loss
                 perc_dist = dist_to_f32(perc_dist)
-                batch_perc_loss = policy._encoder_loss(perc_dist, gt_dict)
+                batch_perc_loss = policy._perception_loss(perc_dist, gt_dict)
                 perception_loss = jnp.mean(batch_perc_loss)
             else:
                 perception_loss = 0.0
@@ -364,15 +375,17 @@ def jessi_multitask_rl_rollout(
     n_epochs,
     beta_entropy,
     lambda_gae,
+    training_type:str = "multitask",
     target_kl:float = None,
     safety_loss:bool = False,
-    full_network_training:bool = True,
     debugging:bool = False,
 ):
+    assert training_type in TRAINING_TYPES, "Invalid training type. Must be one of: " + ", ".join(TRAINING_TYPES)
     assert total_batch_size % n_parallel_envs == 0, "Total batch size must be divisible by number of parallel envs."
     assert mini_batch_size % micro_batch_size == 0, "Mini-batch size must be divisible by micro-batch size."
     assert total_batch_size % mini_batch_size == 0, "Total batch size must be divisible by mini-batch size."
     assert micro_batch_size % device_count() == 0, "Micro-batch size must be divisible by number of devices."
+    training_type = TRAINING_TYPES.index(training_type)
     n_steps = total_batch_size // n_parallel_envs
     n_minibatches = total_batch_size // mini_batch_size
     n_micro_splits = mini_batch_size // micro_batch_size
@@ -456,7 +469,7 @@ def jessi_multitask_rl_rollout(
                 clip_range=clip_range, 
                 beta_entropy=beta_entropy,
                 compute_safety_loss=safety_loss,
-                full_network_training=full_network_training,
+                training_type=training_type,
             )
             abstract_train_out = eval_shape(
                 train_pure,
