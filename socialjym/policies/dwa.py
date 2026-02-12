@@ -65,6 +65,8 @@ class DWA(BasePolicy):
         self.dt = dt
         self.n_steps = int(predict_time_horizon // dt)
         self.wheels_distance = wheels_distance
+        self.w_max = 2 * v_max / wheels_distance
+        self.w_min = - self.w_max
         self.n_stack = n_stack
         self.lidar_angular_range = lidar_angular_range
         self.lidar_max_dist = lidar_max_dist
@@ -172,7 +174,15 @@ class DWA(BasePolicy):
 
     @partial(jit, static_argnames=("self"))
     def _velocity_critic(self, action):
-        return (self.v_max - action[0]) / self.v_max  # Prefer higher speeds
+        if self.use_box_action_space:
+            return (self.v_max - action[0]) / self.v_max  # Prefer higher speeds
+        else:
+            vmax = self.v_max - (self.v_max * jnp.abs(action[1]) / self.w_max)  # Max linear velocity for the given angular velocity, to be in the triangle defined by the kinematic constraints
+            return lax.cond(
+                vmax > 0,
+                lambda: (vmax - action[0]) / vmax,  # Prefer higher speeds (given the maximum speed for the given angular velocity)
+                lambda: 0.0 # Complete turning in place is not penalized
+            )
     
     @partial(jit, static_argnames=("self"))
     def _goal_heading_critic(self, robot_pose, action, robot_goal):

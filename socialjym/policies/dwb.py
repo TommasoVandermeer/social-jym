@@ -40,6 +40,8 @@ class DWB(DWA):
         use_box_action_space=False, # If True, the action space for which the DWA cost is computed is the box action space (i.e. all combinations of linear and angular speeds up to the maximum) but then the action is bounded in the triangle, otherwise it is the discretized action space (i.e. a subset of the box action space). Using the box action space is more computationally expensive, but allows to find better actions.
     ):
         """
+        NOT COMPLETED YET! DO NOT USE!
+
         Dynamic Window Approach by David Lu! (DWB) policy for navigation. Equivalent to DWB in NAV2 ROS2.
         Implementation inspired by https://github.com/locusrobotics/robot_navigation/tree/master/dwb_local_planner
         """
