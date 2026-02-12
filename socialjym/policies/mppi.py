@@ -20,14 +20,14 @@ class MPPI(DWA):
             # MPPI hyperparameters
             num_samples=500, 
             horizon=20, 
-            lambda_=0.3, 
+            temperature=0.3, 
             noise_sigma=jnp.array([0.3, 0.9]), # Sigma for [v, w]
             # MPPI critics weights
             velocity_cost_weight = 0.5,
             goal_distance_cost_weight = 3.0,
             obstacle_cost_weight = 3.0,
             control_cost_weight = 0.1,
-            # DWA and Base hyperparameters 
+            # Base hyperparameters 
             robot_radius:float=0.3,
             v_max:float=1., 
             gamma:float=0.9, 
@@ -62,7 +62,7 @@ class MPPI(DWA):
         # Save MPPI hyperparameters
         self.num_samples = num_samples # K
         self.horizon = horizon         # T
-        self.lambda_ = lambda_         # Temperature
+        self.temperature = temperature         # Temperature
         self.noise_sigma = noise_sigma # Sigma for the noise added to the controls (shape: (2,) for [v, w])
         # Default parameters
         self.name = "MPPI"
@@ -176,7 +176,7 @@ class MPPI(DWA):
         )
         # Compute weights and update u_mean
         beta = jnp.min(costs)
-        weights = jnp.exp(-(costs - beta) / self.lambda_)
+        weights = jnp.exp(-(costs - beta) / self.temperature)
         weights = weights / (jnp.sum(weights) + 1e-5) # Normalize to sum 1
         perturbations_weighted = jnp.sum(weights[:, None, None] * noise, axis=0)
         u_mean = u_mean + perturbations_weighted
@@ -268,7 +268,7 @@ class MPPI(DWA):
         robot_poses, # x, y, theta
         robot_actions,
         robot_u_means,
-        robot_trajectories,
+        robot_trajectories, # Sampled trajectories (num_steps, num_samples, horizon+1, 3)
         robot_trajectories_costs,
         robot_goals,
         observations,
@@ -306,6 +306,22 @@ class MPPI(DWA):
             _, chosen_trajectory = self._rollout_and_cost(robot_pose, robot_u_mean, robot_goal, point_cloud)
             return chosen_trajectory
         chosen_trajectories = vmap(compute_chosen_trajectory)(robot_poses, robot_u_means, robot_goals, observations)
+        # Compute first sampled actions at each frame
+        @jit
+        def inverse_kinematics(robot_pose, next_robot_pose):
+            dtheta = wrap_angle(next_robot_pose[2] - robot_pose[2])
+            w = dtheta / self.dt
+            dx = next_robot_pose[0] - robot_pose[0]
+            dy = next_robot_pose[1] - robot_pose[1]
+            theta_mid = robot_pose[2] + dtheta / 2.0
+            chord_len = dx * jnp.cos(theta_mid) + dy * jnp.sin(theta_mid)
+            v = lax.cond(
+                jnp.abs(w) > 1e-5,
+                lambda: chord_len * w / (2.0 * jnp.sin(dtheta / 2.0)),
+                lambda: (dx * jnp.cos(robot_pose[2]) + dy * jnp.sin(robot_pose[2])) / self.dt,
+            )
+            return jnp.array([v, w])
+        first_sampled_actions = vmap(vmap(inverse_kinematics, in_axes=(None, 0)))(robot_poses, robot_trajectories[:,:,1]) # Shape: (n_steps-1, 2)
         # Animate trajectory
         fig = plt.figure(figsize=(21.43,13.57))
         fig.subplots_adjust(left=0.05, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
@@ -426,6 +442,14 @@ class MPPI(DWA):
                     linewidth=2,
                     zorder=2,
                 ),
+            )
+            axs[2].scatter(
+                first_sampled_actions[frame,:,0],
+                first_sampled_actions[frame,:,1],
+                color='orange',
+                alpha=0.5,
+                zorder=10,
+                s=5,
             )
             axs[2].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51) # Action taken
         anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)

@@ -10,6 +10,9 @@ random_seed = 0
 n_episodes = 100
 kinematics = 'unicycle'
 lidar_n_stack_to_use = 1
+u_noise_sigma = jnp.array([0.4, 1.2]) # jnp.array([0.3, 0.9]) # Sigma for [v, w]
+num_samples = 1_000
+temperature = 0.05
 env_params = {
     'n_stack': 5,
     'lidar_num_rays': 100,
@@ -21,7 +24,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'parallel_traffic', 
+    'scenario': 'hybrid_scenario', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3),
@@ -39,14 +42,17 @@ policy = MPPI(
     lidar_max_dist=env.lidar_max_dist,
     n_stack=env.n_stack,
     lidar_n_stack_to_use=lidar_n_stack_to_use,
+    noise_sigma=u_noise_sigma,
+    num_samples=num_samples,
+    temperature=temperature,
 )
 
 # Execute tests
-metrics = policy.evaluate(
-    n_episodes,
-    random_seed,
-    env,
-)
+# metrics = policy.evaluate(
+#     n_episodes,
+#     random_seed,
+#     env,
+# )
 
 # Simulate some episodes
 for i in range(n_episodes):
