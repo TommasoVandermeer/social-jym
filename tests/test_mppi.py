@@ -1,4 +1,4 @@
-from jax import random, vmap, lax
+from jax import random, vmap
 import jax.numpy as jnp
 
 from socialjym.envs.lasernav import LaserNav
@@ -42,11 +42,11 @@ policy = MPPI(
 )
 
 # Execute tests
-# metrics = policy.evaluate(
-#     n_episodes,
-#     random_seed,
-#     env,
-# )
+metrics = policy.evaluate(
+    n_episodes,
+    random_seed,
+    env,
+)
 
 # Simulate some episodes
 for i in range(n_episodes):
@@ -61,12 +61,12 @@ for i in range(n_episodes):
     all_humans_radii = jnp.array([info['humans_parameters'][:,0]])
     all_actions = jnp.zeros((max_steps, 2))
     all_u_means = jnp.zeros((max_steps, policy.horizon, 2))
-    all_trajectories = jnp.zeros((max_steps, policy.num_samples, policy.horizon, 3))
+    all_trajectories = jnp.zeros((max_steps, policy.num_samples, policy.horizon+1, 3))
     all_trajectories_costs = jnp.zeros((max_steps,policy.num_samples))
     u_mean = policy.init_u_mean()
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, u_mean, trajectories, costs = policy.act(obs, info, u_mean, policy_key)
+        action, u_mean, trajectories, costs, policy_key = policy.act(obs, info, u_mean, policy_key)
         # Step the environment
         state, obs, info, reward, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
         # Save data for animation

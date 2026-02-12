@@ -1,6 +1,6 @@
 from jax import jit, lax, vmap, debug, random
 from jax_tqdm import loop_tqdm
-import numpy as jnp
+import jax.numpy as jnp
 from functools import partial
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
@@ -18,10 +18,15 @@ class MPPI(DWA):
     def __init__(
             self, 
             # MPPI hyperparameters
-            num_samples=100, 
-            horizon=10, 
+            num_samples=500, 
+            horizon=20, 
             lambda_=0.3, 
             noise_sigma=jnp.array([0.3, 0.9]), # Sigma for [v, w]
+            # MPPI critics weights
+            velocity_cost_weight = 0.5,
+            goal_distance_cost_weight = 3.0,
+            obstacle_cost_weight = 3.0,
+            control_cost_weight = 0.1,
             # DWA and Base hyperparameters 
             robot_radius:float=0.3,
             v_max:float=1., 
@@ -66,27 +71,36 @@ class MPPI(DWA):
         # Initialize critics and weights for the cost function
         self.critics = {
             # Inputs are (current_robot_pose, action, action_idx, robot_goal, point_cloud)
-            'velocity':  lambda p, a, aidx, g, pc: super()._velocity_critic(a), # Heredited from DWA
+            'velocity':  lambda p, a, aidx, g, pc: self._velocity_critic(a), # Heredited from DWA
             'goal_distance':   lambda p, a, aidx, g, pc: self._goal_distance_critic(p, g),
             'obstacle_cost': lambda p, a, aidx, g, pc: self._obstacle_critic(p, aidx, pc),
             'control_cost': lambda p, a, aidx, g, pc: self._control_critic(a),
         }
         self.weights = {
-            'velocity':  .5,
-            'goal_distance':   1.,
-            'obstacle_cost': 3.,
-            'control_cost': .1,
+            'velocity':  velocity_cost_weight,
+            'goal_distance':   goal_distance_cost_weight,
+            'obstacle_cost': obstacle_cost_weight,
+            'control_cost': control_cost_weight,
         }
 
     # Private methods
 
     @partial(jit, static_argnames=("self"))
+    def _velocity_critic(self, action):
+        vmax = self.v_max - (self.v_max * jnp.abs(action[1]) / self.w_max)  # Max linear velocity for the given angular velocity, to be in the triangle defined by the kinematic constraints
+        return lax.cond(
+            vmax > 0,
+            lambda: (vmax - action[0]) / vmax,  # Prefer higher speeds (given the maximum speed for the given angular velocity)
+            lambda: 0.0 # Complete turning in place is not penalized
+        )
+
+    @partial(jit, static_argnames=("self"))
     def _obstacle_critic(self, robot_pose, action_idx, point_cloud):
-        distances = jnp.linalg.norm(robot_pose[None, :] - point_cloud, axis=1)
+        distances = jnp.linalg.norm(robot_pose[None, :2] - point_cloud, axis=1)
         min_distance = jnp.min(distances)
         clearance_cost = lax.cond(
             min_distance - self.robot_radius <= 0,
-            lambda: 1_000_000,  # Collision, assign infinite cost
+            lambda: 1_000_000.,  # Collision, assign infinite cost
             lambda: 1/min_distance,  # Prefer larger clearance (i.e. smaller cost)
         )
         return clearance_cost  # Prefer larger clearance (i.e. smaller cost)
@@ -110,7 +124,7 @@ class MPPI(DWA):
             next_pose = self.motion(pose, action, self.dt)
             step_cost = self.cost(pose, action, seq_idx, goal, point_cloud) 
             return (next_pose, seq_idx + 1, current_cost + step_cost), next_pose
-        (final_pose, total_cost), trajectory = lax.scan(step_fn, (start_pose, 0, 0.0), controls_seq)
+        (final_pose, _, total_cost), trajectory = lax.scan(step_fn, (start_pose, 0, 0.0), controls_seq)
         trajectory = jnp.concatenate((start_pose[None, :], trajectory), axis=0) # Shape: (Horizon+1, 3)
         # TERMINAL COST
         total_cost += 5 * self._goal_distance_critic(final_pose, goal) # Add terminal cost based on distance to goal
@@ -137,7 +151,15 @@ class MPPI(DWA):
         return jnp.zeros(self.u_mean_shape)
 
     @partial(jit, static_argnames=("self"))
-    def act(self, obs, info, u_mean, key):
+    def act(
+        self, 
+        obs:jnp.ndarray, 
+        info:dict, 
+        u_mean:jnp.ndarray, 
+        key
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        # Split key
+        key, subkey = random.split(key)
         # Extract robot goal from info
         robot_goal = info['robot_goal']
         # Extract current robot state from observation
@@ -146,7 +168,7 @@ class MPPI(DWA):
         aligned_lidar = self.align_lidar(obs[:self.lidar_n_stack_to_use])[1]
         point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
         # Sample control sequences and compute their costs
-        noise = random.normal(key, (self.num_samples, self.horizon, 2)) * self.noise_sigma
+        noise = random.normal(subkey, (self.num_samples, self.horizon, 2)) * self.noise_sigma
         V = u_mean[None, :, :] + noise
         V_clamped = vmap(vmap(self._clamp_action))(V) # Shape: (num_samples, horizon, 2)
         costs, trajectories = vmap(self._rollout_and_cost, in_axes=(None, 0, None, None))(
@@ -155,18 +177,91 @@ class MPPI(DWA):
         # Compute weights and update u_mean
         beta = jnp.min(costs)
         weights = jnp.exp(-(costs - beta) / self.lambda_)
-        weights = weights / jnp.sum(weights) # Normalize to sum 1
+        weights = weights / (jnp.sum(weights) + 1e-5) # Normalize to sum 1
         perturbations_weighted = jnp.sum(weights[:, None, None] * noise, axis=0)
         u_mean = u_mean + perturbations_weighted
         u_mean_clamped = vmap(self._clamp_action)(u_mean)
         action = u_mean_clamped[0]
         u_mean_clamped = jnp.roll(u_mean_clamped, -1, axis=0)
         u_mean_clamped = u_mean_clamped.at[-1].set(jnp.zeros(2)) 
-        return action, u_mean_clamped, trajectories, costs
+        return action, u_mean_clamped, trajectories, costs, key
 
-    def evaluate(self):
-        #TODO: implement evaluation method that runs multiple episodes and computes metrics
-        pass
+    def evaluate(
+        self,
+        n_trials:int,
+        random_seed:int,
+        env:LaserNav,
+    ) -> dict:
+        """
+        Test MPPI over n_trials episodes and compute relative metrics.
+        """
+        assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
+        assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "MPPI policy can only be evaluated on unicycle kinematics"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        assert env.lidar_angular_range == self.lidar_angular_range, f"Environment LiDAR angular range (lidar_angular_range={env.lidar_angular_range}) must be equal to policy LiDAR angular range (lidar_angular_range={self.lidar_angular_range}) for evaluation"
+        assert env.lidar_max_dist == self.lidar_max_dist, f"Environment LiDAR max distance (lidar_max_dist={env.lidar_max_dist}) must be equal to policy LiDAR max distance (lidar_max_dist={self.lidar_max_dist}) for evaluation"
+        assert env.lidar_num_rays == self.lidar_num_rays, f"Environment LiDAR number of rays (lidar_num_rays={env.lidar_num_rays}) must be equal to policy LiDAR number of rays (lidar_num_rays={self.lidar_num_rays}) for evaluation"
+        time_limit = env.reward_function.time_limit
+        @loop_tqdm(n_trials)
+        @jit
+        def _fori_body(i:int, for_val:tuple):   
+            @jit
+            def _while_body(while_val:tuple):
+                # Retrieve data from the tuple
+                state, obs, info, outcome, u_mean, policy_key, env_key, steps, all_actions, all_states = while_val
+                action, u_mean, _, _, policy_key = self.act(obs, info, u_mean, policy_key)
+                state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
+                # Save data
+                all_actions = all_actions.at[steps].set(action)
+                all_states = all_states.at[steps].set(state)
+                # Update step counter
+                steps += 1
+                return state, obs, info, outcome, u_mean, policy_key, env_key, steps, all_actions, all_states
+
+            ## Retrieve data from the tuple
+            seed, metrics = for_val
+            policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
+            env_key = random.PRNGKey(seed + 1_000_000)
+            ## Reset the environment
+            state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            # state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            initial_robot_position = state[-1,:2]
+            ## Episode loop
+            all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+            all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+            while_val_init = (state, obs, info, init_outcome, self.init_u_mean(), policy_key, env_key, 0, all_actions, all_states)
+            _, _, end_info, outcome, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            ## Update metrics
+            metrics = compute_episode_metrics(
+                environment=env.environment,
+                metrics=metrics,
+                episode_idx=i, 
+                initial_robot_position=initial_robot_position, 
+                all_states=all_states, 
+                all_actions=all_actions, 
+                outcome=outcome, 
+                episode_steps=episode_steps, 
+                end_info=end_info, 
+                max_steps=int(time_limit/env.robot_dt)+1, 
+                personal_space=0.5,
+                robot_dt=env.robot_dt,
+                robot_radius=env.robot_radius,
+                ccso_n_static_humans=env.ccso_n_static_humans,
+                robot_specs={'kinematics': env.kinematics, 'v_max': self.v_max, 'wheels_distance': self.wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
+            )
+            seed += 1
+            return seed, metrics
+        # Initialize metrics
+        metrics = initialize_metrics_dict(n_trials)
+        # Execute n_trials tests
+        if env.scenario == SCENARIOS.index('circular_crossing_with_static_obstacles'):
+            print(f"\nExecuting {n_trials} tests with {env.n_humans - env.ccso_n_static_humans} humans and {env.ccso_n_static_humans} obstacles...")
+        else:
+            print(f"\nExecuting {n_trials} tests with {env.n_humans} humans and {env.n_obstacles} obstacles...")
+        _, metrics = lax.fori_loop(0, n_trials, _fori_body, (random_seed, metrics))
+        # Print results
+        print_average_metrics(n_trials, metrics)
+        return metrics
 
     def animate_trajectory(
         self,
@@ -304,7 +399,8 @@ class MPPI(DWA):
             axs[1].set_title("Pointcloud & Paths")
             for i, trajectory in enumerate(robot_trajectories[frame]):
                 cost = robot_trajectories_costs[frame][i]
-                axs[1].plot(trajectory[:,0], trajectory[:,1], color='green', alpha=0.5, linewidth=1, zorder=10)
+                if cost < 1_000_000:
+                    axs[1].plot(trajectory[:,0], trajectory[:,1], color='green', alpha=0.5, linewidth=1, zorder=10)
             axs[1].plot(chosen_trajectories[frame][:,0], chosen_trajectories[frame][:,1], color='blue', alpha=1, linewidth=3, zorder=30)
             # AX :,2: Feasible and bounded action space + action space distribution and action taken
             axs[2].set_xlabel("$v$ (m/s)")

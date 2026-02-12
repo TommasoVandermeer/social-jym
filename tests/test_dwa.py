@@ -61,7 +61,7 @@ policy = DWA(
 
 # Simulate some episodes
 for i in range(n_episodes):
-    policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
+    reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
     state, reset_key, obs, info, outcome = env.reset(reset_key)
     step = 0
     max_steps = int(env.reward_function.time_limit/env.robot_dt)+1
