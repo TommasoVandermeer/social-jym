@@ -34,22 +34,17 @@ class SinusoidalPositionalEncoding(hk.Module):
         return x + self.pe_table[None, :seq_len, :]
 
 class AngularLocalCrossAttention(hk.Module):
-    def __init__(self, embed_dim, target_beams, input_angles, max_angle_deg=18.0, name="angular_local_cross_attn"):
+    def __init__(self, embed_dim, target_beams, max_angle_deg=18.0, name="angular_local_cross_attn", beam_dropout_rate=0.0):
         super().__init__(name=name)
         self.embed_dim = embed_dim
         self.target_beams = target_beams 
         self.threshold = jnp.cos(jnp.deg2rad(max_angle_deg/2)) 
-        self.input_angles = input_angles
+        self.beam_dropout_rate = beam_dropout_rate
     
         self.spatial_latents = hk.get_parameter("spatial_latents", [target_beams, embed_dim], init=hk.initializers.TruncatedNormal(stddev=0.02))
         query_angles = jnp.linspace(0, 2 * jnp.pi, target_beams, endpoint=False)
 
         self.latent_vecs = jnp.stack([jnp.sin(query_angles), jnp.cos(query_angles)], axis=-1)
-        self.input_vecs = jnp.stack([jnp.sin(input_angles), jnp.cos(input_angles)], axis=-1)
-        cos_diff = jnp.einsum('id,jd->ij', self.latent_vecs, self.input_vecs) # [Target, Input]
-        threshold = jnp.cos(jnp.deg2rad(max_angle_deg/2))
-        self.fixed_mask = cos_diff >= threshold 
-        self.fixed_mask = self.fixed_mask[None, None, :, :]
 
         self.attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
         self.norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
@@ -57,44 +52,43 @@ class AngularLocalCrossAttention(hk.Module):
         self.ffn = hk.nets.MLP([embed_dim], activation=nn.gelu, activate_final=True)
         self.norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
-    def compute_angular_mask(self, input_sin_cos):
+    def compute_angular_mask(self, input_sin_cos, key=None):
         # input_sin_cos: [B*T, Beams, 2]
         # latent_sin_cos: [Target_Beams, 2]
-        cos_diff = jnp.einsum('id,mjd->mij', self.latent_vecs, input_sin_cos)
-        mask = cos_diff >= self.threshold
-        return mask[:, None, :, :] # [B*T, 1, Target_Beams, Beams]
+        cos_diff = jnp.einsum('id,mjd->mij', self.latent_vecs, input_sin_cos) # (B*T, Target_Beams, Beams)
+        mask = cos_diff >= self.threshold # (B*T, Target_Beams, Beams)
+        
+        if key is not None and self.beam_dropout_rate > 0.0:
+            B_T, n_beams, _ = input_sin_cos.shape
+            keep_prob = 1.0 - self.beam_dropout_rate
+            random_mask = random.bernoulli(key, p=keep_prob, shape=(B_T, self.target_beams, n_beams))
+            mask = mask & random_mask
+        
+        mask = mask[:, None, :, :] # [B*T, 1, Target_Beams, Beams]
+        return mask
 
-    def __call__(self, x_emb, x_raw, is_training=False):
+    def __call__(self, x_emb, x_raw, key=None):
         # x_emb: [B*T, Beams, D], x_raw: [B*T, Beams, 7]
         B_T = x_emb.shape[0]
         # 1. Latent Queries
         q = jnp.broadcast_to(self.spatial_latents[None, ...], (B_T, self.target_beams, self.embed_dim))
         # 2. Cross Attention
-        # input_sin_cos = x_raw[..., 4:6]
-        if is_training:
-            # Compute dynamic mask based on input angles for regularization during training. During inference, use fixed precomputed mask for stability.
-            # Computing the mask dinamically based on input angles during training allows for regularization by exposing the model to varying attention patterns, 
-            # which can improve generalization. During inference, using a fixed precomputed mask ensures stability and consistency in the attention mechanism, 
-            # as numerical errors in angle computations could lead to fluctuating masks and thus unstable behavior.
-            input_sin_cos = x_raw[..., 4:6]
-            mask = self.compute_angular_mask(input_sin_cos)
-            attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
-        else:
-            mask = self.fixed_mask
-        attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask) # Using fixed mask because numerical errors change the mask dynamically
+        input_sin_cos = x_raw[..., 4:6]
+        mask = self.compute_angular_mask(input_sin_cos, key=key)
+        attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
         q = self.norm1(q + attn_out)
         # 3. FFN
         ffn_out = self.ffn(q)
         return self.norm2(q + ffn_out)
 
 class SpatioTemporalEncoder(hk.Module):
-    def __init__(self, embed_dim, n_sectors, lidar_angles_robot_frame, name=None): 
+    def __init__(self, embed_dim, n_sectors, lidar_angles_robot_frame, name=None, beam_dropout_rate=0.0): 
         super().__init__(name=name)
         self.embed_dim = embed_dim
         self.n_sectors = n_sectors
-        self.lidar_angles_robot_frame = lidar_angles_robot_frame
+        self.lidar_angles_robot_frame = lidar_angles_robot_frame # UNUSED
         # 1. Spatial Feature Extraction
-        self.angular_spatial_attn = AngularLocalCrossAttention(embed_dim, target_beams=n_sectors, input_angles=lidar_angles_robot_frame, max_angle_deg=18.0)
+        self.angular_spatial_attn = AngularLocalCrossAttention(embed_dim, target_beams=n_sectors, max_angle_deg=18.0, beam_dropout_rate=beam_dropout_rate)
         # 2. Temporal Positional Encodings
         self.pos_encoder_time = SinusoidalPositionalEncoding(embed_dim, max_len=100)
         # 3. Temporal Attention
@@ -103,12 +97,12 @@ class SpatioTemporalEncoder(hk.Module):
         self.temporal_ffn = hk.nets.MLP([embed_dim * 2, embed_dim], activation=nn.gelu)
         self.temporal_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
-    def __call__(self, x, x_raw, is_training=False):
+    def __call__(self, x, x_raw, key=None):
         # x shape: [Batch, Time, Beams, Features]
         B, T, L, F = x.shape
         x_flat = x.reshape(B * T, L, self.embed_dim)
         x_raw_flat = x_raw.reshape(B * T, L, x_raw.shape[-1])
-        h_spatial = self.angular_spatial_attn(x_flat, x_raw_flat, is_training) # [B*T, L, embed_dim]
+        h_spatial = self.angular_spatial_attn(x_flat, x_raw_flat, key=key) # [B*T, L, embed_dim]
         L_new = h_spatial.shape[1]
         h_spatial = h_spatial.reshape(B, T, L_new, self.embed_dim)
         h_time_in = h_spatial.transpose(0, 2, 1, 3).reshape(B * L_new, T, self.embed_dim)
@@ -164,6 +158,7 @@ class Perception(hk.Module):
             embed_dim: int,
             n_sectors: int,
             lidar_angles_robot_frame: jnp.ndarray,
+            beam_dropout_rate: float = 0.0,
         ):
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -174,7 +169,13 @@ class Perception(hk.Module):
         self.n_sectors = n_sectors
         # Modules
         self.input_proj = hk.Linear(embed_dim, name="input_projection")
-        self.perception = SpatioTemporalEncoder(embed_dim=embed_dim, n_sectors=n_sectors, name="spatio_temporal_encoder", lidar_angles_robot_frame=lidar_angles_robot_frame)
+        self.perception = SpatioTemporalEncoder(
+            embed_dim=embed_dim, 
+            n_sectors=n_sectors, 
+            name="spatio_temporal_encoder", 
+            lidar_angles_robot_frame=lidar_angles_robot_frame, 
+            beam_dropout_rate=beam_dropout_rate
+        )
         self.decoder = HCGQueryDecoder(n_detectable_humans, embed_dim, name="decoder")
         # Head: 11 params (weight, mu_x, mu_y, log_sig_x, log_sig_y, corr, mu_vx, mu_vy, log_sig_vx, log_sig_vy, corr_v)
         self.head_hum = hk.Linear(11, w_init=hk.initializers.VarianceScaling(0.01))
@@ -215,7 +216,7 @@ class Perception(hk.Module):
             "weights": weights
         }
 
-    def __call__(self, x, stop_gradient=False, is_training=False):
+    def __call__(self, x, stop_gradient=False, key=None):
         # x input: [batch B, n_stack (T), num_beams (L), 7]
         has_batch = x.ndim == 4
         if not has_batch:
@@ -223,7 +224,7 @@ class Perception(hk.Module):
         # 1. Feature Projection
         x_emb = self.input_proj(x) # [B, T, L, embed_dim]
         # 2. Spatio-Temporal Encoding
-        encoded_features = self.perception(x_emb, x, is_training=is_training) # [B, T, L, embed_dim]
+        encoded_features = self.perception(x_emb, x, key=key) # [B, T, L, embed_dim]
         last_scan_embeddings = encoded_features[:, 0, :, :] # [B, N_sectors, embed_dim]
         # 3. Decoding via Queries
         latents = self.decoder(encoded_features) # [B, n_detectable_humans, embed_dim]        
@@ -382,6 +383,7 @@ class E2E(hk.Module):
             "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
         },
         initial_concentration: float = 0.,
+        beam_dropout_rate: float = 0.0,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -407,6 +409,7 @@ class E2E(hk.Module):
             embed_dim=embed_dim,
             n_sectors=n_sectors,
             lidar_angles_robot_frame=lidar_angles_robot_frame,
+            beam_dropout_rate=beam_dropout_rate,
         )
         # Initialize Actor-Critic module
         self.actor_critic = ActorCritic(
@@ -425,13 +428,13 @@ class E2E(hk.Module):
         y: jnp.ndarray, # Additional actor-critic input (B, n_detectable_humans, 9)
         stop_perception_gradient: bool = False,
         only_perception: bool = False,
-        is_training: bool = False,
         **kwargs: dict,
     ) -> tuple:
         # Extract random key
-        random_key = kwargs.get("random_key", random.PRNGKey(0))
+        action_sample_key = kwargs.get("random_key", random.PRNGKey(0))
+        perception_key = kwargs.get("perception_key", None)
         ## PERCEPTION
-        perception_output, scan_embedding = self.perception(x, stop_gradient=stop_perception_gradient, is_training=is_training) # perception_output: (B, N, 11), scan_embedding: (B, E)
+        perception_output, scan_embedding = self.perception(x, stop_gradient=stop_perception_gradient, key=perception_key) # perception_output: (B, N, 11), scan_embedding: (B, E)
         # Prepare actor-critic input
         hcgs = jnp.concatenate((
             perception_output["pos_distrs"]["means"],
@@ -457,7 +460,7 @@ class E2E(hk.Module):
             sampled_actions, distributions, concentration, state_values = self.actor_critic(
                 actor_input,
                 scan_embedding,
-                random_key=random_key
+                random_key=action_sample_key
             )
         return perception_output, actor_input, sampled_actions, distributions, concentration, state_values
 
@@ -480,6 +483,7 @@ class JESSI(BasePolicy):
         embedding_dim:int=96,
         n_sectors:int=60,
         n_stack_for_action_space_bounding:int=1,
+        beam_dropout_rate:float=0.0,
     ) -> None:
         """
         JESSI (JAX-based E2E Safe Social Interpretable autonomous navigation).
@@ -517,6 +521,7 @@ class JESSI(BasePolicy):
         self.max_beam_range = max_beam_range
         self.embedding_dim = embedding_dim
         self.n_sectors = n_sectors
+        self.beam_dropout_rate = beam_dropout_rate
         # Default attributes
         self.name = "JESSI"
         self.kinematics = ROBOT_KINEMATICS.index("unicycle")
@@ -525,7 +530,7 @@ class JESSI(BasePolicy):
         # Initialize Perception network
         self.perception_name = "lidar_perception"
         @hk.transform
-        def perception_network(x, stop_gradient=False, is_training=False) -> jnp.ndarray:
+        def perception_network(x, stop_gradient=False, key=None) -> jnp.ndarray:
             net = Perception(
                 self.perception_name, 
                 self.n_detectable_humans, 
@@ -534,8 +539,9 @@ class JESSI(BasePolicy):
                 embed_dim=self.embedding_dim, 
                 n_sectors=n_sectors,
                 lidar_angles_robot_frame=self.lidar_angles_robot_frame,
+                beam_dropout_rate=self.beam_dropout_rate,
             )
-            return net(x, stop_gradient=stop_gradient, is_training=is_training)
+            return net(x, stop_gradient=stop_gradient, key=key)
         self.perception = perception_network
         # Initialize Actor Critic network
         self.actor_critic_name = "actor_network"
@@ -553,7 +559,7 @@ class JESSI(BasePolicy):
         # Initialize E2E Actor Critic network
         self.e2e_name = "e2e"
         @hk.transform
-        def e2e_network(x, y, stop_perception_gradient=False, only_perception=False, is_training=False, **kwargs) -> jnp.ndarray:
+        def e2e_network(x, y, stop_perception_gradient=False, only_perception=False, **kwargs) -> jnp.ndarray:
             e2e = E2E(
                 self.e2e_name,
                 self.perception_name,
@@ -566,8 +572,9 @@ class JESSI(BasePolicy):
                 wheels_distance=self.wheels_distance,
                 embed_dim=self.embedding_dim,
                 n_sectors=self.n_sectors,
+                beam_dropout_rate=self.beam_dropout_rate,
             ) 
-            return e2e(x, y, stop_perception_gradient=stop_perception_gradient, only_perception=only_perception, is_training=is_training, **kwargs)
+            return e2e(x, y, stop_perception_gradient=stop_perception_gradient, only_perception=only_perception, **kwargs)
         self.e2e = e2e_network
 
     # Private methods
@@ -605,7 +612,7 @@ class JESSI(BasePolicy):
         return points_robot, points_world
     
     @partial(jit, static_argnames=("self"))
-    def _encoder_loss(
+    def _perception_loss(
         self,
         human_distrs: dict,
         targets:jnp.ndarray,
@@ -963,7 +970,7 @@ class JESSI(BasePolicy):
         return actor_input
 
     @partial(jit, static_argnames=("self"))
-    def compute_encoder_input(
+    def compute_perception_input(
         self,
         obs:jnp.ndarray,
     ):
@@ -991,14 +998,14 @@ class JESSI(BasePolicy):
         def compute_beam_token(
             scan_index:int,
             point:jnp.ndarray,
-            fixed_theta:float,
         ) -> jnp.ndarray:
             # Extract point coordinates
             x, y = point
             # Compute beam features
             distance = jnp.linalg.norm(point)
-            sin_fixed_theta = jnp.sin(fixed_theta)
-            cos_fixed_theta = jnp.cos(fixed_theta)
+            current_theta = jnp.arctan2(y, x)
+            sin_current_theta = jnp.sin(current_theta)
+            cos_current_theta = jnp.cos(current_theta)
             hit = jnp.where(distance < self.lidar_max_dist, 1.0, 0.0)
             # Compute stack index features
             delta_t = scan_index * self.dt
@@ -1007,14 +1014,13 @@ class JESSI(BasePolicy):
                 hit,
                 x,
                 y,
-                sin_fixed_theta,
-                cos_fixed_theta,
+                sin_current_theta,
+                cos_current_theta,
                 delta_t,
             ])
-        encoder_input = vmap(vmap(compute_beam_token, in_axes=(None, 0, 0)), in_axes=(0, 0, None))(
+        encoder_input = vmap(vmap(compute_beam_token, in_axes=(None, 0)), in_axes=(0, 0))(
             jnp.arange(self.n_stack),
             aligned_lidar_scans,
-            self.lidar_angles_robot_frame,
         )  # Shape: (n_stack, lidar_num_rays, 7)
         # Optionally select TOP K beams for each stack here to reduce computation
         # First stack is the most recent one!!!
@@ -1027,7 +1033,7 @@ class JESSI(BasePolicy):
         robot_goal:jnp.ndarray,
     ) -> jnp.ndarray:
         # Compute encoder input and last lidar point cloud (for action bounding)
-        perception_input, point_cloud_for_bounding = self.compute_encoder_input(obs)
+        perception_input, point_cloud_for_bounding = self.compute_perception_input(obs)
         # Compute bounded action space parameters and add it to the input
         bounding_parameters = self.bound_action_space(
             point_cloud_for_bounding,  
@@ -1091,7 +1097,7 @@ class JESSI(BasePolicy):
         )   
     
     @partial(jit, static_argnames=("self"))
-    def encoder_loss(
+    def perception_loss(
         self,
         current_params:dict,
         inputs:jnp.ndarray,
@@ -1099,12 +1105,12 @@ class JESSI(BasePolicy):
         lambda_pos_reg:float=2.0,
         lambda_vel_reg:float=1.0,
         lambda_cls:float=1.0,
-        is_training:bool = False,
+        key=None,
         ) -> jnp.ndarray:
         # B: batch size, K: number of HCGs, M: max number of ground truth humans
         # Compute the prediction
-        human_distrs, _ = self.perception.apply(current_params, None, inputs, is_training=is_training)
-        return self._encoder_loss(
+        human_distrs, _ = self.perception.apply(current_params, None, inputs, key=key)
+        return self._perception_loss(
             human_distrs,
             targets,
             lambda_pos_reg,
@@ -1195,20 +1201,21 @@ class JESSI(BasePolicy):
         )
     
     @partial(jit, static_argnames=("self","encoder_optimizer"))
-    def update_encoder(
+    def update_perception(
         self,
         current_params:dict, 
         encoder_optimizer:optax.GradientTransformation, 
         optimizer_state: jnp.ndarray,
         experiences:dict[str:jnp.ndarray],
+        key:random.PRNGKey,
         # Experiences: {"inputs":jnp.ndarray, "targets":dict{"gt_mask","gt_poses","gt_vels"}}
     ) -> tuple:
         # Compute loss and gradients
-        loss, grads = value_and_grad(self.encoder_loss)(
+        loss, grads = value_and_grad(self.perception_loss)(
             current_params, 
             experiences["inputs"],
             experiences["targets"],
-            is_training=True
+            key=key,
         )
         grad_norm = optax.global_norm(grads)
         # Compute parameter updates
