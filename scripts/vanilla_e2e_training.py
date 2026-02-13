@@ -7,7 +7,6 @@ import os
 import pickle
 import optax
 from matplotlib import rc, rcParams
-from matplotlib.animation import FuncAnimation, FFMpegWriter
 rc('font', weight='regular', size=20)
 rcParams['pdf.fonttype'] = 42
 rcParams['ps.fonttype'] = 42
@@ -19,7 +18,7 @@ from socialjym.utils.rollouts.vanilla_e2e_rollouts import vanilla_e2e_rl_rollout
 
 unbounded_policy_nn_name = 'vanilla_e2e_il_out.pkl'
 unbounded_network_name = 'vanilla_e2e_rl_out.pkl'
-bounded_policy_nn_name = 'bounded_vanilla_e2e_il_out'
+bounded_policy_nn_name = 'bounded_vanilla_e2e_il_out.pkl'
 bounded_network_name = 'bounded_vanilla_e2e_rl_out.pkl'
 ### Environment parameters
 robot_radius = 0.3
@@ -41,7 +40,7 @@ n_steps = 500_000  # Number of labeled examples to train Perception network
 n_parallel_envs = 1000  # Number of parallel environments to simulate to generate the dataset
 policy_learning_rate = 0.005
 policy_batch_size = 200
-policy_n_epochs = 10 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
+policy_n_epochs = 30 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
 ### RL Hyperparameters
 rl_n_parallel_envs = 500 
 rl_training_updates = 500
@@ -65,7 +64,7 @@ training_hyperparams = {
     'hybrid_scenario_subset': hybrid_scenario_subset,
     'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
-    'target_kl': 0.01,  # Target KL divergence for early stopping in each update
+    'target_kl': None,  # Target KL divergence for early stopping in each update
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 
@@ -230,7 +229,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), bounded_policy_nn_
     n_data = controller_dataset["observations"].shape[0]
     n_train_batches = n_data // policy_batch_size
     print(f"# Training dataset size: {controller_dataset['observations'].shape[0]} experiences")
-    @loop_tqdm(policy_n_epochs, desc="Training UNBOUNDED Vanilla-E2E policy network")
+    @loop_tqdm(policy_n_epochs, desc="Training BOUNDED Vanilla-E2E policy network")
     @jit 
     def _epoch_loop(
         i:int,

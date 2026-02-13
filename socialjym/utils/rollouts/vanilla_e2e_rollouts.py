@@ -150,7 +150,7 @@ def process_buffer_and_gae(
 
 @partial(
     jit,
-    static_argnames=("policy", "optimizer", "clip_range", "beta_entropy", "compute_safety_loss", "training_type"),
+    static_argnames=("policy", "optimizer", "clip_range", "beta_entropy"),
     donate_argnums=(0, 1, 2)
 )
 def train_one_epoch(
@@ -402,12 +402,12 @@ def vanilla_e2e_rl_rollout(
             )
             abstract_train_out = eval_shape(
                 train_pure,
-                key, params, opt_state, dummy_buffer_struct 
+                params, opt_state, dummy_buffer_struct 
             )
             out_shardings_train = tree_map(lambda x: sharding_replicated, abstract_train_out)
             train_one_epoch_sharded = jit(
                 train_pure,
-                donate_argnums=(1, 2), # params, opt
+                donate_argnums=(0, 1), # params, opt
                 out_shardings=out_shardings_train
             )
         epoch_metrics_acc = {
