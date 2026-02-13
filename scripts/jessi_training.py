@@ -81,7 +81,7 @@ training_hyperparams = {
     'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
     'safety_loss': False,  # Whether to include safety loss in the RL training
-    'target_kl': 0.01,  # Target KL divergence for early stopping in each update
+    'target_kl': None,  # Target KL divergence for early stopping in each update
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 # JESSI policy

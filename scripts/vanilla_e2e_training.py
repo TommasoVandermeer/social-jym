@@ -40,7 +40,7 @@ n_steps = 500_000  # Number of labeled examples to train Perception network
 n_parallel_envs = 1000  # Number of parallel environments to simulate to generate the dataset
 policy_learning_rate = 0.005
 policy_batch_size = 200
-policy_n_epochs = 30 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
+policy_n_epochs = 10 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
 ### RL Hyperparameters
 rl_n_parallel_envs = 500 
 rl_training_updates = 500
