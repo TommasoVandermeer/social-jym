@@ -1,12 +1,22 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, nn, value_and_grad
+from jax_tqdm import loop_tqdm
 from functools import partial
 import haiku as hk
 from types import FunctionType
 import optax
+import os
+from matplotlib import rc, rcParams
+from matplotlib.animation import FuncAnimation, FFMpegWriter
+import matplotlib.pyplot as plt
 
 from .base_policy import BasePolicy
-from socialjym.envs.base_env import EPSILON, ROBOT_KINEMATICS, wrap_angle
+from socialjym.envs.base_env import EPSILON, ROBOT_KINEMATICS, SCENARIOS, HUMAN_POLICIES, wrap_angle
+from socialjym.envs.socialnav import SocialNav
+from socialjym.envs.lasernav import LaserNav
+from socialjym.utils.aux_functions import initialize_metrics_dict, compute_episode_metrics, print_average_metrics
+from socialjym.policies.jessi import JESSI
+from jhsfm.hsfm import get_linear_velocity
 
 VN_PARAMS = {
     "output_sizes": [150, 100, 100, 1],
@@ -339,3 +349,342 @@ class CADRL(BasePolicy):
         # Apply updates
         updated_vnet_params = optax.apply_updates(current_vnet_params, updates)
         return updated_vnet_params, optimizer_state, loss
+    
+    def evaluate(
+        self,
+        n_trials:int,
+        random_seed:int,
+        env:SocialNav,
+        network_params:dict,
+    ) -> dict:
+        """
+        Test the trained policy over n_trials episodes and compute relative metrics.
+        """
+        assert isinstance(env, SocialNav), "Environment must be an instance of SocialNav"
+        assert env.kinematics == self.kinematics, "CADRL policy can only be evaluated on unicycle kinematics"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        time_limit = env.reward_function.time_limit
+        @loop_tqdm(n_trials)
+        @jit
+        def _fori_body(i:int, for_val:tuple):   
+            @jit
+            def _while_body(while_val:tuple):
+                # Retrieve data from the tuple
+                state, obs, info, outcome, policy_key, steps, all_actions, all_states = while_val
+                action, policy_key, _ = self.act(policy_key, obs, info, network_params, epsilon=0.)
+                state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)    
+                # Save data
+                all_actions = all_actions.at[steps].set(action)
+                all_states = all_states.at[steps].set(state)
+                # Update step counter
+                steps += 1
+                return state, obs, info, outcome, policy_key, steps, all_actions, all_states
+
+            ## Retrieve data from the tuple
+            seed, metrics = for_val
+            policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
+            ## Reset the environment
+            state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            # state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            initial_robot_position = state[-1,:2]
+            ## Episode loop
+            all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+            all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+            while_val_init = (state, obs, info, init_outcome, policy_key, 0, all_actions, all_states)
+            _, _, end_info, outcome, policy_key, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            ## Update metrics
+            metrics = compute_episode_metrics(
+                environment=env.environment,
+                metrics=metrics,
+                episode_idx=i, 
+                initial_robot_position=initial_robot_position, 
+                all_states=all_states, 
+                all_actions=all_actions, 
+                outcome=outcome, 
+                episode_steps=episode_steps, 
+                end_info=end_info, 
+                max_steps=int(time_limit/env.robot_dt)+1, 
+                personal_space=0.5,
+                robot_dt=env.robot_dt,
+                robot_radius=env.robot_radius,
+                ccso_n_static_humans=env.ccso_n_static_humans,
+                robot_specs={'kinematics': env.kinematics, 'v_max': self.v_max, 'wheels_distance': self.wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
+            )
+            seed += 1
+            return seed, metrics
+        # Initialize metrics
+        metrics = initialize_metrics_dict(n_trials)
+        # Execute n_trials tests
+        if env.scenario == SCENARIOS.index('circular_crossing_with_static_obstacles'):
+            print(f"\nExecuting {n_trials} tests with {env.n_humans - env.ccso_n_static_humans} humans and {env.ccso_n_static_humans} obstacles...")
+        else:
+            print(f"\nExecuting {n_trials} tests with {env.n_humans} humans and {env.n_obstacles} obstacles...")
+        _, metrics = lax.fori_loop(0, n_trials, _fori_body, (random_seed, metrics))
+        # Print results
+        print_average_metrics(n_trials, metrics)
+        return metrics
+    
+    def animate_trajectory(
+        self,
+        robot_radius:float,
+        robot_poses, # x, y, theta
+        robot_actions,
+        robot_actions_values,
+        robot_goals,
+        humans_poses, # x, y, theta
+        humans_velocities, # vx, vy (in global frame)
+        humans_radii,
+        lidar_scans=None, # (optional) distance readings of the LiDAR sensor (if not None, it will be visualized in the animation)
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+    ):
+        # Validate input args
+        assert \
+            len(robot_poses) == \
+            len(robot_actions) == \
+            len(robot_goals) == \
+            len(humans_poses) == \
+            len(humans_velocities) == \
+            len(humans_radii), "All input lists must have the same length"
+        # Set matplotlib fonts
+        rc('font', weight='regular', size=20)
+        rcParams['pdf.fonttype'] = 42
+        rcParams['ps.fonttype'] = 42
+        # Compute informations for visualization
+        n_steps = len(robot_poses)
+        # Animate trajectory
+        fig = plt.figure(figsize=(21.43,13.57))
+        fig.subplots_adjust(left=0.05, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
+        outer_gs = fig.add_gridspec(1, 2, width_ratios=[2, 0.4], wspace=0.09)
+        axs = [
+            fig.add_subplot(outer_gs[0]), # Simulation + LiDAR ranges (Top-Left)
+            fig.add_subplot(outer_gs[1]),   # Action space (Right, tall)
+        ]
+        def animate(frame):
+            for i, ax in enumerate(axs):
+                ax.clear()
+                if i == len(axs) - 1: continue
+                ax.set(xlim=x_lims if x_lims is not None else [-10,10], ylim=y_lims if y_lims is not None else [-10,10])
+                ax.set_xlabel('X', labelpad=-5)
+                if i % 2 == 0:
+                    ax.set_ylabel('Y', labelpad=-13)
+                else:
+                    ax.set_yticks([])
+                ax.set_aspect('equal', adjustable='datalim')
+                # Plot humans
+                for h in range(len(humans_poses[frame])):
+                    head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
+                    ax.add_patch(head)
+                    circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                    ax.add_patch(circle)
+                # Plot human velocities
+                for h in range(len(humans_poses[frame])):
+                    ax.arrow(
+                        humans_poses[frame][h,0],
+                        humans_poses[frame][h,1],
+                        humans_velocities[frame][h,0],
+                        humans_velocities[frame][h,1],
+                        head_width=0.15,
+                        head_length=0.15,
+                        fc='blue',
+                        ec='blue',
+                        alpha=0.6,
+                        zorder=30,
+                    )
+                # Plot robot
+                robot_position = robot_poses[frame,:2]
+                head = plt.Circle((robot_position[0] + robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
+                ax.add_patch(head)
+                circle = plt.Circle((robot_position[0], robot_position[1]), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+                ax.add_patch(circle)
+                # Plot robot goal
+                ax.plot(
+                    robot_goals[frame][0],
+                    robot_goals[frame][1],
+                    marker='*',
+                    markersize=7,
+                    color='red',
+                    zorder=5,
+                )
+            ### FIRST ROW AXS: SIMULATION + INPUT VISUALIZATION
+            # AX 0,0: Simulation with LiDAR ranges
+            if lidar_scans is not None:
+                lidar_scan = lidar_scans[frame]
+                for ray in range(len(lidar_scan)):
+                    axs[0].plot(
+                        [robot_poses[frame,0], robot_poses[frame,0] + lidar_scan[ray] * jnp.cos(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
+                        [robot_poses[frame,1], robot_poses[frame,1] + lidar_scan[ray] * jnp.sin(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
+                        color="black", 
+                        linewidth=0.5, 
+                        zorder=0
+                    )
+            axs[0].set_title("Trajectory")
+            # AX :,2: Feasible and bounded action space + action space distribution and action taken
+            axs[1].set_xlabel("$v$ (m/s)")
+            axs[1].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
+            axs[1].set_xlim(-0.1, self.v_max + 0.1)
+            axs[1].set_ylim(-2*self.v_max/self.wheels_distance - 0.3, 2*self.v_max/self.wheels_distance + 0.3)
+            axs[1].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
+            axs[1].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
+            axs[1].set_yticks(jnp.arange(-2,3,1).tolist() + [2*self.v_max/self.wheels_distance,-2*self.v_max/self.wheels_distance])
+            axs[1].set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+            axs[1].grid()
+            axs[1].add_patch(
+                plt.Polygon(
+                    [   
+                        [0,2*self.v_max/self.wheels_distance],
+                        [0,-2*self.v_max/self.wheels_distance],
+                        [self.v_max,0],
+                    ],
+                    closed=True,
+                    fill=True,
+                    edgecolor='green',
+                    facecolor='lightgreen',
+                    linewidth=2,
+                    zorder=2,
+                ),
+            )
+            axs[1].scatter(
+                self.action_space[:,0],
+                self.action_space[:,1],
+                c=robot_actions_values[frame] if robot_actions_values is not None else 'black',
+                cmap='Reds'if robot_actions_values is not None else None,
+                s=20,
+                alpha=0.7,
+                label='Feasible actions',
+                zorder=3,
+            )
+            axs[1].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51) # Action taken
+        anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
+        if save_video:
+            save_path = os.path.join(os.path.dirname(__file__), f'jessi_trajectory.mp4')
+            writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
+            anim.save(save_path, writer=writer_video, dpi=300)
+        anim.paused = False
+        def toggle_pause(self, *args, **kwargs):
+            if anim.paused: anim.resume()
+            else: anim.pause()
+            anim.paused = not anim.paused
+        fig.canvas.mpl_connect('button_press_event', toggle_pause)
+        plt.show()
+
+    def animate_socialnav_trajectory(
+        self,
+        states,
+        actions,
+        goals,
+        humans_radii,
+        socialnav_env:SocialNav,
+        action_values:jnp.ndarray=None,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+    ):
+        robot_positions = states[:,-1,:2]
+        robot_orientations = states[:,-1,4]
+        robot_poses = jnp.hstack((robot_positions, robot_orientations.reshape(-1,1)))
+        humans_positions = states[:,:-1,:2]
+        humans_orientations = states[:,:-1,4]
+        humans_poses = jnp.dstack((humans_positions, humans_orientations))
+        humans_body_velocities = states[:,:-1,2:4]
+        humans_velocities = lax.cond(
+            socialnav_env.humans_policy == HUMAN_POLICIES.index('hsfm'),
+            lambda: vmap(vmap(get_linear_velocity, in_axes=(0,0)), in_axes=(0,0))(
+                    humans_orientations,
+                    humans_body_velocities,
+                ),
+            lambda: humans_body_velocities,
+        )
+        self.animate_trajectory(
+            socialnav_env.robot_radius,
+            robot_poses,
+            actions,
+            action_values,
+            goals,
+            humans_poses,
+            humans_velocities,
+            humans_radii,
+            x_lims,
+            y_lims,
+            save_video,
+        )
+
+    # LaserNav methods
+
+    @partial(jit, static_argnames=("self","jessi"))
+    def act_on_jessi_perception(
+        self, 
+        jessi:JESSI,
+        perception_params:dict,
+        lasernav_obs:jnp.ndarray, # LaserNav observations
+        robot_goal:jnp.ndarray,
+        humans_radius:float,
+        vnet_params:dict, 
+        epsilon:float,
+        key:random.PRNGKey,
+    ) -> jnp.ndarray:
+        ## Identify visible humans with JESSI perception
+        hcgs = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        humans_mask = hcgs['weights'] > 0.5
+        rc_humans_pos = hcgs['pos_distrs']['means']
+        rc_humans_vel = hcgs['vel_distrs']['means']
+        # SOCIALNAV OBSERVATION FORMAT:
+        # - obs: observation of the current state. It is in the form:
+        #         [[human1_px, human1_py, human1_vx, human1_vy, human1_radius, padding],
+        #         [human2_px, human2_py, human2_vx, human2_vy, human2_radius, padding],
+        #         ...
+        #         [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius, padding],
+        #         [robot_px, robot_py, robot_u1, robot_u2, robot_radius, robot_theta]].
+        obs = jnp.zeros((len(humans_mask)+1, 6))
+        obs = obs.at[:-1,0:2].set(rc_humans_pos)
+        obs = obs.at[:-1,2:4].set(rc_humans_vel)
+        obs = obs.at[:-1,4].set(humans_radius)
+        obs = obs.at[-1,0:2].set(lasernav_obs[0,:2]) # Current Robot position
+        obs = obs.at[-1,2:4].set(lasernav_obs[0,4:6]) # Current Robot action (velocity)
+        obs = obs.at[-1,4].set(lasernav_obs[0,3]) # Robot radius
+        obs = obs.at[-1,5].set(lasernav_obs[0,2]) # Robot theta
+        info = {"robot_goal": robot_goal}
+
+        @jit
+        def _random_action(val):
+            obs, _, info, _, key = val
+            key, subkey = random.split(key)
+            vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
+            return random.choice(subkey, self.action_space), key, vnet_inputs
+        @jit
+        def _forward_pass(val):
+            obs, humans_mask, info, vnet_params, key = val
+            # Propagate humans state for dt time
+            next_obs = jnp.vstack([self.batch_propagate_human_obs(obs[0:-1]),obs[-1]])
+            # Compute action values
+            action_values, vnet_inputs = self._batch_compute_action_value(next_obs, obs, info, self.action_space, vnet_params)
+            action = self.action_space[jnp.argmax(action_values)]
+            vnet_input = vnet_inputs[jnp.argmax(action_values)]
+            # Return action with highest value
+            return action, key, vnet_input
+        @jit
+        def _towards_goal_action(val):
+            obs, _, info, _, key = val
+            vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
+            # Compute the action that goes straight towards the goal with maximum speed allowed for the unicycle robot
+            direction = jnp.arctan2(info["robot_goal"][1] - obs[-1,1], info["robot_goal"][0] - obs[-1,0])
+            w = jnp.clip(direction/self.dt, -self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2))
+            v = self.v_max - (self.v_max * jnp.abs(w) / (self.v_max/(self.wheels_distance/2)))
+            action = jnp.array([v,w])
+            return action, key, vnet_inputs
+        key, subkey = random.split(key)
+        explore = random.uniform(subkey) < epsilon
+        case = jnp.argmax(jnp.array([
+            explore, 
+            ~explore & jnp.any(humans_mask), 
+            ~explore & ~jnp.any(humans_mask)
+        ]))
+        action, key, vnet_input = lax.switch(
+            case, 
+            _random_action, 
+            _forward_pass, 
+            _towards_goal_action, 
+            (obs, humans_mask, info, vnet_params, key)
+        )
+        return action, key, vnet_input
