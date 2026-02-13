@@ -800,10 +800,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
         is_dropout = random.bernoulli(beam_dropout_key, p=beam_dropout_prob, shape=raw_distances.shape)
         noisy_distances = jnp.where(is_dropout, jessi.max_beam_range, noisy_distances)  # (n_stack, lidar_num_rays)
         new_hit = jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0) * (1.0 - is_dropout)  # (n_stack, lidar_num_rays)
-        cos = data['inputs'][:,:,2] / (raw_distances + 1e-6)  # (n_stack, lidar_num_rays)
-        sin = data['inputs'][:,:,3] / (raw_distances + 1e-6)  # (n_stack, lidar_num_rays)
-        x = noisy_distances * cos  # (n_stack, lidar_num_rays)
-        y = noisy_distances * sin  # (n_stack, lidar_num_rays)
+        x = noisy_distances * data['inputs'][:,:,4]  # (n_stack, lidar_num_rays)
+        y = noisy_distances * data['inputs'][:,:,5]  # (n_stack, lidar_num_rays)
         data['inputs'] = data['inputs'].at[:,:,0].set(noisy_distances / jessi.max_beam_range)
         data['inputs'] = data['inputs'].at[:,:,1].set(new_hit)
         data['inputs'] = data['inputs'].at[:,:,2].set(x)
@@ -940,9 +938,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     _, _, obs, info, _ = env.reset(random.PRNGKey(training_hyperparams['random_seed']))
     # Initialize robot policy and vnet params
     policy = JESSI(
-        robot_radius=0.3, 
+        robot_radius=env_params['robot_radius'],
         v_max=robot_vmax, 
         dt=env_params['robot_dt'], 
+        lidar_num_rays=lidar_num_rays, 
+        lidar_max_dist=lidar_max_dist,
+        lidar_angular_range=lidar_angular_range,
+        n_stack=n_stack,
         beam_dropout_rate=0.2,
     )
     # Load pre-trained weights
@@ -1244,9 +1246,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), modular_network_na
     _, _, obs, info, _ = env.reset(random.PRNGKey(training_hyperparams['random_seed']))
     # Initialize robot policy and vnet params
     policy = JESSI(
-        robot_radius=0.3, 
+        robot_radius=env_params['robot_radius'],
         v_max=robot_vmax, 
         dt=env_params['robot_dt'], 
+        lidar_num_rays=lidar_num_rays, 
+        lidar_max_dist=lidar_max_dist,
+        lidar_angular_range=lidar_angular_range,
+        n_stack=n_stack,
         beam_dropout_rate=0.2,
     )
     # Load pre-trained weights
@@ -1540,9 +1546,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_network_nam
     _, _, obs, info, _ = env.reset(random.PRNGKey(training_hyperparams['random_seed']))
     # Initialize robot policy and vnet params
     policy = JESSI(
-        robot_radius=0.3, 
+        robot_radius=env_params['robot_radius'],
         v_max=robot_vmax, 
         dt=env_params['robot_dt'], 
+        lidar_num_rays=lidar_num_rays, 
+        lidar_max_dist=lidar_max_dist,
+        lidar_angular_range=lidar_angular_range,
+        n_stack=n_stack,
         beam_dropout_rate=0.2,
     )
     # Load pre-trained weights

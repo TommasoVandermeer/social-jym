@@ -240,6 +240,21 @@ class VanillaE2E(BasePolicy):
         return network_params
 
     @partial(jit, static_argnames=("self"))
+    def robot_centric_goal(
+        self,
+        obs,
+        robot_goal, # In cartesian coordinates in THE WIRLD FRAME
+    ) -> jnp.ndarray:
+        robot_position = obs[0,:2] # WITH RESPECT TO THE CURRENT POISTION ANDO ORIENTATION
+        robot_orientation = obs[0,2] # WITH RESPECT TO THE CURRENT POISTION ANDO ORIENTATION
+        c, s = jnp.cos(-robot_orientation), jnp.sin(-robot_orientation)
+        R = jnp.array([[c, -s],
+                    [s,  c]])
+        translated_position = robot_goal - robot_position
+        rc_robot_goal = R @ translated_position
+        return rc_robot_goal
+
+    @partial(jit, static_argnames=("self"))
     def bound_action_space(self, lidar_point_cloud, eps=1e-6):
         """
         Compute the bounds of the action space based on the control parameters alpha, beta, gamma.
@@ -342,7 +357,7 @@ class VanillaE2E(BasePolicy):
     def compute_actor_inputs(
         self,
         obs:jnp.ndarray,
-        robot_goal:jnp.ndarray,
+        rc_robot_goal:jnp.ndarray, # In cartesian coordinates (gx, gy) IN THE ROBOT FRAME
     ):
         """
         Compute the inputs for the actor network from the raw observation.
@@ -350,7 +365,7 @@ class VanillaE2E(BasePolicy):
         args:
         - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
         The first stack is the most recent one.
-        - robot_goal (2,): Goal position in world frame.
+        - rc_robot_goal (2,): Goal position in the robot frame
 
         output:
         - aligned_lidar_stack (n_stack, lidar_num_rays, 2): Aligned LiDAR stack. First information corresponds to the most recent observation.
@@ -359,13 +374,6 @@ class VanillaE2E(BasePolicy):
         # Align LiDAR scans
         aligned_lidar_stack, _ = self.align_lidar(obs)
         # Robot state input
-        robot_position = obs[0,:2]
-        robot_orientation = obs[0,2]
-        c, s = jnp.cos(-robot_orientation), jnp.sin(-robot_orientation)
-        R = jnp.array([[c, -s],
-                    [s,  c]])
-        translated_position = robot_goal - robot_position
-        rc_robot_goal = R @ translated_position
         robot_goal_dist = jnp.linalg.norm(rc_robot_goal)
         robot_goal_theta = jnp.arctan2(rc_robot_goal[1], rc_robot_goal[0])
         robot_goal_sin_theta = jnp.sin(robot_goal_theta)
@@ -393,10 +401,12 @@ class VanillaE2E(BasePolicy):
         network_params:dict,
         sample:bool = False,
     ) -> jnp.ndarray:
+        # Compute robot_centric robot goal
+        rc_robot_goal = self.robot_centric_goal(obs, info['robot_goal'])
         # Compute encoder input and last lidar point cloud (for action bounding)
         aligned_lidar_readings, robot_state_input = self.compute_actor_inputs(
             obs,
-            info["robot_goal"],
+            rc_robot_goal,
         )
         # Compute action
         key, subkey = random.split(key)
@@ -427,6 +437,88 @@ class VanillaE2E(BasePolicy):
             network_params,
             sample,
         )   
+
+    @partial(jit, static_argnames=("self","actor_critic_optimizer"))
+    def update_il(
+        self, 
+        actor_critic_params:dict,
+        actor_critic_optimizer:optax.GradientTransformation, 
+        actor_critic_opt_state: jnp.ndarray, 
+        experiences:dict[str:jnp.ndarray], 
+    ) -> tuple:
+        @jit
+        def _compute_loss_and_gradients(
+            current_actor_params:dict,  
+            experiences:dict,
+            # Experiences: {"inputs":dict, "actor_actions":jnp.ndarray}
+        ) -> tuple:
+            @jit
+            def _batch_loss_function(
+                current_actor_params:dict,
+                inputs:jnp.ndarray,
+                expert_actions:jnp.ndarray,
+                returns:jnp.ndarray,
+                ) -> jnp.ndarray:
+                
+                @partial(vmap, in_axes=(None, 0, 0, 0))
+                def _loss_function(
+                    current_actor_params:dict,
+                    input:jnp.ndarray,
+                    expert_action:jnp.ndarray,
+                    returnn:jnp.ndarray,
+                    ) -> jnp.ndarray:
+                    # Compute the prediction (here we should input a key but for now we work only with mean actions)
+                    _, predicted_distr, predicted_state_value = self.actor_critic.apply(
+                        current_actor_params, 
+                        None, 
+                        input['inputs0'], 
+                        input['inputs1']
+                    )                    
+                    ## Compute actor loss (MSE between expert action and predicted mean action)
+                    predicted_action = self.dirichlet.mean(predicted_distr)
+                    actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
+                    # Compute critic loss
+                    critic_loss = jnp.square(predicted_state_value - returnn)
+                    # Compute total loss
+                    total_loss = actor_loss + .5 * critic_loss
+                    return total_loss, (actor_loss, critic_loss)
+                
+                total_loss, (actor_losses, critic_losses) = _loss_function(
+                    current_actor_params,
+                    inputs,
+                    expert_actions,
+                    returns,
+                )
+
+                return jnp.mean(total_loss), (jnp.mean(actor_losses), jnp.mean(critic_losses))
+
+            inputs = {
+                "inputs0": experiences["inputs0"],
+                "inputs1": experiences["inputs1"],
+            }
+            expert_actions = experiences["actor_actions"]
+            returns = experiences["returns"]
+            # Compute the loss and gradients
+            (loss, (actor_loss, critic_loss)), grads = value_and_grad(_batch_loss_function, has_aux=True)(
+                current_actor_params, 
+                inputs,
+                expert_actions,
+                returns,
+            )
+            return loss, actor_loss, critic_loss, grads
+        # Compute loss and gradients for actor and critic
+        actor_critic_loss, actor_loss, critic_loss, actor_critic_grads = _compute_loss_and_gradients(actor_critic_params,experiences)
+        # Compute parameter updates
+        actor_critic_updates, actor_critic_opt_state = actor_critic_optimizer.update(actor_critic_grads, actor_critic_opt_state)
+        # Apply updates
+        updated_actor_critic_params = optax.apply_updates(actor_critic_params, actor_critic_updates)
+        return (
+            updated_actor_critic_params, 
+            actor_critic_opt_state, 
+            actor_critic_loss, 
+            actor_loss,
+            critic_loss,
+        )
 
     def evaluate(
         self,
