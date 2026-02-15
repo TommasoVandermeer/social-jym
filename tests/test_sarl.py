@@ -8,7 +8,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1 as SocialReward
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as LaserReward
-from socialjym.policies.cadrl import CADRL
+from socialjym.policies.sarl import SARL
 from socialjym.policies.jessi import JESSI
 
 # Hyperparameters
@@ -34,11 +34,11 @@ if use_ground_truth_data:
     # Initialize the environment
     env = SocialNav(**env_params)
     # Initialize the policy
-    policy = CADRL(
+    policy = SARL(
         reward_function=env.reward_function,
         kinematics=kinematics,
     )
-    with open(os.path.join(os.path.dirname(__file__), 'cadrl.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'sarl.pkl'), 'rb') as f:
         network_params = pickle.load(f)['policy_params']
     # Execute tests
     # metrics = policy.evaluate(
@@ -105,7 +105,7 @@ else:
     # Initialize the environment
     env = LaserNav(**env_params)
     # Initialize the policy
-    policy = CADRL(
+    policy = SARL(
         reward_function=SocialReward(kinematics=kinematics),
         kinematics=kinematics,
     )
@@ -115,7 +115,7 @@ else:
         lidar_max_dist=env.lidar_max_dist,
         n_stack=env.n_stack,
     )
-    with open(os.path.join(os.path.dirname(__file__), 'cadrl.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'sarl.pkl'), 'rb') as f:
         network_params = pickle.load(f)['policy_params']
     with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
         perception_params = pickle.load(f)

@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, nn, value_and_grad
 from jax_tqdm import loop_tqdm
+from jax.tree_util import tree_map
 from functools import partial
 import haiku as hk
 from types import FunctionType
@@ -133,7 +134,7 @@ class CADRL(BasePolicy):
         return action_space
 
     @partial(jit, static_argnames=("self"))
-    def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
+    def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray=None) -> jnp.ndarray:
         n_humans = len(next_obs) - 1
         # Compute instantaneous reward
         current_obs = current_obs.at[-1,2:4].set(action)
@@ -145,6 +146,8 @@ class CADRL(BasePolicy):
         vnet_inputs = self.batch_compute_vnet_input(next_obs[n_humans], next_obs[0:n_humans], info)
         # Compute the output of the value network (value of the state)
         vnet_outputs = self.model.apply(vnet_params, None, vnet_inputs)
+        if humans_mask is not None:
+            vnet_outputs = jnp.where(jnp.expand_dims(humans_mask, axis=-1), vnet_outputs, jnp.full_like(vnet_outputs, jnp.inf)) # Mask the value of non visible humans (if any) so that they don't affect the final value of the action
         # Take the minimum among all outputs (representing the worst case scenario)
         min_vnet_output = jnp.min(vnet_outputs)
         # Compute the final value of the action
@@ -152,8 +155,8 @@ class CADRL(BasePolicy):
         return value, vnet_inputs
         
     @partial(jit, static_argnames=("self"))
-    def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
-        return vmap(CADRL._compute_action_value, in_axes=(None,None,None,None,0,None))(self, next_obs, current_obs, info, action, vnet_params)
+    def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray=None) -> jnp.ndarray:
+        return vmap(CADRL._compute_action_value, in_axes=(None,None,None,None,0,None,None))(self, next_obs, current_obs, info, action, vnet_params, humans_mask)
     
     @partial(jit, static_argnames=("self"))
     def _add_noise_to_human_obs(self, human_obs:jnp.ndarray, robot_pos:jnp.ndarray, key:random.PRNGKey) -> jnp.ndarray:
@@ -246,7 +249,7 @@ class CADRL(BasePolicy):
             obs, info, _, key = val
             key, subkey = random.split(key)
             vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
-            return random.choice(subkey, self.action_space), key, vnet_inputs
+            return random.choice(subkey, self.action_space), key, vnet_inputs, jnp.zeros((len(self.action_space)))
         
         @jit
         def _forward_pass(val):
@@ -262,12 +265,12 @@ class CADRL(BasePolicy):
             action = self.action_space[jnp.argmax(action_values)]
             vnet_input = vnet_inputs[jnp.argmax(action_values)]
             # Return action with highest value
-            return action, key, vnet_input
+            return action, key, vnet_input, jnp.squeeze(action_values)
         
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
-        action, key, vnet_input = lax.cond(explore, _random_action, _forward_pass, (obs, info, vnet_params, key))
-        return action, key, vnet_input
+        action, key, vnet_input, action_values = lax.cond(explore, _random_action, _forward_pass, (obs, info, vnet_params, key))
+        return action, key, vnet_input, action_values
 
     @partial(jit, static_argnames=("self"))
     def batch_act(
@@ -361,7 +364,7 @@ class CADRL(BasePolicy):
         Test the trained policy over n_trials episodes and compute relative metrics.
         """
         assert isinstance(env, SocialNav), "Environment must be an instance of SocialNav"
-        assert env.kinematics == self.kinematics, "CADRL policy can only be evaluated on unicycle kinematics"
+        assert env.kinematics == self.kinematics, "Policy kinematics must match environment kinematics"
         assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
         time_limit = env.reward_function.time_limit
         @loop_tqdm(n_trials)
@@ -434,7 +437,9 @@ class CADRL(BasePolicy):
         humans_poses, # x, y, theta
         humans_velocities, # vx, vy (in global frame)
         humans_radii,
+        perception_distrs=None, # (optional) distribution of the robot's perception of humans' positions and velocities (if not None, it will be visualized in the animation)
         lidar_scans=None, # (optional) distance readings of the LiDAR sensor (if not None, it will be visualized in the animation)
+        static_obstacles=None, # (optional) positions and radii of static obstacles (if not None, they will be visualized in the animation)
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
         save_video:bool=False,
@@ -509,6 +514,11 @@ class CADRL(BasePolicy):
                 )
             ### FIRST ROW AXS: SIMULATION + INPUT VISUALIZATION
             # AX 0,0: Simulation with LiDAR ranges
+            if static_obstacles is not None:
+                if static_obstacles[frame].shape[1] > 1: # Polygon obstacles
+                    for o in static_obstacles[frame]: axs[0].fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+                else: # One segment obstacles
+                    for o in static_obstacles[frame]: axs[0].plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
             if lidar_scans is not None:
                 lidar_scan = lidar_scans[frame]
                 for ray in range(len(lidar_scan)):
@@ -519,6 +529,40 @@ class CADRL(BasePolicy):
                         linewidth=0.5, 
                         zorder=0
                     )
+            if perception_distrs is not None:
+                distr = tree_map(lambda x: x[frame], perception_distrs)
+                for h in range(len(distr['pos_distrs']['means'])):
+                    if distr['weights'][h] > 0.5:
+                        pos_mean = distr['pos_distrs']['means'][h]
+                        pos_world_frame = jnp.array([
+                            pos_mean[0] * jnp.cos(robot_poses[frame,2]) - pos_mean[1] * jnp.sin(robot_poses[frame,2]) + robot_poses[frame,0],
+                            pos_mean[0] * jnp.sin(robot_poses[frame,2]) + pos_mean[1] * jnp.cos(robot_poses[frame,2]) + robot_poses[frame,1],
+                        ])
+                        vel_mean = distr['vel_distrs']['means'][h]
+                        vel_world_frame = jnp.array([
+                            vel_mean[0] * jnp.cos(robot_poses[frame,2]) - vel_mean[1] * jnp.sin(robot_poses[frame,2]),
+                            vel_mean[0] * jnp.sin(robot_poses[frame,2]) + vel_mean[1] * jnp.cos(robot_poses[frame,2]),
+                        ])
+                        axs[0].scatter(
+                            pos_world_frame[0],
+                            pos_world_frame[1],
+                            color='red',
+                            s=30,
+                            alpha=1,
+                            zorder=20,
+                        )
+                        axs[0].arrow(
+                            pos_world_frame[0],
+                            pos_world_frame[1],
+                            vel_world_frame[0],
+                            vel_world_frame[1],
+                            head_width=0.3,
+                            head_length=0.3,
+                            fc='red',
+                            ec='red',
+                            alpha=1,
+                            zorder=20,
+                        )
             axs[0].set_title("Trajectory")
             # AX :,2: Feasible and bounded action space + action space distribution and action taken
             axs[1].set_xlabel("$v$ (m/s)")
@@ -545,11 +589,14 @@ class CADRL(BasePolicy):
                     zorder=2,
                 ),
             )
+            feasible_actions_idx = jnp.where(self.action_space > -jnp.inf)[0]
+            feasible_actions = self.action_space[feasible_actions_idx]
+            feasible_actions_values = robot_actions_values[frame][feasible_actions_idx] if robot_actions_values is not None else None
             axs[1].scatter(
-                self.action_space[:,0],
-                self.action_space[:,1],
-                c=robot_actions_values[frame] if robot_actions_values is not None else 'black',
-                cmap='Reds'if robot_actions_values is not None else None,
+                feasible_actions[:,0],
+                feasible_actions[:,1],
+                c=feasible_actions_values if feasible_actions_values is not None else 'black',
+                cmap='Reds'if feasible_actions_values is not None else None,
                 s=20,
                 alpha=0.7,
                 label='Feasible actions',
@@ -577,6 +624,8 @@ class CADRL(BasePolicy):
         humans_radii,
         socialnav_env:SocialNav,
         action_values:jnp.ndarray=None,
+        perception_distrs:dict=None,
+        static_obstacles=None,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
         save_video:bool=False,
@@ -605,9 +654,11 @@ class CADRL(BasePolicy):
             humans_poses,
             humans_velocities,
             humans_radii,
-            x_lims,
-            y_lims,
-            save_video,
+            perception_distrs,
+            static_obstacles=static_obstacles,
+            x_lims=x_lims,
+            y_lims=y_lims,
+            save_video=save_video,
         )
 
     # LaserNav methods
@@ -617,18 +668,28 @@ class CADRL(BasePolicy):
         self, 
         jessi:JESSI,
         perception_params:dict,
+        key:random.PRNGKey,
         lasernav_obs:jnp.ndarray, # LaserNav observations
-        robot_goal:jnp.ndarray,
-        humans_radius:float,
+        info:dict,
         vnet_params:dict, 
         epsilon:float,
-        key:random.PRNGKey,
+        humans_radius:float,
     ) -> jnp.ndarray:
         ## Identify visible humans with JESSI perception
-        hcgs = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
         humans_mask = hcgs['weights'] > 0.5
         rc_humans_pos = hcgs['pos_distrs']['means']
         rc_humans_vel = hcgs['vel_distrs']['means']
+        # Extract robot pose
+        robot_position = lasernav_obs[0,:2]
+        robot_theta = lasernav_obs[0,2]
+        # Make humans positions and velocities in the world frame (later they will be transformed in the robot frame inside the vnet_input computation. This is inefficient but it's easier to reuse the same batch_compute_vnet_input function for both LaserNav and SocialNav observations)
+        humans_pos = jnp.zeros_like(rc_humans_pos)
+        humans_pos = humans_pos.at[:,0].set(rc_humans_pos[:,0] * jnp.cos(robot_theta) - rc_humans_pos[:,1] * jnp.sin(robot_theta) + robot_position[0])
+        humans_pos = humans_pos.at[:,1].set(rc_humans_pos[:,0] * jnp.sin(robot_theta) + rc_humans_pos[:,1] * jnp.cos(robot_theta) + robot_position[1])
+        humans_vel = jnp.zeros_like(rc_humans_vel)
+        humans_vel = humans_vel.at[:,0].set(rc_humans_vel[:,0] * jnp.cos(robot_theta) - rc_humans_vel[:,1] * jnp.sin(robot_theta))
+        humans_vel = humans_vel.at[:,1].set(rc_humans_vel[:,0] * jnp.sin(robot_theta) + rc_humans_vel[:,1] * jnp.cos(robot_theta))
         # SOCIALNAV OBSERVATION FORMAT:
         # - obs: observation of the current state. It is in the form:
         #         [[human1_px, human1_py, human1_vx, human1_vy, human1_radius, padding],
@@ -637,32 +698,31 @@ class CADRL(BasePolicy):
         #         [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius, padding],
         #         [robot_px, robot_py, robot_u1, robot_u2, robot_radius, robot_theta]].
         obs = jnp.zeros((len(humans_mask)+1, 6))
-        obs = obs.at[:-1,0:2].set(rc_humans_pos)
-        obs = obs.at[:-1,2:4].set(rc_humans_vel)
+        obs = obs.at[:-1,0:2].set(humans_pos)
+        obs = obs.at[:-1,2:4].set(humans_vel)
         obs = obs.at[:-1,4].set(humans_radius)
-        obs = obs.at[-1,0:2].set(lasernav_obs[0,:2]) # Current Robot position
+        obs = obs.at[-1,0:2].set(robot_position) # Current Robot position
         obs = obs.at[-1,2:4].set(lasernav_obs[0,4:6]) # Current Robot action (velocity)
         obs = obs.at[-1,4].set(lasernav_obs[0,3]) # Robot radius
-        obs = obs.at[-1,5].set(lasernav_obs[0,2]) # Robot theta
-        info = {"robot_goal": robot_goal}
+        obs = obs.at[-1,5].set(robot_theta) # Robot theta
 
         @jit
         def _random_action(val):
             obs, _, info, _, key = val
             key, subkey = random.split(key)
             vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
-            return random.choice(subkey, self.action_space), key, vnet_inputs
+            return random.choice(subkey, self.action_space), key, vnet_inputs, jnp.zeros(len(self.action_space))
         @jit
         def _forward_pass(val):
             obs, humans_mask, info, vnet_params, key = val
             # Propagate humans state for dt time
             next_obs = jnp.vstack([self.batch_propagate_human_obs(obs[0:-1]),obs[-1]])
             # Compute action values
-            action_values, vnet_inputs = self._batch_compute_action_value(next_obs, obs, info, self.action_space, vnet_params)
+            action_values, vnet_inputs = self._batch_compute_action_value(next_obs, obs, info, self.action_space, vnet_params, humans_mask=humans_mask)
             action = self.action_space[jnp.argmax(action_values)]
             vnet_input = vnet_inputs[jnp.argmax(action_values)]
             # Return action with highest value
-            return action, key, vnet_input
+            return action, key, vnet_input, jnp.squeeze(action_values)
         @jit
         def _towards_goal_action(val):
             obs, _, info, _, key = val
@@ -672,19 +732,98 @@ class CADRL(BasePolicy):
             w = jnp.clip(direction/self.dt, -self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2))
             v = self.v_max - (self.v_max * jnp.abs(w) / (self.v_max/(self.wheels_distance/2)))
             action = jnp.array([v,w])
-            return action, key, vnet_inputs
+            return action, key, vnet_inputs, jnp.zeros(len(self.action_space))
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
         case = jnp.argmax(jnp.array([
             explore, 
-            ~explore & jnp.any(humans_mask), 
-            ~explore & ~jnp.any(humans_mask)
+            (~explore) & jnp.any(humans_mask), 
+            (~explore) & ~jnp.any(humans_mask)
         ]))
-        action, key, vnet_input = lax.switch(
+        action, key, vnet_input, action_values = lax.switch(
             case, 
-            _random_action, 
-            _forward_pass, 
-            _towards_goal_action, 
+            [
+                _random_action, 
+                _forward_pass, 
+                _towards_goal_action, 
+            ],
             (obs, humans_mask, info, vnet_params, key)
         )
-        return action, key, vnet_input
+        return action, key, vnet_input, action_values, hcgs
+    
+    def evaluate_on_jessi_perception(
+        self,
+        n_trials:int,
+        random_seed:int,
+        env:LaserNav,
+        jessi:JESSI,
+        perception_params:dict,
+        network_params:dict,
+        humans_radius_hypothesis:jnp.ndarray
+    ) -> dict:
+        """
+        Test the trained policy over n_trials episodes and compute relative metrics.
+        """
+        assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
+        assert env.kinematics == self.kinematics, "Policy kinematics must match environment kinematics"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        time_limit = env.reward_function.time_limit
+        @loop_tqdm(n_trials)
+        @jit
+        def _fori_body(i:int, for_val:tuple):   
+            @jit
+            def _while_body(while_val:tuple):
+                # Retrieve data from the tuple
+                state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states = while_val
+                action, _, _, _, _ = self.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, network_params, 0., humans_radius_hypothesis)
+                state, obs, info, _, outcome, (_, env_key)  = env.step(state,info,action,test=True)    
+                # Save data
+                all_actions = all_actions.at[steps].set(action)
+                all_states = all_states.at[steps].set(state)
+                # Update step counter
+                steps += 1
+                return state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states
+
+            ## Retrieve data from the tuple
+            seed, metrics = for_val
+            policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
+            ## Reset the environment
+            state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            # state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            initial_robot_position = state[-1,:2]
+            ## Episode loop
+            all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+            all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+            while_val_init = (state, obs, info, init_outcome, policy_key, env_key, 0, all_actions, all_states)
+            _, _, end_info, outcome, policy_key, env_key, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            ## Update metrics
+            metrics = compute_episode_metrics(
+                environment=env.environment,
+                metrics=metrics,
+                episode_idx=i, 
+                initial_robot_position=initial_robot_position, 
+                all_states=all_states, 
+                all_actions=all_actions, 
+                outcome=outcome, 
+                episode_steps=episode_steps, 
+                end_info=end_info, 
+                max_steps=int(time_limit/env.robot_dt)+1, 
+                personal_space=0.5,
+                robot_dt=env.robot_dt,
+                robot_radius=env.robot_radius,
+                ccso_n_static_humans=env.ccso_n_static_humans,
+                robot_specs={'kinematics': env.kinematics, 'v_max': self.v_max, 'wheels_distance': self.wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
+            )
+            seed += 1
+            return seed, metrics
+        # Initialize metrics
+        metrics = initialize_metrics_dict(n_trials)
+        # Execute n_trials tests
+        if env.scenario == SCENARIOS.index('circular_crossing_with_static_obstacles'):
+            print(f"\nExecuting {n_trials} tests with {env.n_humans - env.ccso_n_static_humans} humans and {env.ccso_n_static_humans} obstacles...")
+        else:
+            print(f"\nExecuting {n_trials} tests with {env.n_humans} humans and {env.n_obstacles} obstacles...")
+        _, metrics = lax.fori_loop(0, n_trials, _fori_body, (random_seed, metrics))
+        # Print results
+        print_average_metrics(n_trials, metrics)
+        return metrics
