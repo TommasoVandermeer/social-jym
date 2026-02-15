@@ -8,7 +8,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1 as SocialReward
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as LaserReward
-from socialjym.policies.sarl_star import SARLStar
+from socialjym.policies.cadrl import CADRL
 from socialjym.policies.jessi import JESSI
 
 # Hyperparameters
@@ -20,7 +20,7 @@ kinematics = 'unicycle'
 if use_ground_truth_data:
     env_params = {
         'n_humans': 5,
-        'n_obstacles': 5,
+        'n_obstacles': 0,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
         'humans_dt': 0.01,      
@@ -30,21 +30,15 @@ if use_ground_truth_data:
         'ccso_n_static_humans': 0,
         'reward_function': SocialReward(kinematics=kinematics),
         'kinematics': kinematics,
-        'grid_map_computation': True, # Enable grid map computation for global planning
     }
     # Initialize the environment
     env = SocialNav(**env_params)
     # Initialize the policy
-    policy = SARLStar(
-        env.reward_function,
-        env.get_grid_size(), 
-        planner="A*", 
-        v_max=1.0, 
-        dt=0.25, 
-        kinematics='unicycle', 
-        wheels_distance=0.7
+    policy = CADRL(
+        reward_function=env.reward_function,
+        kinematics=kinematics,
     )
-    with open(os.path.join(os.path.dirname(__file__), 'sarl.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'cadrl.pkl'), 'rb') as f:
         network_params = pickle.load(f)['policy_params']
     # Execute tests
     # metrics = policy.evaluate(
@@ -64,7 +58,6 @@ if use_ground_truth_data:
         all_humans_radii = jnp.array([info['humans_parameters'][:,0]])
         all_actions = jnp.zeros((max_steps, 2))
         all_actions_values = jnp.zeros((max_steps,len(policy.action_space)))
-        all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
         while outcome["nothing"]:
             # Compute action from trained JESSI
             action, _, _, action_values = policy.act(policy_key, obs, info, network_params, epsilon=0.)
@@ -75,7 +68,6 @@ if use_ground_truth_data:
             all_observations = jnp.vstack((all_observations, jnp.array([obs])))
             all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
             all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
-            all_static_obstacles = jnp.vstack((all_static_obstacles, jnp.array([info['static_obstacles'][-1]])))
             all_actions = all_actions.at[step].set(action)
             all_actions_values = all_actions_values.at[step].set(action_values)
             # Increment step
@@ -90,7 +82,6 @@ if use_ground_truth_data:
             all_humans_radii[:-1],
             env,
             action_values=all_actions_values,
-            static_obstacles=all_static_obstacles[:-1],
         )
 else:
     env_params = {
@@ -99,7 +90,7 @@ else:
         'lidar_angular_range': jnp.pi * 2,
         'lidar_max_dist': 10.,
         'n_humans': 5,
-        'n_obstacles': 5,
+        'n_obstacles': 0,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
         'humans_dt': 0.01,      
@@ -110,19 +101,13 @@ else:
         'reward_function': LaserReward(robot_radius=0.3),
         'kinematics': kinematics,
         'lidar_noise': True,
-        'grid_map_computation': True, # Enable grid map computation for global planning
     }
     # Initialize the environment
     env = LaserNav(**env_params)
     # Initialize the policy
-    policy = SARLStar(
-        SocialReward(kinematics=kinematics),
-        env.get_grid_size(), 
-        planner="A*", 
-        v_max=1.0, 
-        dt=0.25, 
-        kinematics='unicycle', 
-        wheels_distance=0.7
+    policy = CADRL(
+        reward_function=SocialReward(kinematics=kinematics),
+        kinematics=kinematics,
     )
     jessi =  JESSI(
         lidar_num_rays=env.lidar_num_rays,
@@ -130,7 +115,7 @@ else:
         lidar_max_dist=env.lidar_max_dist,
         n_stack=env.n_stack,
     )
-    with open(os.path.join(os.path.dirname(__file__), 'sarl.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'cadrl.pkl'), 'rb') as f:
         network_params = pickle.load(f)['policy_params']
     with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
         perception_params = pickle.load(f)
@@ -168,7 +153,6 @@ else:
             "vel_distrs": bigauss,
             "weights": jnp.zeros((max_steps,jessi.n_detectable_humans)),
         }
-        all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
         while outcome["nothing"]:
             # Compute action from trained JESSI
             action, _, _, action_values, perception_distr = policy.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, network_params, 0., jnp.full((jessi.n_detectable_humans,), .3))
@@ -182,7 +166,6 @@ else:
             all_actions = all_actions.at[step].set(action)
             all_actions_values = all_actions_values.at[step].set(action_values)
             all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, perception_distr)
-            all_static_obstacles = jnp.vstack((all_static_obstacles, jnp.array([info['static_obstacles'][-1]])))
             # Increment step
             step += 1
         all_actions = all_actions[:step]
@@ -197,5 +180,4 @@ else:
             env,
             action_values=all_actions_values,
             perception_distrs=all_encoder_distrs,
-            static_obstacles=all_static_obstacles[:-1],
         )

@@ -1627,7 +1627,8 @@ class BaseEnv(ABC):
         - center: Array of shape (2,) containing the (x, y) coordinates of the grid map center
         """
         # center = jnp.nanmean(jnp.vstack((jnp.reshape(info['static_obstacles'][-1], (self.n_obstacles * 2,-1)), state[-1,:2], info['robot_goal'])), axis=0)
-        center = jnp.nanmean(jnp.vstack((jnp.reshape(self.static_obstacles_per_scenario[info['current_scenario']], (10,-1)), state[-1,:2], info['robot_goal'])), axis=0)
+        reshape_dim = (10,-1) if not self.thick_default_obstacle else (40,-1)
+        center = jnp.nanmean(jnp.vstack((jnp.reshape(self.static_obstacles_per_scenario[info['current_scenario']], reshape_dim), state[-1,:2], info['robot_goal'])), axis=0)
         return center
 
     @partial(jit, static_argnames=("self"))

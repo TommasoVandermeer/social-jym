@@ -96,7 +96,7 @@ def _fori_body(i:int, for_val:tuple):
         # Retrieve data from the tuple
         state, obs, info, outcome, policy_key, steps, all_actions, all_states, all_rewards_0, all_rewards_1, all_rewards_2, all_rewards_3 = while_val
         # Make a step in the environment
-        action, policy_key, _ = policy.act(policy_key, obs, info, vnet_params, epsilon)
+        action, policy_key, _, _ = policy.act(policy_key, obs, info, vnet_params, epsilon)
         # Compute additional rewards
         all_rewards_1 = all_rewards_1.at[steps].set(reward_function_1(obs, info, env_params['robot_dt'])[0])
         all_rewards_2 = all_rewards_2.at[steps].set(reward_function_2(obs, info, env_params['robot_dt'])[0])

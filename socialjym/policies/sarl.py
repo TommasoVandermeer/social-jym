@@ -5,6 +5,7 @@ import haiku as hk
 from types import FunctionType
 
 from .cadrl import CADRL
+from .jessi import JESSI
 
 MLP_1_PARAMS = {
     "output_sizes": [150, 100],
@@ -53,7 +54,8 @@ class ValueNetwork(hk.Module):
 
     def __call__(
             self, 
-            x: jnp.ndarray
+            x: jnp.ndarray,
+            mask: jnp.ndarray = None
         ) -> jnp.ndarray:
         """
         Computes the value of the state given the input x of shape (# of humans, length of reparametrized state)
@@ -102,6 +104,7 @@ class ValueNetwork(hk.Module):
         attention_input = jnp.concatenate([mlp1_output, global_state], axis=1)
         # debug.print("Attention input size: {x}", x=attention_input.shape)
         scores = self.attention(attention_input)
+        if mask is not None: scores = scores * mask[:,None] # Set attention scores to zero for non existing humans
         # debug.print("Scores size: {x}", x=scores.shape)
         scores_exp = jnp.exp(scores) * jnp.array(scores != 0, dtype=jnp.float32)
         attention_weights = scores_exp / jnp.sum(scores_exp, axis=0)
@@ -117,9 +120,9 @@ class ValueNetwork(hk.Module):
         return state_value
 
 @hk.transform
-def value_network(x, robot_state_size=6):
+def value_network(x, mask=None, robot_state_size=6):
     vnet = ValueNetwork(robot_state_size=robot_state_size)
-    return vnet(x)
+    return vnet(x, mask=mask)
 
 class SARL(CADRL):
     def __init__(
@@ -159,7 +162,7 @@ class SARL(CADRL):
     # Private methods
 
     @partial(jit, static_argnames=("self"))
-    def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
+    def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray=None) -> jnp.ndarray:
         n_humans = len(next_obs) - 1
         # Compute instantaneous reward
         current_obs = current_obs.at[-1,2:4].set(action)
@@ -170,60 +173,13 @@ class SARL(CADRL):
         # Re-parametrize observation, for each human: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
         vnet_inputs = self.batch_compute_vnet_input(next_obs[n_humans], next_obs[0:n_humans], info)
         # Compute the output of the value network (value of the state)
-        vnet_output = self.model.apply(vnet_params, None, vnet_inputs)
+        vnet_output = self.model.apply(vnet_params, None, vnet_inputs, mask=humans_mask)
         # Compute the final value of the action
         value = reward + pow(self.gamma,self.dt * self.v_max) * vnet_output
         return value, vnet_inputs
     
     @partial(jit, static_argnames=("self"))
-    def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict) -> jnp.ndarray:
-        return vmap(SARL._compute_action_value, in_axes=(None,None,None,None,0,None))(self, next_obs, current_obs, info, action, vnet_params)
+    def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray=None) -> jnp.ndarray:
+        return vmap(SARL._compute_action_value, in_axes=(None,None,None,None,0,None,None))(self, next_obs, current_obs, info, action, vnet_params, humans_mask)
 
     # Public methods
-
-    @partial(jit, static_argnames=("self"))
-    def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, vnet_params:dict, epsilon:float) -> jnp.ndarray:
-        
-        @jit
-        def _random_action(val):
-            obs, info, _, key = val
-            key, subkey = random.split(key)
-            vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
-            return random.choice(subkey, self.action_space), key, vnet_inputs
-        
-        @jit
-        def _forward_pass(val):
-            obs, info, vnet_params, key = val
-            # Add noise to humans' observations
-            if self.noise:
-                key, subkey = random.split(key)
-                obs = self._batch_add_noise_to_human_obs(obs, subkey)
-            # Propagate humans state for dt time
-            next_obs = jnp.vstack([self.batch_propagate_human_obs(obs[0:-1]),obs[-1]])
-            # Compute action values
-            action_values, vnet_inputs = self._batch_compute_action_value(next_obs, obs, info, self.action_space, vnet_params)
-            action = self.action_space[jnp.argmax(action_values)]
-            vnet_input = vnet_inputs[jnp.argmax(action_values)]
-            # Return action with highest value
-            return action, key, vnet_input
-        
-        key, subkey = random.split(key)
-        explore = random.uniform(subkey) < epsilon
-        action, key, vnet_input = lax.cond(explore, _random_action, _forward_pass, (obs, info, vnet_params, key))
-        return action, key, vnet_input
-    
-    @partial(jit, static_argnames=("self"))
-    def batch_act(
-        self,
-        keys,
-        obses,
-        infos,
-        vnet_params,
-        epsilon):
-        return vmap(SARL.act, in_axes=(None, 0, 0, 0, None, None))(
-            self,
-            keys, 
-            obses, 
-            infos, 
-            vnet_params, 
-            epsilon)

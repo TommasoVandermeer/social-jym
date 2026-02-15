@@ -5,6 +5,7 @@ import haiku as hk
 from types import FunctionType
 
 from .sarl import SARL
+from .jessi import JESSI
 from jhsfm.hsfm import vectorized_compute_obstacle_closest_point
 from socialjym.utils.global_planners.base_global_planner import GLOBAL_PLANNERS
 from socialjym.utils.global_planners.a_star import AStarPlanner
@@ -94,29 +95,30 @@ class SARLStar(SARL):
         return vmap(SARLStar._is_action_safe, in_axes=(None, None, None, 0))(self, obs, info, self.action_space)
 
     @partial(jit, static_argnames=("self"))
-    def _compute_safe_action_value(self, next_obs, obs, info, action, vnet_params, is_action_safe) -> jnp.ndarray:
+    def _compute_safe_action_value(self, next_obs, obs, info, action, vnet_params, is_action_safe, humans_mask=None) -> jnp.ndarray:
         """
         Compute the value of a given action only if it is safe, otherwise return -inf.
         """
         return lax.cond(
             is_action_safe,
-            lambda: self._compute_action_value(next_obs, obs, info, action, vnet_params),
+            lambda: self._compute_action_value(next_obs, obs, info, action, vnet_params, humans_mask=humans_mask),
             lambda: (jnp.array([-jnp.inf]), self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)), # Return -inf and dummy vnet_input
         )
 
     @partial(jit, static_argnames=("self"))
-    def _batch_compute_safe_action_value(self, next_obs, obs, info, action, vnet_params, is_action_safe) -> jnp.ndarray:
+    def _batch_compute_safe_action_value(self, next_obs, obs, info, action, vnet_params, is_action_safe, humans_mask=None) -> jnp.ndarray:
         """
         Compute the value of a batch of actions only if they are safe, otherwise return -inf.
         """
-        return vmap(SARLStar._compute_safe_action_value, in_axes=(None,None,None,None,0,None,0))(
+        return vmap(SARLStar._compute_safe_action_value, in_axes=(None,None,None,None,0,None,0, None))(
             self,
             next_obs, 
             obs, 
             info, 
             action, 
             vnet_params, 
-            is_action_safe
+            is_action_safe,
+            humans_mask,
         )
 
     # Public methods
@@ -131,7 +133,7 @@ class SARLStar(SARL):
             vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
             # Set to zero the probabilities to sample unsafe actions
             probabilities = jnp.where(safe_actions, 1/jnp.sum(safe_actions), 0.)
-            return random.choice(subkey, self.action_space, p=probabilities), key, vnet_inputs
+            return random.choice(subkey, self.action_space, p=probabilities), key, vnet_inputs, jnp.zeros((len(self.action_space)))
 
         @jit
         def _forward_pass(val):
@@ -154,7 +156,7 @@ class SARLStar(SARL):
             action = self.action_space[jnp.argmax(action_values)]
             vnet_input = vnet_inputs[jnp.argmax(action_values)]
             # Return action with highest value
-            return action, key, vnet_input
+            return action, key, vnet_input, jnp.squeeze(action_values)
         
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
@@ -175,8 +177,8 @@ class SARLStar(SARL):
         ## Compute safe actions
         safe_actions = self._compute_safe_action_space(obs, info)
         ## Compute best action
-        action, key, vnet_input = lax.cond(explore, _random_action, _forward_pass, (obs, info, vnet_params, safe_actions, key))
-        return action, key, vnet_input
+        action, key, vnet_input, action_values = lax.cond(explore, _random_action, _forward_pass, (obs, info, vnet_params, safe_actions, key))
+        return action, key, vnet_input, action_values
     
     @partial(jit, static_argnames=("self"))
     def batch_act(
@@ -193,3 +195,107 @@ class SARLStar(SARL):
             infos, 
             vnet_params, 
             epsilon)
+
+    # LaserNav methods
+
+    @partial(jit, static_argnames=("self","jessi"))
+    def act_on_jessi_perception(
+        self, 
+        jessi:JESSI,
+        perception_params:dict,
+        key:random.PRNGKey,
+        lasernav_obs:jnp.ndarray, # LaserNav observations
+        info:dict,
+        vnet_params:dict, 
+        epsilon:float,
+        humans_radius:float,
+    ) -> jnp.ndarray:
+        #TODO: This methods uses GT of obstacles, re-implement to use lidar pointcloud instead
+        #TODO: Add global planner
+
+        ## Identify visible humans with JESSI perception
+        hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        humans_mask = hcgs['weights'] > 0.5
+        rc_humans_pos = hcgs['pos_distrs']['means']
+        rc_humans_vel = hcgs['vel_distrs']['means']
+        # Extract robot pose
+        robot_position = lasernav_obs[0,:2]
+        robot_theta = lasernav_obs[0,2]
+        # Make humans positions and velocities in the world frame (later they will be transformed in the robot frame inside the vnet_input computation. This is inefficient but it's easier to reuse the same batch_compute_vnet_input function for both LaserNav and SocialNav observations)
+        humans_pos = jnp.zeros_like(rc_humans_pos)
+        humans_pos = humans_pos.at[:,0].set(rc_humans_pos[:,0] * jnp.cos(robot_theta) - rc_humans_pos[:,1] * jnp.sin(robot_theta) + robot_position[0])
+        humans_pos = humans_pos.at[:,1].set(rc_humans_pos[:,0] * jnp.sin(robot_theta) + rc_humans_pos[:,1] * jnp.cos(robot_theta) + robot_position[1])
+        humans_vel = jnp.zeros_like(rc_humans_vel)
+        humans_vel = humans_vel.at[:,0].set(rc_humans_vel[:,0] * jnp.cos(robot_theta) - rc_humans_vel[:,1] * jnp.sin(robot_theta))
+        humans_vel = humans_vel.at[:,1].set(rc_humans_vel[:,0] * jnp.sin(robot_theta) + rc_humans_vel[:,1] * jnp.cos(robot_theta))
+        # SOCIALNAV OBSERVATION FORMAT:
+        # - obs: observation of the current state. It is in the form:
+        #         [[human1_px, human1_py, human1_vx, human1_vy, human1_radius, padding],
+        #         [human2_px, human2_py, human2_vx, human2_vy, human2_radius, padding],
+        #         ...
+        #         [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius, padding],
+        #         [robot_px, robot_py, robot_u1, robot_u2, robot_radius, robot_theta]].
+        obs = jnp.zeros((len(humans_mask)+1, 6))
+        obs = obs.at[:-1,0:2].set(humans_pos)
+        obs = obs.at[:-1,2:4].set(humans_vel)
+        obs = obs.at[:-1,4].set(humans_radius)
+        obs = obs.at[-1,0:2].set(robot_position) # Current Robot position
+        obs = obs.at[-1,2:4].set(lasernav_obs[0,4:6]) # Current Robot action (velocity)
+        obs = obs.at[-1,4].set(lasernav_obs[0,3]) # Robot radius
+        obs = obs.at[-1,5].set(robot_theta) # Robot theta
+
+        @jit
+        def _random_action(val):
+            obs, _, info, _, key, safe_actions = val
+            key, subkey = random.split(key)
+            vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
+            probabilities = jnp.where(safe_actions, 1/jnp.sum(safe_actions), 0.)
+            return random.choice(subkey, self.action_space, p=probabilities), key, vnet_inputs, jnp.zeros((len(self.action_space)))
+        @jit
+        def _forward_pass(val):
+            obs, humans_mask, info, vnet_params, key, safe_actions = val
+            # Propagate humans state for dt time
+            next_obs = jnp.vstack([self.batch_propagate_human_obs(obs[0:-1]),obs[-1]])
+            # Compute action values
+            action_values, vnet_inputs = self._batch_compute_safe_action_value(
+                next_obs, 
+                obs, 
+                info, 
+                self.action_space, 
+                vnet_params, 
+                safe_actions, 
+                humans_mask=humans_mask
+            )
+            action = self.action_space[jnp.argmax(action_values)]
+            vnet_input = vnet_inputs[jnp.argmax(action_values)]
+            # Return action with highest value
+            return action, key, vnet_input, jnp.squeeze(action_values)
+        @jit
+        def _towards_goal_action(val):
+            obs, _, info, _, key, _ = val
+            vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
+            # Compute the action that goes straight towards the goal with maximum speed allowed for the unicycle robot
+            direction = jnp.arctan2(info["robot_goal"][1] - obs[-1,1], info["robot_goal"][0] - obs[-1,0])
+            w = jnp.clip(direction/self.dt, -self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2))
+            v = self.v_max - (self.v_max * jnp.abs(w) / (self.v_max/(self.wheels_distance/2)))
+            action = jnp.array([v,w])
+            return action, key, vnet_inputs, jnp.zeros(len(self.action_space))
+        ## Compute safe actions
+        safe_actions = self._compute_safe_action_space(obs, info)
+        key, subkey = random.split(key)
+        explore = random.uniform(subkey) < epsilon
+        case = jnp.argmax(jnp.array([
+            explore, 
+            (~explore) & jnp.any(humans_mask), 
+            (~explore) & ~jnp.any(humans_mask)
+        ]))
+        action, key, vnet_input, action_values = lax.switch(
+            case, 
+            [
+                _random_action, 
+                _forward_pass, 
+                _towards_goal_action, 
+            ],
+            (obs, humans_mask, info, vnet_params, key, safe_actions)
+        )
+        return action, key, vnet_input, action_values, hcgs

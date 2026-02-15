@@ -61,7 +61,7 @@ for i in range(n_episodes):
     all_states = np.array([state])
     while outcome["nothing"]:
 
-        action, policy_key, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
+        action, policy_key, _, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
         state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
 
         # state, obs, info, reward, outcome = env.imitation_learning_step(state,info)

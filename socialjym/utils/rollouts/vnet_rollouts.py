@@ -81,7 +81,7 @@ def vnet_rl_rollout(
                                 lambda x: epsilon_decay_fn(*x),
                                 lambda _: 1.0,
                                 (epsilon_start, epsilon_end, i - exploration_episodes, decay_rate))
-                        action, policy_key, vnet_input = policy.act(policy_key, obs, info, model_params, epsilon)
+                        action, policy_key, vnet_input, _ = policy.act(policy_key, obs, info, model_params, epsilon)
                         state, obs, info, reward, outcome, _ = env.step(state, info, action)
                         # Save data
                         vnet_inputs = vnet_inputs.at[steps].set(vnet_input)

@@ -444,7 +444,7 @@ def test_k_trials(
                 if actor_critic_policy:
                     action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
                 else:
-                    action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
+                    action, policy_key, _, _ = policy.act(policy_key, obs, info, model_params, 0.)
                 state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
             # Save data
             all_actions = all_actions.at[steps].set(action)
@@ -607,7 +607,7 @@ def test_k_custom_trials(
                 if actor_critic_policy:
                     action, policy_key, _, _, _ = policy.act(policy_key, obs, info, model_params, sample=False)
                 else:
-                    action, policy_key, _ = policy.act(policy_key, obs, info, model_params, 0.)
+                    action, policy_key, _, _ = policy.act(policy_key, obs, info, model_params, 0.)
                 state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
             # Save data
             all_actions = all_actions.at[steps].set(action)
