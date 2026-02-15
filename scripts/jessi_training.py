@@ -52,13 +52,13 @@ perception_learning_rate = 0.0005
 perception_batch_size = 100
 policy_learning_rate = 0.005
 policy_batch_size = 200
-policy_n_epochs = 10 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
+policy_n_epochs = 30 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
 n_max_epochs = 1000
 patience = 100  # Early stopping patience
 delta_improvement = 0.001  # Minimum validation improvement to reset early stopping patience
 data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
 ### MULTI-TASK RL Hyperparameters
-rl_n_parallel_envs = 500 
+rl_n_parallel_envs = 300 
 rl_training_updates = 500
 training_hyperparams = {
     'random_seed': 0,
@@ -68,9 +68,9 @@ training_hyperparams = {
     'rl_parallel_envs': rl_n_parallel_envs,
     'rl_learning_rate': 1e-4, # 3e-4
     'rl_learning_rate_final': 1e-5, # 2e-4
-    'rl_total_batch_size': 50_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
-    'rl_mini_batch_size': 2_000, # 2_000 Mini-batch size for each model update
-    'rl_micro_batch_size': 1_000, # 1_000 # Micro-batch size for gradient accumulation 
+    'rl_total_batch_size': 30_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
+    'rl_mini_batch_size': 1_000, # 2_000 Mini-batch size for each model update
+    'rl_micro_batch_size': 500, # 1_000 # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 6, # 6
     'rl_beta_entropy': 5e-4, # 1e-4
@@ -838,7 +838,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
                 },
                 random.split(random.PRNGKey(i * n_train_batches + j), policy_batch_size),
             )
-            hcgs, scan_embeddings = jessi.perception.apply(
+            hcgs, scan_embeddings, _ = jessi.perception.apply(
                 encoder_params, 
                 None, 
                 noisy_inputs["inputs"],
@@ -945,7 +945,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         lidar_max_dist=lidar_max_dist,
         lidar_angular_range=lidar_angular_range,
         n_stack=n_stack,
-        beam_dropout_rate=0.2,
+        beam_dropout_rate=0.2
     )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
@@ -1011,6 +1011,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'safety_loss': training_hyperparams['safety_loss'],
         'training_type': "multitask",
         'target_kl': training_hyperparams['target_kl'],
+        'debugging': False,
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)
@@ -1253,7 +1254,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), modular_network_na
         lidar_max_dist=lidar_max_dist,
         lidar_angular_range=lidar_angular_range,
         n_stack=n_stack,
-        beam_dropout_rate=0.2,
+        beam_dropout_rate=0.2
     )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
@@ -1262,6 +1263,15 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), modular_network_na
         il_actor_params = pickle.load(f)
     il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
     # Initialize RL optimizer
+    def label_params(params):
+        labels = {}
+        for module_name, module_params in params.items():
+            if jessi.perception_name in module_name.lower(): 
+                label = 'perception'
+            elif jessi.actor_critic_name in module_name.lower():
+                label = 'actor_critic'
+            labels[module_name] = {k: label for k in module_params.keys()}
+        return labels
     network_optimizer = optax.multi_transform(
         {
         'perception': optax.chain(
@@ -1311,6 +1321,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), modular_network_na
         'safety_loss': training_hyperparams['safety_loss'],
         'target_kl': training_hyperparams['target_kl'],
         'training_type': "modular",
+        'debugging': False,
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)
@@ -1553,7 +1564,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_network_nam
         lidar_max_dist=lidar_max_dist,
         lidar_angular_range=lidar_angular_range,
         n_stack=n_stack,
-        beam_dropout_rate=0.2,
+        beam_dropout_rate=0.2
     )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:

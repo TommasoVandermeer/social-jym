@@ -33,7 +33,7 @@ def collect_rollout_step(
 ):
     def _scan_step(carry, _):
         (states, obses, infos, outcomes, returns, times, success_per_scenario, episodes_per_scenario, p_keys, r_keys, e_keys, outcomes_acc) = carry
-        actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, values = policy.batch_act(
+        actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, values, masks = policy.batch_act(
             p_keys, obses, infos, network_params, sample=True
         )
         new_states, new_obses, new_infos, rewards, new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
@@ -59,6 +59,7 @@ def collect_rollout_step(
             # "robot_goal": infos["robot_goal"],
             "inputs0": inputs0,
             "inputs1": inputs1,
+            "masks": masks.astype(jnp.bool),
             "gt_poses": rc_humans_positions,
             "gt_vels": rc_humans_velocities,
             "gt_mask": humans_visibility & humans_in_range,
@@ -118,7 +119,7 @@ def process_buffer_and_gae(
     perception_inputs, robot_state_inputs = vmap(policy.compute_e2e_input, in_axes=(0,0))(
         last_obs, last_info['robot_goal']
     )
-    _, _, _, _, _, last_values = policy.e2e.apply(
+    _, _, _, _, _, last_values, _ = policy.e2e.apply(
         network_params, None, perception_inputs, robot_state_inputs
     )
     rewards = history["rewards"]
@@ -143,6 +144,7 @@ def process_buffer_and_gae(
         # "robot_goals": flatten(history["robot_goal"]),
         "inputs0": flatten(history["inputs0"]),
         "inputs1": flatten(history["inputs1"]),
+        "masks": flatten(history["masks"]),
         "gt_poses": flatten(history["gt_poses"]),
         "gt_vels": flatten(history["gt_vels"]),
         "gt_mask": flatten(history["gt_mask"]),
@@ -190,20 +192,19 @@ def train_one_epoch(
         micro_batches["advantages"] = micro_batches["advantages"].at[:].set(jnp.clip(norm_advantages, -5, 5))
 
         def micro_batch_loss_fn(p, u_mb, micro_batch_key):
-            inputs0, inputs1 = u_mb["inputs0"], u_mb["inputs1"]
+            inputs0, inputs1, masks = u_mb["inputs0"], u_mb["inputs1"], u_mb["masks"]
             # Lowe input precision to save memory
             if multitask_training or modular_training:
-                p = tree_map(lambda x: x.astype(jnp.float16), p)
-                inputs0_f16 = inputs0.astype(jnp.float16)
-                inputs1_f16 = inputs1.astype(jnp.float16)
+                inputs0_f16 = inputs0.astype(jnp.bfloat16)
+                inputs1_f16 = inputs1.astype(jnp.bfloat16)
                 # Forward pass (For Actor/Critic)
-                (safety_perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
-                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training)
+                (safety_perc_dist, _, _, actor_dist, _, pred_val, _) = policy.e2e.apply(
+                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training), external_mask=masks
                 )
             else:
                 # Forward pass (For Actor/Critic)
-                (safety_perc_dist, _, _, actor_dist, _, pred_val) = policy.e2e.apply(
-                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training)
+                (safety_perc_dist, _, _, actor_dist, _, pred_val, _) = policy.e2e.apply(
+                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training), external_mask=masks
                 )
             # Cast back to higher precision for loss computation
             if multitask_training or modular_training:
@@ -215,12 +216,12 @@ def train_one_epoch(
             # Actor
             new_neglogp = policy.dirichlet.batch_neglogp(actor_dist, u_mb["actions"])
             log_ratio = u_mb["neglogpdfs"] - new_neglogp
+            # log_ratio = jnp.clip(log_ratio, -10, 10) # MORE STABLE
             ratio = jnp.exp(log_ratio)
             lax.cond(
                 debugging & (batch_idx == 0),
-                lambda _: debug.print("Ratio is: {r}", r=ratio[:10]),
-                lambda _: None,
-                operand=None
+                lambda : debug.print("Mean Ratio is: {m} - Std Ratio is: {s}", m=jnp.mean(ratio), s=jnp.std(ratio)),
+                lambda : None,
             )
             surr1 = ratio * u_mb["advantages"]
             surr2 = jnp.clip(ratio, 1.0 - clip_range, 1.0 + clip_range) * u_mb["advantages"]
@@ -262,10 +263,10 @@ def train_one_epoch(
                     return inputs0, gt_dict
                 inputs0_corrupt, gt_dict = augment_data(inputs0, gt_dict, augment_key)
                 # Cast corrupted input to float16 to save memory during forward pass
-                inputs0_corrupt_f16 = inputs0_corrupt.astype(jnp.float16)
+                inputs0_corrupt_f16 = inputs0_corrupt.astype(jnp.bfloat16)
                 # Forward pass through perception head
-                (perc_dist, _, _, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0_corrupt_f16, inputs1_f16, stop_perception_gradient=False, only_perception=True, perception_key=mask_drop_key
+                (perc_dist, _, _, _, _, _, _) = policy.e2e.apply(
+                    p, None, inputs0_corrupt_f16, inputs1, stop_perception_gradient=False, only_perception=True, perception_key=mask_drop_key
                 )
                 # Compute perception loss
                 perc_dist = dist_to_f32(perc_dist)
