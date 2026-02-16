@@ -107,7 +107,7 @@ class ValueNetwork(hk.Module):
         if mask is not None: scores = scores * mask[:,None] # Set attention scores to zero for non existing humans
         # debug.print("Scores size: {x}", x=scores.shape)
         scores_exp = jnp.exp(scores) * jnp.array(scores != 0, dtype=jnp.float32)
-        attention_weights = scores_exp / jnp.sum(scores_exp, axis=0)
+        attention_weights = scores_exp / (jnp.sum(scores_exp, axis=0) + 1e-8) # Add small epsilon to avoid division by zero
         # debug.print("Weights size: {x}", x=attention_weights.shape)
         # Compute weighted features (hidden features weighted by attention weights)
         weighted_features = jnp.sum(jnp.multiply(attention_weights, features), axis=0)

@@ -78,7 +78,7 @@ class Actor(hk.Module):
         if mask is not None: scores = scores * mask[:,None] # Set attention scores to zero for non existing humans
         # debug.print("Scores size: {x}", x=scores.shape)
         scores_exp = jnp.exp(scores) * jnp.array(scores != 0, dtype=jnp.float32)
-        attention_weights = scores_exp / jnp.sum(scores_exp, axis=0)
+        attention_weights = scores_exp / (jnp.sum(scores_exp, axis=0) + 1e-8) # Add small epsilon to avoid division by zero
         # debug.print("Weights size: {x}", x=attention_weights.shape)
         ## Compute weighted features (hidden features weighted by attention weights)
         weighted_features = jnp.sum(jnp.multiply(attention_weights, features), axis=0)
@@ -722,7 +722,7 @@ class DIRSAFE(SARL):
         sample:bool = False,
     ) -> jnp.ndarray:
         ## Compute aligned point_cloud
-        aligned_lidar = jessi.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[1]
+        aligned_lidar = jessi.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[0]
         point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
         ## Identify visible humans with JESSI perception
         hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])

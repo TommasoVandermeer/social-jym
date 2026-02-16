@@ -99,9 +99,9 @@ if use_ground_truth_data:
             env,
             action_values=all_actions_values,
             static_obstacles=all_static_obstacles[:-1],
-            occupancy_grids=all_occupancy_grids[1:],
-            grid_cells=info['grid_cells'] if env_params['grid_map_computation'] else None,
-            grid_cells_size=info['grid_cells_size'] if env_params['grid_map_computation'] else None,
+            occupancy_grids=all_occupancy_grids[1:] if use_global_planner else None,
+            grid_cells=info['grid_cells'] if use_global_planner else None,
+            grid_cells_size=info['grid_cells_size'] if use_global_planner else None,
         )
 else:
     env_params = {
@@ -213,7 +213,7 @@ else:
             action_values=all_actions_values,
             perception_distrs=all_encoder_distrs,
             static_obstacles=all_static_obstacles[:-1],
-            occupancy_grids=all_occupancy_grids[1:],
-            grid_cells=info['grid_cells'] if env_params['grid_map_computation'] else None,
-            grid_cells_size=info['grid_cells_size'] if env_params['grid_map_computation'] else None,
+            occupancy_grids=all_occupancy_grids[1:] if use_global_planner else None,
+            grid_cells=info['grid_cells'] if use_global_planner else None,
+            grid_cells_size=info['grid_cells_size'] if use_global_planner else None,
         )

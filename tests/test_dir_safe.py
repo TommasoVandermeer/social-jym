@@ -12,7 +12,7 @@ from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.policies.jessi import JESSI
 
 # Hyperparameters
-use_ground_truth_data = True
+use_ground_truth_data = False
 random_seed = 0
 n_episodes = 100
 kinematics = 'unicycle'
