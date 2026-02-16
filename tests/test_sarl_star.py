@@ -16,11 +16,15 @@ use_ground_truth_data = False
 random_seed = 0
 n_episodes = 100
 kinematics = 'unicycle'
+n_humans = 1
+n_obstacles = 5
+grid_cell_size = 0.5
+use_global_planner = False
 
 if use_ground_truth_data:
     env_params = {
-        'n_humans': 5,
-        'n_obstacles': 5,
+        'n_humans': n_humans,
+        'n_obstacles': n_obstacles,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
         'humans_dt': 0.01,      
@@ -31,6 +35,7 @@ if use_ground_truth_data:
         'reward_function': SocialReward(kinematics=kinematics),
         'kinematics': kinematics,
         'grid_map_computation': True, # Enable grid map computation for global planning
+        'grid_cell_size': grid_cell_size,
     }
     # Initialize the environment
     env = SocialNav(**env_params)
@@ -38,6 +43,7 @@ if use_ground_truth_data:
     policy = SARLStar(
         env.reward_function,
         env.get_grid_size(), 
+        use_planner=use_global_planner,
         planner="A*", 
         v_max=1.0, 
         dt=0.25, 
@@ -65,19 +71,21 @@ if use_ground_truth_data:
         all_actions = jnp.zeros((max_steps, 2))
         all_actions_values = jnp.zeros((max_steps,len(policy.action_space)))
         all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
+        all_occupancy_grids = jnp.array([info['occupancy_grid']])
         while outcome["nothing"]:
             # Compute action from trained JESSI
-            action, _, _, action_values = policy.act(policy_key, obs, info, network_params, epsilon=0.)
+            action, _, _, action_values, robot_goal, occupancy_grid = policy.act(policy_key, obs, info, network_params, epsilon=0.)
             # Step the environment (SocialNav)
             state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
             # Save data for animation
             all_states = jnp.vstack((all_states, jnp.array([state])))
             all_observations = jnp.vstack((all_observations, jnp.array([obs])))
-            all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
+            all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([robot_goal])))
             all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
             all_static_obstacles = jnp.vstack((all_static_obstacles, jnp.array([info['static_obstacles'][-1]])))
             all_actions = all_actions.at[step].set(action)
             all_actions_values = all_actions_values.at[step].set(action_values)
+            all_occupancy_grids = jnp.vstack((all_occupancy_grids, jnp.array([occupancy_grid])))
             # Increment step
             step += 1
         all_actions = all_actions[:step]
@@ -91,6 +99,9 @@ if use_ground_truth_data:
             env,
             action_values=all_actions_values,
             static_obstacles=all_static_obstacles[:-1],
+            occupancy_grids=all_occupancy_grids[1:] if use_global_planner else None,
+            grid_cells=info['grid_cells'] if use_global_planner else None,
+            grid_cells_size=info['grid_cells_size'] if use_global_planner else None,
         )
 else:
     env_params = {
@@ -98,8 +109,8 @@ else:
         'lidar_num_rays': 100,
         'lidar_angular_range': jnp.pi * 2,
         'lidar_max_dist': 10.,
-        'n_humans': 5,
-        'n_obstacles': 5,
+        'n_humans': n_humans,
+        'n_obstacles': n_obstacles,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
         'humans_dt': 0.01,      
@@ -111,6 +122,7 @@ else:
         'kinematics': kinematics,
         'lidar_noise': True,
         'grid_map_computation': True, # Enable grid map computation for global planning
+        'grid_cell_size': grid_cell_size,
     }
     # Initialize the environment
     env = LaserNav(**env_params)
@@ -118,6 +130,7 @@ else:
     policy = SARLStar(
         SocialReward(kinematics=kinematics),
         env.get_grid_size(), 
+        use_planner=use_global_planner,
         planner="A*", 
         v_max=1.0, 
         dt=0.25, 
@@ -169,20 +182,22 @@ else:
             "weights": jnp.zeros((max_steps,jessi.n_detectable_humans)),
         }
         all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
+        all_occupancy_grids = jnp.array([info['occupancy_grid']])
         while outcome["nothing"]:
             # Compute action from trained JESSI
-            action, _, _, action_values, perception_distr = policy.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, network_params, 0., jnp.full((jessi.n_detectable_humans,), .3))
+            action, _, _, action_values, perception_distr, robot_goal, occupancy_grid = policy.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, network_params, 0., jnp.full((jessi.n_detectable_humans,), .3))
             # # Step the environment (Lasernav)
             state, obs, info, reward, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
             # Save data for animation
             all_states = jnp.vstack((all_states, jnp.array([state])))
             all_observations = jnp.vstack((all_observations, jnp.array([obs])))
-            all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
+            all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([robot_goal])))
             all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
             all_actions = all_actions.at[step].set(action)
             all_actions_values = all_actions_values.at[step].set(action_values)
             all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, perception_distr)
             all_static_obstacles = jnp.vstack((all_static_obstacles, jnp.array([info['static_obstacles'][-1]])))
+            all_occupancy_grids = jnp.vstack((all_occupancy_grids, jnp.array([occupancy_grid])))
             # Increment step
             step += 1
         all_actions = all_actions[:step]
@@ -198,4 +213,7 @@ else:
             action_values=all_actions_values,
             perception_distrs=all_encoder_distrs,
             static_obstacles=all_static_obstacles[:-1],
+            occupancy_grids=all_occupancy_grids[1:] if use_global_planner else None,
+            grid_cells=info['grid_cells'] if use_global_planner else None,
+            grid_cells_size=info['grid_cells_size'] if use_global_planner else None,
         )

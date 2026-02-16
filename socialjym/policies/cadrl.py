@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, nn, value_and_grad
+from jax import random, jit, vmap, lax, nn, value_and_grad, debug
 from jax_tqdm import loop_tqdm
 from jax.tree_util import tree_map
 from functools import partial
@@ -432,17 +432,22 @@ class CADRL(BasePolicy):
         robot_radius:float,
         robot_poses, # x, y, theta
         robot_actions,
-        robot_actions_values,
         robot_goals,
         humans_poses, # x, y, theta
         humans_velocities, # vx, vy (in global frame)
         humans_radii,
+        robot_actions_values=None, # (optional) values of the robot's actions (if not None, they will be visualized in the animation)
+        action_distrs=None, # (optional) distribution of the robot's actions (if not None, it will be visualized in the animation)
         perception_distrs=None, # (optional) distribution of the robot's perception of humans' positions and velocities (if not None, it will be visualized in the animation)
         lidar_scans=None, # (optional) distance readings of the LiDAR sensor (if not None, it will be visualized in the animation)
         static_obstacles=None, # (optional) positions and radii of static obstacles (if not None, they will be visualized in the animation)
+        occupancy_grids=None, # (optional) occupancy grids (if not None, they will be visualized in the animation)
+        grid_cells=None, # (optional) grid cells (if not None, they will be visualized in the animation)
+        grid_cells_size=None, # (optional) size of each grid cell (if not None, it will be visualized in the animation)
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
         save_video:bool=False,
+        p_visualization_threshold_dir:float=0.05,
     ):
         # Validate input args
         assert \
@@ -458,6 +463,8 @@ class CADRL(BasePolicy):
         rcParams['ps.fonttype'] = 42
         # Compute informations for visualization
         n_steps = len(robot_poses)
+        if action_distrs is not None:
+            test_action_samples = self._build_action_space(unicycle_triangle_samples=35)
         # Animate trajectory
         fig = plt.figure(figsize=(21.43,13.57))
         fig.subplots_adjust(left=0.05, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
@@ -519,6 +526,14 @@ class CADRL(BasePolicy):
                     for o in static_obstacles[frame]: axs[0].fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
                 else: # One segment obstacles
                     for o in static_obstacles[frame]: axs[0].plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+            if (grid_cells is not None) and (grid_cells_size is not None):
+                for i in range(len(grid_cells)):
+                    for j in range(len(grid_cells[i])):
+                        cell = grid_cells[i,j]
+                        cell_occupancy = occupancy_grids[frame][i,j] if occupancy_grids is not None else 0
+                        cell_color = 'red' if cell_occupancy else 'white'
+                        rect = plt.Rectangle((cell[0]-grid_cells_size/2, cell[1]-grid_cells_size/2), grid_cells_size, grid_cells_size, facecolor=cell_color, edgecolor='black', alpha=0.5, zorder=0)
+                        axs[0].add_patch(rect)
             if lidar_scans is not None:
                 lidar_scan = lidar_scans[frame]
                 for ray in range(len(lidar_scan)):
@@ -563,7 +578,6 @@ class CADRL(BasePolicy):
                             alpha=1,
                             zorder=20,
                         )
-            axs[0].set_title("Trajectory")
             # AX :,2: Feasible and bounded action space + action space distribution and action taken
             axs[1].set_xlabel("$v$ (m/s)")
             axs[1].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
@@ -583,25 +597,49 @@ class CADRL(BasePolicy):
                     ],
                     closed=True,
                     fill=True,
-                    edgecolor='green',
-                    facecolor='lightgreen',
+                    edgecolor='black',
+                    facecolor='white',
                     linewidth=2,
                     zorder=2,
                 ),
             )
-            feasible_actions_idx = jnp.where(self.action_space > -jnp.inf)[0]
-            feasible_actions = self.action_space[feasible_actions_idx]
-            feasible_actions_values = robot_actions_values[frame][feasible_actions_idx] if robot_actions_values is not None else None
-            axs[1].scatter(
-                feasible_actions[:,0],
-                feasible_actions[:,1],
-                c=feasible_actions_values if feasible_actions_values is not None else 'black',
-                cmap='Reds'if feasible_actions_values is not None else None,
-                s=20,
-                alpha=0.7,
-                label='Feasible actions',
-                zorder=3,
-            )
+            if robot_actions_values is not None:
+                feasible_actions_idx = jnp.where(self.action_space > -jnp.inf)[0]
+                feasible_actions = self.action_space[feasible_actions_idx]
+                feasible_actions_values = robot_actions_values[frame][feasible_actions_idx] if robot_actions_values is not None else None
+                axs[1].scatter(
+                    feasible_actions[:,0],
+                    feasible_actions[:,1],
+                    c=feasible_actions_values if feasible_actions_values is not None else 'black',
+                    cmap='Reds'if feasible_actions_values is not None else None,
+                    s=20,
+                    alpha=0.7,
+                    label='Feasible actions',
+                    zorder=3,
+                )
+            if action_distrs is not None:
+                bounded_action_space_vertices = action_distrs["vertices"][frame]
+                axs[1].add_patch(
+                    plt.Polygon(
+                        [   
+                            bounded_action_space_vertices[0],
+                            bounded_action_space_vertices[1],
+                            bounded_action_space_vertices[2],
+                        ],
+                        closed=True,
+                        fill=True,
+                        edgecolor='green',
+                        facecolor='lightgreen',
+                        linewidth=2,
+                        zorder=3,
+                    ),
+                )
+                actor_distr = tree_map(lambda x: x[frame], action_distrs)
+                samples = test_action_samples[self.distr.batch_is_in_support(actor_distr, test_action_samples)]
+                test_action_p = self.distr.batch_p(actor_distr, samples)
+                points_high_p = samples[test_action_p > p_visualization_threshold_dir]
+                corresponding_colors = test_action_p[test_action_p > p_visualization_threshold_dir]
+                axs[1].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[1].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51) # Action taken
         anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
         if save_video:
@@ -624,8 +662,12 @@ class CADRL(BasePolicy):
         humans_radii,
         socialnav_env:SocialNav,
         action_values:jnp.ndarray=None,
+        action_distrs:jnp.ndarray=None,
         perception_distrs:dict=None,
         static_obstacles=None,
+        occupancy_grids=None,
+        grid_cells=None,
+        grid_cells_size=None,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
         save_video:bool=False,
@@ -649,13 +691,17 @@ class CADRL(BasePolicy):
             socialnav_env.robot_radius,
             robot_poses,
             actions,
-            action_values,
             goals,
             humans_poses,
             humans_velocities,
             humans_radii,
-            perception_distrs,
+            robot_actions_values=action_values,
+            perception_distrs=perception_distrs,
+            action_distrs=action_distrs,
             static_obstacles=static_obstacles,
+            occupancy_grids=occupancy_grids,
+            grid_cells=grid_cells,
+            grid_cells_size=grid_cells_size,
             x_lims=x_lims,
             y_lims=y_lims,
             save_video=save_video,
@@ -728,10 +774,18 @@ class CADRL(BasePolicy):
             obs, _, info, _, key = val
             vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
             # Compute the action that goes straight towards the goal with maximum speed allowed for the unicycle robot
-            direction = jnp.arctan2(info["robot_goal"][1] - obs[-1,1], info["robot_goal"][0] - obs[-1,0])
-            w = jnp.clip(direction/self.dt, -self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2))
+            diff = info["robot_goal"] - obs[-1,0:2]
+            distance = jnp.linalg.norm(diff)
+            direction = jnp.arctan2(diff[1], diff[0])
+            direction_error = wrap_angle(direction - obs[-1,5])
+            w = jnp.clip(direction_error/self.dt, -self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2))
             v = self.v_max - (self.v_max * jnp.abs(w) / (self.v_max/(self.wheels_distance/2)))
-            action = jnp.array([v,w])
+            v = jnp.clip(v, 0, jnp.min(jnp.array([v, distance/self.dt])))
+            optimal_action = jnp.array([v,w])
+            # Find discrete action closest to the optimal action
+            action_idx = jnp.argmin(jnp.linalg.norm(self.action_space - optimal_action, axis=1))
+            action = self.action_space[action_idx]
+            debug.print("Optimal action: {x}, Closest action: {y}", x=optimal_action, y=action)
             return action, key, vnet_inputs, jnp.zeros(len(self.action_space))
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
@@ -775,7 +829,12 @@ class CADRL(BasePolicy):
             def _while_body(while_val:tuple):
                 # Retrieve data from the tuple
                 state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states = while_val
-                action, _, _, _, _ = self.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, network_params, 0., humans_radius_hypothesis)
+                if self.name == "SARL*":
+                    action, _, _, _, _, _, _= self.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, network_params, 0., humans_radius_hypothesis)
+                elif self.name == "DIRSAFE":
+                    action, _, _, _, _, _ = self.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, network_params, humans_radius_hypothesis, sample=False)
+                else:
+                    action, _, _, _, _ = self.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, network_params, 0., humans_radius_hypothesis)
                 state, obs, info, _, outcome, (_, env_key)  = env.step(state,info,action,test=True)    
                 # Save data
                 all_actions = all_actions.at[steps].set(action)
