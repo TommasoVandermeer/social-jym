@@ -1,11 +1,13 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, debug, nn
+from jax import random, jit, vmap, lax, debug
+from jax.tree_util import tree_map
 from functools import partial
-import haiku as hk
 from types import FunctionType
+import os
 
 from .sarl import SARL
 from .jessi import JESSI
+from socialjym.envs.base_env import wrap_angle
 from jhsfm.hsfm import vectorized_compute_obstacle_closest_point
 from socialjym.utils.global_planners.base_global_planner import GLOBAL_PLANNERS
 from socialjym.utils.global_planners.a_star import AStarPlanner
@@ -39,6 +41,8 @@ class SARLStar(SARL):
             # position_noise_sigma_percentage_radius = 0., # Standard deviation of the noise as a percentage of the ditance between the robot and the humans
             # position_noise_sigma_angle = 0., # Standard deviation of the noise on the angle of humans' position in the robot frame
             # velocity_noise_sigma_percentage = 0., # Standard deviation of the noise as a percentage of the (vx,vy) coordinates of humans' velocity in the robot frame
+            # USED ONLY FOR LASERNAV:
+            lidar_n_stack_to_use = 1, # Number of past lidar observations to stack and use as input for the policy. If 1, only the current lidar observation is used.
         ) -> None:
         assert planner in GLOBAL_PLANNERS, f"Planner {planner} not recognized. Available planners: {GLOBAL_PLANNERS}"
         # Configurable attributes
@@ -61,6 +65,7 @@ class SARLStar(SARL):
             self.planner = AStarPlanner(grid_size)
         elif planner == "Dijkstra":
             self.planner = DijkstraPlanner(grid_size)
+        self.lidar_n_stack_to_use = lidar_n_stack_to_use
         # Default attributes
         self.name = "SARL*"
 
@@ -95,6 +100,25 @@ class SARLStar(SARL):
         return vmap(SARLStar._is_action_safe, in_axes=(None, None, None, 0))(self, obs, info, self.action_space)
 
     @partial(jit, static_argnames=("self"))
+    def _is_action_safe_from_lidar(self, point_cloud:jnp.ndarray, obs:jnp.ndarray, action:jnp.ndarray) -> bool:
+        """
+        For a given action, simulate the robot's movement and check if it collides with any obstacle using the lidar point cloud.
+        """
+        obs = obs.at[-1,2:4].set(action)
+        next_pos = self._propagate_robot_obs(obs[-1])[:2]
+        # Check collision with obstacles
+        distances = jnp.linalg.norm(point_cloud - next_pos, axis=1)
+        min_distance = jnp.min(distances)
+        return min_distance > obs[-1,4]
+    
+    @partial(jit, static_argnames=("self"))
+    def _compute_safe_action_space_from_lidar(self, point_cloud:jnp.ndarray, obs:jnp.ndarray) -> jnp.ndarray:
+        """
+        For each action in the action space, simulate the robot's movement and check if it collides with any obstacle using the lidar point cloud.
+        """
+        return vmap(SARLStar._is_action_safe_from_lidar, in_axes=(None, None, None, 0))(self, point_cloud, obs, self.action_space)
+
+    @partial(jit, static_argnames=("self"))
     def _compute_safe_action_value(self, next_obs, obs, info, action, vnet_params, is_action_safe, humans_mask=None) -> jnp.ndarray:
         """
         Compute the value of a given action only if it is safe, otherwise return -inf.
@@ -120,6 +144,22 @@ class SARLStar(SARL):
             is_action_safe,
             humans_mask,
         )
+
+    @partial(jit, static_argnames=("self"))
+    def _is_cell_occupied_from_lidar(self, point_cloud:jnp.ndarray, cell_center:jnp.ndarray, cell_size:float, epsilon=1e-5) -> bool:
+        """
+        Check if a cell is free by checking if any point in the point cloud is within the cell. 
+        The cell is considered occupied if there is at least one point in the point cloud that is within the cell.
+        """
+        # Check if any point in the point cloud is within the cell
+        half_cell_size = cell_size / 2
+        in_cell = \
+            (point_cloud[:,0] >= cell_center[0] - half_cell_size - epsilon) & \
+            (point_cloud[:,0] <= cell_center[0] + half_cell_size + epsilon) & \
+            (point_cloud[:,1] >= cell_center[1] - half_cell_size - epsilon) & \
+            (point_cloud[:,1] <= cell_center[1] + half_cell_size + epsilon)
+        # If there are no points in the cell, it is free
+        return jnp.any(in_cell)
 
     # Public methods
 
@@ -178,7 +218,7 @@ class SARLStar(SARL):
         safe_actions = self._compute_safe_action_space(obs, info)
         ## Compute best action
         action, key, vnet_input, action_values = lax.cond(explore, _random_action, _forward_pass, (obs, info, vnet_params, safe_actions, key))
-        return action, key, vnet_input, action_values
+        return action, key, vnet_input, action_values, info['robot_goal'], info['occupancy_grid']
     
     @partial(jit, static_argnames=("self"))
     def batch_act(
@@ -210,9 +250,15 @@ class SARLStar(SARL):
         epsilon:float,
         humans_radius:float,
     ) -> jnp.ndarray:
-        #TODO: This methods uses GT of obstacles, re-implement to use lidar pointcloud instead
-        #TODO: Add global planner
-
+        ## Compute aligned point_cloud
+        aligned_lidar = jessi.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[1]
+        point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
+        # Compute occupancy grid for the planner based on the point_cloud
+        occupancy_grid = vmap(vmap(self._is_cell_occupied_from_lidar, in_axes=(None, 0, None)), in_axes=(None, 0, None))(
+            point_cloud, 
+            info['grid_cells'], 
+            info['grid_cells_size']
+        )
         ## Identify visible humans with JESSI perception
         hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
         humans_mask = hcgs['weights'] > 0.5
@@ -250,7 +296,10 @@ class SARLStar(SARL):
             key, subkey = random.split(key)
             vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
             probabilities = jnp.where(safe_actions, 1/jnp.sum(safe_actions), 0.)
-            return random.choice(subkey, self.action_space, p=probabilities), key, vnet_inputs, jnp.zeros((len(self.action_space)))
+            # Fictitious action values
+            action_values = jnp.zeros(len(self.action_space))
+            action_values = jnp.where(safe_actions, action_values, -jnp.inf) # Set to -inf the value of unsafe actions
+            return random.choice(subkey, self.action_space, p=probabilities), key, vnet_inputs, action_values
         @jit
         def _forward_pass(val):
             obs, humans_mask, info, vnet_params, key, safe_actions = val
@@ -270,32 +319,29 @@ class SARLStar(SARL):
             vnet_input = vnet_inputs[jnp.argmax(action_values)]
             # Return action with highest value
             return action, key, vnet_input, jnp.squeeze(action_values)
-        @jit
-        def _towards_goal_action(val):
-            obs, _, info, _, key, _ = val
-            vnet_inputs = self.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
-            # Compute the action that goes straight towards the goal with maximum speed allowed for the unicycle robot
-            direction = jnp.arctan2(info["robot_goal"][1] - obs[-1,1], info["robot_goal"][0] - obs[-1,0])
-            w = jnp.clip(direction/self.dt, -self.v_max/(self.wheels_distance/2), self.v_max/(self.wheels_distance/2))
-            v = self.v_max - (self.v_max * jnp.abs(w) / (self.v_max/(self.wheels_distance/2)))
-            action = jnp.array([v,w])
-            return action, key, vnet_inputs, jnp.zeros(len(self.action_space))
+        ## Compute path
+        if self.use_planner:
+            # Find path
+            path, path_length = self.planner.find_path(
+                obs[-1,:2], 
+                info['robot_goal'], 
+                info['grid_cells'], 
+                occupancy_grid
+            )
+            info['robot_goal'] = lax.cond(
+                path_length > 1,
+                lambda: path[1], # Next waypoint in the path
+                lambda: info['robot_goal'], # Already at goal cell
+            )
+            # debug.print("New subgoal: {x}, path length: {y}", x=info['robot_goal'], y=path_length)
         ## Compute safe actions
-        safe_actions = self._compute_safe_action_space(obs, info)
+        safe_actions = self._compute_safe_action_space_from_lidar(point_cloud, obs)
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
-        case = jnp.argmax(jnp.array([
+        action, key, vnet_input, action_values = lax.cond(
             explore, 
-            (~explore) & jnp.any(humans_mask), 
-            (~explore) & ~jnp.any(humans_mask)
-        ]))
-        action, key, vnet_input, action_values = lax.switch(
-            case, 
-            [
-                _random_action, 
-                _forward_pass, 
-                _towards_goal_action, 
-            ],
+            lambda x: _random_action(x), 
+            lambda x: _forward_pass(x), 
             (obs, humans_mask, info, vnet_params, key, safe_actions)
         )
-        return action, key, vnet_input, action_values, hcgs
+        return action, key, vnet_input, action_values, hcgs, info['robot_goal'], occupancy_grid

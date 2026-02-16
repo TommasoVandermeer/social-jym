@@ -13,13 +13,14 @@ from socialjym.policies.jessi import JESSI
 
 # Hyperparameters
 use_ground_truth_data = False
-random_seed = 0
+random_seed = 1
 n_episodes = 100
 kinematics = 'unicycle'
+n_humans = 5
 
 if use_ground_truth_data:
     env_params = {
-        'n_humans': 5,
+        'n_humans': n_humans,
         'n_obstacles': 0,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
@@ -89,7 +90,7 @@ else:
         'lidar_num_rays': 100,
         'lidar_angular_range': jnp.pi * 2,
         'lidar_max_dist': 10.,
-        'n_humans': 5,
+        'n_humans': n_humans,
         'n_obstacles': 0,
         'robot_radius': 0.3,
         'robot_dt': 0.25,

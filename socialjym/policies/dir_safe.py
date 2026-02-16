@@ -1,16 +1,25 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug, nn, value_and_grad
+from jax.tree_util import tree_map
 from functools import partial
 import haiku as hk
 from types import FunctionType
 import optax
+import os
+from matplotlib import rc, rcParams
+from matplotlib.animation import FuncAnimation, FFMpegWriter
+import matplotlib.pyplot as plt
 
-from socialjym.envs.base_env import wrap_angle
+from socialjym.envs.base_env import EPSILON, HUMAN_POLICIES, wrap_angle
+from socialjym.envs.socialnav import SocialNav
+from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.distributions.base_distribution import DISTRIBUTIONS
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from .sarl import SARL
 from .sarl import ValueNetwork
 from .sarl_ppo import EPSILON, MLP_1_PARAMS, MLP_2_PARAMS, MLP_3_PARAMS, ATTENTION_LAYER_PARAMS
+from .jessi import JESSI
+from jhsfm.hsfm import get_linear_velocity
 
 class Actor(hk.Module):
     def __init__(
@@ -38,6 +47,7 @@ class Actor(hk.Module):
     def __call__(
             self, 
             x: jnp.ndarray,
+            mask: jnp.ndarray = None,
             **kwargs:dict,
         ) -> jnp.ndarray:
         """
@@ -65,6 +75,7 @@ class Actor(hk.Module):
         attention_input = jnp.concatenate([mlp1_output, global_state], axis=1)
         # debug.print("Attention input size: {x}", x=attention_input.shape)
         scores = self.attention(attention_input)
+        if mask is not None: scores = scores * mask[:,None] # Set attention scores to zero for non existing humans
         # debug.print("Scores size: {x}", x=scores.shape)
         scores_exp = jnp.exp(scores) * jnp.array(scores != 0, dtype=jnp.float32)
         attention_weights = scores_exp / jnp.sum(scores_exp, axis=0)
@@ -99,6 +110,8 @@ class DIRSAFE(SARL):
             wheels_distance:float=0.7, 
             noise:bool=False, # If True, noise is added to humams positions and velocities
             noise_sigma_percentage:float=0., # Standard deviation of the noise as a percentage of the absolute value of the difference between the robot and the humans
+            # USED ONLY FOR LASERNAV:
+            lidar_n_stack_to_use:int=1, # Number of past lidar observations to stack and use as input for the policy. If 1, only the current observation is used.
         ) -> None:
         """
         DIRSAFE (DIRichlet-based Socially Aware FEasible-action) is an RL policy that takes in input a local map of the static obstacles in the environment, the robot state and the human states, and
@@ -115,6 +128,7 @@ class DIRSAFE(SARL):
             noise=noise,
             noise_sigma_percentage=noise_sigma_percentage,
         )
+        self.lidar_n_stack_to_use = lidar_n_stack_to_use
         # Default attributes
         self.name = "DIRSAFE"
         self.distr_id = DISTRIBUTIONS.index('dirichlet')
@@ -122,14 +136,14 @@ class DIRSAFE(SARL):
         self.normalize_and_clip_obs =  False
         self.vnet_input_size = 16 # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma), 7 as the human state (px, py, vx, vy, radius, dg, da)
         @hk.transform
-        def value_network(x, robot_state_size=9):  # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
+        def value_network(x, mask=None, robot_state_size=9):  # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
             vnet = ValueNetwork(robot_state_size=robot_state_size)
-            return vnet(x)
+            return vnet(x, mask=mask)
         self.critic = value_network
         @hk.transform
-        def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
+        def actor_network(x:jnp.ndarray, mask=None, **kwargs) -> jnp.ndarray:
             actor = Actor(v_max=self.v_max, wheels_distance=self.wheels_distance, robot_state_size=6+3) # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
-            return actor(x, **kwargs)
+            return actor(x, mask=mask, **kwargs)
         self.actor = actor_network
 
     # Private methods
@@ -382,6 +396,15 @@ class DIRSAFE(SARL):
         return vmap(DIRSAFE._compute_vnet_input,in_axes=(None,None,0,None,None))(self, robot_obs, humans_obs, action_space_params, info)
 
     @partial(jit, static_argnames=("self"))
+    def batch_compute_vnet_input_from_lidar(self, robot_obs:jnp.ndarray, humans_obs:jnp.ndarray, info:dict, point_cloud:jnp.ndarray) -> jnp.ndarray:
+        # Compute action space parameters (alpha, beta, gamma) - Done one time for all humans
+        action_space_params = self.bound_action_space_from_lidar(
+            point_cloud, 
+            robot_obs[4], # robot radius
+        )
+        return vmap(DIRSAFE._compute_vnet_input,in_axes=(None,None,0,None,None))(self, robot_obs, humans_obs, action_space_params, info)
+
+    @partial(jit, static_argnames=("self"))
     def init_nns(
         self, 
         key:random.PRNGKey, 
@@ -482,6 +505,85 @@ class DIRSAFE(SARL):
         return jnp.array([new_alpha, new_beta, new_gamma])
 
     @partial(jit, static_argnames=("self"))
+    def bound_action_space_from_lidar(self, lidar_point_cloud, robot_radius, eps=1e-6):
+        """
+        Compute the bounds of the action space based on the control parameters alpha, beta, gamma.
+        WARNING: Assumes LiDAR orientation is align with robot frame.
+        """
+        # Lower ALPHA
+        is_inside_frontal_rect = (
+            (lidar_point_cloud[:,0] >=  0 + eps) & # xmin
+            (lidar_point_cloud[:,0] <= self.v_max * self.dt + robot_radius - eps) & # xmax
+            (lidar_point_cloud[:,1] >= -robot_radius + eps) &  # ymin
+            (lidar_point_cloud[:,1] <= robot_radius - eps) # ymax
+        )
+        intersection_points = jnp.where(
+            is_inside_frontal_rect[:, None],
+            lidar_point_cloud,
+            jnp.full_like(lidar_point_cloud, fill_value=jnp.nan)
+        )
+        min_x = jnp.nanmin(intersection_points[:,0])
+        new_alpha = lax.cond(
+            ~jnp.isnan(min_x),
+            lambda _: jnp.max(jnp.array([0, min_x - robot_radius])) / (self.v_max * self.dt),
+            lambda _: 1.,
+            None,
+        )
+        @jit
+        def _lower_beta_and_gamma(tup:tuple):
+            lidar_point_cloud, new_alpha, vmax, wheels_distance, dt = tup
+            # Lower BETA
+            is_inside_left_rect = (
+                (lidar_point_cloud[:,0] >= -robot_radius + eps) & # xmin
+                (lidar_point_cloud[:,0] <= new_alpha * vmax * dt + robot_radius - eps) & # xmax
+                (lidar_point_cloud[:,1] >= robot_radius + eps) &  # ymin
+                (lidar_point_cloud[:,1] <= robot_radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance)) - eps) # ymax
+            )
+            intersection_points = jnp.where(
+                is_inside_left_rect[:, None],
+                lidar_point_cloud,
+                jnp.full_like(lidar_point_cloud, fill_value=jnp.nan)
+            )
+            min_y = jnp.nanmin(intersection_points[:,1])
+            new_beta = lax.cond(
+                ~jnp.isnan(min_y),
+                lambda _: (min_y - robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
+                lambda _: 1.,
+                None,
+            )
+            # Lower GAMMA
+            is_inside_right_rect = (
+                (lidar_point_cloud[:,0] >=  -robot_radius + eps) & # xmin
+                (lidar_point_cloud[:,0] <= new_alpha * vmax * dt + robot_radius - eps) & # xmax
+                (lidar_point_cloud[:,1] >= -robot_radius - (new_alpha*dt**2*vmax**2/(4*wheels_distance)) + eps) & # ymin
+                (lidar_point_cloud[:,1] <= -robot_radius - eps) # ymax
+            )
+            intersection_points = jnp.where(
+                is_inside_right_rect[:, None],
+                lidar_point_cloud,
+                jnp.full_like(lidar_point_cloud, fill_value=jnp.nan)
+            )
+            max_y = jnp.nanmax(intersection_points[:,1])
+            new_gamma = lax.cond(
+                ~jnp.isnan(max_y),
+                lambda _: (-max_y - robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
+                lambda _: 1.,
+                None,
+            )
+            return new_beta, new_gamma
+        new_beta, new_gamma = lax.cond(
+            new_alpha == 0.,
+            lambda _: (1., 1.),
+            _lower_beta_and_gamma,
+            (lidar_point_cloud, new_alpha, self.v_max, self.wheels_distance, self.dt)
+        )
+        # Apply lower bound to new_alpha, new_beta, new_gamma
+        new_alpha = jnp.max(jnp.array([EPSILON, new_alpha]))
+        new_beta = jnp.max(jnp.array([EPSILON, new_beta]))
+        new_gamma = jnp.max(jnp.array([EPSILON, new_gamma]))
+        return jnp.array([new_alpha, new_beta, new_gamma])
+
+    @partial(jit, static_argnames=("self"))
     def act(
         self, 
         key:random.PRNGKey, 
@@ -490,7 +592,6 @@ class DIRSAFE(SARL):
         actor_params:dict, 
         sample:bool = False,
     ) -> jnp.ndarray:
-        
         # Add noise to human observations
         if self.noise:
             key, subkey = random.split(key)
@@ -605,3 +706,86 @@ class DIRSAFE(SARL):
             actor_loss, 
             entropy_loss
         )
+
+    # LaserNav methods
+
+    @partial(jit, static_argnames=("self","jessi"))
+    def act_on_jessi_perception(
+        self, 
+        jessi:JESSI,
+        perception_params:dict,
+        key:random.PRNGKey, 
+        lasernav_obs:jnp.ndarray, 
+        info:dict, 
+        actor_params:dict, 
+        humans_radius:float,
+        sample:bool = False,
+    ) -> jnp.ndarray:
+        ## Compute aligned point_cloud
+        aligned_lidar = jessi.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[1]
+        point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
+        ## Identify visible humans with JESSI perception
+        hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        humans_mask = hcgs['weights'] > 0.5
+        rc_humans_pos = hcgs['pos_distrs']['means']
+        rc_humans_vel = hcgs['vel_distrs']['means']
+        # Extract robot pose
+        robot_position = lasernav_obs[0,:2]
+        robot_theta = lasernav_obs[0,2]
+        # Make humans positions and velocities in the world frame (later they will be transformed in the robot frame inside the vnet_input computation. This is inefficient but it's easier to reuse the same batch_compute_vnet_input function for both LaserNav and SocialNav observations)
+        humans_pos = jnp.zeros_like(rc_humans_pos)
+        humans_pos = humans_pos.at[:,0].set(rc_humans_pos[:,0] * jnp.cos(robot_theta) - rc_humans_pos[:,1] * jnp.sin(robot_theta) + robot_position[0])
+        humans_pos = humans_pos.at[:,1].set(rc_humans_pos[:,0] * jnp.sin(robot_theta) + rc_humans_pos[:,1] * jnp.cos(robot_theta) + robot_position[1])
+        humans_vel = jnp.zeros_like(rc_humans_vel)
+        humans_vel = humans_vel.at[:,0].set(rc_humans_vel[:,0] * jnp.cos(robot_theta) - rc_humans_vel[:,1] * jnp.sin(robot_theta))
+        humans_vel = humans_vel.at[:,1].set(rc_humans_vel[:,0] * jnp.sin(robot_theta) + rc_humans_vel[:,1] * jnp.cos(robot_theta))
+        # SOCIALNAV OBSERVATION FORMAT:
+        # - obs: observation of the current state. It is in the form:
+        #         [[human1_px, human1_py, human1_vx, human1_vy, human1_radius, padding],
+        #         [human2_px, human2_py, human2_vx, human2_vy, human2_radius, padding],
+        #         ...
+        #         [humanN_px, humanN_py, humanN_vx, humanN_vy, humanN_radius, padding],
+        #         [robot_px, robot_py, robot_u1, robot_u2, robot_radius, robot_theta]].
+        obs = jnp.zeros((len(humans_mask)+1, 6))
+        obs = obs.at[:-1,0:2].set(humans_pos)
+        obs = obs.at[:-1,2:4].set(humans_vel)
+        obs = obs.at[:-1,4].set(humans_radius)
+        obs = obs.at[-1,0:2].set(robot_position) # Current Robot position
+        obs = obs.at[-1,2:4].set(lasernav_obs[0,4:6]) # Current Robot action (velocity)
+        obs = obs.at[-1,4].set(lasernav_obs[0,3]) # Robot radius
+        obs = obs.at[-1,5].set(robot_theta) # Robot theta
+
+        # Compute actor input
+        input = self.batch_compute_vnet_input_from_lidar(obs[-1], obs[:-1], info, point_cloud)
+
+        @jit
+        def _forward_pass_sample_action(val):
+            vnet_input, key = val
+            key, subkey = random.split(key)
+            sampled_action, distr = self.actor.apply(
+                actor_params, 
+                None, 
+                vnet_input, 
+                humans_mask, # Mask to consider only visible humans in the actor forward pass
+                random_key=subkey
+            )
+            return sampled_action, sampled_action, distr, key
+        @jit
+        def _forward_pass_mean_action(val):
+            vnet_input, key = val
+            sampled_action, distr = self.actor.apply(
+                actor_params, 
+                None, 
+                vnet_input, 
+                humans_mask, # Mask to consider only visible humans in the actor forward pass
+            )
+            return self.distr.mean(distr), sampled_action, distr, key
+        
+        # Compute action
+        action, sampled_action, distr, key = lax.cond(
+            sample, 
+            _forward_pass_sample_action,
+            _forward_pass_mean_action,
+            (input, key)
+        )
+        return action, key, input, sampled_action, distr, hcgs

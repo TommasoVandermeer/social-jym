@@ -353,6 +353,7 @@ class BaseEnv(ABC):
         )
         if self.grid_map_computation: # Compute the grid map of static obstacles for global planning
             info['grid_cells'], info['occupancy_grid'] = self.build_grid_map_and_occupancy(full_state, info)
+            info['grid_cells_size'] = self.grid_cell_size
         return full_state, key, info
 
     @partial(jit, static_argnames=("self"))
