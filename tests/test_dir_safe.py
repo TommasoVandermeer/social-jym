@@ -16,8 +16,9 @@ use_ground_truth_data = False
 random_seed = 0
 n_episodes = 100
 kinematics = 'unicycle'
-n_humans = 1
+n_humans = 5
 n_obstacles = 5
+lidar_noise = False
 
 if use_ground_truth_data:
     env_params = {
@@ -107,7 +108,7 @@ else:
         'ccso_n_static_humans': 0,
         'reward_function': LaserReward(robot_radius=0.3),
         'kinematics': kinematics,
-        'lidar_noise': True,
+        'lidar_noise': lidar_noise,
     }
     # Initialize the environment
     env = LaserNav(**env_params)

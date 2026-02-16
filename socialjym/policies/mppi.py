@@ -18,10 +18,10 @@ class MPPI(DWA):
     def __init__(
             self, 
             # MPPI hyperparameters
-            num_samples=500, 
+            num_samples=1_000, 
             horizon=20, 
-            temperature=0.3, 
-            noise_sigma=jnp.array([0.3, 0.9]), # Sigma for [v, w]
+            temperature=0.1, 
+            noise_sigma=jnp.array([0.4, 1.2]), # Sigma for [v, w]
             # MPPI critics weights
             velocity_cost_weight = 0.5,
             goal_distance_cost_weight = 3.0,
