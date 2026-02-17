@@ -73,7 +73,7 @@ class MPPI(DWA):
             # Inputs are (current_robot_pose, action, action_idx, robot_goal, point_cloud)
             'velocity':  lambda p, a, aidx, g, pc: self._velocity_critic(a), # Heredited from DWA
             'goal_distance':   lambda p, a, aidx, g, pc: self._goal_distance_critic(p, g),
-            'obstacle_cost': lambda p, a, aidx, g, pc: self._obstacle_critic(p, aidx, pc),
+            'obstacle_cost': lambda p, a, aidx, g, pc: self._obstacle_critic(p, pc),
             'control_cost': lambda p, a, aidx, g, pc: self._control_critic(a),
         }
         self.weights = {
@@ -95,7 +95,7 @@ class MPPI(DWA):
         )
 
     @partial(jit, static_argnames=("self"))
-    def _obstacle_critic(self, robot_pose, action_idx, point_cloud):
+    def _obstacle_critic(self, robot_pose, point_cloud):
         distances = jnp.linalg.norm(robot_pose[None, :2] - point_cloud, axis=1)
         min_distance = jnp.min(distances)
         clearance_cost = lax.cond(
