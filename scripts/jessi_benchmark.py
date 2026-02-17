@@ -174,7 +174,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_modular_test
 ### JESSI-POLICY TESTS ###
 if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_policy_tests.pkl")):
     # Load JESSI-MODULAR policy parameters
-    with open(os.path.join(os.path.dirname(__file__), 'jessi_policy_tests.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'jessi_policy_rl_out.pkl'), 'rb') as f:
         jessi_params, _, _ = pickle.load(f)
     # Execute tests
     all_metrics = jessi_tests(jessi_params)
@@ -344,7 +344,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl
         perception_params = pickle.load(f)
     for i, n_obstacle in enumerate(tests_n_obstacles):
         for j, n_human in enumerate(tests_n_humans):
-            humans_radius_hypotheses = jnp.full((n_human,), 0.3)
+            humans_radius_hypotheses = jnp.full((jessi.n_detectable_humans,), 0.3)
             seen_env_params = {
                 'n_stack': 5,
                 'lidar_num_rays': 100,
@@ -383,7 +383,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl
                 jessi,
                 perception_params,
                 network_params,
-                humans_radius_hypotheses
+                humans_radius_hypotheses,
             )
             metrics_ct = policy.evaluate_on_jessi_perception(
                 n_trials,
@@ -392,6 +392,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl
                 jessi,
                 perception_params,
                 network_params,
+                humans_radius_hypotheses,
             )
             metrics_ccso = policy.evaluate_on_jessi_perception(
                 n_trials,
@@ -400,6 +401,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl
                 jessi,
                 perception_params,
                 network_params,
+                humans_radius_hypotheses,
             )
             all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_seen_scenarios)
             all_metrics = tree_map(lambda x, y: x.at[1,i,j].set(y), all_metrics, metrics_ct)
@@ -412,7 +414,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl
 if not os.path.exists(os.path.join(os.path.dirname(__file__),"sarl_star_tests.pkl")):
     metrics_dims = (3,len(tests_n_obstacles),len(tests_n_humans))
     all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
-    dummy_env = LaserNav(kinematics='unicycle', reward_function=LaserReward(robot_radius=0.3))
+    dummy_env = LaserNav(kinematics='unicycle', reward_function=LaserReward(robot_radius=0.3), robot_radius=0.3, humans_dt=0.01, robot_dt=0.25, n_humans=1, n_obstacles=1, scenario='hybrid_scenario')
     policy = SARLStar(
         reward_function = SocialReward2(
             target_reached_reward = True,
@@ -424,7 +426,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"sarl_star_tests.pk
             high_rotation_penalty_reward=True,
             angular_speed_bound=1.,
             angular_speed_penalty_weight=0.0075,
-            kinematics='unicycle'
         ),
         grid_size = dummy_env.get_grid_size(),
         use_planner = False,
@@ -443,7 +444,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"sarl_star_tests.pk
         perception_params = pickle.load(f)
     for i, n_obstacle in enumerate(tests_n_obstacles):
         for j, n_human in enumerate(tests_n_humans):
-            humans_radius_hypotheses = jnp.full((n_human,), 0.3)
+            humans_radius_hypotheses = jnp.full((jessi.n_detectable_humans,), 0.3)
             seen_env_params = {
                 'n_stack': 5,
                 'lidar_num_rays': 100,
@@ -463,6 +464,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"sarl_star_tests.pk
                 'reward_function': LaserReward(robot_radius=0.3,collision_with_humans_penalty=-.5),
                 'kinematics': 'unicycle',
                 'lidar_noise': True,
+                'grid_map_computation': True
             }
             ct_env_params = seen_env_params.copy()
             ct_env_params['scenario'] = 'corner_traffic'
@@ -491,6 +493,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"sarl_star_tests.pk
                 jessi,
                 perception_params,
                 network_params,
+                humans_radius_hypotheses,
             )
             metrics_ccso = policy.evaluate_on_jessi_perception(
                 n_trials,
@@ -499,6 +502,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"sarl_star_tests.pk
                 jessi,
                 perception_params,
                 network_params,
+                humans_radius_hypotheses,
             )
             all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_seen_scenarios)
             all_metrics = tree_map(lambda x, y: x.at[1,i,j].set(y), all_metrics, metrics_ct)
@@ -522,7 +526,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"sarl_tests.pkl")):
             high_rotation_penalty_reward=True,
             angular_speed_bound=1.,
             angular_speed_penalty_weight=0.0075,
-            kinematics='unicycle'
         ),
         kinematics='unicycle'
     )
@@ -539,7 +542,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"sarl_tests.pkl")):
         perception_params = pickle.load(f)
     for i, n_obstacle in enumerate(tests_n_obstacles):
         for j, n_human in enumerate(tests_n_humans):
-            humans_radius_hypotheses = jnp.full((n_human,), 0.3)
+            humans_radius_hypotheses = jnp.full((jessi.n_detectable_humans,), 0.3)
             ccso_env_params = {
                 'n_stack': 5,
                 'lidar_num_rays': 100,
@@ -569,6 +572,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"sarl_tests.pkl")):
                 jessi,
                 perception_params,
                 network_params,
+                humans_radius_hypotheses,
             )
             all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_ccso)
     with open(os.path.join(os.path.dirname(__file__),"sarl_tests.pkl"), 'wb') as f:
@@ -590,7 +594,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"cadrl_tests.pkl"))
             high_rotation_penalty_reward=True,
             angular_speed_bound=1.,
             angular_speed_penalty_weight=0.0075,
-            kinematics='unicycle'
         ),
         kinematics='unicycle'
     )
@@ -601,13 +604,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"cadrl_tests.pkl"))
         n_stack=5,
         n_stack_for_action_space_bounding=1,
     )
-    with open(os.path.join(os.path.dirname(__file__), 'sarl.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), 'cadrl.pkl'), 'rb') as f:
         network_params = pickle.load(f)['policy_params']
     with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
         perception_params = pickle.load(f)
     for i, n_obstacle in enumerate(tests_n_obstacles):
         for j, n_human in enumerate(tests_n_humans):
-            humans_radius_hypotheses = jnp.full((n_human,), 0.3)
+            humans_radius_hypotheses = jnp.full((jessi.n_detectable_humans,), 0.3)
             ccso_env_params = {
                 'n_stack': 5,
                 'lidar_num_rays': 100,
@@ -637,6 +640,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"cadrl_tests.pkl"))
                 jessi,
                 perception_params,
                 network_params,
+                humans_radius_hypotheses,
             )
             all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_ccso)
     with open(os.path.join(os.path.dirname(__file__),"cadrl_tests.pkl"), 'wb') as f:

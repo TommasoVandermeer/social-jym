@@ -785,7 +785,6 @@ class CADRL(BasePolicy):
             # Find discrete action closest to the optimal action
             action_idx = jnp.argmin(jnp.linalg.norm(self.action_space - optimal_action, axis=1))
             action = self.action_space[action_idx]
-            debug.print("Optimal action: {x}, Closest action: {y}", x=optimal_action, y=action)
             return action, key, vnet_inputs, jnp.zeros(len(self.action_space))
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
