@@ -1,16 +1,19 @@
 from jax import jit, lax, vmap, debug, random
 from jax_tqdm import loop_tqdm
+from jax.tree_util import tree_map
 import jax.numpy as jnp
 from functools import partial
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 import os
 
 from socialjym.envs.base_env import SCENARIOS, ROBOT_KINEMATICS, HUMAN_POLICIES
 from socialjym.policies.dwa import DWA
 from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
+from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 from jhsfm.hsfm import get_linear_velocity
 
@@ -67,13 +70,12 @@ class MPPI(DWA):
         # Default parameters
         self.name = "MPPI"
         self.kinematics = ROBOT_KINEMATICS.index("unicycle")
-        self.u_mean_shape = (self.horizon, 2) # Shape: (Horizon, 2) -> (20 steps, 2 controls)
         # Initialize critics and weights for the cost function
         self.critics = {
             # Inputs are (current_robot_pose, action, action_idx, robot_goal, point_cloud)
             'velocity':  lambda p, a, aidx, g, pc: self._velocity_critic(a), # Heredited from DWA
             'goal_distance':   lambda p, a, aidx, g, pc: self._goal_distance_critic(p, g),
-            'obstacle_cost': lambda p, a, aidx, g, pc: self._obstacle_critic(p, aidx, pc),
+            'obstacle_cost': lambda p, a, aidx, g, pc: self._obstacle_critic(p, pc),
             'control_cost': lambda p, a, aidx, g, pc: self._control_critic(a),
         }
         self.weights = {
@@ -95,7 +97,7 @@ class MPPI(DWA):
         )
 
     @partial(jit, static_argnames=("self"))
-    def _obstacle_critic(self, robot_pose, action_idx, point_cloud):
+    def _obstacle_critic(self, robot_pose, point_cloud):
         distances = jnp.linalg.norm(robot_pose[None, :2] - point_cloud, axis=1)
         min_distance = jnp.min(distances)
         clearance_cost = lax.cond(
@@ -148,7 +150,7 @@ class MPPI(DWA):
 
     @partial(jit, static_argnames=("self"))
     def init_u_mean(self):
-        return jnp.zeros(self.u_mean_shape)
+        return jnp.zeros((self.horizon, 2)) # Shape: (horizon, 2) for [v, w]
 
     @partial(jit, static_argnames=("self"))
     def act(
@@ -190,12 +192,15 @@ class MPPI(DWA):
         self,
         n_trials:int,
         random_seed:int,
-        env:LaserNav,
+        env,
     ) -> dict:
         """
         Test MPPI over n_trials episodes and compute relative metrics.
         """
-        assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
+        if self.name == "MPPI":
+            assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
+        elif self.name == "DRA-MPPI":
+            assert isinstance(env, SocialNav), "Environment must be an instance of SocialNav"
         assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "MPPI policy can only be evaluated on unicycle kinematics"
         assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
         assert env.lidar_angular_range == self.lidar_angular_range, f"Environment LiDAR angular range (lidar_angular_range={env.lidar_angular_range}) must be equal to policy LiDAR angular range (lidar_angular_range={self.lidar_angular_range}) for evaluation"
@@ -207,16 +212,24 @@ class MPPI(DWA):
         def _fori_body(i:int, for_val:tuple):   
             @jit
             def _while_body(while_val:tuple):
-                # Retrieve data from the tuple
-                state, obs, info, outcome, u_mean, policy_key, env_key, steps, all_actions, all_states = while_val
-                action, u_mean, _, _, policy_key = self.act(obs, info, u_mean, policy_key)
-                state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
+                if self.name == "MPPI":
+                    # Retrieve data from the tuple
+                    state, obs, info, outcome, u_mean, policy_key, env_key, steps, all_actions, all_states = while_val
+                    action, u_mean, _, _, policy_key = self.act(obs, info, u_mean, policy_key)
+                    state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key) 
+                elif self.name == "DRA-MPPI":
+                    state, obs, info, outcome, u_mean, beta, policy_key, env_key, steps, all_actions, all_states = while_val
+                    action, u_mean, beta, _, _, _, policy_key = self.act(obs, info, u_mean, beta, policy_key)
+                    state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
                 # Save data
                 all_actions = all_actions.at[steps].set(action)
                 all_states = all_states.at[steps].set(state)
                 # Update step counter
                 steps += 1
-                return state, obs, info, outcome, u_mean, policy_key, env_key, steps, all_actions, all_states
+                if self.name == "MPPI":
+                    return state, obs, info, outcome, u_mean, policy_key, env_key, steps, all_actions, all_states
+                elif self.name == "DRA-MPPI":
+                    return state, obs, info, outcome, u_mean, beta, policy_key, env_key, steps, all_actions, all_states
 
             ## Retrieve data from the tuple
             seed, metrics = for_val
@@ -229,8 +242,13 @@ class MPPI(DWA):
             ## Episode loop
             all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
             all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
-            while_val_init = (state, obs, info, init_outcome, self.init_u_mean(), policy_key, env_key, 0, all_actions, all_states)
-            _, _, end_info, outcome, _, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            if self.name == "MPPI":
+                while_val_init = (state, obs, info, init_outcome, self.init_u_mean(), policy_key, env_key, 0, all_actions, all_states)
+                _, _, end_info, outcome, _, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            elif self.name == "DRA-MPPI":
+                u_mean_init, beta_init = self.init_u_mean_and_beta()
+                while_val_init = (state, obs, info, init_outcome, u_mean_init, beta_init, policy_key, env_key, 0, all_actions, all_states)
+                _, _, end_info, outcome, _, _, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
             ## Update metrics
             metrics = compute_episode_metrics(
                 environment=env.environment,
@@ -267,15 +285,18 @@ class MPPI(DWA):
         self,
         robot_poses, # x, y, theta
         robot_actions,
-        robot_u_means,
+        robot_chosen_trajectories, # Trajectories computed using U_mean (num_steps, horizon+1, 3)
         robot_trajectories, # Sampled trajectories (num_steps, num_samples, horizon+1, 3)
         robot_trajectories_costs,
         robot_goals,
-        observations,
         humans_poses, # x, y, theta
         humans_velocities, # vx, vy (in global frame)
         humans_radii,
         static_obstacles,
+        lidar_scans=None, # Shape: (num_steps, lidar_num_rays)
+        point_clouds=None, # Shape: (num_steps, lidar_n_stack_to_use, lidar_num_rays, 2)
+        humans_distributions=None, # DRA-MPPI Shape: Dict {'means': (num_steps, horizon, n_humans, 2), 'logsigmas': (num_steps, horizon, n_humans, 2), 'correlation': (num_steps, horizon, n_humans)}
+        perception_distributions=None, # JESSI Shape: Dict {'pos_distrs': {'means': (num_steps, horizon, n_humans, 2), 'logsigmas': (num_steps, horizon, n_humans, 2), 'correlation': (num_steps, horizon, n_humans)}, 'vel_distrs': {'means': (num_steps, horizon, n_humans, 2), 'logsigmas': (num_steps, horizon, n_humans, 2), 'correlation': (num_steps, horizon, n_humans)}, 'weights': (num_steps, n_humans)}
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
         save_video:bool=False,
@@ -284,11 +305,10 @@ class MPPI(DWA):
         assert \
             len(robot_poses) == \
             len(robot_actions) == \
-            len(robot_u_means) == \
+            len(robot_chosen_trajectories) == \
             len(robot_trajectories) == \
             len(robot_trajectories_costs) == \
             len(robot_goals) == \
-            len(observations) == \
             len(humans_poses) == \
             len(humans_velocities) == \
             len(humans_radii) == \
@@ -298,14 +318,6 @@ class MPPI(DWA):
         rc('font', weight='regular', size=20)
         rcParams['pdf.fonttype'] = 42
         rcParams['ps.fonttype'] = 42
-        # Compute full trajectories with U_mean
-        @jit
-        def compute_chosen_trajectory(robot_pose, robot_u_mean, robot_goal, obs):
-            aligned_lidar = self.align_lidar(obs[:self.lidar_n_stack_to_use])[1]
-            point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
-            _, chosen_trajectory = self._rollout_and_cost(robot_pose, robot_u_mean, robot_goal, point_cloud)
-            return chosen_trajectory
-        chosen_trajectories = vmap(compute_chosen_trajectory)(robot_poses, robot_u_means, robot_goals, observations)
         # Compute first sampled actions at each frame
         @jit
         def inverse_kinematics(robot_pose, next_robot_pose):
@@ -385,39 +397,87 @@ class MPPI(DWA):
                     for o in static_obstacles[frame]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
             ### FIRST ROW AXS: SIMULATION + INPUT VISUALIZATION
             # AX 0,0: Simulation with LiDAR ranges
-            lidar_scan = observations[frame,0,6:]
-            for ray in range(len(lidar_scan)):
-                axs[0].plot(
-                    [robot_poses[frame,0], robot_poses[frame,0] + lidar_scan[ray] * jnp.cos(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
-                    [robot_poses[frame,1], robot_poses[frame,1] + lidar_scan[ray] * jnp.sin(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
-                    color="black", 
-                    linewidth=0.5, 
-                    zorder=0
-                )
-            axs[0].set_title("Trajectory")
+            if lidar_scans is not None:
+                lidar_scan = lidar_scans[frame]
+                for ray in range(len(lidar_scan)):
+                    axs[0].plot(
+                        [robot_poses[frame,0], robot_poses[frame,0] + lidar_scan[ray] * jnp.cos(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
+                        [robot_poses[frame,1], robot_poses[frame,1] + lidar_scan[ray] * jnp.sin(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
+                        color="black", 
+                        linewidth=0.5, 
+                        zorder=0
+                    )
+            if perception_distributions is not None:
+                distr = tree_map(lambda x: x[frame], perception_distributions)
+                for h in range(len(distr['pos_distrs']['means'])):
+                    if distr['weights'][h] > 0.5:
+                        pos_world_frame = distr['pos_distrs']['means'][h] # ALREADY CONVERTED TO WORLD FRAME FROM DRA-MPPI
+                        vel_world_frame = distr['vel_distrs']['means'][h]
+                        axs[0].scatter(
+                            pos_world_frame[0],
+                            pos_world_frame[1],
+                            color='red',
+                            s=30,
+                            alpha=1,
+                            zorder=20,
+                        )
+                        axs[0].arrow(
+                            pos_world_frame[0],
+                            pos_world_frame[1],
+                            vel_world_frame[0],
+                            vel_world_frame[1],
+                            head_width=0.3,
+                            head_length=0.3,
+                            fc='red',
+                            ec='red',
+                            alpha=1,
+                            zorder=20,
+                        )            
             # AX 0,1: Simulation with LiDAR point cloud stack and DWA possible paths
-            point_cloud = self.align_lidar(observations[frame])[1][:self.lidar_n_stack_to_use].reshape(-1, 2)
-            if len(point_cloud.shape) == 2:
-                point_cloud = point_cloud[None, ...]
-            for j, cloud in enumerate(point_cloud):
-                # color/alpha fade with j (smaller j -> less faded)
-                t = (1 - j / (self.n_stack - 1))  # in [0,1]
-                axs[1].scatter(
-                    cloud[:,0],
-                    cloud[:,1],
-                    c=0.3 + 0.7 * jnp.ones((self.lidar_num_rays,)) * t,
-                    cmap='Reds',
-                    vmin=0.0,
-                    vmax=1.0,
-                    alpha=0.3 + 0.7 * t,
-                    zorder=20 + self.n_stack - j,
-                )
-            axs[1].set_title("Pointcloud & Paths")
+            if point_clouds is not None:
+                point_cloud = point_clouds[frame]
+                if len(point_cloud.shape) == 2:
+                    point_cloud = point_cloud[None, ...]
+                for j, cloud in enumerate(point_cloud):
+                    # color/alpha fade with j (smaller j -> less faded)
+                    t = (1 - j / (self.n_stack - 1))  # in [0,1]
+                    axs[1].scatter(
+                        cloud[:,0],
+                        cloud[:,1],
+                        c=0.3 + 0.7 * jnp.ones((self.lidar_num_rays,)) * t,
+                        cmap='Reds',
+                        vmin=0.0,
+                        vmax=1.0,
+                        alpha=0.3 + 0.7 * t,
+                        zorder=20 + self.n_stack - j,
+                    )
+            if humans_distributions is not None:
+                distrs = tree_map(lambda x: x[frame], humans_distributions)
+                for t in range(distrs['means'].shape[0]):
+                    for h in range(distrs['means'].shape[1]):
+                        mean = distrs['means'][t,h]
+                        if jnp.any(jnp.isnan(mean)): continue
+                        d = tree_map(lambda x: x[t, h], distrs)
+                        cov_matrix = self.biv_gaussian.covariance(d)
+                        eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+                        angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+                        width, height = 2 * jnp.sqrt(eigenvalues)
+                        ellipse = Ellipse(
+                            xy=mean,
+                            width=width,
+                            height=height,
+                            angle=jnp.degrees(angle),
+                            edgecolor='blue',
+                            facecolor='lightblue',
+                            alpha=0.5,
+                            zorder=15,
+                        )
+                        axs[1].add_patch(ellipse)
             for i, trajectory in enumerate(robot_trajectories[frame]):
                 cost = robot_trajectories_costs[frame][i]
                 if cost < 1_000_000:
                     axs[1].plot(trajectory[:,0], trajectory[:,1], color='green', alpha=0.5, linewidth=1, zorder=10)
-            axs[1].plot(chosen_trajectories[frame][:,0], chosen_trajectories[frame][:,1], color='blue', alpha=1, linewidth=3, zorder=30)
+            axs[1].plot(robot_chosen_trajectories[frame][:,0], robot_chosen_trajectories[frame][:,1], color='blue', alpha=1, linewidth=3, zorder=30)
             # AX :,2: Feasible and bounded action space + action space distribution and action taken
             axs[2].set_xlabel("$v$ (m/s)")
             axs[2].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
@@ -454,7 +514,7 @@ class MPPI(DWA):
             axs[2].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51) # Action taken
         anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
         if save_video:
-            save_path = os.path.join(os.path.dirname(__file__), f'jessi_trajectory.mp4')
+            save_path = os.path.join(os.path.dirname(__file__), f'{self.name}_trajectory.mp4')
             writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
             anim.save(save_path, writer=writer_video, dpi=300)
         anim.paused = False
@@ -496,20 +556,34 @@ class MPPI(DWA):
                 ),
             lambda: humans_body_velocities,
         )
+        # Compute full trajectories with U_mean
+        @jit
+        def compute_chosen_trajectory(robot_pose, robot_u_mean, robot_goal, obs):
+            aligned_lidar = self.align_lidar(obs[:self.lidar_n_stack_to_use])[1]
+            point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
+            _, chosen_trajectory = self._rollout_and_cost(robot_pose, robot_u_mean, robot_goal, point_cloud)
+            return chosen_trajectory
+        chosen_trajectories = vmap(compute_chosen_trajectory)(robot_poses, u_means, goals, observations)
+        # Compute point clouds from LaserNav observations
+        @jit
+        def compute_point_cloud(observation):
+            return self.align_lidar(observation)[1][:self.lidar_n_stack_to_use].reshape(-1, 2)
+        point_clouds = vmap(compute_point_cloud)(observations)
         self.animate_trajectory(
             robot_poses,
             actions,
-            u_means,
+            chosen_trajectories,
             trajectories,
             trajectories_costs,
             goals,
-            observations,
             humans_poses,
             humans_velocities,
             humans_radii,
             static_obstacles,
-            x_lims,
-            y_lims,
-            save_video,
+            lidar_scans=observations[:,0,6:],
+            point_clouds=point_clouds,
+            x_lims=x_lims,
+            y_lims=y_lims,
+            save_video=save_video,
         )
     

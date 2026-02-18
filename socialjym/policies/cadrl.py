@@ -643,7 +643,7 @@ class CADRL(BasePolicy):
             axs[1].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51) # Action taken
         anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
         if save_video:
-            save_path = os.path.join(os.path.dirname(__file__), f'jessi_trajectory.mp4')
+            save_path = os.path.join(os.path.dirname(__file__), f'{self.name}_trajectory.mp4')
             writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
             anim.save(save_path, writer=writer_video, dpi=300)
         anim.paused = False
