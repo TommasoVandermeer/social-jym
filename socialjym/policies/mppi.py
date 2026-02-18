@@ -13,6 +13,7 @@ from socialjym.envs.base_env import SCENARIOS, ROBOT_KINEMATICS, HUMAN_POLICIES
 from socialjym.policies.dwa import DWA
 from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
+from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 from jhsfm.hsfm import get_linear_velocity
 
@@ -191,12 +192,15 @@ class MPPI(DWA):
         self,
         n_trials:int,
         random_seed:int,
-        env:LaserNav,
+        env,
     ) -> dict:
         """
         Test MPPI over n_trials episodes and compute relative metrics.
         """
-        assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
+        if self.name == "MPPI":
+            assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
+        elif self.name == "DRA-MPPI":
+            assert isinstance(env, SocialNav), "Environment must be an instance of SocialNav"
         assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "MPPI policy can only be evaluated on unicycle kinematics"
         assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
         assert env.lidar_angular_range == self.lidar_angular_range, f"Environment LiDAR angular range (lidar_angular_range={env.lidar_angular_range}) must be equal to policy LiDAR angular range (lidar_angular_range={self.lidar_angular_range}) for evaluation"
@@ -208,16 +212,24 @@ class MPPI(DWA):
         def _fori_body(i:int, for_val:tuple):   
             @jit
             def _while_body(while_val:tuple):
-                # Retrieve data from the tuple
-                state, obs, info, outcome, u_mean, policy_key, env_key, steps, all_actions, all_states = while_val
-                action, u_mean, _, _, policy_key = self.act(obs, info, u_mean, policy_key)
-                state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
+                if self.name == "MPPI":
+                    # Retrieve data from the tuple
+                    state, obs, info, outcome, u_mean, policy_key, env_key, steps, all_actions, all_states = while_val
+                    action, u_mean, _, _, policy_key = self.act(obs, info, u_mean, policy_key)
+                    state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key) 
+                elif self.name == "DRA-MPPI":
+                    state, obs, info, outcome, u_mean, beta, policy_key, env_key, steps, all_actions, all_states = while_val
+                    action, u_mean, beta, _, _, _, policy_key = self.act(obs, info, u_mean, beta, policy_key)
+                    state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
                 # Save data
                 all_actions = all_actions.at[steps].set(action)
                 all_states = all_states.at[steps].set(state)
                 # Update step counter
                 steps += 1
-                return state, obs, info, outcome, u_mean, policy_key, env_key, steps, all_actions, all_states
+                if self.name == "MPPI":
+                    return state, obs, info, outcome, u_mean, policy_key, env_key, steps, all_actions, all_states
+                elif self.name == "DRA-MPPI":
+                    return state, obs, info, outcome, u_mean, beta, policy_key, env_key, steps, all_actions, all_states
 
             ## Retrieve data from the tuple
             seed, metrics = for_val
@@ -230,8 +242,13 @@ class MPPI(DWA):
             ## Episode loop
             all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
             all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
-            while_val_init = (state, obs, info, init_outcome, self.init_u_mean(), policy_key, env_key, 0, all_actions, all_states)
-            _, _, end_info, outcome, _, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            if self.name == "MPPI":
+                while_val_init = (state, obs, info, init_outcome, self.init_u_mean(), policy_key, env_key, 0, all_actions, all_states)
+                _, _, end_info, outcome, _, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            elif self.name == "DRA-MPPI":
+                u_mean_init, beta_init = self.init_u_mean_and_beta()
+                while_val_init = (state, obs, info, init_outcome, u_mean_init, beta_init, policy_key, env_key, 0, all_actions, all_states)
+                _, _, end_info, outcome, _, _, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
             ## Update metrics
             metrics = compute_episode_metrics(
                 environment=env.environment,

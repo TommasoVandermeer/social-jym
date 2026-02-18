@@ -25,6 +25,7 @@ from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.policies.sarl_star import SARLStar
 from socialjym.policies.vanilla_e2e import VanillaE2E
 from socialjym.policies.mppi import MPPI
+from socialjym.policies.dra_mppi import DRAMPPI
 
 # Hyperparameters
 random_seed = 0
@@ -81,6 +82,7 @@ policies = {
     "cadrl": {"label": "CADRL", "short": "CADRL", "only_ccso": True, "color": "tab:gray"},
     "dwa": {"label": "DWA", "short": "DWA", "only_ccso": False, "color": "tab:olive"},
     "mppi": {"label": "MPPI", "short": "MPPI", "only_ccso": False, "color": "tab:cyan"},
+    "dra_mppi": {"label": "DRA-MPPI", "short": "DRA-MPPI", "only_ccso": False, "color": "tab:black"},
 }
 
 def jessi_tests(jessi_params):
@@ -773,6 +775,81 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"mppi_tests.pkl")):
         pickle.dump(all_metrics, f)
 
 
+## DRA-MPPI TESTS ##
+if not os.path.exists(os.path.join(os.path.dirname(__file__),"dra_mppi_tests.pkl")):
+    metrics_dims = (3,len(tests_n_obstacles),len(tests_n_humans))
+    all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
+    policy = DRAMPPI()
+    jessi = JESSI(
+        lidar_num_rays=100,
+        lidar_angular_range=jnp.pi * 2,
+        lidar_max_dist=10.0,
+        n_stack=5,
+        n_stack_for_action_space_bounding=1,
+    )
+    with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
+        perception_params = pickle.load(f)
+    for i, n_obstacle in enumerate(tests_n_obstacles):
+        for j, n_human in enumerate(tests_n_humans):
+            seen_env_params = {
+                'n_stack': 5,
+                'lidar_num_rays': 100,
+                'lidar_angular_range': jnp.pi * 2,
+                'lidar_max_dist': 10.0,
+                'n_humans': n_human,
+                'n_obstacles': n_obstacle,
+                'robot_radius': 0.3,
+                'robot_dt': 0.25,
+                'humans_dt': 0.01,      
+                'robot_visible': True,
+                'scenario': 'hybrid_scenario', 
+                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'ccso_n_static_humans': 0,
+                'ccso_static_humans_radius_mean': 0.3,
+                'ccso_static_humans_radius_std': 0.025,
+                'reward_function': LaserReward(robot_radius=0.3,collision_with_humans_penalty=-.5),
+                'kinematics': 'unicycle',
+                'lidar_noise': True,
+            }
+            ct_env_params = seen_env_params.copy()
+            ct_env_params['scenario'] = 'corner_traffic'
+            ccso_env_params = seen_env_params.copy()
+            ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
+            ccso_env_params['ccso_n_static_humans'] = n_obstacle
+            ccso_env_params['n_humans'] = n_human + n_obstacle
+            # Initialize the environments
+            seen_env = LaserNav(**seen_env_params)
+            ct_env = LaserNav(**ct_env_params) # Unseen scenario
+            ccso_env = LaserNav(**ccso_env_params) # Unseen scenario
+            # Test the trained JESSI-MULTITASK policy
+            metrics_seen_scenarios = policy.evaluate_on_jessi_perception(
+                n_trials,
+                random_seed,
+                seen_env,
+                jessi,
+                perception_params,
+            )
+            metrics_ct = policy.evaluate_on_jessi_perception(
+                n_trials,
+                random_seed,
+                ct_env,
+                jessi,
+                perception_params,
+            )
+            metrics_ccso = policy.evaluate_on_jessi_perception(
+                n_trials,
+                random_seed,
+                ccso_env,
+                jessi,
+                perception_params,
+            )
+            all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_seen_scenarios)
+            all_metrics = tree_map(lambda x, y: x.at[1,i,j].set(y), all_metrics, metrics_ct)
+            all_metrics = tree_map(lambda x, y: x.at[2,i,j].set(y), all_metrics, metrics_ccso)
+    with open(os.path.join(os.path.dirname(__file__),"dra_mppi_tests.pkl"), 'wb') as f:
+        pickle.dump(all_metrics, f)
+
+
 ### AGGREGATE ALL RESULTS ###
 if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_tests.pkl")):
     # Load all test results and aggregate them in a single dictionary
@@ -798,6 +875,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
             dwa_results = pickle.load(f)  
     with open(os.path.join(os.path.dirname(__file__),"mppi_tests.pkl"), 'rb') as f:
             mppi_results = pickle.load(f)
+    with open(os.path.join(os.path.dirname(__file__),"dra_mppi_tests.pkl"), 'rb') as f:
+            dra_mppi_results = pickle.load(f)
     all_results = {
         'jessi_multitask': jessi_multitask_results,
         'jessi_modular': jessi_modular_results,
@@ -810,6 +889,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
         'cadrl': cadrl_results,
         'dwa': dwa_results,
         'mppi': mppi_results,
+        'dra_mppi': dra_mppi_results,
     }
     with open(os.path.join(os.path.dirname(__file__),"jessi_benchmark_tests.pkl"), 'wb') as f:
         pickle.dump(all_results, f)

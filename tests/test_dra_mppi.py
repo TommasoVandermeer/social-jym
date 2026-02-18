@@ -20,7 +20,7 @@ kinematics = 'unicycle'
 if use_ground_truth_data:
     env_params = {
         'n_humans': 5,
-        'n_obstacles': 5,
+        'n_obstacles': 3,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
         'humans_dt': 0.01,      
@@ -30,6 +30,7 @@ if use_ground_truth_data:
         'ccso_n_static_humans': 0,
         'reward_function': SocialReward(kinematics=kinematics),
         'kinematics': kinematics,
+        'thick_default_obstacle': True,
     }
     # Initialize the environment
     env = SocialNav(**env_params)
@@ -105,7 +106,7 @@ else:
         'lidar_angular_range': jnp.pi * 2,
         'lidar_max_dist': 10.,
         'n_humans': 5,
-        'n_obstacles': 0,
+        'n_obstacles': 3,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
         'humans_dt': 0.01,      
@@ -127,8 +128,6 @@ else:
         lidar_max_dist=env.lidar_max_dist,
         n_stack=env.n_stack,
     )
-    with open(os.path.join(os.path.dirname(__file__), 'sarl.pkl'), 'rb') as f:
-        network_params = pickle.load(f)['policy_params']
     with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
         perception_params = pickle.load(f)
     # with open(os.path.join(os.path.dirname(__file__), 'jessi_e2e_rl_out.pkl'), 'rb') as f:
@@ -140,8 +139,6 @@ else:
     #     env,
     #     jessi,
     #     perception_params,
-    #     network_params,
-    #     humans_radius_hypothesis=jnp.full((jessi.n_detectable_humans,), .3),
     # )
     # Simulate some episodes on PERCEIVED DATA
     for i in range(n_episodes):

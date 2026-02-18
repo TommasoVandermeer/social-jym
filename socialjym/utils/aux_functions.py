@@ -240,7 +240,7 @@ def compute_episode_metrics(
     ## Update metrics
     metrics["successes"] = lax.cond(outcome["success"], lambda x: x + 1, lambda x: x, metrics["successes"])
     if environment == ENVIRONMENTS.index('socialnav'):
-        failure = outcome['collision']
+        failure = outcome['failure']
         metrics["collisions_with_human"] = lax.cond(failure, lambda x: x + 1, lambda x: x, metrics["collisions_with_human"])
     elif environment == ENVIRONMENTS.index('lasernav'):
         failure = outcome['collision_with_human'] | outcome['collision_with_obstacle']

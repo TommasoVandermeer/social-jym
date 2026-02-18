@@ -5,12 +5,12 @@ from functools import partial
 import scipy.interpolate as interpolate
 from jax.scipy.special import ndtri
 
-from socialjym.envs.base_env import ROBOT_KINEMATICS, HUMAN_POLICIES
+from socialjym.envs.base_env import ROBOT_KINEMATICS, HUMAN_POLICIES, SCENARIOS
 from socialjym.policies.mppi import MPPI
 from socialjym.utils.distributions.gaussian import BivariateGaussian
-from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
 from socialjym.envs.socialnav import SocialNav
+from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 from .jessi import JESSI
 from jhsfm.hsfm import get_linear_velocity, vectorized_compute_obstacle_closest_point
 
@@ -381,9 +381,10 @@ class DRAMPPI(MPPI):
         noise = base_noise * self.noise_sigma
         V = u_mean[None, :, :] + noise # Shape: (num_samples, horizon, 2)
         V_clamped = vmap(vmap(self._clamp_action))(V).transpose((1, 0, 2)) # Shape: (horizon, num_samples, 2)
+        V_clamped = V_clamped.at[:,0,:].set(jnp.zeros((self.horizon, 2))) # Ensure one trajectory is full braking
         monte_carlo_keys = random.split(key_mc, self.horizon)
         costs, trajectories, humans_distributions = self._rollouts_and_costs(
-            robot_pose, V_clamped, robot_goal, humans_state, monte_carlo_keys, info['static_obstacles'][-1]
+            robot_pose, V_clamped, robot_goal, humans_state, monte_carlo_keys, info['static_obstacles'][-1],
         )
         # Compute weights and update u_mean
         rho = jnp.min(costs)
@@ -489,7 +490,7 @@ class DRAMPPI(MPPI):
         # Extract current robot state from observation
         robot_pose = lasernav_obs[0, :3] # Shape: (3,)
         ## Compute aligned point_cloud
-        aligned_lidar = jessi.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[0]
+        aligned_lidar = self.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[1]
         point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
         ## Identify visible humans with JESSI perception
         hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
@@ -612,3 +613,79 @@ class DRAMPPI(MPPI):
             y_lims=y_lims,
             save_video=save_video,
         )
+
+    def evaluate_on_jessi_perception(
+        self,
+        n_trials:int,
+        random_seed:int,
+        env:LaserNav,
+        jessi:JESSI,
+        perception_params:dict,
+    ) -> dict:
+        """
+        Test the trained policy over n_trials episodes and compute relative metrics.
+        """
+        assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
+        assert env.kinematics == self.kinematics, "Policy kinematics must match environment kinematics"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        time_limit = env.reward_function.time_limit
+        @loop_tqdm(n_trials)
+        @jit
+        def _fori_body(i:int, for_val:tuple):   
+            @jit
+            def _while_body(while_val:tuple):
+                # Retrieve data from the tuple
+                state, obs, info, outcome, u_mean, beta, policy_key, env_key, steps, all_actions, all_states = while_val
+                action, u_mean, beta, _, _, _, _, policy_key = self.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, u_mean, beta)
+                state, obs, info, _, outcome, (_, env_key)  = env.step(state,info,action,test=True)    
+                # Save data
+                all_actions = all_actions.at[steps].set(action)
+                all_states = all_states.at[steps].set(state)
+                # Update step counter
+                steps += 1
+                return state, obs, info, outcome, u_mean, beta, policy_key, env_key, steps, all_actions, all_states
+
+            ## Retrieve data from the tuple
+            seed, metrics = for_val
+            policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + seed) # We don't care if we generate two identical keys, they operate differently
+            ## Reset the environment
+            state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            # state, reset_key, obs, info, init_outcome = env.reset(reset_key)
+            initial_robot_position = state[-1,:2]
+            ## Episode loop
+            all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
+            all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
+            u_mean_init, beta_init = self.init_u_mean_and_beta()
+            while_val_init = (state, obs, info, init_outcome, u_mean_init, beta_init, policy_key, env_key, 0, all_actions, all_states)
+            _, _, end_info, outcome, _ , _, policy_key, env_key, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
+            ## Update metrics
+            metrics = compute_episode_metrics(
+                environment=env.environment,
+                metrics=metrics,
+                episode_idx=i, 
+                initial_robot_position=initial_robot_position, 
+                all_states=all_states, 
+                all_actions=all_actions, 
+                outcome=outcome, 
+                episode_steps=episode_steps, 
+                end_info=end_info, 
+                max_steps=int(time_limit/env.robot_dt)+1, 
+                personal_space=0.5,
+                robot_dt=env.robot_dt,
+                robot_radius=env.robot_radius,
+                ccso_n_static_humans=env.ccso_n_static_humans,
+                robot_specs={'kinematics': env.kinematics, 'v_max': self.v_max, 'wheels_distance': self.wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
+            )
+            seed += 1
+            return seed, metrics
+        # Initialize metrics
+        metrics = initialize_metrics_dict(n_trials)
+        # Execute n_trials tests
+        if env.scenario == SCENARIOS.index('circular_crossing_with_static_obstacles'):
+            print(f"\nExecuting {n_trials} tests with {env.n_humans - env.ccso_n_static_humans} humans and {env.ccso_n_static_humans} obstacles...")
+        else:
+            print(f"\nExecuting {n_trials} tests with {env.n_humans} humans and {env.n_obstacles} obstacles...")
+        _, metrics = lax.fori_loop(0, n_trials, _fori_body, (random_seed, metrics))
+        # Print results
+        print_average_metrics(n_trials, metrics)
+        return metrics

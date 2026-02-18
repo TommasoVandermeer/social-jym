@@ -48,11 +48,11 @@ policy = MPPI(
 )
 
 # Execute tests
-# metrics = policy.evaluate(
-#     n_episodes,
-#     random_seed,
-#     env,
-# )
+metrics = policy.evaluate(
+    n_episodes,
+    random_seed,
+    env,
+)
 
 # Simulate some episodes
 for i in range(n_episodes):
