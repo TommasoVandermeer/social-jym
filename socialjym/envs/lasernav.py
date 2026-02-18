@@ -42,6 +42,8 @@ class LaserNav(BaseEnv):
             kinematics='unicycle',
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
+            ccso_static_humans_radius_mean:float = 1.,
+            ccso_static_humans_radius_std:float = 0.2,
             thick_default_obstacle:bool = True,
             grid_map_computation:bool = False,
             grid_cell_size:float = 0.9, # Such parameter is suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT)
@@ -72,6 +74,8 @@ class LaserNav(BaseEnv):
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,
+            ccso_static_humans_radius_mean=ccso_static_humans_radius_mean,
+            ccso_static_humans_radius_std=ccso_static_humans_radius_std,
             grid_map_computation=grid_map_computation,
             grid_cell_size=grid_cell_size,
             grid_min_size=grid_min_size,

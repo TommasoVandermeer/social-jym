@@ -239,8 +239,37 @@ class BivariateGaussian(BaseDistribution):
 
     @partial(jit, static_argnames=("self"))
     def batch_mahalanobis(self, distribution:dict, samples:jnp.ndarray) -> jnp.ndarray:
-        """
-        Vectorized version of mahalanobis distance.
-        distribution keys shape: (Batch, ...) matches samples shape: (Batch, 2)
-        """
         return vmap(self.mahalanobis, in_axes=(0, 0))(distribution, samples)
+    
+    @partial(jit, static_argnames=("self"))
+    def covariance_to_parameters(self, covariance: jnp.ndarray) -> dict:
+        variances = jnp.diag(covariance)  # shape: (2,)
+        logsigmas = 0.5 * jnp.log(variances + self.epsilon) # shape: (2,)
+        sigmas = jnp.sqrt(variances + self.epsilon) # shape: (2,)
+        cov_xy = covariance[0, 1]
+        correlation = cov_xy / (jnp.prod(sigmas) + self.epsilon) # shape: scalar
+        correlation = jnp.clip(correlation, -1.0 + self.epsilon, 1.0 - self.epsilon)
+        return {
+            "logsigmas": logsigmas,
+            "correlation": correlation
+        }
+
+    @partial(jit, static_argnames=("self"))
+    def roto_translate(self, distribution: dict, reference_pose:jnp.ndarray) -> dict:
+        mu_R = distribution["means"]
+        Sigma_R = self.covariance(distribution)
+        rx, ry, theta = reference_pose
+        c, s = jnp.cos(theta), jnp.sin(theta)
+        R = jnp.array([
+            [c, -s],
+            [s,  c]
+        ])
+        t = jnp.array([rx, ry])
+        mu_W = R @ mu_R + t
+        Sigma_W = R @ Sigma_R @ R.T
+        params_W = self.covariance_to_parameters(Sigma_W)
+        return {
+            "means": mu_W,
+            "logsigmas": params_W["logsigmas"],
+            "correlation": params_W["correlation"]
+        }

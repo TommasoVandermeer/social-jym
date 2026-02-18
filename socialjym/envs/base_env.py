@@ -150,6 +150,8 @@ class BaseEnv(ABC):
         kinematics:str,
         max_cc_delay:float,
         ccso_n_static_humans:int,
+        ccso_static_humans_radius_mean:float,
+        ccso_static_humans_radius_std:float,
         grid_map_computation:bool,
         grid_cell_size:float,
         grid_min_size:float,
@@ -206,6 +208,8 @@ class BaseEnv(ABC):
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
         self.max_cc_delay = max_cc_delay
         self.ccso_n_static_humans = ccso_n_static_humans
+        self.ccso_static_humans_radius_mean = ccso_static_humans_radius_mean
+        self.ccso_static_humans_radius_std = ccso_static_humans_radius_std
         self.thick_default_obstacle = thick_default_obstacle
         # Global planning parameters
         if grid_map_computation:
@@ -775,7 +779,7 @@ class BaseEnv(ABC):
             parameters = lax.cond(
                 idx < (self.ccso_n_static_humans),
                 lambda _: parameters.at[0:3].set(jnp.array([
-                    jnp.squeeze(radius + random.uniform(key, shape=(1,), minval=-0.2, maxval=0.2)),
+                    jnp.squeeze(radius + random.uniform(key, shape=(1,), minval=-self.ccso_static_humans_radius_std, maxval=self.ccso_static_humans_radius_std)),
                     parameters[1], 
                     max_vel
                 ])),
@@ -788,7 +792,7 @@ class BaseEnv(ABC):
         humans_parameters = vmap(_overwrite_radius_and_vel, in_axes=(0, 0, None, None, 0))(
             humans_parameters, 
             jnp.arange(self.n_humans), 
-            1., 
+            self.ccso_static_humans_radius_mean, 
             0., 
             subkeys)
 

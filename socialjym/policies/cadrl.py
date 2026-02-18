@@ -643,7 +643,7 @@ class CADRL(BasePolicy):
             axs[1].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51) # Action taken
         anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
         if save_video:
-            save_path = os.path.join(os.path.dirname(__file__), f'jessi_trajectory.mp4')
+            save_path = os.path.join(os.path.dirname(__file__), f'{self.name}_trajectory.mp4')
             writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
             anim.save(save_path, writer=writer_video, dpi=300)
         anim.paused = False
@@ -785,7 +785,6 @@ class CADRL(BasePolicy):
             # Find discrete action closest to the optimal action
             action_idx = jnp.argmin(jnp.linalg.norm(self.action_space - optimal_action, axis=1))
             action = self.action_space[action_idx]
-            debug.print("Optimal action: {x}, Closest action: {y}", x=optimal_action, y=action)
             return action, key, vnet_inputs, jnp.zeros(len(self.action_space))
         key, subkey = random.split(key)
         explore = random.uniform(subkey) < epsilon
