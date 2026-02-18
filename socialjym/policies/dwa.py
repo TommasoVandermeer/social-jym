@@ -566,7 +566,7 @@ class DWA(BasePolicy):
                 axs[2].plot([robot_actions[frame,0], min_cost_box_action[0]], [robot_actions[frame,1], min_cost_box_action[1]], color='darkorange', linestyle='--', zorder=49) # Line between best box action and action taken
         anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
         if save_video:
-            save_path = os.path.join(os.path.dirname(__file__), f'jessi_trajectory.mp4')
+            save_path = os.path.join(os.path.dirname(__file__), f'{self.name}_trajectory.mp4')
             writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
             anim.save(save_path, writer=writer_video, dpi=300)
         anim.paused = False

@@ -12,7 +12,7 @@ from socialjym.policies.dra_mppi import DRAMPPI
 from socialjym.policies.jessi import JESSI
 
 # Hyperparameters
-use_ground_truth_data = True
+use_ground_truth_data = False
 random_seed = 0
 n_episodes = 100
 kinematics = 'unicycle'
@@ -20,7 +20,7 @@ kinematics = 'unicycle'
 if use_ground_truth_data:
     env_params = {
         'n_humans': 5,
-        'n_obstacles': 0,
+        'n_obstacles': 5,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
         'humans_dt': 0.01,      
@@ -34,13 +34,7 @@ if use_ground_truth_data:
     # Initialize the environment
     env = SocialNav(**env_params)
     # Initialize the policy
-    policy = DRAMPPI(
-        lidar_num_rays=env.lidar_num_rays,
-        lidar_angular_range=env.lidar_angular_range,
-        lidar_max_dist=env.lidar_max_dist,
-        n_stack=env.n_stack,
-        lidar_n_stack_to_use=1,
-    )
+    policy = DRAMPPI()
     # Execute tests
     # metrics = policy.evaluate(
     #     n_episodes,
@@ -62,10 +56,15 @@ if use_ground_truth_data:
         all_u_means = jnp.zeros((max_steps, policy.horizon, 2))
         all_trajectories = jnp.zeros((max_steps, policy.num_samples, policy.horizon+1, 3))
         all_trajectories_costs = jnp.zeros((max_steps,policy.num_samples))
-        u_mean = policy.init_u_mean()
+        all_humans_distrs = {
+            "means": jnp.zeros((max_steps, policy.horizon, env.n_humans,2)),
+            "logsigmas": jnp.zeros((max_steps,policy.horizon, env.n_humans,2)),
+            "correlation": jnp.zeros((max_steps,policy.horizon, env.n_humans)),
+        }
+        u_mean, beta = policy.init_u_mean_and_beta()
         while outcome["nothing"]:
             # Compute action 
-            action, u_mean, trajectories, costs, hum_distrs, policy_key = policy.act(obs, info, u_mean, policy_key)
+            action, u_mean, beta, trajectories, costs, hum_distrs, policy_key = policy.act(obs, info, u_mean, beta, policy_key)
             # Step the environment (SocialNav)
             state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
             # Save data for animation
@@ -78,16 +77,17 @@ if use_ground_truth_data:
             all_u_means = all_u_means.at[step].set(u_mean)
             all_trajectories = all_trajectories.at[step].set(trajectories)
             all_trajectories_costs = all_trajectories_costs.at[step].set(costs)
+            all_humans_distrs = tree_map(lambda x, y: x.at[step].set(y), all_humans_distrs, hum_distrs)
             # Increment step
             step += 1
         all_actions = all_actions[:step]
         all_u_means = all_u_means[:step]
         all_trajectories = all_trajectories[:step]
         all_trajectories_costs = all_trajectories_costs[:step]
+        all_humans_distrs = tree_map(lambda x: x[:step], all_humans_distrs)
         print("\nOutcome: ", [k for k, v in outcome.items() if v][0])
-        policy.animate_lasernav_trajectory(
+        policy.animate_socialnav_trajectory(
             all_states[:-1],
-            all_observations[:-1],
             all_actions,
             all_u_means,
             all_trajectories,
@@ -95,6 +95,7 @@ if use_ground_truth_data:
             all_robot_goals[:-1],
             all_static_obstacles[:-1],
             all_humans_radii[:-1],
+            all_humans_distrs,
             env,
         )
 else:
@@ -119,13 +120,7 @@ else:
     # Initialize the environment
     env = LaserNav(**env_params)
     # Initialize the policy
-    policy = DRAMPPI(
-        lidar_num_rays=env.lidar_num_rays,
-        lidar_angular_range=env.lidar_angular_range,
-        lidar_max_dist=env.lidar_max_dist,
-        n_stack=env.n_stack,
-        lidar_n_stack_to_use=1,
-    )
+    policy = DRAMPPI()
     jessi =  JESSI(
         lidar_num_rays=env.lidar_num_rays,
         lidar_angular_range=env.lidar_angular_range,
@@ -157,9 +152,17 @@ else:
         all_states = jnp.array([state])
         all_observations = jnp.array([obs])
         all_robot_goals = jnp.array([info['robot_goal']])
+        all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
         all_humans_radii = jnp.array([info['humans_parameters'][:,0]])
         all_actions = jnp.zeros((max_steps, 2))
-        all_actions_values = jnp.zeros((max_steps,len(policy.action_space)))
+        all_u_means = jnp.zeros((max_steps, policy.horizon, 2))
+        all_trajectories = jnp.zeros((max_steps, policy.num_samples, policy.horizon+1, 3))
+        all_trajectories_costs = jnp.zeros((max_steps,policy.num_samples))
+        all_humans_distrs = {
+            "means": jnp.zeros((max_steps, policy.horizon, jessi.n_detectable_humans,2)),
+            "logsigmas": jnp.zeros((max_steps,policy.horizon, jessi.n_detectable_humans,2)),
+            "correlation": jnp.zeros((max_steps,policy.horizon, jessi.n_detectable_humans)),
+        }
         bigauss = {
             "means": jnp.zeros((max_steps,jessi.n_detectable_humans,2)),
             "logsigmas": jnp.zeros((max_steps,jessi.n_detectable_humans,2)),
@@ -170,31 +173,44 @@ else:
             "vel_distrs": bigauss,
             "weights": jnp.zeros((max_steps,jessi.n_detectable_humans)),
         }
+        u_mean, beta = policy.init_u_mean_and_beta()
         while outcome["nothing"]:
-            # Compute action from trained JESSI
-            action, _, _, action_values, perception_distr = policy.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, network_params, 0., jnp.full((jessi.n_detectable_humans,), .3))
+            # Compute action 
+            action, u_mean, beta, trajectories, costs, hum_distrs, perception_distrs, policy_key = policy.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, u_mean, beta)
             # # Step the environment (Lasernav)
             state, obs, info, reward, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
             # Save data for animation
             all_states = jnp.vstack((all_states, jnp.array([state])))
             all_observations = jnp.vstack((all_observations, jnp.array([obs])))
             all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
+            all_static_obstacles = jnp.vstack((all_static_obstacles, jnp.array([info['static_obstacles'][-1]])))
             all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
             all_actions = all_actions.at[step].set(action)
-            all_actions_values = all_actions_values.at[step].set(action_values)
-            all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, perception_distr)
+            all_u_means = all_u_means.at[step].set(u_mean)
+            all_trajectories = all_trajectories.at[step].set(trajectories)
+            all_trajectories_costs = all_trajectories_costs.at[step].set(costs)
+            all_humans_distrs = tree_map(lambda x, y: x.at[step].set(y), all_humans_distrs, hum_distrs)
+            all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, perception_distrs)
             # Increment step
             step += 1
         all_actions = all_actions[:step]
-        all_actions_values = all_actions_values[:step]
+        all_u_means = all_u_means[:step]
+        all_trajectories = all_trajectories[:step]
+        all_trajectories_costs = all_trajectories_costs[:step]
+        all_humans_distrs = tree_map(lambda x: x[:step], all_humans_distrs)
         all_encoder_distrs = tree_map(lambda x: x[:step], all_encoder_distrs)
         print("\nOutcome: ", [k for k, v in outcome.items() if v][0])
-        policy.animate_socialnav_trajectory(
+        policy.animate_lasernav_trajectory(
             all_states[:-1],
+            all_observations[:-1],
             all_actions,
+            all_u_means,
+            all_trajectories,
+            all_trajectories_costs,
             all_robot_goals[:-1],
+            all_static_obstacles[:-1],
             all_humans_radii[:-1],
+            all_humans_distrs,
+            all_encoder_distrs,
             env,
-            action_values=all_actions_values,
-            perception_distrs=all_encoder_distrs,
         )
