@@ -28,7 +28,7 @@ from socialjym.policies.mppi import MPPI
 from socialjym.policies.dra_mppi import DRAMPPI
 
 # Hyperparameters
-random_seed = 0
+random_seed = 1_000_000 # Make sure test episodes are not the same as the training ones
 n_trials = 100
 # Tests
 tests_n_humans = [1, 3, 5, 10]
@@ -63,12 +63,14 @@ metrics = {
 scenarios = {
     "parallel_traffic": {"label": "PaT"},
     "perpendicular_traffic": {"label": "PeT"},
-    "corner_traffic": {"label": "CT"},
-    "circular_crossing": {"label": "CC"},
+    "corner_traffic": {"label": "CoT"},
+    "circular_crossing": {"label": "CiC"},
     "circular_crossing_with_static_obstacles": {"label": "CCSO"},
     "delayed_circular_crossing": {"label": "DCC"},
-    "robot_crowding": {"label": "RC"},
-    "crowd_navigation": {"label": "CN"},
+    "robot_crowding": {"label": "RoC"},
+    "crowd_navigation": {"label": "CrN"},
+    "door_crossing": {"label": "DoC"},
+    "crowd_chasing": {"label": "CrC"},
 }
 policies = {
     "jessi_multitask": {"label": "JESSI-MULTITASK", "short": "JESSI-MT", "only_ccso": False, "color": "tab:blue"},
@@ -82,7 +84,7 @@ policies = {
     "cadrl": {"label": "CADRL", "short": "CADRL", "only_ccso": True, "color": "tab:gray"},
     "dwa": {"label": "DWA", "short": "DWA", "only_ccso": False, "color": "tab:olive"},
     "mppi": {"label": "MPPI", "short": "MPPI", "only_ccso": False, "color": "tab:cyan"},
-    "dra_mppi": {"label": "DRA-MPPI", "short": "DRA-MPPI", "only_ccso": False, "color": "tab:black"},
+    "dra_mppi": {"label": "DRA-MPPI", "short": "DRA-MPPI", "only_ccso": False, "color": "black"},
 }
 
 def jessi_tests(jessi_params):
@@ -108,8 +110,8 @@ def jessi_tests(jessi_params):
                 'robot_dt': 0.25,
                 'humans_dt': 0.01,      
                 'robot_visible': True,
-                'scenario': 'hybrid_scenario', 
-                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'scenario': 'training_scenario', 
+                # 'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
                 'ccso_n_static_humans': 0,
                 'ccso_static_humans_radius_mean': 0.3,
                 'ccso_static_humans_radius_std': 0.025,
@@ -118,7 +120,7 @@ def jessi_tests(jessi_params):
                 'lidar_noise': True,
             }
             ct_env_params = seen_env_params.copy()
-            ct_env_params['scenario'] = 'corner_traffic'
+            ct_env_params['scenario'] = 'testing_scenario'
             ccso_env_params = seen_env_params.copy()
             ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
             ccso_env_params['ccso_n_static_humans'] = n_obstacle
@@ -210,8 +212,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"vanilla_e2e_tests.
                 'robot_dt': 0.25,
                 'humans_dt': 0.01,      
                 'robot_visible': True,
-                'scenario': 'hybrid_scenario', 
-                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'scenario': 'training_scenario', 
+                # 'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
                 'ccso_n_static_humans': 0,
                 'ccso_static_humans_radius_mean': 0.3,
                 'ccso_static_humans_radius_std': 0.025,
@@ -220,7 +222,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"vanilla_e2e_tests.
                 'lidar_noise': True,
             }
             ct_env_params = seen_env_params.copy()
-            ct_env_params['scenario'] = 'corner_traffic'
+            ct_env_params['scenario'] = 'testing_scenario'
             ccso_env_params = seen_env_params.copy()
             ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
             ccso_env_params['ccso_n_static_humans'] = n_obstacle
@@ -281,8 +283,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"bounded_vanilla_e2
                 'robot_dt': 0.25,
                 'humans_dt': 0.01,      
                 'robot_visible': True,
-                'scenario': 'hybrid_scenario', 
-                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'scenario': 'training_scenario', 
+                # 'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
                 'ccso_n_static_humans': 0,
                 'ccso_static_humans_radius_mean': 0.3,
                 'ccso_static_humans_radius_std': 0.025,
@@ -291,7 +293,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"bounded_vanilla_e2
                 'lidar_noise': True,
             }
             ct_env_params = seen_env_params.copy()
-            ct_env_params['scenario'] = 'corner_traffic'
+            ct_env_params['scenario'] = 'testing_scenario'
             ccso_env_params = seen_env_params.copy()
             ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
             ccso_env_params['ccso_n_static_humans'] = n_obstacle
@@ -358,8 +360,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl
                 'robot_dt': 0.25,
                 'humans_dt': 0.01,      
                 'robot_visible': True,
-                'scenario': 'hybrid_scenario', 
-                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'scenario': 'training_scenario', 
+                # 'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
                 'ccso_n_static_humans': 0,
                 'ccso_static_humans_radius_mean': 0.3,
                 'ccso_static_humans_radius_std': 0.025,
@@ -368,7 +370,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dir_safe_tests.pkl
                 'lidar_noise': True,
             }
             ct_env_params = seen_env_params.copy()
-            ct_env_params['scenario'] = 'corner_traffic'
+            ct_env_params['scenario'] = 'testing_scenario'
             ccso_env_params = seen_env_params.copy()
             ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
             ccso_env_params['ccso_n_static_humans'] = n_obstacle
@@ -458,18 +460,18 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"sarl_star_tests.pk
                 'robot_dt': 0.25,
                 'humans_dt': 0.01,      
                 'robot_visible': True,
-                'scenario': 'hybrid_scenario', 
-                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'scenario': 'training_scenario', 
+                # 'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
                 'ccso_n_static_humans': 0,
                 'ccso_static_humans_radius_mean': 0.3,
                 'ccso_static_humans_radius_std': 0.025,
                 'reward_function': LaserReward(robot_radius=0.3,collision_with_humans_penalty=-.5),
                 'kinematics': 'unicycle',
                 'lidar_noise': True,
-                'grid_map_computation': True
+                'grid_map_computation': True,
             }
             ct_env_params = seen_env_params.copy()
-            ct_env_params['scenario'] = 'corner_traffic'
+            ct_env_params['scenario'] = 'testing_scenario'
             ccso_env_params = seen_env_params.copy()
             ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
             ccso_env_params['ccso_n_static_humans'] = n_obstacle
@@ -672,8 +674,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dwa_tests.pkl")):
                 'robot_dt': 0.25,
                 'humans_dt': 0.01,      
                 'robot_visible': True,
-                'scenario': 'hybrid_scenario', 
-                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'scenario': 'training_scenario', 
+                # 'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
                 'ccso_n_static_humans': 0,
                 'ccso_static_humans_radius_mean': 0.3,
                 'ccso_static_humans_radius_std': 0.025,
@@ -682,7 +684,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dwa_tests.pkl")):
                 'lidar_noise': True,
             }
             ct_env_params = seen_env_params.copy()
-            ct_env_params['scenario'] = 'corner_traffic'
+            ct_env_params['scenario'] = 'testing_scenario'
             ccso_env_params = seen_env_params.copy()
             ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
             ccso_env_params['ccso_n_static_humans'] = n_obstacle
@@ -737,8 +739,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"mppi_tests.pkl")):
                 'robot_dt': 0.25,
                 'humans_dt': 0.01,      
                 'robot_visible': True,
-                'scenario': 'hybrid_scenario', 
-                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'scenario': 'training_scenario', 
+                # 'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
                 'ccso_n_static_humans': 0,
                 'ccso_static_humans_radius_mean': 0.3,
                 'ccso_static_humans_radius_std': 0.025,
@@ -747,7 +749,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"mppi_tests.pkl")):
                 'lidar_noise': True,
             }
             ct_env_params = seen_env_params.copy()
-            ct_env_params['scenario'] = 'corner_traffic'
+            ct_env_params['scenario'] = 'testing_scenario'
             ccso_env_params = seen_env_params.copy()
             ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
             ccso_env_params['ccso_n_static_humans'] = n_obstacle
@@ -806,8 +808,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dra_mppi_tests.pkl
                 'robot_dt': 0.25,
                 'humans_dt': 0.01,      
                 'robot_visible': True,
-                'scenario': 'hybrid_scenario', 
-                'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
+                'scenario': 'training_scenario', 
+                # 'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic - SEEN SCENARIO
                 'ccso_n_static_humans': 0,
                 'ccso_static_humans_radius_mean': 0.3,
                 'ccso_static_humans_radius_std': 0.025,
@@ -816,7 +818,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"dra_mppi_tests.pkl
                 'lidar_noise': True,
             }
             ct_env_params = seen_env_params.copy()
-            ct_env_params['scenario'] = 'corner_traffic'
+            ct_env_params['scenario'] = 'testing_scenario'
             ccso_env_params = seen_env_params.copy()
             ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
             ccso_env_params['ccso_n_static_humans'] = n_obstacle
@@ -902,7 +904,7 @@ else:
         all_results = pickle.load(f)
 
 ### PLOT RESULTS ###
-# Plot metrics against number of humans on SEEN scenarios
+# Plot metrics against number of humans on TRAIN scenarios
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 figure, ax = plt.subplots(4, 3, figsize=(15, 20))
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
@@ -925,9 +927,9 @@ for m, metric in enumerate(metrics_to_plot):
             y_data = jnp.nanmean(all_results[p][metric][0, :, :, :], axis=(0,2))
         ax[i, j].plot(jnp.arange(len(tests_n_humans)), y_data, label=policies[p]['short'], color=policies[p]['color'], linewidth=2.5)
 h, l = ax[0,0].get_legend_handles_labels()
-figure.legend(h, l, loc='center right', title='Policy\n(SEEN scenarios)')
+figure.legend(h, l, loc='center right', title='Policy\n(TRAIN scenarios)')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_benchmark_tests_1.eps"), format='eps')
-# Plot metrics against number of obstacles on SEEN scenarios
+# Plot metrics against number of obstacles on TRAIN scenarios
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 figure, ax = plt.subplots(4, 3, figsize=(15, 20))
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
@@ -949,9 +951,9 @@ for m, metric in enumerate(metrics_to_plot):
             y_data = jnp.nanmean(all_results[p][metric][0, :, :, :], axis=(1,2))
         ax[i, j].plot(jnp.arange(len(tests_n_obstacles)), y_data, label=policies[p]['short'], color=policies[p]['color'], linewidth=2.5)
 h, l = ax[0,0].get_legend_handles_labels()
-figure.legend(h, l, loc='center right', title='Policy\n(SEEN scenarios)')
+figure.legend(h, l, loc='center right', title='Policy\n(TRAIN scenarios)')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_benchmark_tests_2.eps"), format='eps')
-# Plot metrics against number of humans on CORNER TRAFFIC scenario
+# Plot metrics against number of humans on TEST scenario
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 figure, ax = plt.subplots(4, 3, figsize=(15, 20))
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
@@ -974,9 +976,9 @@ for m, metric in enumerate(metrics_to_plot):
             y_data = jnp.nanmean(all_results[p][metric][1, :, :, :], axis=(0,2))
         ax[i, j].plot(jnp.arange(len(tests_n_humans)), y_data, label=policies[p]['short'], color=policies[p]['color'], linewidth=2.5)
 h, l = ax[0,0].get_legend_handles_labels()
-figure.legend(h, l, loc='center right', title='Policy\n(CoT scenario)')
+figure.legend(h, l, loc='center right', title='Policy\n(TEST scenario)')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_benchmark_tests_3.eps"), format='eps')
-# Plot metrics against number of obstacles on CORNER TRAFFIC scenario
+# Plot metrics against number of obstacles on TEST scenario
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 figure, ax = plt.subplots(4, 3, figsize=(15, 20))
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
@@ -998,7 +1000,7 @@ for m, metric in enumerate(metrics_to_plot):
             y_data = jnp.nanmean(all_results[p][metric][1, :, :, :], axis=(1,2))
         ax[i, j].plot(jnp.arange(len(tests_n_obstacles)), y_data, label=policies[p]['short'], color=policies[p]['color'], linewidth=2.5)
 h, l = ax[0,0].get_legend_handles_labels()
-figure.legend(h, l, loc='center right', title='Policy\n(CoT scenario)')
+figure.legend(h, l, loc='center right', title='Policy\n(TEST scenario)')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_benchmark_tests_4.eps"), format='eps')
 # Plot metrics against number of humans on CCSO scenario
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]

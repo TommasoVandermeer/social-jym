@@ -19,6 +19,8 @@ SCENARIOS = [
     "circular_crossing_with_static_obstacles",
     "crowd_navigation",
     "corner_traffic",
+    "door_crossing",
+    "crowd_chasing",
     "hybrid_scenario" # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
 ] 
 HUMAN_POLICIES = [
@@ -158,9 +160,15 @@ class BaseEnv(ABC):
         thick_default_obstacle:bool
     ) -> None:
         ## Args validation
-        assert scenario in SCENARIOS or scenario is None, f"Invalid scenario. Choose one of {SCENARIOS}, or None for custom scenario."
+        assert (scenario in SCENARIOS) or (scenario is None) or (scenario in ['training_scenario','testing_scenario']), f"Invalid scenario. Choose one of {SCENARIOS}, None for custom scenario, or training_scenario for a mixture of scenarios for training, or testing_scenario for a mixture of scenarios for testing."
         if scenario is None:
             print("\nWARNING: Custom scenario is selected. Make sure to implement the 'reset_custom_episode' method in the derived class (not 'reset').\n")
+        if scenario == 'training_scenario':
+            scenario = 'hybrid_scenario'
+            hybrid_scenario_subset = jnp.array([0,1,2,3,4,6]) # Skip CCSO
+        if scenario == 'testing_scenario':
+            scenario = 'hybrid_scenario'
+            hybrid_scenario_subset = jnp.array([7,8,9]) # Double waypoint scenarios
         assert humans_policy in HUMAN_POLICIES, f"Invalid human policy. Choose one of {HUMAN_POLICIES}"
         assert kinematics in ROBOT_KINEMATICS, f"Invalid robot kinematics. Choose one of {ROBOT_KINEMATICS}"
         if grid_map_computation:
@@ -275,6 +283,20 @@ class BaseEnv(ABC):
                 [[[0.,self.traffic_length/2-self.traffic_height/2-0.3],[self.traffic_length/2-self.traffic_height/2-0.3, self.traffic_length/2-self.traffic_height/2-0.3]]],
                 [[[0.,self.traffic_length/2+self.traffic_height/2+0.3],[self.traffic_length/2+self.traffic_height/2+0.3, self.traffic_length/2+self.traffic_height/2+0.3]]],
             ],
+            [ # Door crossing
+                [[[0., 0.75],[0., 2.5]]],
+                [[[0., -0.75],[0., -2.5]]],
+                [[[-5., 2.5],[5., 2.5]]],
+                [[[-5., -2.5],[5., -2.5]]],
+                [[[-5., -2.5],[-5., 2.5]]],
+            ],
+            [ # Crowd chasing
+                [[[-self.traffic_length/2-3, self.traffic_height/2 + 0.7],[self.traffic_length/2+3, self.traffic_height/2 + 0.7]]],
+                [[[-self.traffic_length/2-3, -(self.traffic_height/2 + 0.7)],[self.traffic_length/2+3, -(self.traffic_height/2 + 0.7)]]],
+                [[[-1.,0],[1.,0.]]],
+                [[[-self.traffic_length/2-3, self.traffic_height/2 + 0.7],[-self.traffic_length/2-3, -(self.traffic_height/2 + 0.7)]]],
+                [[[self.traffic_length/2+3, self.traffic_height/2 + 0.7],[self.traffic_length/2+3, -(self.traffic_height/2 + 0.7)]]],
+            ],
         ])
         if thick_default_obstacle:
             self.static_obstacles_per_scenario = thicken_obstacles(self.static_obstacles_per_scenario, thickness=0.1)
@@ -290,6 +312,8 @@ class BaseEnv(ABC):
             [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Circular crossing with static obstacles
             [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Crowd navigation
             [[self.traffic_length/2-self.traffic_height/4, self.traffic_length/2-self.traffic_height/4],[self.traffic_length/2, 1.]], # Corner traffic
+            [[0., 0.],[5., 0.]], # Door crossing
+            [[0, -0.75],[self.traffic_length/2-1, 0.]], # Crowd chasing
         ])
         ## Possible delays for delayed circular crossing scenario
         self.possible_delays = jnp.arange(0., self.max_cc_delay + self.robot_dt, self.robot_dt)
@@ -331,6 +355,8 @@ class BaseEnv(ABC):
                 self._generate_circular_crossing_with_static_obstacles_episode,
                 self._generate_crowd_navigation_episode,
                 self._generate_corner_traffic_episode,
+                self._generate_door_crossing_episode,
+                self._generate_crowd_chasing_episode,
             ], 
             scen_key
         )
@@ -1023,6 +1049,136 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
+    def _generate_door_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([-4., 0.])) 
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, humans_goal, key, valid = while_val
+                key, room_key, noise_key, goal_key = random.split(key, 4)
+                room = random.bernoulli(room_key)
+                normalized_point = random.uniform(noise_key, shape=(2,), minval=-1, maxval=1)
+                new_point = jnp.array([
+                    -2.5 + room * 5 + normalized_point[0] * 2.4, 
+                    normalized_point[1] * 2.4,
+                ])
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None)
+                normalized_goal_point = random.uniform(noise_key, shape=(2,), minval=-1, maxval=1)
+                humans_goal = humans_goal.at[i].set(jnp.array([
+                    -2.5 + room * 5 + normalized_goal_point[0] * 2.4, 
+                    normalized_goal_point[1] * 2.4,
+                ]))
+                return (disturbed_points, humans_goal, key, valid)
+            disturbed_points, humans_goal, key = for_val
+            disturbed_points, humans_goal, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[3]), _while_body, (disturbed_points, humans_goal, key, False))
+            return disturbed_points, humans_goal, key
+    
+        disturbed_points, humans_goal, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, jnp.empty((self.n_humans,2)), key))
+
+        # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
+        if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
+            # Humans
+            key, subkey = random.split(key)
+            random_orientations = random.uniform(subkey, shape=(self.n_humans,), minval=-1, maxval=1) * jnp.pi
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], random_orientations))
+        elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
+            # Humans
+            full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
+        # Robot
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
+
+        # Assign robot goals
+        robot_goal = self._init_robot_goal(SCENARIOS.index('door_crossing'))
+
+        # Obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('door_crossing'))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_crowd_chasing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_goal = jnp.zeros((self.n_humans, 2))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+
+        # Randomly generate the humans' positions
+        disturbed_points = jnp.ones((self.n_humans+1, 2)) * -1000
+        disturbed_points = disturbed_points.at[-1].set(jnp.array([-self.traffic_length/2 + 1, 0.])) 
+        
+        @jit
+        def _fori_body(i:int, for_val:tuple):
+            @jit 
+            def _while_body(while_val:tuple):
+                disturbed_points, key, valid = while_val
+                key, subkey = random.split(key)
+                normalized_point = random.uniform(subkey, shape=(2,), minval=0, maxval=1)
+                new_point = jnp.array([-self.traffic_length/2 + 2 + normalized_point[0] * (self.traffic_length/2), -self.traffic_height/2 + normalized_point[1] * self.traffic_height])
+                differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
+                valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
+                disturbed_points = lax.cond(
+                    valid,
+                    lambda _: disturbed_points.at[i].set(new_point),
+                    lambda _: disturbed_points,
+                    operand=None)
+                return (disturbed_points, key, valid)
+            disturbed_points, key = for_val
+            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            return disturbed_points, key
+    
+        disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
+
+        # Assign the humans' and robot's positions
+        @jit
+        def _set_state(position:jnp.ndarray, theta:float) -> jnp.ndarray:
+            return jnp.array([
+                position[0],
+                position[1],
+                0.,
+                0.,
+                theta,
+                0.
+            ])
+        # Humans
+        full_state = full_state.at[:-1].set(vmap(_set_state, in_axes=(0, 0))(disturbed_points[:-1], jnp.zeros((self.n_humans,))))
+        # Robot
+        full_state = full_state.at[self.n_humans].set(jnp.array([*disturbed_points[-1], *full_state[self.n_humans,2:]]))
+
+        # Assign the humans' and robot goals
+        humans_goal = lax.fori_loop(
+            0, 
+            self.n_humans, 
+            lambda i, humans_goal: humans_goal.at[i].set(jnp.array([self.traffic_length/2+3, disturbed_points[i,1]])),
+            humans_goal)
+        robot_goal = self._init_robot_goal(SCENARIOS.index('crowd_chasing'))
+
+        # Obstacles
+        static_obstacles = self._init_obstacles(key, SCENARIOS.index('crowd_chasing'))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+
+    @partial(jit, static_argnames=("self"))
     def _human_ray_intersect(self, direction:jnp.ndarray, human_position:jnp.ndarray, lidar_position:jnp.ndarray, human_radius:float) -> float:
         s = lidar_position - human_position
         b = jnp.dot(s, direction)
@@ -1246,6 +1402,87 @@ class BaseEnv(ABC):
             info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0,None,None))(state[:-1,0:2], info["humans_goal"], info["humans_parameters"][:,0], info["is_x_flipped"], info["is_y_flipped"])
             return (info, state)
 
+        @jit
+        def _update_door_crossing(val:tuple):
+            @jit
+            def _update_human_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float) -> jnp.ndarray:
+                @jit
+                def _set_new_goal(position, goal):
+                    key = random.PRNGKey(jnp.array(jnp.linalg.norm(position)*1000, int))
+                    key1, key2, key3 = random.split(key, 3)
+                    door_goal = random.bernoulli(key1, p=0.1)
+                    normalized_goal_point = random.uniform(key2, shape=(2,), minval=-1, maxval=1)
+                    new_room = random.bernoulli(key3)
+                    case = jnp.argmax(jnp.array([
+                        (goal[0] < 0) & ~(door_goal), # Left room
+                        goal[0] == 0 & ~(door_goal), # Door goal
+                        goal[0] > 0 & ~(door_goal), # Right room
+                        door_goal, # Set new goal as door
+                    ]))
+                    new_goal = lax.switch(
+                        case,
+                        [
+                            lambda: jnp.array([
+                                -2.5 + normalized_goal_point[0] * 2.4, 
+                                normalized_goal_point[1] * 2.4,
+                            ]), # Remain in left room
+                            lambda: jnp.array([
+                                -2.5 + new_room * 5 + normalized_goal_point[0] * 2.4, 
+                                normalized_goal_point[1] * 2.4,
+                            ]), # Pick one room randomly
+                            lambda: jnp.array([
+                                2.5 + normalized_goal_point[0] * 2.4, 
+                                normalized_goal_point[1] * 2.4,
+                            ]), # Remain in right room
+                            lambda: jnp.array([
+                                0.,
+                                0.
+                            ]), # Set door goal
+                        ]
+                    )
+                    return new_goal
+                goal = lax.cond(
+                    jnp.linalg.norm(position - goal) <= radius,
+                    lambda x: _set_new_goal(*x),
+                    lambda x: x[1],
+                    (position, goal))
+                return goal
+            info, state = val
+            info["humans_goal"] = vmap(_update_human_goal, in_axes=(0,0,0))(state[:-1,0:2], info["humans_goal"], info["humans_parameters"][:,0])
+            return (info, state)
+
+        @jit
+        def _update_crowd_chasing(val:tuple):
+            @jit
+            def _update_human_state_and_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray, is_x_flipped:bool) -> tuple:
+                flip_x = lax.cond(is_x_flipped,lambda _: -1.,lambda _: 1.,None)
+                position, goal = lax.cond(
+                    # jnp.linalg.norm(position - goal) <= radius + 2,
+                    jnp.linalg.norm(position - goal) <= 3,
+                    lambda _: (
+                        jnp.array([
+                        flip_x * jnp.min(jnp.append(positions[:,0] + (jnp.max(jnp.append(radiuses, self.robot_radius))*2)+(jnp.max(safety_spaces)*2), -self.traffic_length/2)),
+                        jnp.clip(position[1], -self.traffic_height/2, self.traffic_height/2)]
+                        ),
+                        jnp.array([goal[0], position[1]]),
+                    ),
+                    lambda x: x,
+                    (position, goal))
+                return position, goal
+            info, state = val
+            new_positions, new_goals = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None, None))(
+                state[:-1,0:2], 
+                info["humans_goal"], 
+                info["humans_parameters"][:,0], 
+                state[:,0:2], 
+                info["humans_parameters"][:,0], 
+                info["humans_parameters"][:,-1],
+                info['is_x_flipped']
+            )
+            state = state.at[:-1,0:2].set(new_positions)
+            info["humans_goal"] = info["humans_goal"].at[:].set(new_goals)
+            return info, state
+
         if self.scenario != -1:  # If not custom scenario
             new_info, new_state = lax.switch(
                 info["current_scenario"], 
@@ -1258,6 +1495,8 @@ class BaseEnv(ABC):
                     _update_circular_crossing_with_static_obstacles,
                     _update_crowd_navigation,
                     _update_corner_traffic,
+                    _update_door_crossing,
+                    _update_crowd_chasing,
                 ], 
                 (info, state),
             )
