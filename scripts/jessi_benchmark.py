@@ -76,7 +76,7 @@ scenarios = {
 policies = {
     "jessi_multitask": {"label": "JESSI-MULTITASK", "short": "JESSI-MT", "only_ccso": False, "color": "tab:blue"},
     "jessi_modular": {"label": "JESSI-MODULAR", "short": "JESSI-MD", "only_ccso": False, "color": "tab:orange"},
-    "jessi_policy": {"label": "JESSI-POLICY", "short": "JESSI-P", "only_ccso": False, "color": "tab:green"},
+    "jessi_policy": {"label": "JESSI-POLICY", "short": "JESSI-PO", "only_ccso": False, "color": "tab:green"},
     "vanilla_e2e": {"label": "Vanilla E2E", "short": "V-E2E", "only_ccso": False, "color": "tab:red"},
     "bounded_vanilla_e2e": {"label": "Bounded Vanilla E2E", "short": "BV-E2E", "only_ccso": False, "color": "#800080"}, # purple
     "dir_safe": {"label": "DIR-SAFE", "short": "DIR-SAFE", "only_ccso": False, "color":"tab:purple"},
@@ -950,9 +950,19 @@ for metric in metrics_to_plot:
 def print_pretty_table(summary_dict, title, latex_mode=False):
     print(f"\n{'-'*30} {title.upper()} {'-'*30}")
     if latex_mode:
-        headers = ["Policy", "SR (\\%)", "Coll. Hum (\\%)", "Coll. Obs (\\%)", "Timeout (\\%)", "TTG (s)", "Lin Jerk", "Ang Jerk", "Space Comp."]
+        headers = [
+            "Policy", 
+            r"\makecell{SR \\ (\%)}", 
+            r"\makecell{CR-H \\ (\%)}", 
+            r"\makecell{CR-O \\ (\%)}", 
+            r"\makecell{TR \\ (\%)}", 
+            r"\makecell{TtG \\ (s)}", 
+            r"\makecell{LJ \\ (m/s$^3$)}", 
+            r"\makecell{AJ \\ (rad/s$^3$)}", 
+            r"\makecell{SC \\ (\%)}"
+        ]
     else:
-        headers = ["Policy", "SR (%)", "Coll. Hum (%)", "Coll. Obs (%)", "Timeout (%)", "TTG (s)", "Lin Jerk", "Ang Jerk", "Space Comp."]
+        headers = ["Policy", "SR (%)", "CR-H (%)", "CR-O (%)", "TR (%)", "TtG (s)", "LJ (m/s^3)", "AJ (rad/s^3)", "SC (%)"]
     top_3_values = {}
     for metric in metrics_to_plot:
         valid_vals = [m[metric] for p, m in summary_dict.items() if m and not jnp.isnan(m.get(metric, float('nan')))]
@@ -970,8 +980,8 @@ def print_pretty_table(summary_dict, title, latex_mode=False):
             if jnp.isnan(val):
                 row.append("N/A")
                 continue
-            if metric in ['successes', 'collisions_with_human', 'collisions_with_obstacle', 'timeouts']:
-                val_str = f"{val*100:.1f}\\%" if latex_mode else f"{val*100:.1f}%"
+            if metric in ['successes', 'collisions_with_human', 'collisions_with_obstacle', 'timeouts','space_compliance']:
+                val_str = f"{val*100:.1f}" if latex_mode else f"{val*100:.1f}%"
             else:
                 val_str = f"{val:.2f}"
             val_rounded = round(val, 5)
@@ -986,9 +996,10 @@ def print_pretty_table(summary_dict, title, latex_mode=False):
         num_cols = len(headers)
         col_format = "c" * num_cols
         latex_lines = []
-        latex_lines.append(f"\\begin{{table*}}[thpb]")
+        latex_lines.append(f"\\begin{{table}}[thpb]")
         latex_lines.append(f"\\centering")
         latex_lines.append(f"\\caption{{{title}}}")
+        latex_lines.append(f"\\resizebox{{\\columnwidth}}{{!}}{{")
         latex_lines.append(f"\\begin{{tabular}}{{{col_format}}}")
         latex_lines.append(f"\\toprule")
         latex_lines.append(" & ".join(headers) + " \\\\")
@@ -997,16 +1008,17 @@ def print_pretty_table(summary_dict, title, latex_mode=False):
             latex_lines.append(" & ".join(str(item) for item in row) + " \\\\")
         latex_lines.append(f"\\bottomrule")
         latex_lines.append(f"\\end{{tabular}}")
+        latex_lines.append(f"}}")
         latex_lines.append(f"\\label{{tab:{title.lower().replace(' ', '_')}}}")
-        latex_lines.append(f"\\end{{table*}}\n")
+        latex_lines.append(f"\\end{{table}}\n")
         print("\n".join(latex_lines))
     else:
         print(tabulate(table_data, headers=headers, tablefmt="fancy_grid", stralign="center", numalign="center"))
 print_pretty_table(complete_summary, "Overall Results", latex_mode=False)
-print_pretty_table(train_and_test_scenarios_summary, "Train and test Scenario Results", latex_mode=True)
+print_pretty_table(train_and_test_scenarios_summary, "First experimental setup results", latex_mode=True)
 print_pretty_table(train_scenarios_summary, "Train Scenarios Results", latex_mode=False)
 print_pretty_table(test_scenarios_summary, "Test Scenarios Results", latex_mode=False)
-print_pretty_table(ccso_scenarios_summary, "CCSO Scenarios Results", latex_mode=True)
+print_pretty_table(ccso_scenarios_summary, "Second experimental setup results", latex_mode=True)
 
 ### PLOT RESULTS ###
 # Plot metrics against number of humans on TRAIN scenarios
