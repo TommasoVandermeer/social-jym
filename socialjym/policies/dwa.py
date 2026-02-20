@@ -33,7 +33,7 @@ class DWA(BasePolicy):
         lidar_num_rays=100,
         lidar_angles_robot_frame=None, # If not specified, rays are evenly distributed in the angular range
         lidar_n_stack_to_use=1, # Number of lidar scans to use to compute the action. If 1, only the most recent scan is used. If >1, the most recent n_stack_to_use scans are used and stacked together (e.g. if n_stack_to_use=3 and lidar_num_rays=100, the input point cloud will have 300 points).
-        use_box_action_space=True, # If True, the action space for which the DWA cost is computed is the box action space (i.e. all combinations of linear and angular speeds up to the maximum) but then the action is bounded in the triangle, otherwise it is the discretized action space (i.e. a subset of the box action space). Using the box action space is more computationally expensive, but allows to find better actions.
+        use_box_action_space=False, # If True, the action space for which the DWA cost is computed is the box action space (i.e. all combinations of linear and angular speeds up to the maximum) but then the action is bounded in the triangle, otherwise it is the discretized action space (i.e. a subset of the box action space). Using the box action space is more computationally expensive, but allows to find better actions.
     ):
         """
         Dynamic Window Approach (DWA) policy for navigation.
