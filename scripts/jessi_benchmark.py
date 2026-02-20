@@ -910,6 +910,7 @@ metrics_to_plot = ["successes","collisions_with_human","collisions_with_obstacle
 higher_is_better = ["successes", "space_compliance"]
 train_scenarios_summary = {p: {} for p in policies.keys()}
 test_scenarios_summary = {p: {} for p in policies.keys()}
+train_and_test_scenarios_summary = {p: {} for p in policies.keys()}
 ccso_scenarios_summary = {p: {} for p in policies.keys()}
 complete_summary = {p: {} for p in policies.keys()}
 for metric in metrics_to_plot:
@@ -937,10 +938,12 @@ for metric in metrics_to_plot:
         else:
             y_data = jnp.nanmean(all_results[p][metric][idx, :, :, :])
         ccso_scenarios_summary[p][metric] = float(y_data)
-    ### Complete summary
+    ### Complete summary & Train and Test scenarios summary
     for p in all_results.keys():
         v_train = train_scenarios_summary[p].get(metric, jnp.nan)
         v_test  = test_scenarios_summary[p].get(metric, jnp.nan)
+        if not policies[p]["only_ccso"]:
+            train_and_test_scenarios_summary[p][metric] = float(jnp.nanmean(jnp.array([v_train, v_test])))
         v_ccso  = ccso_scenarios_summary[p].get(metric, jnp.nan)
         avg_val = float(jnp.nanmean(jnp.array([v_train, v_test, v_ccso])))
         complete_summary[p][metric] = avg_val
@@ -983,10 +986,9 @@ def print_pretty_table(summary_dict, title, latex_mode=False):
         num_cols = len(headers)
         col_format = "c" * num_cols
         latex_lines = []
-        latex_lines.append(f"\\begin{{table}}[thpb]")
+        latex_lines.append(f"\\begin{{table*}}[thpb]")
         latex_lines.append(f"\\centering")
         latex_lines.append(f"\\caption{{{title}}}")
-        latex_lines.append(f"\\resizebox{{\\columnwidth}}{{!}}{{")
         latex_lines.append(f"\\begin{{tabular}}{{{col_format}}}")
         latex_lines.append(f"\\toprule")
         latex_lines.append(" & ".join(headers) + " \\\\")
@@ -995,16 +997,16 @@ def print_pretty_table(summary_dict, title, latex_mode=False):
             latex_lines.append(" & ".join(str(item) for item in row) + " \\\\")
         latex_lines.append(f"\\bottomrule")
         latex_lines.append(f"\\end{{tabular}}")
-        latex_lines.append(f"}}")
         latex_lines.append(f"\\label{{tab:{title.lower().replace(' ', '_')}}}")
-        latex_lines.append(f"\\end{{table}}\n")
+        latex_lines.append(f"\\end{{table*}}\n")
         print("\n".join(latex_lines))
     else:
         print(tabulate(table_data, headers=headers, tablefmt="fancy_grid", stralign="center", numalign="center"))
 print_pretty_table(complete_summary, "Overall Results", latex_mode=False)
+print_pretty_table(train_and_test_scenarios_summary, "Train and test Scenario Results", latex_mode=True)
 print_pretty_table(train_scenarios_summary, "Train Scenarios Results", latex_mode=False)
 print_pretty_table(test_scenarios_summary, "Test Scenarios Results", latex_mode=False)
-print_pretty_table(ccso_scenarios_summary, "CCSO Scenarios Results", latex_mode=False)
+print_pretty_table(ccso_scenarios_summary, "CCSO Scenarios Results", latex_mode=True)
 
 ### PLOT RESULTS ###
 # Plot metrics against number of humans on TRAIN scenarios

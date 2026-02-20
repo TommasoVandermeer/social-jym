@@ -19,15 +19,17 @@ kinematics = 'unicycle'
 
 if use_ground_truth_data:
     env_params = {
-        'n_humans': 5,
+        'n_humans': 15,
         'n_obstacles': 0,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
         'humans_dt': 0.01,      
         'robot_visible': True,
-        'scenario': 'hybrid_scenario', 
+        'scenario': 'circular_crossing_with_static_obstacles', 
+        'ccso_static_humans_radius_mean': 0.3,
+        'ccso_static_humans_radius_std': 0.025,
         'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
-        'ccso_n_static_humans': 0,
+        'ccso_n_static_humans': 5,
         'reward_function': SocialReward(kinematics=kinematics),
         'kinematics': kinematics,
     }
@@ -45,6 +47,7 @@ if use_ground_truth_data:
     #     n_episodes,
     #     random_seed,
     #     env,
+    #     network_params
     # )
     # Simulate some episodes on GROUND TRUTH DATA
     for i in range(n_episodes):
@@ -89,15 +92,17 @@ else:
         'lidar_num_rays': 100,
         'lidar_angular_range': jnp.pi * 2,
         'lidar_max_dist': 10.,
-        'n_humans': 5,
+        'n_humans': 15,
         'n_obstacles': 0,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
         'humans_dt': 0.01,      
         'robot_visible': True,
-        'scenario': 'hybrid_scenario', 
+        'scenario': 'circular_crossing_with_static_obstacles',
+        'ccso_static_humans_radius_mean': 0.3,
+        'ccso_static_humans_radius_std': 0.025, 
         'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
-        'ccso_n_static_humans': 0,
+        'ccso_n_static_humans': 5,
         'reward_function': LaserReward(robot_radius=0.3),
         'kinematics': kinematics,
         'lidar_noise': True,
@@ -122,15 +127,15 @@ else:
     # with open(os.path.join(os.path.dirname(__file__), 'jessi_e2e_rl_out.pkl'), 'rb') as f:
     #     jessi_network_params, _, _ = pickle.load(f)
     # Execute tests
-    # metrics = policy.evaluate_on_jessi_perception(
-    #     n_episodes,
-    #     random_seed,
-    #     env,
-    #     jessi,
-    #     perception_params,
-    #     network_params,
-    #     humans_radius_hypothesis=jnp.full((jessi.n_detectable_humans,), .3),
-    # )
+    metrics = policy.evaluate_on_jessi_perception(
+        n_episodes,
+        random_seed,
+        env,
+        jessi,
+        perception_params,
+        network_params,
+        humans_radius_hypothesis=jnp.full((jessi.n_detectable_humans,), .3),
+    )
     # Simulate some episodes on PERCEIVED DATA
     for i in range(n_episodes):
         reset_key, env_key, policy_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently

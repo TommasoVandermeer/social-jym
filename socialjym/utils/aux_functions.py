@@ -71,104 +71,6 @@ def binary_to_decimal(binary:jnp.array) -> int:
         0)
     return decimal
 
-def decimal_to_binary(decimal:int, n_bits:int) -> jnp.array:
-    binary = jnp.zeros((n_bits,), dtype=bool)
-    for bit in range(n_bits):
-        binary = binary.at[n_bits - bit - 1].set(bool(decimal % 2))
-        decimal = decimal // 2
-    return binary
-
-def plot_state(
-        ax:Axes, 
-        time:float, 
-        full_state:jnp.ndarray, 
-        humans_policy:str, 
-        scenario:int, 
-        humans_radiuses:np.ndarray, 
-        robot_radius:float, 
-        circle_radius=7, 
-        traffic_height=3, 
-        traffic_length=14, 
-        crowding_square_side=14,
-        plot_time=True,
-        kinematics:str='holonomic',
-        xlims:list=None,
-        ylims:list=None,
-    ) -> None:
-    """
-    Plots a given single state of the environment.
-
-    args:
-    - ax: matplotlib.axes.Axes. The axes to plot the state.
-    - time: float. The time of the state to be plotted.
-    - full_state: shape=(n_humans+1, 6), dtype=jnp.float32
-        The state of the environment to be plotted. The last row of full_state corresponds to the robot state.
-    - humans_policy: str, one of ['orca', 'sfm', 'hsfm']
-    - humans_radiuses: np.ndarray, shape=(n_humans,), dtype=np.float32
-    - circle_radius: float
-    - robot_radius: float
-
-    output:
-    - None
-    """
-    n_humans = len(humans_radiuses)
-    colors = list(mcolors.TABLEAU_COLORS.values())
-    num = int(time) if (time).is_integer() else (time)
-    # Humans
-    for h in range(len(full_state)-1): 
-        if humans_policy == 'hsfm': 
-            head = plt.Circle((full_state[h,0] + np.cos(full_state[h,4]) * humans_radiuses[h], full_state[h,1] + np.sin(full_state[h,4]) * humans_radiuses[h]), 0.1, color=colors[h%len(colors)], zorder=1)
-            ax.add_patch(head)
-        circle = plt.Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor=colors[h%len(colors)], facecolor="white", fill=True, zorder=1)
-        ax.add_patch(circle)
-        if plot_time: 
-            ax.text(full_state[h,0],full_state[h,1], f"{num}", color=colors[h%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
-        elif (not plot_time) and (n_humans < 11): 
-            ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
-        # else: ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
-    # Robot
-    if kinematics == 'unicycle':
-        head = plt.Circle((full_state[-1,0] + np.cos(full_state[-1,4]) * robot_radius, full_state[-1,1] + np.sin(full_state[-1,4]) * robot_radius), 0.1, color='black', zorder=1)
-        ax.add_patch(head)
-    circle = plt.Circle((full_state[-1,0],full_state[-1,1]), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
-    ax.add_patch(circle)
-    # Time/Label
-    if plot_time: 
-        ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color="black", va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=3, weight='bold')
-    else: 
-        ax.text(full_state[-1,0],full_state[-1,1], f"R", color="black", va="center", ha="center", size=10, zorder=3, weight='bold')
-    # Set axis limits and labels
-    if scenario == SCENARIOS.index('circular_crossing') or scenario == SCENARIOS.index('delayed_circular_crossing') or scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or scenario == SCENARIOS.index('crowd_navigation'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-circle_radius-1,circle_radius+1],ylim=[-circle_radius-1,circle_radius+1])
-    elif scenario == SCENARIOS.index('parallel_traffic'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_height-3,traffic_height+3])
-    elif scenario == SCENARIOS.index('perpendicular_traffic'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_length/2,traffic_length/2])
-    elif scenario == SCENARIOS.index('robot_crowding'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5],ylim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5])
-    elif scenario == SCENARIOS.index('corner_traffic'):
-        ax.set(xlabel='X',ylabel='Y',xlim=[-2,traffic_length/2+traffic_height/2+2],ylim=[-2,traffic_length/2+traffic_height/2+2])
-    elif scenario is None:
-        ax.set_aspect('equal', adjustable='box')
-        ax.set(xlabel='X',ylabel='Y',xlim=xlims,ylim=ylims)
-
-def plot_trajectory(ax:Axes, agents_positions:jnp.ndarray, humans_goal:jnp.ndarray, robot_goal:jnp.ndarray):
-    colors = list(mcolors.TABLEAU_COLORS.values())
-    n_agents = len(agents_positions[0])
-    for h in range(n_agents): 
-        ax.plot(agents_positions[:,h,0], agents_positions[:,h,1], color=colors[h%len(colors)] if h < n_agents - 1 else "red", linewidth=1, zorder=0)
-        if h < n_agents - 1: ax.scatter(humans_goal[h,0], humans_goal[h,1], marker="*", color=colors[h%len(colors)], zorder=2)
-        else: ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
-
-def plot_lidar_measurements(ax:Axes, lidar_measurements:jnp.ndarray, robot_state:jnp.ndarray, robot_radius:float):
-    for i in range(len(lidar_measurements)):
-        ax.plot(
-            [robot_state[0], robot_state[0] + lidar_measurements[i,0] * jnp.cos(lidar_measurements[i,1])], 
-            [robot_state[1], robot_state[1] + lidar_measurements[i,0] * jnp.sin(lidar_measurements[i,1])], 
-            color="black", 
-            linewidth=0.5, 
-            zorder=0)
-
 def initialize_metrics_dict(n_trials:int, dims:tuple=()) -> dict:
     metrics = {
         "successes": 0 if len(dims) == 0 else jnp.zeros(dims),
@@ -241,11 +143,22 @@ def compute_episode_metrics(
     metrics["successes"] = lax.cond(outcome["success"], lambda x: x + 1, lambda x: x, metrics["successes"])
     if environment == ENVIRONMENTS.index('socialnav'):
         failure = outcome['failure']
-        metrics["collisions_with_human"] = lax.cond(failure, lambda x: x + 1, lambda x: x, metrics["collisions_with_human"])
+        last_distances = jnp.linalg.norm(all_states[-1,:2] - all_states[:-1,:2])
+        hum_coll_idx = jnp.argmin(last_distances)
+        failure_with_obstacle = (failure) & (end_info["current_scenario"] == SCENARIOS.index('circular_crossing_with_static_obstacles')) & (hum_coll_idx < ccso_n_static_humans)
+        failure_with_human = (failure) & ~(failure_with_obstacle)
+        metrics["collisions_with_human"] = lax.cond(failure_with_human, lambda x: x + 1, lambda x: x, metrics["collisions_with_human"])
+        metrics["collisions_with_obstacle"] = lax.cond(failure_with_obstacle, lambda x: x + 1, lambda x: x, metrics["collisions_with_obstacle"])
     elif environment == ENVIRONMENTS.index('lasernav'):
         failure = outcome['collision_with_human'] | outcome['collision_with_obstacle']
-        metrics["collisions_with_human"] = lax.cond(outcome['collision_with_human'], lambda x: x + 1, lambda x: x, metrics["collisions_with_human"])
-        metrics["collisions_with_obstacle"] = lax.cond(outcome['collision_with_obstacle'], lambda x: x + 1, lambda x: x, metrics["collisions_with_obstacle"])
+        last_distances = jnp.linalg.norm(all_states[-1,:2] - all_states[:-1,:2])
+        hum_coll_idx = jnp.argmin(last_distances)
+        failure_with_obstacle = \
+            outcome['collision_with_obstacle'] | \
+            ((outcome['collision_with_human']) & (end_info["current_scenario"] == SCENARIOS.index('circular_crossing_with_static_obstacles')) & (hum_coll_idx < ccso_n_static_humans))
+        failure_with_human = (failure) & ~(failure_with_obstacle)
+        metrics["collisions_with_human"] = lax.cond(failure_with_human, lambda x: x + 1, lambda x: x, metrics["collisions_with_human"])
+        metrics["collisions_with_obstacle"] = lax.cond(failure_with_obstacle, lambda x: x + 1, lambda x: x, metrics["collisions_with_obstacle"])
     metrics["collisions"] = lax.cond(failure, lambda x: x + 1, lambda x: x, metrics["collisions"])
     metrics["timeouts"] = lax.cond(outcome["timeout"], lambda x: x + 1, lambda x: x, metrics["timeouts"])
     metrics["returns"] = metrics["returns"].at[episode_idx].set(end_info["return"])
@@ -362,6 +275,104 @@ def compute_episode_metrics(
         metrics["feasible_actions_rate"],
     )
     return metrics
+
+def decimal_to_binary(decimal:int, n_bits:int) -> jnp.array:
+    binary = jnp.zeros((n_bits,), dtype=bool)
+    for bit in range(n_bits):
+        binary = binary.at[n_bits - bit - 1].set(bool(decimal % 2))
+        decimal = decimal // 2
+    return binary
+
+def plot_state(
+        ax:Axes, 
+        time:float, 
+        full_state:jnp.ndarray, 
+        humans_policy:str, 
+        scenario:int, 
+        humans_radiuses:np.ndarray, 
+        robot_radius:float, 
+        circle_radius=7, 
+        traffic_height=3, 
+        traffic_length=14, 
+        crowding_square_side=14,
+        plot_time=True,
+        kinematics:str='holonomic',
+        xlims:list=None,
+        ylims:list=None,
+    ) -> None:
+    """
+    Plots a given single state of the environment.
+
+    args:
+    - ax: matplotlib.axes.Axes. The axes to plot the state.
+    - time: float. The time of the state to be plotted.
+    - full_state: shape=(n_humans+1, 6), dtype=jnp.float32
+        The state of the environment to be plotted. The last row of full_state corresponds to the robot state.
+    - humans_policy: str, one of ['orca', 'sfm', 'hsfm']
+    - humans_radiuses: np.ndarray, shape=(n_humans,), dtype=np.float32
+    - circle_radius: float
+    - robot_radius: float
+
+    output:
+    - None
+    """
+    n_humans = len(humans_radiuses)
+    colors = list(mcolors.TABLEAU_COLORS.values())
+    num = int(time) if (time).is_integer() else (time)
+    # Humans
+    for h in range(len(full_state)-1): 
+        if humans_policy == 'hsfm': 
+            head = plt.Circle((full_state[h,0] + np.cos(full_state[h,4]) * humans_radiuses[h], full_state[h,1] + np.sin(full_state[h,4]) * humans_radiuses[h]), 0.1, color=colors[h%len(colors)], zorder=1)
+            ax.add_patch(head)
+        circle = plt.Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor=colors[h%len(colors)], facecolor="white", fill=True, zorder=1)
+        ax.add_patch(circle)
+        if plot_time: 
+            ax.text(full_state[h,0],full_state[h,1], f"{num}", color=colors[h%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
+        elif (not plot_time) and (n_humans < 11): 
+            ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
+        # else: ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
+    # Robot
+    if kinematics == 'unicycle':
+        head = plt.Circle((full_state[-1,0] + np.cos(full_state[-1,4]) * robot_radius, full_state[-1,1] + np.sin(full_state[-1,4]) * robot_radius), 0.1, color='black', zorder=1)
+        ax.add_patch(head)
+    circle = plt.Circle((full_state[-1,0],full_state[-1,1]), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+    ax.add_patch(circle)
+    # Time/Label
+    if plot_time: 
+        ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color="black", va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=3, weight='bold')
+    else: 
+        ax.text(full_state[-1,0],full_state[-1,1], f"R", color="black", va="center", ha="center", size=10, zorder=3, weight='bold')
+    # Set axis limits and labels
+    if scenario == SCENARIOS.index('circular_crossing') or scenario == SCENARIOS.index('delayed_circular_crossing') or scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or scenario == SCENARIOS.index('crowd_navigation'): 
+        ax.set(xlabel='X',ylabel='Y',xlim=[-circle_radius-1,circle_radius+1],ylim=[-circle_radius-1,circle_radius+1])
+    elif scenario == SCENARIOS.index('parallel_traffic'): 
+        ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_height-3,traffic_height+3])
+    elif scenario == SCENARIOS.index('perpendicular_traffic'): 
+        ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_length/2,traffic_length/2])
+    elif scenario == SCENARIOS.index('robot_crowding'): 
+        ax.set(xlabel='X',ylabel='Y',xlim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5],ylim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5])
+    elif scenario == SCENARIOS.index('corner_traffic'):
+        ax.set(xlabel='X',ylabel='Y',xlim=[-2,traffic_length/2+traffic_height/2+2],ylim=[-2,traffic_length/2+traffic_height/2+2])
+    elif scenario is None:
+        ax.set_aspect('equal', adjustable='box')
+        ax.set(xlabel='X',ylabel='Y',xlim=xlims,ylim=ylims)
+
+def plot_trajectory(ax:Axes, agents_positions:jnp.ndarray, humans_goal:jnp.ndarray, robot_goal:jnp.ndarray):
+    colors = list(mcolors.TABLEAU_COLORS.values())
+    n_agents = len(agents_positions[0])
+    for h in range(n_agents): 
+        ax.plot(agents_positions[:,h,0], agents_positions[:,h,1], color=colors[h%len(colors)] if h < n_agents - 1 else "red", linewidth=1, zorder=0)
+        if h < n_agents - 1: ax.scatter(humans_goal[h,0], humans_goal[h,1], marker="*", color=colors[h%len(colors)], zorder=2)
+        else: ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
+
+def plot_lidar_measurements(ax:Axes, lidar_measurements:jnp.ndarray, robot_state:jnp.ndarray, robot_radius:float):
+    for i in range(len(lidar_measurements)):
+        ax.plot(
+            [robot_state[0], robot_state[0] + lidar_measurements[i,0] * jnp.cos(lidar_measurements[i,1])], 
+            [robot_state[1], robot_state[1] + lidar_measurements[i,0] * jnp.sin(lidar_measurements[i,1])], 
+            color="black", 
+            linewidth=0.5, 
+            zorder=0)
 
 def test_k_trials(
     k: int, 
