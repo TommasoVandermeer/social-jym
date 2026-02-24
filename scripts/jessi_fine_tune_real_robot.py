@@ -26,7 +26,7 @@ lidar_angular_range = jnp.pi * 70 / 180
 lidar_max_dist = 10.
 lidar_num_rays = 100
 scenario = "hybrid_scenario"
-hybrid_scenario_subset = jnp.array([0,1,2,3,4,6,7,8,9])  # Exclude circular_crossing_with_static_obstacles and corner_traffic
+hybrid_scenario_subset = jnp.array([0,1,2,3,4,6])  # Exclude circular_crossing_with_static_obstacles and corner_traffic
 n_humans = 3
 n_obstacles = 3
 humans_policy = 'hsfm'
@@ -83,8 +83,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
         'reward_function': reward_function,
         'kinematics': 'unicycle',
         'lidar_noise': True,
+        'lidar_num_rays': lidar_num_rays,
+        'lidar_max_dist': lidar_max_dist,
+        'lidar_angular_range': lidar_angular_range,
         'lidar_noise_fixed_std': 0.02, 
-        'lidar_noise_proportional_std': 0.02,
+        'lidar_noise_proportional_std': 0.03,
         'lidar_salt_and_pepper_prob': 0.05,
     }
     # Initialize environment
@@ -99,7 +102,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
         lidar_max_dist=lidar_max_dist,
         lidar_angular_range=lidar_angular_range,
         n_stack_for_action_space_bounding=3,
-        beam_dropout_rate=0.2
+        beam_dropout_rate=0.1
     )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), network_name), 'rb') as f:
@@ -120,8 +123,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
             optax.adam(
                 learning_rate=optax.schedules.warmup_cosine_decay_schedule(
                     init_value=0.,
-                    peak_value=training_hyperparams['rl_learning_rate'] * 0.1,
-                    end_value=training_hyperparams['rl_learning_rate_final'] * 0.05, 
+                    peak_value=training_hyperparams['rl_learning_rate'], 
+                    end_value=training_hyperparams['rl_learning_rate_final'], 
                     warmup_steps=(training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches']) // 10,
                     decay_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
                 ), 

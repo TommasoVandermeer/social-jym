@@ -141,6 +141,7 @@ for i in range(n_episodes):
     # )
     ## Animate trajectory with JESSI's perception and action distribution
     policy.animate_lasernav_trajectory(
+        env,
         all_states[:-1],
         all_observations[:-1],
         all_actions,
@@ -149,5 +150,4 @@ for i in range(n_episodes):
         all_robot_goals[:-1],
         all_static_obstacles[:-1],
         all_humans_radii[:-1],
-        env,
     )

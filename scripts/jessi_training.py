@@ -969,8 +969,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
             optax.adam(
                 learning_rate=optax.schedules.warmup_cosine_decay_schedule(
                     init_value=0.,
-                    peak_value=training_hyperparams['rl_learning_rate'] * 0.1,
-                    end_value=training_hyperparams['rl_learning_rate_final'] * 0.05, 
+                    peak_value=training_hyperparams['rl_learning_rate'],
+                    end_value=training_hyperparams['rl_learning_rate_final'], 
                     warmup_steps=(training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches']) // 10,
                     decay_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
                 ), 
@@ -1279,8 +1279,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), modular_network_na
             optax.adam(
                 learning_rate=optax.schedules.warmup_cosine_decay_schedule(
                     init_value=0.,
-                    peak_value=training_hyperparams['rl_learning_rate'] * 0.1,
-                    end_value=training_hyperparams['rl_learning_rate_final'] * 0.05, 
+                    peak_value=training_hyperparams['rl_learning_rate'],
+                    end_value=training_hyperparams['rl_learning_rate_final'], 
                     warmup_steps=(training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches']) // 10,
                     decay_steps=training_hyperparams['rl_training_updates']*training_hyperparams['rl_num_epochs']*training_hyperparams['rl_num_batches'],
                 ), 

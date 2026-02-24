@@ -8,6 +8,7 @@ import numpy as np
 import os
 import pickle
 from jax import random
+from jax.tree_util import tree_map
 from collections import deque
 import math
 import jax.numpy as jnp
@@ -16,6 +17,7 @@ from rclpy.qos import qos_profile_sensor_data
 from socialjym.policies.jessi import JESSI
 
 NETWORK_NAME = 'jessi_finetuned_rl_out.pkl'
+SAVE_FILE_NAME = 'jessi_recorded_obs.pkl'
 
 class JessiController(Node):
     def __init__(self):
@@ -30,10 +32,13 @@ class JessiController(Node):
         # Usiamo appendleft così l'indice 0 è sempre l'osservazione più recente.
         self.obs_stack = deque(maxlen=self.n_stack)
         
+        # Buffer per salvare i dati per il pickle
+        self.recorded_data = []
+
         # Variabili di stato correnti
         self.latest_scan = None
         self.latest_odom = None
-        self.robot_goal = np.array([5.0, 0.]) # Esempio: goal a 5 metri dritti in frame globale (da aggiornare in runtime)
+        self.robot_goal = np.array([-.5, 1.5]) # Esempio: goal a 5 metri dritti in frame globale (da aggiornare in runtime)
         
         self.lidar_num_rays = 320
         self.lidar_min_angle = -0.46981275  # Radianti
@@ -123,7 +128,7 @@ class JessiController(Node):
 
         # 5. INFERENZA JESSI
         try:
-            action, self.rng_key, _, _, _, _, _, _, _, _ = self.jessi.act(
+            action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _ = self.jessi.act(
                 key=self.rng_key,
                 obs=obs_matrix,
                 info=info_dict,
@@ -142,9 +147,32 @@ class JessiController(Node):
             self.pub_cmd.publish(cmd_msg)
 
             self.previous_action = jnp.array([v_cmd, w_cmd])
+
+            # 7. SALVATAGGIO DATI PER IL PICKLE
+            # Convertiamo i tensori JAX in array Numpy standard per evitare problemi di unpickling offline
+            self.recorded_data.append({
+                'observation': np.array(obs_matrix),
+                'robot_goal': np.array(self.robot_goal),
+                'action': np.array([v_cmd, w_cmd]),
+                'perception_distr': perception_output,
+                'actor_distr': actor_distr,
+            })
             
         except Exception as e:
             self.get_logger().error(f"Errore durante inferenza JESSI: {e}")
+
+    def save_data(self):
+        """Metodo chiamato allo spegnimento per salvare le osservazioni su disco"""
+        if len(self.recorded_data) > 0:
+            save_path = os.path.join(os.path.dirname(__file__), SAVE_FILE_NAME)
+            try:
+                with open(save_path, 'wb') as f:
+                    pickle.dump(self.recorded_data, f)
+                self.get_logger().info(f"💾 Salvataggio completato! {len(self.recorded_data)} frame salvati in: {save_path}")
+            except Exception as e:
+                self.get_logger().error(f"Errore durante il salvataggio dei dati: {e}")
+        else:
+            self.get_logger().info("Nessun dato da salvare.")
 
 def main(args=None):
     rclpy.init(args=args)
@@ -154,6 +182,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.save_data()
         node.destroy_node()
         rclpy.shutdown()
 
