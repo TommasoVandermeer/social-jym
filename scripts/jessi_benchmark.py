@@ -160,7 +160,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
     if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_multitask_tests.pkl")):
         # Load JESSI-MULTITASK policy parameters
         with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out.pkl'), 'rb') as f:
-            jessi_params, _, _ = pickle.load(f)
+            _, jessi_params, _ = pickle.load(f)
         # Execute tests
         all_metrics = jessi_tests(jessi_params)
         with open(os.path.join(os.path.dirname(__file__),"jessi_multitask_tests.pkl"), 'wb') as f:

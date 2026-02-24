@@ -14,12 +14,13 @@ lidar_min_angle = -0.46981275
 lidar_max_angle = 0.46981275   
 lidar_angle_increment = 0.00294553 
 lidar_angular_range = lidar_max_angle - lidar_min_angle
+lidar_max_dist = 4
 
 env_params = {
     'n_stack': 5,
     'lidar_num_rays': lidar_num_rays,
     'lidar_angular_range': lidar_angular_range,
-    'lidar_max_dist': 4.0, # Usa 4.0 come sul robot
+    'lidar_max_dist': lidar_max_dist,
     'n_humans': 3,
     'n_obstacles': 5,
     'robot_radius': 0.3,
@@ -41,7 +42,7 @@ env = LaserNav(**env_params)
 jessi = JESSI(
     lidar_num_rays=lidar_num_rays,
     lidar_angular_range=lidar_angular_range,
-    lidar_max_dist=4.,
+    lidar_max_dist=lidar_max_dist,
     n_stack_for_action_space_bounding=5
 )
 

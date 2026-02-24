@@ -38,19 +38,20 @@ class JessiController(Node):
         # Variabili di stato correnti
         self.latest_scan = None
         self.latest_odom = None
-        self.robot_goal = np.array([-.5, 1.5]) # Esempio: goal a 5 metri dritti in frame globale (da aggiornare in runtime)
+        self.robot_goal = np.array([0., 2.]) # Esempio: goal a 5 metri dritti in frame globale (da aggiornare in runtime)
         
         self.lidar_num_rays = 320
         self.lidar_min_angle = -0.46981275  # Radianti
         self.lidar_max_angle = 0.46981275   # Radianti
         self.lidar_angle_increment = 0.00294553 # Radianti
+        self.lidar_max_dist = 4
 
         # Inizializza il modello JESSI
         self.jessi = JESSI(
             lidar_num_rays=320,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
-            lidar_max_dist=4.,
-            n_stack_for_action_space_bounding=5
+            lidar_max_dist=self.lidar_max_dist,
+            n_stack_for_action_space_bounding=1
         )
         self.rng_key = random.PRNGKey(0)
         with open(os.path.join(os.path.dirname(__file__), NETWORK_NAME), 'rb') as f:
