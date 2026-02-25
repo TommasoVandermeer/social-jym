@@ -13,6 +13,7 @@ from collections import deque
 import math
 import jax.numpy as jnp
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from socialjym.policies.jessi import JESSI
 
@@ -67,7 +68,14 @@ class JessiController(Node):
         self.sub_odom = self.create_subscription(Odometry, '/loomo/odom', self.odom_callback, 10)
         
         # ROS 2 Publisher
-        self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
+        # - KEEP_LAST con depth=1: tieni in memoria SOLO l'ultimissimo comando generato.
+        # - BEST_EFFORT: invia il comando il più velocemente possibile, senza aspettare conferme di ricezione (TCP vs UDP-style).
+        qos_cmd = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', qos_cmd)
         
         # ROS 2 Timer (Il cuore di JESSI)
         self.timer = self.create_timer(self.dt, self.control_loop)

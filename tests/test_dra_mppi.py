@@ -1,31 +1,39 @@
-from jax import random, vmap
+from jax import random, vmap, lax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 import os
 import pickle
+import matplotlib.pyplot as plt
+from matplotlib import rc, rcParams
+rc('font', weight='regular', size=20)
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
 
+from socialjym.envs.base_env import HUMAN_POLICIES
 from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1 as SocialReward
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as LaserReward
 from socialjym.policies.dra_mppi import DRAMPPI
 from socialjym.policies.jessi import JESSI
+from jhsfm.hsfm import get_linear_velocity
+
 
 # Hyperparameters
-use_ground_truth_data = False
-random_seed = 0
+use_ground_truth_data = True
+random_seed = 1
 n_episodes = 100
 kinematics = 'unicycle'
 
 if use_ground_truth_data:
     env_params = {
         'n_humans': 5,
-        'n_obstacles': 3,
+        'n_obstacles': 5,
         'robot_radius': 0.3,
         'robot_dt': 0.25,
         'humans_dt': 0.01,      
         'robot_visible': True,
-        'scenario': 'hybrid_scenario', 
+        'scenario': 'parallel_traffic', 
         'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
         'ccso_n_static_humans': 0,
         'reward_function': SocialReward(kinematics=kinematics),
@@ -46,6 +54,73 @@ if use_ground_truth_data:
     for i in range(n_episodes):
         reset_key, env_key, policy_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
         state, reset_key, obs, info, outcome = env.reset(reset_key)
+        
+        # PLOT INITIAL STATE
+        figure, ax = plt.subplots(1,1, figsize=(9, 4))
+        figure.subplots_adjust(left=0.09, right=0.96, top=0.99, bottom=0.15)
+        ax.set(xlim=[-10,10], ylim=[-4,4])
+        ax.set_xlabel('X', labelpad=-2)
+        ax.set_ylabel('Y', labelpad=-2)
+        ax.set_aspect('equal', adjustable='box')
+        # Plot humans
+        humans_positions = state[:-1,:2]
+        humans_orientations = state[:-1,4]
+        humans_poses = jnp.concatenate([humans_positions, humans_orientations[:,None]], axis=-1)
+        humans_body_velocities = state[:-1,2:4]
+        humans_velocities = lax.cond(
+            env.humans_policy == HUMAN_POLICIES.index('hsfm'),
+            lambda: vmap(get_linear_velocity, in_axes=(0,0))(
+                    humans_orientations,
+                    humans_body_velocities,
+                ),
+            lambda: humans_body_velocities,
+        )
+        for h in range(len(humans_poses)):
+            color = 'blue'
+            alpha = 0.6
+            head = plt.Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * info['humans_parameters'][h,0], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
+            ax.add_patch(head)
+            circle = plt.Circle((humans_poses[h,0], humans_poses[h,1]), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            ax.add_patch(circle)
+        # Plot human velocities
+        for h in range(len(humans_poses)):
+            color = 'blue'
+            alpha = 0.6
+            ax.arrow(
+                humans_poses[h,0],
+                humans_poses[h,1],
+                humans_velocities[h,0],
+                humans_velocities[h,1],
+                head_width=0.15,
+                head_length=0.15,
+                fc=color,
+                ec=color,
+                alpha=alpha,
+                zorder=30,
+            )
+        # Plot robot
+        robot_position = state[-1,:2]
+        head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+        ax.add_patch(head)
+        circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+        ax.add_patch(circle)
+        # Plot robot goal
+        ax.plot(
+            info['robot_goal'][0],
+            info['robot_goal'][1],
+            marker='*',
+            markersize=7,
+            color='red',
+            zorder=5,
+        )
+        # Plot static obstacles
+        if info['static_obstacles'][-1].shape[1] > 1: # Polygon obstacles
+            for o in info['static_obstacles'][-1]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+        else: # One segment obstacles
+            for o in info['static_obstacles'][-1]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+        figure.savefig(os.path.join(os.path.dirname(__file__), "episode_example.eps"), format='eps')
+        #
+
         step = 0
         max_steps = int(env.reward_function.time_limit/env.robot_dt)+1
         all_states = jnp.array([state])

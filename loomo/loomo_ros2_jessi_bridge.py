@@ -16,6 +16,7 @@ import numpy as np
 import math
 import warnings
 import scipy.signal # Mettilo in cima al file insieme agli altri import!
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 class LoomoJessiBridge(Node):
     def __init__(self):
@@ -33,7 +34,13 @@ class LoomoJessiBridge(Node):
         self.bridge = CvBridge()
         
         # Publishers & Subscribers
-        self.sub_cmd = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+        # self.sub_cmd = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+        qos_cmd = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        self.sub_cmd = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, qos_cmd) 
         self.pub_odom = self.create_publisher(Odometry, '/loomo/odom', 10)
         
         # Publisher per i Sensori (Profilo Best Effort)

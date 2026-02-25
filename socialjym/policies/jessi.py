@@ -1595,7 +1595,7 @@ class JESSI(BasePolicy):
         test_action_samples = dummy_cadrl._build_action_space(unicycle_triangle_samples=35)
         # Animate trajectory
         fig = plt.figure(figsize=(21.43,13.57))
-        fig.subplots_adjust(left=0.05, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
+        fig.subplots_adjust(left=0.07, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
         outer_gs = fig.add_gridspec(1, 2, width_ratios=[2, 0.4], wspace=0.09)
         gs_left = outer_gs[0].subgridspec(2, 2, wspace=0.0, hspace=0.0)
         axs = [
@@ -1615,7 +1615,7 @@ class JESSI(BasePolicy):
                 else:
                     ax.set_xticks([])
                 if i % 2 == 0:
-                    ax.set_ylabel('Y', labelpad=-13)
+                    ax.set_ylabel('Y', labelpad=-16)
                 else:
                     ax.set_yticks([])
                 ax.set_aspect('equal', adjustable='datalim')
@@ -1727,7 +1727,7 @@ class JESSI(BasePolicy):
                     axs[3].scatter(vel[0], vel[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
             axs[2].text(
                 0.5, -0.13,
-                "HCGs positions",
+                "Humans' predicted positions",
                 transform=axs[2].transAxes,
                 rotation=0,
                 va="center",
@@ -1735,7 +1735,7 @@ class JESSI(BasePolicy):
             )
             axs[3].text(
                 0.5, -0.13,
-                "HCGs velocities",
+                "Humans' predicted velocities",
                 transform=axs[3].transAxes,
                 rotation=0,
                 va="center",
