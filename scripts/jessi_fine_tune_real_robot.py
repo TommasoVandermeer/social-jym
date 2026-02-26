@@ -23,7 +23,8 @@ robot_radius = 0.3
 robot_dt = 0.25
 robot_vmax = 0.3 # 0.3, 1.0
 robot_wheel_distance = 0.235 # 0.235, 0.7
-time_limit = 120 # 120, 50
+reward_type = 'lasernav_reward2' # 'lasernav_reward1'
+time_limit = 100 # 100, 50
 kinematics = "unicycle"
 lidar_angular_range = 2*jnp.pi # 2*jnp.pi, jnp.pi * 60 / 180
 lidar_max_dist = 10. # 10, 4
@@ -54,7 +55,7 @@ training_hyperparams = {
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': hybrid_scenario_subset,
-    'reward_function': 'lasernav_reward2',
+    'reward_function': reward_type,
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
     'safety_loss': False,  # Whether to include safety loss in the RL training
     'target_kl': None,  # Target KL divergence for early stopping in each update

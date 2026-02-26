@@ -6,6 +6,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
+from irobot_create_msgs.srv import ResetPose
 import numpy as np
 import os
 import pickle
@@ -18,9 +19,6 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from socialjym.policies.jessi import JESSI
 
-NETWORK_NAME = 'jessi_finetuned_rl_out.pkl'
-SAVE_FILE_NAME = 'jessi_recorded_obs.pkl'
-
 class JessiController(Node):
     def __init__(self, rc_goal, patrol_mode, network_name, save_file_name):
         super().__init__('jessi_controller')
@@ -30,7 +28,7 @@ class JessiController(Node):
         self.radius = 0.3
         self.patrol = patrol_mode # Back and forth from initial position to goal
         self.save_file_name = save_file_name
-        
+
         self.obs_stack = deque(maxlen=self.n_stack)
         self.recorded_data = []
 
@@ -40,12 +38,17 @@ class JessiController(Node):
         self.initial_position = jnp.array([0.,0.]) # Odometry is reset at the beginning
         self.goal_reached = False
         
-        self.lidar_num_rays = 320
-        self.lidar_min_angle = -0.46981275  
-        self.lidar_max_angle = 0.46981275   
-        self.lidar_max_dist = 4
+        #self.original_lidar_num_rays = 1081
+        self.lidar_num_rays = 540
+        self.lidar_min_angle = -jnp.pi
+        self.lidar_max_angle = jnp.pi
+        self.lidar_max_dist = 10
+        self.angular_res = (float(self.lidar_max_angle) - float(self.lidar_min_angle)) / self.lidar_num_rays
 
         self.jessi = JESSI(
+            v_max=0.3,
+            wheels_distance=0.235,
+            robot_radius=self.radius,
             lidar_num_rays=self.lidar_num_rays,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
             lidar_max_dist=self.lidar_max_dist,
@@ -55,14 +58,32 @@ class JessiController(Node):
         with open(os.path.join(os.path.dirname(__file__), network_name), 'rb') as f:
             self.network_params, _, _ = pickle.load(f)
         
+        # Reset turtlebot odometry
+        self.odom_reset_confirmed = False
+        self.reset_odom_client = self.create_client(ResetPose, '/reset_pose')
+        if self.reset_odom_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().info("Sending odometry reset request...")
+            req = ResetPose.Request()
+            req.pose.position.x = 0.0
+            req.pose.position.y = 0.0
+            req.pose.position.z = 0.0
+            req.pose.orientation.x = 0.0
+            req.pose.orientation.y = 0.0
+            req.pose.orientation.z = 0.0
+            req.pose.orientation.w = 1.0
+            future = self.reset_odom_client.call_async(req)
+            future.add_done_callback(self.odom_reset_callback)
+        else:
+            self.get_logger().warn("WARNING: Odometry reset service /reset_pose not found.\nControl loop will not start...")
+
         # ROS 2 Subscribers
         self.sub_scan = self.create_subscription(
             LaserScan, 
-            '/loomo/scan', 
+            '/scan', 
             self.scan_callback, 
             qos_profile_sensor_data
         )
-        self.sub_odom = self.create_subscription(Odometry, '/loomo/odom', self.odom_callback, 10)
+        self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         
         # ROS 2 Publisher
         qos_cmd = QoSProfile(
@@ -78,6 +99,14 @@ class JessiController(Node):
 
         self.get_logger().info("JESSI Controller initialized at 4Hz!")
 
+    def odom_reset_callback(self, future):
+        try:
+            response = future.result()
+            self.get_logger().info("OK: Odometry reset on turtlebot4")
+            self.odom_reset_confirmed = True
+        except Exception as e:
+            self.get_logger().error(f"Error during odometry reset: {e}\nControl loop will not start...")
+
     def scan_callback(self, msg):
         self.latest_scan = msg
 
@@ -90,19 +119,36 @@ class JessiController(Node):
         return math.atan2(siny_cosp, cosy_cosp)
 
     def control_loop(self):
-        if self.latest_scan is None or self.latest_odom is None:
+        if self.latest_scan is None or self.latest_odom is None or not self.odom_reset_confirmed:
             self.get_logger().warn("Waiting data from sensors...")
             return
 
+        # Ranges cleaning
         ranges = np.array(self.latest_scan.ranges)
-        safe_ranges = np.where(np.isnan(ranges) | np.isinf(ranges), self.jessi.lidar_max_dist, ranges)
+        cleaned = np.nan_to_num(ranges, nan=self.lidar_max_dist, posinf=self.lidar_max_dist, neginf=self.lidar_max_dist)
+        cleaned[cleaned < 0.15] = self.lidar_max_dist
+        cleaned = np.clip(cleaned, 0.0, self.lidar_max_dist)
+        # Ranges shifting (first ray of TB4 is at -90, in JESSI first ray is at -self.lidar_angular_range/2)
+        tb4_angle_min = self.latest_scan.angle_min
+        tb4_angle_max = self.latest_scan.angle_max
+        tb4_num_rays = len(cleaned)
+        angular_res_tb4 = (tb4_angle_max - tb4_angle_min) / (tb4_num_rays - 1)
+        jessi_angle_min = float(self.lidar_min_angle)
+        shift_rad = tb4_angle_min - jessi_angle_min
+        shift_bins = int(round(shift_rad / angular_res_tb4))
+        shifted_cleaned = np.roll(cleaned, shift_bins)
+        # Ranges resampling (from self.original_num_rays to self.lidar_num_rays)
+        x_old = np.linspace(0, 1, tb4_num_rays)
+        x_new = np.linspace(0, 1, self.lidar_num_rays)
+        lidar_scan = np.interp(x_new, x_old, shifted_cleaned)
 
+        # Odometry
         rx = self.latest_odom.pose.pose.position.x
         ry = self.latest_odom.pose.pose.position.y
         r_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
-        # print(rx,ry, r_theta)
-
-        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], safe_ranges))
+        
+        # Observation
+        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], lidar_scan))
         self.obs_stack.appendleft(current_step_obs)
         while len(self.obs_stack) < self.n_stack:
             self.obs_stack.appendleft(current_step_obs) 
@@ -142,14 +188,11 @@ class JessiController(Node):
                     sample=False # Use mean action
                 )
                 v_cmd, w_cmd = float(action[0]), float(action[1])
-                
                 cmd_msg = Twist()
                 cmd_msg.linear.x = v_cmd
                 cmd_msg.angular.z = w_cmd
                 self.pub_cmd.publish(cmd_msg)
-
                 self.previous_action = jnp.array([v_cmd, w_cmd])
-
                 self.recorded_data.append({
                     'observation': np.array(obs_matrix),
                     'robot_goal': np.array(self.robot_goal),
@@ -157,7 +200,6 @@ class JessiController(Node):
                     'perception_distr': perception_output,
                     'actor_distr': actor_distr,
                 })
-                
             except Exception as e:
                 self.get_logger().error(f"Error during JESSI inference: {e}")
 
@@ -178,7 +220,7 @@ def main(args=None):
     parser.add_argument('-x', '--goal_x', type=float, default=2.0, help='Goal X (in meters)')
     parser.add_argument('-y', '--goal_y', type=float, default=0.0, help='Goal Y (in meters)')
     parser.add_argument('--patrol', action='store_true', help='Activate Patrol Mode (back and forth continuously)')
-    parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out.pkl', help='Network weights pickle file name')
+    parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out_turtlebot.pkl', help='Network weights pickle file name')
     parser.add_argument('-s', '--save_file', type=str, default='jessi_recorded_obs.pkl', help='Output pickle file name for recorded data')
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
     rc_goal = np.array([parsed_args.goal_x, parsed_args.goal_y])
@@ -186,7 +228,7 @@ def main(args=None):
     rclpy.init(args=ros_args)
     
     node = JessiController(
-        rc_goal=rc_goal,
+        rc_goal=rc_goal, 
         patrol_mode=parsed_args.patrol,
         network_name=parsed_args.network,
         save_file_name=parsed_args.save_file

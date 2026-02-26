@@ -15,7 +15,7 @@ import threading
 import numpy as np
 import math
 import warnings
-import scipy.signal # Mettilo in cima al file insieme agli altri import!
+import scipy.signal 
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 class LoomoJessiBridge(Node):
@@ -34,7 +34,6 @@ class LoomoJessiBridge(Node):
         self.bridge = CvBridge()
         
         # Publishers & Subscribers
-        # self.sub_cmd = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
         qos_cmd = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -43,12 +42,10 @@ class LoomoJessiBridge(Node):
         self.sub_cmd = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, qos_cmd) 
         self.pub_odom = self.create_publisher(Odometry, '/loomo/odom', 10)
         
-        # Publisher per i Sensori (Profilo Best Effort)
         self.pub_depth = self.create_publisher(Image, '/loomo/depth', qos_profile_sensor_data)
         self.pub_camera_info = self.create_publisher(CameraInfo, '/loomo/camera_info', qos_profile_sensor_data)        
         self.pub_scan = self.create_publisher(LaserScan, '/loomo/scan', qos_profile_sensor_data)
         
-        # TF Broadcasters
         self.tf_broadcaster = TransformBroadcaster(self)
         self.static_broadcaster = StaticTransformBroadcaster(self)
         
@@ -66,7 +63,7 @@ class LoomoJessiBridge(Node):
         self.get_logger().info(f"🚀 Bridge JESSI All-In-One avviato su {self.loomo_ip}!")
 
     def publish_static_transforms(self):
-        # 1. TF Ottico: Montato sulla testa (head_link)
+        # 1. TF Ottico: Mounted on the head (head_link)
         t_opt = TransformStamped()
         t_opt.header.stamp = self.get_clock().now().to_msg()
         t_opt.header.frame_id = "head_link"           
@@ -79,7 +76,7 @@ class LoomoJessiBridge(Node):
         t_opt.transform.rotation.z = -0.5
         t_opt.transform.rotation.w = 0.5
 
-        # 2. TF Laser Reale: Montato sulla testa (head_link)
+        # 2. TF Laser Reale: Mounted on the head (head_link)
         t_laser = TransformStamped()
         t_laser.header.stamp = t_opt.header.stamp
         t_laser.header.frame_id = "head_link"         
@@ -89,9 +86,7 @@ class LoomoJessiBridge(Node):
         t_laser.transform.translation.z = 0.0
         t_laser.transform.rotation.w = 1.0
 
-        # 3. TF Laser Virtuale: Montato sulla base (base_link)
-        # Questo frame serve per il laser shiftato matematicamente per JESSI.
-        # Si trova nella stessa posizione (x=0.1, z=0.5) del collo, ma NON ruota.
+        # 3. TF Laser Virtuale: Mounted on the base (base_link)
         t_virtual = TransformStamped()
         t_virtual.header.stamp = t_opt.header.stamp
         t_virtual.header.frame_id = "base_link"       
@@ -104,7 +99,6 @@ class LoomoJessiBridge(Node):
         t_virtual.transform.rotation.z = 0.0
         t_virtual.transform.rotation.w = 1.0
 
-        # Manda tutti e tre i TF
         self.static_broadcaster.sendTransform([t_opt, t_laser, t_virtual])
 
     def connect_cmd_socket(self):
@@ -112,10 +106,10 @@ class LoomoJessiBridge(Node):
             try:
                 self.sock_cmd = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.sock_cmd.connect((self.loomo_ip, self.port_cmd))
-                self.get_logger().info("✅ Connesso al Controllo Motori (8000)")
+                self.get_logger().info("✅ Connected to cmd (8000)")
                 break
             except Exception:
-                self.get_logger().warn("Attesa server comandi Loomo...")
+                self.get_logger().warn("Waiting cmd server Loomo...")
                 time.sleep(2)
 
     def cmd_vel_callback(self, msg):
@@ -124,7 +118,7 @@ class LoomoJessiBridge(Node):
             command_bytes = struct.pack('<ff', float(msg.linear.x), float(msg.angular.z))
             self.sock_cmd.sendall(command_bytes)
         except Exception as e:
-            self.get_logger().error(f"Errore invio comandi: {e}")
+            self.get_logger().error(f"Error sending commands: {e}")
             self.connect_cmd_socket()
 
     def recvall(self, sock, n):
@@ -136,50 +130,45 @@ class LoomoJessiBridge(Node):
         return data
 
     def receive_depth_loop(self):
-        # Parametri Intrinseci della Telecamera Loomo
         fx = 314.14313
         cx = 159.5
         u = np.arange(self.img_width)
-        # Calcolo angoli pre-computato per efficienza (da sinistra a destra)
         theta = np.arctan2(cx - u, fx)
 
         while rclpy.ok() and self.running:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.connect((self.loomo_ip, self.port_depth))
-                self.get_logger().info("📸 Connesso al Server Depth e Laser (8002)")
+                self.get_logger().info("📸 Connected to depth server (8002)")
                 
                 while self.running:
                     header = self.recvall(s, 8)
                     if not header: 
-                        self.get_logger().warn("⚠️ Nessun dato ricevuto. Il Loomo ha chiuso la connessione?")
+                        self.get_logger().warn("⚠️ No data received. Loomo closed connection?")
                         break
                     msg_len, head_yaw = struct.unpack('>if', header)
                     
                     if msg_len != (self.img_width * self.img_height * 2):
-                        self.get_logger().error(f"❌ DISALLINEAMENTO BYTE! Ricevuta lunghezza {msg_len} (attesa 153600). Riconnessione forzata...")
-                        break # Uscendo da questo while, chiude il socket e si riconnette pulito
+                        self.get_logger().error(f"❌ BYTE MISALIGNMENT! Received length {msg_len} (expected 153600). Re-trying connection...")
+                        break 
 
                     img_data = self.recvall(s, msg_len)
                     if not img_data: 
                         self.get_logger().warn("⚠️ Dati immagine incompleti dal socket.")
                         break
                     
-                    # 1. Creazione Immagine Numpy
                     image_np = np.frombuffer(img_data, dtype=np.uint16).reshape((self.img_height, self.img_width))
                     sync_stamp = self.get_clock().now().to_msg()
                     
-                    # Pubblichiamo la rotazione della testa rispetto al corpo
                     t_head = TransformStamped()
                     t_head.header.stamp = sync_stamp
                     t_head.header.frame_id = "base_link"
                     t_head.child_frame_id = "head_link"
                     
-                    t_head.transform.translation.x = 0.1 # Offset in avanti della testa
+                    t_head.transform.translation.x = 0. # Frontal head offset
                     t_head.transform.translation.y = 0.0
-                    t_head.transform.translation.z = 0.5 # Altezza della testa
+                    t_head.transform.translation.z = 0.5 # Head hight
                     
-                    # Ruotiamo solo sull'asse Z (Yaw)
                     t_head.transform.rotation.x = 0.0
                     t_head.transform.rotation.y = 0.0
                     t_head.transform.rotation.z = math.sin(head_yaw / 2.0)
@@ -187,107 +176,38 @@ class LoomoJessiBridge(Node):
                     
                     self.tf_broadcaster.sendTransform(t_head)
 
-                    # 2. Pubblicazione Depth Grezza (Opzionale, puoi rimuoverlo in futuro se non serve)
                     ros_img = self.bridge.cv2_to_imgmsg(image_np, encoding="16UC1")
                     ros_img.header.stamp = sync_stamp
                     ros_img.header.frame_id = "loomo_depth_optical_frame"
                     self.pub_depth.publish(ros_img)
 
-                    # # --- 3. CONVERSIONE NATIVA IN LASERSCAN ---
-                    # # Prendiamo 10 righe centrali e ne calcoliamo la media
-                    # center_rows = image_np[110:130, :].astype(np.float32)
-                    # center_rows[center_rows == 0] = np.nan 
-                    
-                    # with warnings.catch_warnings():
-                    #     warnings.simplefilter("ignore", category=RuntimeWarning)
-                    #     z_mm = np.nanmean(center_rows, axis=0) 
-                    
-                    # z_m = z_mm / 1000.0 
-
-                    # valid_mask = ~np.isnan(z_m)
-                    # if np.any(valid_mask): # Se c'è almeno un pixel valido nella riga
-                    #     z_m = np.interp(np.arange(len(z_m)), np.arange(len(z_m))[valid_mask], z_m[valid_mask])
-                    
-                    # r = z_m * np.sqrt(1 + ((cx - u) / fx)**2)
-                    
-                    # # MAGIA QUI: Sommiamo head_yaw all'angolo del pixel!
-                    # # Se la testa è girata a sx (+), theta_base sarà shiftato a sx.
-                    # theta_base = theta + head_yaw
-                    
-                    # scan_msg = LaserScan()
-                    # scan_msg.header.stamp = sync_stamp
-                    # # Assegniamo lo scan al frame virtuale che non ruota mai!
-                    # scan_msg.header.frame_id = "loomo_base_laser_frame" 
-                    
-                    # # Manteniamo la "finestra" fissa dell'array da -27 a +27 gradi
-                    # scan_msg.angle_min = float(theta[-1]) 
-                    # scan_msg.angle_max = float(theta[0])  
-                    # scan_msg.angle_increment = float((scan_msg.angle_max - scan_msg.angle_min) / (self.img_width - 1))
-                    # scan_msg.time_increment = 0.0
-                    # scan_msg.scan_time = 0.1
-                    # scan_msg.range_min = 0.3
-                    # scan_msg.range_max = 4.0
-                    
-                    # ranges = np.full(self.img_width, np.inf)
-                    # valid = (r >= scan_msg.range_min) & (r <= scan_msg.range_max) & ~np.isnan(r)
-                    
-                    # # Usiamo i nuovi angoli theta_base per calcolare in quale bin casca il pixel!
-                    # bins = ((theta_base - scan_msg.angle_min) / scan_msg.angle_increment).astype(int)
-                    
-                    # # I pixel che finiscono fuori dal FOV della base (perché la testa è girata troppo) 
-                    # # verranno semplicemente ignorati grazie a questa condizione:
-                    # valid_bins = valid & (bins >= 0) & (bins < self.img_width)
-                    
-                    # for i in range(self.img_width):
-                    #     if valid_bins[i]:
-                    #         b = bins[i]
-                    #         if r[i] < ranges[b]:
-                    #             ranges[b] = float(r[i])
-                                
-                    # scan_msg.ranges = ranges.tolist()
-                    # self.pub_scan.publish(scan_msg)
-
                     center_rows = image_np[110:130, :].astype(np.float32)
                     
-                    # 1. Pulizia iniziale: scarta gli zeri e le misure troppo grandi (es. > 10m)
                     center_rows[center_rows == 0] = np.nan 
                     center_rows[center_rows > 10000] = np.nan 
                     
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", category=RuntimeWarning)
-                        # Comprimiamo in 1D usando la mediana verticale (già un ottimo filtro!)
                         z_mm = np.nanmedian(center_rows, axis=0) 
                     
                     z_m = z_mm / 1000.0 
 
-                    # 2. FILTRO MEDIANO ORIZZONTALE (Uccide il rumore "Salt & Pepper" a singolo pixel)
-                    # Applichiamo un filtro mediano con finestra di 5 pixel (circa 4 gradi di ampiezza)
-                    # Questo distrugge i picchi stretti senza rovinare gli spigoli veri.
                     valid_mask = ~np.isnan(z_m)
                     
-                    # Riempiamo temporaneamente i NaN con un valore alto per far funzionare bene la mediana
                     z_temp = np.where(valid_mask, z_m, 10.0)
                     z_filtered = scipy.signal.medfilt(z_temp, kernel_size=5)
                     
-                    # Ripristiniamo i NaN originali per non inventare muri lontani
                     z_m = np.where(valid_mask, z_filtered, np.nan)
 
-                    # 3. FILLING DEI BUCHI (Nearest-Neighbor al posto della lineare)
-                    # Se c'è un buco, prende il valore dell'ostacolo più vicino invece di interpolare.
                     if np.any(valid_mask):
-                        # Trova gli indici dei pixel validi
                         valid_indices = np.arange(len(z_m))[valid_mask]
-                        # Usa np.interp solo per mappare gli indici, ma poi clona i valori
                         idx_nearest = np.interp(np.arange(len(z_m)), valid_indices, valid_indices).astype(int)
                         z_m = z_m[idx_nearest]
                     else:
-                        # Se l'intera immagine è cieca, imposta tutto alla distanza massima
                         z_m = np.full(self.img_width, scan_msg.range_max)
 
-                    # --- Geometria e Shift della Testa ---
                     r = z_m * np.sqrt(1 + ((cx - u) / fx)**2)
                     
-                    # Sommiamo head_yaw all'angolo del pixel
                     theta_base = theta + head_yaw
                     
                     scan_msg = LaserScan()
@@ -317,8 +237,6 @@ class LoomoJessiBridge(Node):
                     scan_msg.ranges = ranges.tolist()
                     self.pub_scan.publish(scan_msg)
 
-                    # # self.get_logger().info(f"✅ Scan Pubblicato! Yaw testa: {head_yaw:.2f} rad", throttle_duration_sec=1.0)
-
             except Exception as e:
                 self.get_logger().error(f"Errore Depth/Scan: {e}")
                 time.sleep(2)
@@ -334,7 +252,7 @@ class LoomoJessiBridge(Node):
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.connect((self.loomo_ip, self.port_odom))
-                self.get_logger().info("📍 Connesso al Server Odometria (8001)")
+                self.get_logger().info("📍 Connected to odometry server (8001)")
                 self.last_time = time.time()
                 
                 while self.running:
@@ -346,7 +264,7 @@ class LoomoJessiBridge(Node):
                         self.odom_x = 0.0
                         self.odom_y = 0.0
                         self.odom_theta = 0.0
-                        self.get_logger().info("🔄 Odometria AZZERATA dal display del robot!")
+                        self.get_logger().info("🔄 Odometry reset!")
                     
                     current_time = time.time()
                     dt = current_time - self.last_time
@@ -387,7 +305,7 @@ class LoomoJessiBridge(Node):
                     self.tf_broadcaster.sendTransform(t)
                     self.pub_odom.publish(odom_msg)
             except Exception as e:
-                self.get_logger().warn(f"Riconnessione Odometria... ({e})")
+                self.get_logger().warn(f"Re-connecting odometry... ({e})")
                 time.sleep(2)
 
 def main(args=None):
