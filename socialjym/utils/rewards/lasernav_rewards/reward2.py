@@ -82,7 +82,7 @@ class Reward2(BaseReward):
         self.progress_to_goal_weight = progress_to_goal_weight
         self.angular_speed_bound = angular_speed_bound
         self.angular_speed_penalty_weight = angular_speed_penalty_weight
-        self.accountability_fov = accountability_fov
+        self.accountability_fov = jnp.deg2rad(accountability_fov)
         self.accountability_danger_dist = accountability_danger_dist
         self.accountability_fast_penalty_coeff = accountability_fast_penalty_coeff
         self.accountability_stop_reward_coeff = accountability_stop_reward_coeff
