@@ -18,9 +18,6 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from socialjym.policies.jessi import JESSI
 
-NETWORK_NAME = 'jessi_finetuned_rl_out.pkl'
-SAVE_FILE_NAME = 'jessi_recorded_obs.pkl'
-
 class JessiController(Node):
     def __init__(self, rc_goal, patrol_mode, network_name, save_file_name):
         super().__init__('jessi_controller')
@@ -46,10 +43,11 @@ class JessiController(Node):
         self.lidar_max_dist = 4
 
         self.jessi = JESSI(
+            v_max = 0.6,
             lidar_num_rays=self.lidar_num_rays,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
             lidar_max_dist=self.lidar_max_dist,
-            n_stack_for_action_space_bounding=1
+            n_stack_for_action_space_bounding=5
         )
         self.rng_key = random.PRNGKey(0)
         with open(os.path.join(os.path.dirname(__file__), network_name), 'rb') as f:
@@ -100,7 +98,7 @@ class JessiController(Node):
         rx = self.latest_odom.pose.pose.position.x
         ry = self.latest_odom.pose.pose.position.y
         r_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
-        # print(rx,ry, r_theta)
+        print("Robot pose: ", rx,ry, r_theta)
 
         current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], safe_ranges))
         self.obs_stack.appendleft(current_step_obs)
@@ -148,15 +146,19 @@ class JessiController(Node):
                 cmd_msg.angular.z = w_cmd
                 self.pub_cmd.publish(cmd_msg)
 
-                self.previous_action = jnp.array([v_cmd, w_cmd])
+                v_real = self.latest_odom.twist.twist.linear.x
+                w_real = self.latest_odom.twist.twist.angular.z
 
                 self.recorded_data.append({
                     'observation': np.array(obs_matrix),
                     'robot_goal': np.array(self.robot_goal),
                     'action': np.array([v_cmd, w_cmd]),
+                    'action_registered': np.array([v_real, w_real]),
                     'perception_distr': perception_output,
                     'actor_distr': actor_distr,
                 })
+
+                self.previous_action = jnp.array([v_cmd, w_cmd])
                 
             except Exception as e:
                 self.get_logger().error(f"Error during JESSI inference: {e}")
