@@ -1591,7 +1591,7 @@ class JESSI(BasePolicy):
         gauss_samples = gauss_samples.at[:].set(jnp.stack((gauss_samples[:,1] * jnp.cos(gauss_samples[:,0]), gauss_samples[:,1] * jnp.sin(gauss_samples[:,0])), axis=-1))
         from socialjym.policies.cadrl import CADRL
         from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
-        dummy_cadrl = CADRL(DummyReward(kinematics="unicycle"),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
+        dummy_cadrl = CADRL(DummyReward(kinematics="unicycle", v_max=self.v_max),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
         test_action_samples = dummy_cadrl._build_action_space(unicycle_triangle_samples=35)
         # Animate trajectory
         fig = plt.figure(figsize=(21.43,13.57))
@@ -1746,8 +1746,15 @@ class JESSI(BasePolicy):
             axs[4].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
             axs[4].set_xlim(-0.1, self.v_max + 0.1)
             axs[4].set_ylim(-2*self.v_max/self.wheels_distance - 0.3, 2*self.v_max/self.wheels_distance + 0.3)
-            axs[4].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
-            axs[4].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
+            if self.v_max % 0.2 == 0:
+                axs[4].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
+                axs[4].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
+            elif self.v_max % 0.1 == 0:
+                axs[4].set_xticks(jnp.arange(0, self.v_max+0.1, 0.1))
+                axs[4].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.1)] + [r"$\overline{v}$"])
+            else:
+                axs[4].set_xticks(jnp.array([0.,self.v_max]))
+                axs[4].set_xticklabels([round(0.0,1)] + [r"$\overline{v}$"])
             axs[4].set_yticks(jnp.arange(-2,3,1).tolist() + [2*self.v_max/self.wheels_distance,-2*self.v_max/self.wheels_distance])
             axs[4].set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
             axs[4].grid()

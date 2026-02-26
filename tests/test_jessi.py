@@ -10,7 +10,10 @@ from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
-random_seed = 0
+random_seed = 1
+robot_vmax = 0.3
+robot_wheel_distance = 0.235
+time_limit = 120
 n_episodes = 100
 kinematics = 'unicycle'
 n_stack_for_action_space_bounding = 1
@@ -28,7 +31,7 @@ env_params = {
     'scenario': 'perpendicular_traffic', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
-    'reward_function': Reward(robot_radius=0.3),
+    'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
     'lidar_noise': True,
 }
@@ -38,6 +41,8 @@ env = LaserNav(**env_params)
 
 # Initialize the policy
 policy = JESSI(
+    v_max=robot_vmax,
+    wheels_distance=robot_wheel_distance,
     lidar_num_rays=env.lidar_num_rays,
     lidar_angular_range=env.lidar_angular_range,
     lidar_max_dist=env.lidar_max_dist,
@@ -49,7 +54,7 @@ policy = JESSI(
 # with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
 #     actor_params = pickle.load(f)
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
-with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'jessi_finetuned_rl_out_turtlebot.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # Test the trained JESSI policy

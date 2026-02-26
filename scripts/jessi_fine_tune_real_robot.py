@@ -13,17 +13,20 @@ rcParams['ps.fonttype'] = 42
 from socialjym.policies.jessi import JESSI
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
+from socialjym.utils.rewards.lasernav_rewards.reward2 import Reward2
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
 
 network_name = 'jessi_multitask_rl_out.pkl'
-finetune_network_name = 'jessi_finetuned_rl_out.pkl'
+finetune_network_name = 'jessi_finetuned_rl_out_turtlebot.pkl'
 ### Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
-robot_vmax = 1.0
+robot_vmax = 0.3 # 0.3, 1.0
+robot_wheel_distance = 0.235 # 0.235, 0.7
+time_limit = 120 # 120, 50
 kinematics = "unicycle"
-lidar_angular_range = jnp.pi * 70 / 180 
-lidar_max_dist = 10.
+lidar_angular_range = 2*jnp.pi # 2*jnp.pi, jnp.pi * 60 / 180
+lidar_max_dist = 10. # 10, 4
 lidar_num_rays = 100
 scenario = "hybrid_scenario"
 hybrid_scenario_subset = jnp.array([0,1,2,3,4,6])  # Exclude circular_crossing_with_static_obstacles and corner_traffic
@@ -51,7 +54,7 @@ training_hyperparams = {
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': hybrid_scenario_subset,
-    'reward_function': 'lasernav_reward1',
+    'reward_function': 'lasernav_reward2',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
     'safety_loss': False,  # Whether to include safety loss in the RL training
     'target_kl': None,  # Target KL divergence for early stopping in each update
@@ -64,8 +67,17 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
+            v_max=robot_vmax,
             robot_radius=0.3,
             collision_with_humans_penalty=-.5,
+            time_limit=time_limit,
+        )
+    elif training_hyperparams['reward_function'] == 'lasernav_reward2':
+        reward_function = Reward2(
+            v_max=robot_vmax,
+            robot_radius=0.3,
+            collision_with_humans_penalty=-.5,
+            time_limit=time_limit,
         )
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
@@ -97,6 +109,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
     policy = JESSI(
         robot_radius=env_params['robot_radius'],
         v_max=robot_vmax, 
+        wheels_distance=robot_wheel_distance,
         dt=env_params['robot_dt'], 
         lidar_num_rays=lidar_num_rays, 
         lidar_max_dist=lidar_max_dist,
