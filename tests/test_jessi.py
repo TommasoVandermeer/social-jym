@@ -10,7 +10,10 @@ from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
-random_seed = 0
+random_seed = 1
+robot_vmax = 0.3
+robot_wheel_distance = 0.235
+time_limit = 120
 n_episodes = 100
 kinematics = 'unicycle'
 n_stack_for_action_space_bounding = 1
@@ -19,16 +22,16 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
-    'n_humans': 10,
+    'n_humans': 3,
     'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'hybrid_scenario', 
+    'scenario': 'perpendicular_traffic', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
-    'reward_function': Reward(robot_radius=0.3),
+    'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
     'lidar_noise': True,
 }
@@ -38,6 +41,8 @@ env = LaserNav(**env_params)
 
 # Initialize the policy
 policy = JESSI(
+    v_max=robot_vmax,
+    wheels_distance=robot_wheel_distance,
     lidar_num_rays=env.lidar_num_rays,
     lidar_angular_range=env.lidar_angular_range,
     lidar_max_dist=env.lidar_max_dist,
@@ -49,16 +54,16 @@ policy = JESSI(
 # with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
 #     actor_params = pickle.load(f)
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
-with open(os.path.join(os.path.dirname(__file__), 'jessi_e2e_rl_out.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'jessi_finetuned_rl_out_turtlebot.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # Test the trained JESSI policy
-metrics = policy.evaluate(
-    n_episodes,
-    random_seed,
-    env,
-    network_params,
-)
+# metrics = policy.evaluate(
+#     n_episodes,
+#     random_seed,
+#     env,
+#     network_params,
+# )
 
 # Simulate some episodes
 for i in range(n_episodes):
@@ -141,6 +146,7 @@ for i in range(n_episodes):
     # )
     ## Animate trajectory with JESSI's perception and action distribution
     policy.animate_lasernav_trajectory(
+        env,
         all_states[:-1],
         all_observations[:-1],
         all_actions,
@@ -149,5 +155,4 @@ for i in range(n_episodes):
         all_robot_goals[:-1],
         all_static_obstacles[:-1],
         all_humans_radii[:-1],
-        env,
     )

@@ -27,7 +27,7 @@ class MPPI(DWA):
             noise_sigma=jnp.array([0.4, 1.2]), # Sigma for [v, w]
             # MPPI critics weights
             velocity_cost_weight = 0.5,
-            goal_distance_cost_weight = 3.0,
+            goal_distance_cost_weight = 1.0,
             obstacle_cost_weight = 3.0,
             control_cost_weight = 0.1,
             # Base hyperparameters 

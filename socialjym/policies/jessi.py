@@ -1560,13 +1560,13 @@ class JESSI(BasePolicy):
         observations,
         actor_distrs,
         humans_distrs,
-        humans_poses, # x, y, theta
-        humans_velocities, # vx, vy (in global frame)
-        humans_radii,
-        humans_visibility_mask,
-        static_obstacles,
-        p_visualization_threshold_hcgs,
-        p_visualization_threshold_dir,
+        humans_poses=None, # x, y, theta
+        humans_velocities=None, # vx, vy (in global frame)
+        humans_radii=None,
+        humans_visibility_mask=None,
+        static_obstacles=None,
+        p_visualization_threshold_hcgs:float=0.05,
+        p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
         save_video:bool=False,
@@ -1578,11 +1578,7 @@ class JESSI(BasePolicy):
             len(robot_goals) == \
             len(observations) == \
             len(actor_distrs['alphas']) == \
-            len(humans_distrs['pos_distrs']['means']) == \
-            len(humans_poses) == \
-            len(humans_velocities) == \
-            len(humans_radii) == \
-            len(static_obstacles), "All inputs must have the same length"
+            len(humans_distrs['pos_distrs']['means']), "All primary inputs must have the same length"
         # Set matplotlib fonts
         rc('font', weight='regular', size=20)
         rcParams['pdf.fonttype'] = 42
@@ -1595,11 +1591,11 @@ class JESSI(BasePolicy):
         gauss_samples = gauss_samples.at[:].set(jnp.stack((gauss_samples[:,1] * jnp.cos(gauss_samples[:,0]), gauss_samples[:,1] * jnp.sin(gauss_samples[:,0])), axis=-1))
         from socialjym.policies.cadrl import CADRL
         from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
-        dummy_cadrl = CADRL(DummyReward(kinematics="unicycle"),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
+        dummy_cadrl = CADRL(DummyReward(kinematics="unicycle", v_max=self.v_max),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
         test_action_samples = dummy_cadrl._build_action_space(unicycle_triangle_samples=35)
         # Animate trajectory
         fig = plt.figure(figsize=(21.43,13.57))
-        fig.subplots_adjust(left=0.05, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
+        fig.subplots_adjust(left=0.07, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
         outer_gs = fig.add_gridspec(1, 2, width_ratios=[2, 0.4], wspace=0.09)
         gs_left = outer_gs[0].subgridspec(2, 2, wspace=0.0, hspace=0.0)
         axs = [
@@ -1619,34 +1615,36 @@ class JESSI(BasePolicy):
                 else:
                     ax.set_xticks([])
                 if i % 2 == 0:
-                    ax.set_ylabel('Y', labelpad=-13)
+                    ax.set_ylabel('Y', labelpad=-16)
                 else:
                     ax.set_yticks([])
                 ax.set_aspect('equal', adjustable='datalim')
-                # Plot humans
-                for h in range(len(humans_poses[frame])):
-                    color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
-                    alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
-                    head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
-                    ax.add_patch(head)
-                    circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-                    ax.add_patch(circle)
-                # Plot human velocities
-                for h in range(len(humans_poses[frame])):
-                    color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
-                    alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
-                    ax.arrow(
-                        humans_poses[frame][h,0],
-                        humans_poses[frame][h,1],
-                        humans_velocities[frame][h,0],
-                        humans_velocities[frame][h,1],
-                        head_width=0.15,
-                        head_length=0.15,
-                        fc=color,
-                        ec=color,
-                        alpha=alpha,
-                        zorder=30,
-                    )
+                if humans_poses is not None:
+                    # Plot humans
+                    for h in range(len(humans_poses[frame])):
+                        color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
+                        alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
+                        head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                        ax.add_patch(head)
+                        circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                        ax.add_patch(circle)
+                    if humans_velocities is not None:
+                        # Plot human velocities
+                        for h in range(len(humans_poses[frame])):
+                            color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
+                            alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
+                            ax.arrow(
+                                humans_poses[frame][h,0],
+                                humans_poses[frame][h,1],
+                                humans_velocities[frame][h,0],
+                                humans_velocities[frame][h,1],
+                                head_width=0.15,
+                                head_length=0.15,
+                                fc=color,
+                                ec=color,
+                                alpha=alpha,
+                                zorder=30,
+                            )
                 # Plot robot
                 robot_position = robot_poses[frame,:2]
                 head = plt.Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
@@ -1663,10 +1661,11 @@ class JESSI(BasePolicy):
                     zorder=5,
                 )
                 # Plot static obstacles
-                if static_obstacles[frame].shape[1] > 1: # Polygon obstacles
-                    for o in static_obstacles[frame]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
-                else: # One segment obstacles
-                    for o in static_obstacles[frame]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+                if static_obstacles is not None:
+                    if static_obstacles[frame].shape[1] > 1: # Polygon obstacles
+                        for o in static_obstacles[frame]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+                    else: # One segment obstacles
+                        for o in static_obstacles[frame]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
             ### FIRST ROW AXS: SIMULATION + INPUT VISUALIZATION
             c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
             rot = jnp.array([[c, -s], [s, c]])
@@ -1728,7 +1727,7 @@ class JESSI(BasePolicy):
                     axs[3].scatter(vel[0], vel[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
             axs[2].text(
                 0.5, -0.13,
-                "HCGs positions",
+                "Humans' predicted positions",
                 transform=axs[2].transAxes,
                 rotation=0,
                 va="center",
@@ -1736,7 +1735,7 @@ class JESSI(BasePolicy):
             )
             axs[3].text(
                 0.5, -0.13,
-                "HCGs velocities",
+                "Humans' predicted velocities",
                 transform=axs[3].transAxes,
                 rotation=0,
                 va="center",
@@ -1747,8 +1746,15 @@ class JESSI(BasePolicy):
             axs[4].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
             axs[4].set_xlim(-0.1, self.v_max + 0.1)
             axs[4].set_ylim(-2*self.v_max/self.wheels_distance - 0.3, 2*self.v_max/self.wheels_distance + 0.3)
-            axs[4].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
-            axs[4].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
+            if self.v_max % 0.2 == 0:
+                axs[4].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
+                axs[4].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
+            elif self.v_max % 0.1 == 0:
+                axs[4].set_xticks(jnp.arange(0, self.v_max+0.1, 0.1))
+                axs[4].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.1)] + [r"$\overline{v}$"])
+            else:
+                axs[4].set_xticks(jnp.array([0.,self.v_max]))
+                axs[4].set_xticklabels([round(0.0,1)] + [r"$\overline{v}$"])
             axs[4].set_yticks(jnp.arange(-2,3,1).tolist() + [2*self.v_max/self.wheels_distance,-2*self.v_max/self.wheels_distance])
             axs[4].set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
             axs[4].grid()
@@ -1806,55 +1812,61 @@ class JESSI(BasePolicy):
 
     def animate_lasernav_trajectory(
         self,
-        states,
-        observations,
-        actions,
-        actor_distrs,
-        humans_distrs,
-        goals,
-        static_obstacles,
-        humans_radii,
         lasernav_env:LaserNav,
+        states=None,
+        observations=None,
+        actions=None,
+        actor_distrs=None,
+        humans_distrs=None,
+        goals=None,
+        static_obstacles=None,
+        humans_radii=None,
         p_visualization_threshold_gmm:float=0.05,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
         save_video:bool=False,
     ):
-        robot_positions = states[:,-1,:2]
-        robot_orientations = states[:,-1,4]
-        robot_poses = jnp.hstack((robot_positions, robot_orientations.reshape(-1,1)))
-        humans_positions = states[:,:-1,:2]
-        humans_orientations = states[:,:-1,4]
-        humans_poses = jnp.dstack((humans_positions, humans_orientations))
-        humans_body_velocities = states[:,:-1,2:4]
-        humans_velocities = lax.cond(
-            lasernav_env.humans_policy == HUMAN_POLICIES.index('hsfm'),
-            lambda: vmap(vmap(get_linear_velocity, in_axes=(0,0)), in_axes=(0,0))(
-                    humans_orientations,
-                    humans_body_velocities,
-                ),
-            lambda: humans_body_velocities,
-        )
-        rc_humans_positions, _, _, rc_static_obstacles, _ = lasernav_env.batch_robot_centric_transform(
-            humans_positions,
-            humans_orientations,
-            humans_velocities,
-            static_obstacles,
-            robot_positions,
-            robot_orientations,
-            goals,
-        )
-        humans_visibility_mask, _ = lasernav_env.batch_object_visibility(
-            rc_humans_positions, 
-            humans_radii, 
-            rc_static_obstacles
-        )
-        humans_in_range = lasernav_env.batch_humans_inside_lidar_range(
-            rc_humans_positions,
-            humans_radii,
-        )
-        humans_visibility_mask = humans_visibility_mask & humans_in_range
+        if (states is not None) and (goals is not None) and (static_obstacles is not None) and (humans_radii is not None):
+            robot_positions = states[:,-1,:2]
+            robot_orientations = states[:,-1,4]
+            robot_poses = jnp.hstack((robot_positions, robot_orientations.reshape(-1,1)))
+            humans_positions = states[:,:-1,:2]
+            humans_orientations = states[:,:-1,4]
+            humans_poses = jnp.dstack((humans_positions, humans_orientations))
+            humans_body_velocities = states[:,:-1,2:4]
+            humans_velocities = lax.cond(
+                lasernav_env.humans_policy == HUMAN_POLICIES.index('hsfm'),
+                lambda: vmap(vmap(get_linear_velocity, in_axes=(0,0)), in_axes=(0,0))(
+                        humans_orientations,
+                        humans_body_velocities,
+                    ),
+                lambda: humans_body_velocities,
+            )
+            rc_humans_positions, _, _, rc_static_obstacles, _ = lasernav_env.batch_robot_centric_transform(
+                humans_positions,
+                humans_orientations,
+                humans_velocities,
+                static_obstacles,
+                robot_positions,
+                robot_orientations,
+                goals,
+            )
+            humans_visibility_mask, _ = lasernav_env.batch_object_visibility(
+                rc_humans_positions, 
+                humans_radii, 
+                rc_static_obstacles
+            )
+            humans_in_range = lasernav_env.batch_humans_inside_lidar_range(
+                rc_humans_positions,
+                humans_radii,
+            )
+            humans_visibility_mask = humans_visibility_mask & humans_in_range
+        else:
+            robot_poses = observations[:,0,:3]
+            humans_poses = None
+            humans_velocities = None
+            humans_visibility_mask = None
         self.animate_trajectory(
             robot_poses,
             actions,
