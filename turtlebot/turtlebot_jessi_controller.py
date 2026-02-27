@@ -147,6 +147,7 @@ class JessiController(Node):
         rx = self.latest_odom.pose.pose.position.x
         ry = self.latest_odom.pose.pose.position.y
         r_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        print(f"Current pose - x: {rx}, y: {ry}, theta: {r_theta}")
         
         # Observation
         current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], lidar_scan))
