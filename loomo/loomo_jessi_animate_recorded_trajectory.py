@@ -18,7 +18,7 @@ def main(args=None):
     save_file_name = parsed_args.save_file
 
     n_stack = 5
-    lidar_num_rays = 320
+    lidar_num_rays = 100
     lidar_min_angle = -0.46981275  
     lidar_max_angle = 0.46981275   
     lidar_angular_range = lidar_max_angle - lidar_min_angle
@@ -45,6 +45,7 @@ def main(args=None):
 
     env = LaserNav(**env_params)
     jessi = JESSI(
+        robot_radius=0.4,
         n_stack=n_stack,
         lidar_num_rays=lidar_num_rays,
         lidar_angular_range=lidar_angular_range,

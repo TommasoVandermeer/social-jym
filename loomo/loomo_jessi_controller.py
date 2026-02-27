@@ -15,6 +15,9 @@ import math
 import jax.numpy as jnp
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
+from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
 
 from socialjym.policies.jessi import JESSI
 
@@ -25,6 +28,7 @@ class JessiController(Node):
         self.n_stack = 5 
         self.dt = 0.25 # 4 Hz
         self.radius = 0.3
+        self.bounding_radius = 0.4
         self.patrol = patrol_mode # Back and forth from initial position to goal
         self.save_file_name = save_file_name
         
@@ -37,12 +41,13 @@ class JessiController(Node):
         self.initial_position = jnp.array([0.,0.]) # Odometry is reset at the beginning
         self.goal_reached = False
         
-        self.lidar_num_rays = 320
+        self.lidar_num_rays = 100
         self.lidar_min_angle = -0.46981275  
         self.lidar_max_angle = 0.46981275   
         self.lidar_max_dist = 4
 
         self.jessi = JESSI(
+            robot_radius = self.bounding_radius,
             v_max = 0.6,
             lidar_num_rays=self.lidar_num_rays,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
@@ -61,7 +66,9 @@ class JessiController(Node):
             qos_profile_sensor_data
         )
         self.sub_odom = self.create_subscription(Odometry, '/loomo/odom', self.odom_callback, 10)
-        
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
         # ROS 2 Publisher
         qos_cmd = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -92,13 +99,33 @@ class JessiController(Node):
             self.get_logger().warn("Waiting data from sensors...")
             return
 
+        scan_time = self.latest_scan.header.stamp
+
+        try:
+            trans = self.tf_buffer.lookup_transform(
+                'odom', 
+                'base_link', 
+                scan_time, 
+                rclpy.duration.Duration(seconds=0.1)
+            )
+        except (LookupException, ConnectivityException, ExtrapolationException) as e:
+            self.get_logger().warn(f"Impossible to sincronize odom and scan (desync): {e}", throttle_duration_sec=2.0)
+            return
+        rx = trans.transform.translation.x
+        ry = trans.transform.translation.y
+        r_theta = self.get_yaw_from_quaternion(trans.transform.rotation)
+
+        print(f"Interp. Robot pose: {rx:.3f}, {ry:.3f}, {r_theta:.3f}")
+
         ranges = np.array(self.latest_scan.ranges)
         safe_ranges = np.where(np.isnan(ranges) | np.isinf(ranges), self.jessi.lidar_max_dist, ranges)
+        indices = np.round(np.linspace(0, len(safe_ranges) - 1, self.lidar_num_rays)).astype(int)
+        safe_ranges = safe_ranges[indices]
 
-        rx = self.latest_odom.pose.pose.position.x
-        ry = self.latest_odom.pose.pose.position.y
-        r_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
-        print("Robot pose: ", rx,ry, r_theta)
+        curr_rx = self.latest_odom.pose.pose.position.x
+        curr_ry = self.latest_odom.pose.pose.position.y
+        curr_r_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        print(f"Robot pose:         {curr_rx:.3f}, {curr_ry:.3f}, {curr_r_theta:.3f}")
 
         current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], safe_ranges))
         self.obs_stack.appendleft(current_step_obs)

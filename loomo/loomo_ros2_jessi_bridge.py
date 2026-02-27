@@ -171,7 +171,7 @@ class LoomoJessiBridge(Node):
                     ros_img.header.frame_id = "loomo_depth_optical_frame"
                     self.pub_depth.publish(ros_img)
 
-                    center_rows = image_np[110:130, :].astype(np.float32)
+                    center_rows = image_np[105:135, :].astype(np.float32)
                     center_rows[center_rows == 0] = np.nan 
                     center_rows[center_rows > 10000] = np.nan 
                     
