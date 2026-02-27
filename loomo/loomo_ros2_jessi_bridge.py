@@ -94,12 +94,19 @@ class LoomoJessiBridge(Node):
         t_virtual.transform.translation.x = 0.1       
         t_virtual.transform.translation.y = 0.0
         t_virtual.transform.translation.z = 0.5
-        t_virtual.transform.rotation.x = 0.0
-        t_virtual.transform.rotation.y = 0.0
-        t_virtual.transform.rotation.z = 0.0
         t_virtual.transform.rotation.w = 1.0
 
-        self.static_broadcaster.sendTransform([t_opt, t_laser, t_virtual])
+        # 4. TF Head (Fixed on the base)
+        t_head = TransformStamped()
+        t_head.header.stamp = t_opt.header.stamp
+        t_head.header.frame_id = "base_link"
+        t_head.child_frame_id = "head_link"
+        t_head.transform.translation.x = 0.0
+        t_head.transform.translation.y = 0.0
+        t_head.transform.translation.z = 0.5
+        t_head.transform.rotation.w = 1.0
+
+        self.static_broadcaster.sendTransform([t_opt, t_laser, t_virtual, t_head])
 
     def connect_cmd_socket(self):
         while rclpy.ok() and self.running:
@@ -146,43 +153,25 @@ class LoomoJessiBridge(Node):
                     if not header: 
                         self.get_logger().warn("⚠️ No data received. Loomo closed connection?")
                         break
-                    msg_len, head_yaw = struct.unpack('>if', header)
+                    
+                    msg_len, _ = struct.unpack('>if', header) 
                     
                     if msg_len != (self.img_width * self.img_height * 2):
                         self.get_logger().error(f"❌ BYTE MISALIGNMENT! Received length {msg_len} (expected 153600). Re-trying connection...")
                         break 
 
                     img_data = self.recvall(s, msg_len)
-                    if not img_data: 
-                        self.get_logger().warn("⚠️ Dati immagine incompleti dal socket.")
-                        break
+                    if not img_data: break
                     
                     image_np = np.frombuffer(img_data, dtype=np.uint16).reshape((self.img_height, self.img_width))
                     sync_stamp = self.get_clock().now().to_msg()
                     
-                    t_head = TransformStamped()
-                    t_head.header.stamp = sync_stamp
-                    t_head.header.frame_id = "base_link"
-                    t_head.child_frame_id = "head_link"
-                    
-                    t_head.transform.translation.x = 0. # Frontal head offset
-                    t_head.transform.translation.y = 0.0
-                    t_head.transform.translation.z = 0.5 # Head hight
-                    
-                    t_head.transform.rotation.x = 0.0
-                    t_head.transform.rotation.y = 0.0
-                    t_head.transform.rotation.z = math.sin(head_yaw / 2.0)
-                    t_head.transform.rotation.w = math.cos(head_yaw / 2.0)
-                    
-                    self.tf_broadcaster.sendTransform(t_head)
-
                     ros_img = self.bridge.cv2_to_imgmsg(image_np, encoding="16UC1")
                     ros_img.header.stamp = sync_stamp
                     ros_img.header.frame_id = "loomo_depth_optical_frame"
                     self.pub_depth.publish(ros_img)
 
                     center_rows = image_np[110:130, :].astype(np.float32)
-                    
                     center_rows[center_rows == 0] = np.nan 
                     center_rows[center_rows > 10000] = np.nan 
                     
@@ -193,22 +182,17 @@ class LoomoJessiBridge(Node):
                     z_m = z_mm / 1000.0 
 
                     valid_mask = ~np.isnan(z_m)
-                    
                     z_temp = np.where(valid_mask, z_m, 10.0)
                     z_filtered = scipy.signal.medfilt(z_temp, kernel_size=5)
-                    
                     z_m = np.where(valid_mask, z_filtered, np.nan)
 
                     if np.any(valid_mask):
                         valid_indices = np.arange(len(z_m))[valid_mask]
                         idx_nearest = np.interp(np.arange(len(z_m)), valid_indices, valid_indices).astype(int)
                         z_m = z_m[idx_nearest]
-                    else:
-                        z_m = np.full(self.img_width, scan_msg.range_max)
-
-                    r = z_m * np.sqrt(1 + ((cx - u) / fx)**2)
                     
-                    theta_base = theta + head_yaw
+                    # Calcolo Distanza proiettata
+                    r = z_m * np.sqrt(1 + ((cx - u) / fx)**2)
                     
                     scan_msg = LaserScan()
                     scan_msg.header.stamp = sync_stamp
@@ -222,10 +206,16 @@ class LoomoJessiBridge(Node):
                     scan_msg.range_min = 0.3
                     scan_msg.range_max = 4.0
                     
+                    if not np.any(valid_mask):
+                        scan_msg.ranges = np.full(self.img_width, scan_msg.range_max).tolist()
+                        self.pub_scan.publish(scan_msg)
+                        continue
+
                     ranges = np.full(self.img_width, np.inf)
                     valid = (r >= scan_msg.range_min) & (r <= scan_msg.range_max) & ~np.isnan(r)
                     
-                    bins = ((theta_base - scan_msg.angle_min) / scan_msg.angle_increment).astype(int)
+                    # Nessun offset angolare aggiunto qui! (theta_base = theta)
+                    bins = ((theta - scan_msg.angle_min) / scan_msg.angle_increment).astype(int)
                     valid_bins = valid & (bins >= 0) & (bins < self.img_width)
                     
                     for i in range(self.img_width):
@@ -243,52 +233,46 @@ class LoomoJessiBridge(Node):
 
     def receive_odom_loop(self):
         self.port_odom = 8001
-        self.odom_x = 0.0
-        self.odom_y = 0.0
-        self.odom_theta = 0.0
-        self.last_time = time.time()
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+        self.offset_theta = 0.0
 
         while rclpy.ok() and self.running:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.connect((self.loomo_ip, self.port_odom))
                 self.get_logger().info("📍 Connected to odometry server (8001)")
-                self.last_time = time.time()
                 
                 while self.running:
-                    raw_data = self.recvall(s, 12)
+                    raw_data = self.recvall(s, 24) 
                     if not raw_data: break
-                    v, w, reset_flag = struct.unpack('<fff', raw_data)
+                    
+                    pose_x, pose_y, pose_theta, v, w, reset_flag = struct.unpack('<ffffff', raw_data)
                     
                     if reset_flag > 0.5:
-                        self.odom_x = 0.0
-                        self.odom_y = 0.0
-                        self.odom_theta = 0.0
-                        self.get_logger().info("🔄 Odometry reset!")
+                        self.offset_x = pose_x
+                        self.offset_y = pose_y
+                        self.offset_theta = pose_theta
+                        self.get_logger().info("🔄 Odometry reset! Nuovo zero impostato.")
                     
-                    current_time = time.time()
-                    dt = current_time - self.last_time
-                    self.last_time = current_time
+                    dx = pose_x - self.offset_x
+                    dy = pose_y - self.offset_y
                     
-                    if abs(w) < 1e-6:
-                        self.odom_x += v * math.cos(self.odom_theta) * dt
-                        self.odom_y += v * math.sin(self.odom_theta) * dt
-                    else:
-                        self.odom_x += (v / w) * (math.sin(self.odom_theta + w * dt) - math.sin(self.odom_theta))
-                        self.odom_y -= (v / w) * (math.cos(self.odom_theta + w * dt) - math.cos(self.odom_theta))
+                    odom_x = dx * math.cos(-self.offset_theta) - dy * math.sin(-self.offset_theta)
+                    odom_y = dx * math.sin(-self.offset_theta) + dy * math.cos(-self.offset_theta)
                     
-                    self.odom_theta += w * dt
-                    self.odom_theta = math.atan2(math.sin(self.odom_theta), math.cos(self.odom_theta))
+                    odom_theta = pose_theta - self.offset_theta
+                    odom_theta = math.atan2(math.sin(odom_theta), math.cos(odom_theta))
                     
                     odom_msg = Odometry()
                     odom_msg.header.stamp = self.get_clock().now().to_msg()
                     odom_msg.header.frame_id = "odom"
                     odom_msg.child_frame_id = "base_link"
                     
-                    odom_msg.pose.pose.position.x = float(self.odom_x)
-                    odom_msg.pose.pose.position.y = float(self.odom_y)
-                    odom_msg.pose.pose.orientation.z = math.sin(self.odom_theta / 2.0)
-                    odom_msg.pose.pose.orientation.w = math.cos(self.odom_theta / 2.0)
+                    odom_msg.pose.pose.position.x = float(odom_x)
+                    odom_msg.pose.pose.position.y = float(odom_y)
+                    odom_msg.pose.pose.orientation.z = math.sin(odom_theta / 2.0)
+                    odom_msg.pose.pose.orientation.w = math.cos(odom_theta / 2.0)
                     odom_msg.twist.twist.linear.x = float(v)
                     odom_msg.twist.twist.angular.z = float(w)
 
@@ -296,14 +280,15 @@ class LoomoJessiBridge(Node):
                     t.header.stamp = odom_msg.header.stamp
                     t.header.frame_id = "odom"
                     t.child_frame_id = "base_link"
-                    t.transform.translation.x = float(self.odom_x)
-                    t.transform.translation.y = float(self.odom_y)
+                    t.transform.translation.x = float(odom_x)
+                    t.transform.translation.y = float(odom_y)
                     t.transform.translation.z = 0.0
-                    t.transform.rotation.z = math.sin(self.odom_theta / 2.0)
-                    t.transform.rotation.w = math.cos(self.odom_theta / 2.0)
+                    t.transform.rotation.z = math.sin(odom_theta / 2.0)
+                    t.transform.rotation.w = math.cos(odom_theta / 2.0)
                     
                     self.tf_broadcaster.sendTransform(t)
                     self.pub_odom.publish(odom_msg)
+                    
             except Exception as e:
                 self.get_logger().warn(f"Re-connecting odometry... ({e})")
                 time.sleep(2)

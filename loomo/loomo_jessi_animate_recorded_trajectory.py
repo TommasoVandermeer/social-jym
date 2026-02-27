@@ -4,6 +4,7 @@ import os
 import pickle
 import sys
 import argparse
+import matplotlib.pyplot as plt
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
@@ -63,6 +64,51 @@ def main(args=None):
     all_robot_goals = jnp.array([step['robot_goal'] for step in trajectory])
     all_encoder_distrs = tree_map(lambda *xs: jnp.stack(xs), *[step['perception_distr'] for step in trajectory])
     all_actor_distrs = tree_map(lambda *xs: jnp.stack(xs), *[step['actor_distr'] for step in trajectory])
+    all_registerd_actions = jnp.array([step['action_registered'] for step in trajectory])
+
+    print(f"Mean v diff: ", jnp.mean(jnp.abs(all_registerd_actions[:,0] - all_actions[:,0])))
+    print(f"Mean w diff: ", jnp.mean(jnp.abs(all_registerd_actions[:,1] - all_actions[:,1])))
+
+    figure, ax = plt.subplots(1,1)
+    ax.set_xlabel("$v$ (m/s)")
+    ax.set_ylabel("$\omega$ (rad/s)", labelpad=-15)
+    ax.set_xlim(-0.1, jessi.v_max + 0.1)
+    ax.set_ylim(-2*jessi.v_max/jessi.wheels_distance - 0.3, 2*jessi.v_max/jessi.wheels_distance + 0.3)
+    ax.set_xticks(jnp.arange(0, jessi.v_max+0.2, 0.2))
+    ax.set_xticklabels([round(i,1) for i in jnp.arange(0, jessi.v_max, 0.2)] + [r"$\overline{v}$"])
+    ax.set_yticks(jnp.arange(-2,3,1).tolist() + [2*jessi.v_max/jessi.wheels_distance,-2*jessi.v_max/jessi.wheels_distance])
+    ax.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+    ax.grid()
+    ax.add_patch(
+        plt.Polygon(
+            [   
+                [0,2*jessi.v_max/jessi.wheels_distance],
+                [0,-2*jessi.v_max/jessi.wheels_distance],
+                [jessi.v_max,0],
+            ],
+            closed=True,
+            fill=True,
+            edgecolor='green',
+            facecolor='lightgreen',
+            linewidth=2,
+            zorder=2,
+        ),
+    )
+    ax.scatter(
+        all_registerd_actions[:,0],
+        all_registerd_actions[:,1],
+        s=8,
+        zorder=50,
+        color='red'
+    )
+    ax.scatter(
+        all_actions[:,0],
+        all_actions[:,1],
+        s=8,
+        zorder=49,
+        color='blue'
+    )
+    figure.show()
 
     # ANIMATION
     jessi.animate_lasernav_trajectory(
@@ -76,3 +122,6 @@ def main(args=None):
         static_obstacles=None,
         humans_radii=None,
     )
+
+if __name__ == '__main__':
+    main()

@@ -32,9 +32,9 @@ class Reward2(BaseReward):
         angular_speed_bound: float=1.,
         angular_speed_penalty_weight: float=0.0075,
         accountability_danger_dist: float=1.5,
-        accountability_fov: float=60,
+        accountability_fov: float=120,
         accountability_fast_penalty_coeff: float=1,
-        accountability_stop_reward_coeff: float=0.1,
+        accountability_stop_reward_coeff: float=0.01,
     ) -> None:
         super().__init__(0.9)
         # Check input parameters
@@ -235,10 +235,11 @@ class Reward2(BaseReward):
         if self.accountability_for_human_proximity_reward:
             dists = jnp.linalg.norm(humans_pos - robot_pos, axis=1)
             closest_idx = jnp.argmin(dists)
+            min_distance = dists[closest_idx]
             vec_to_human = humans_pos[closest_idx] - robot_pos
             angle_to_human = jnp.arctan2(vec_to_human[1], vec_to_human[0])
             rel_angle = wrap_angle(angle_to_human - robot_yaw)
-            in_zone = (min_distance < self.accountability_danger_dist) & (jnp.abs(rel_angle) < self.accountability_for_human_proximity_reward) & (~failure)
+            in_zone = (min_distance < self.accountability_danger_dist) & (jnp.abs(rel_angle) < self.accountability_fov/2) & (~failure)
             urgency = jnp.clip((self.accountability_danger_dist - min_distance) / self.accountability_danger_dist, 0.0, 1.0)
             v = action[0]
             is_fast = v > 0.1

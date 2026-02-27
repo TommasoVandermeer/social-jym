@@ -39,7 +39,7 @@ class JessiController(Node):
         self.goal_reached = False
         
         #self.original_lidar_num_rays = 1081
-        self.lidar_num_rays = 540
+        self.lidar_num_rays = 100
         self.lidar_min_angle = -jnp.pi
         self.lidar_max_angle = jnp.pi
         self.lidar_max_dist = 10
@@ -83,7 +83,7 @@ class JessiController(Node):
             self.scan_callback, 
             qos_profile_sensor_data
         )
-        self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_profile_sensor_data)
         
         # ROS 2 Publisher
         qos_cmd = QoSProfile(
@@ -125,7 +125,7 @@ class JessiController(Node):
 
         # Ranges cleaning
         ranges = np.array(self.latest_scan.ranges)
-        cleaned = np.nan_to_num(ranges, nan=self.lidar_max_dist, posinf=self.lidar_max_dist, neginf=self.lidar_max_dist)
+        cleaned = np.nan_to_num(ranges, nan=30., posinf=30., neginf=30.)
         cleaned[cleaned < 0.15] = self.lidar_max_dist
         cleaned = np.clip(cleaned, 0.0, self.lidar_max_dist)
         # Ranges shifting (first ray of TB4 is at -90, in JESSI first ray is at -self.lidar_angular_range/2)
@@ -134,13 +134,14 @@ class JessiController(Node):
         tb4_num_rays = len(cleaned)
         angular_res_tb4 = (tb4_angle_max - tb4_angle_min) / (tb4_num_rays - 1)
         jessi_angle_min = float(self.lidar_min_angle)
-        shift_rad = tb4_angle_min - jessi_angle_min
+        shift_rad = (tb4_angle_min - jessi_angle_min) + jnp.deg2rad(jnp.array([90]))
         shift_bins = int(round(shift_rad / angular_res_tb4))
         shifted_cleaned = np.roll(cleaned, shift_bins)
         # Ranges resampling (from self.original_num_rays to self.lidar_num_rays)
         x_old = np.linspace(0, 1, tb4_num_rays)
         x_new = np.linspace(0, 1, self.lidar_num_rays)
         lidar_scan = np.interp(x_new, x_old, shifted_cleaned)
+        lidar_scan = np.clip(lidar_scan, 0, self.lidar_max_dist)
 
         # Odometry
         rx = self.latest_odom.pose.pose.position.x

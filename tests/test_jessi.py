@@ -28,7 +28,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'perpendicular_traffic', 
+    'scenario': 'hybrid_scenario', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
@@ -54,7 +54,7 @@ policy = JESSI(
 # with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
 #     actor_params = pickle.load(f)
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
-with open(os.path.join(os.path.dirname(__file__), 'jessi_finetuned_rl_out_turtlebot.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'jessi_finetuned_rl_out_turtlebot2.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # Test the trained JESSI policy
