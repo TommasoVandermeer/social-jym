@@ -18,6 +18,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from socialjym.policies.jessi import JESSI
+from socialjym.envs.base_env import wrap_angle
 
 class JessiController(Node):
     def __init__(self, rc_goal, patrol_mode, network_name, save_file_name):
@@ -38,16 +39,15 @@ class JessiController(Node):
         self.initial_position = jnp.array([0.,0.]) # Odometry is reset at the beginning
         self.goal_reached = False
         
-        #self.original_lidar_num_rays = 1081
         self.lidar_num_rays = 100
-        self.lidar_min_angle = -jnp.pi
-        self.lidar_max_angle = jnp.pi
+        self.lidar_min_angle = -jnp.pi/2
+        self.lidar_max_angle = jnp.pi/2
         self.lidar_max_dist = 10
         self.angular_res = (float(self.lidar_max_angle) - float(self.lidar_min_angle)) / self.lidar_num_rays
 
         self.jessi = JESSI(
-            v_max=0.3,
-            wheels_distance=0.235,
+            v_max=1,
+            wheels_distance=0.8,
             robot_radius=self.radius,
             lidar_num_rays=self.lidar_num_rays,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
@@ -59,39 +59,19 @@ class JessiController(Node):
             self.network_params, _, _ = pickle.load(f)
         
         # Reset turtlebot odometry
-        self.odom_reset_confirmed = False
-        self.reset_odom_client = self.create_client(ResetPose, '/reset_pose')
-        if self.reset_odom_client.wait_for_service(timeout_sec=3.0):
-            self.get_logger().info("Sending odometry reset request...")
-            req = ResetPose.Request()
-            req.pose.position.x = 0.0
-            req.pose.position.y = 0.0
-            req.pose.position.z = 0.0
-            req.pose.orientation.x = 0.0
-            req.pose.orientation.y = 0.0
-            req.pose.orientation.z = 0.0
-            req.pose.orientation.w = 1.0
-            future = self.reset_odom_client.call_async(req)
-            future.add_done_callback(self.odom_reset_callback)
-        else:
-            self.get_logger().warn("WARNING: Odometry reset service /reset_pose not found.\nControl loop will not start...")
+        self.initial_odom = None
 
         # ROS 2 Subscribers
         self.sub_scan = self.create_subscription(
             LaserScan, 
-            '/scan', 
+            'demo/laser/out', 
             self.scan_callback, 
             qos_profile_sensor_data
         )
-        self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_profile_sensor_data)
+        self.sub_odom = self.create_subscription(Odometry, '/demo/odom', self.odom_callback, 10)
         
         # ROS 2 Publisher
-        qos_cmd = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1
-        )
-        self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', qos_cmd)
+        self.pub_cmd = self.create_publisher(Twist, '/demo/cmd_vel', 10)
         
         # ROS 2 Timer
         self.timer = self.create_timer(self.dt, self.control_loop)
@@ -99,18 +79,12 @@ class JessiController(Node):
 
         self.get_logger().info("JESSI Controller initialized at 4Hz!")
 
-    def odom_reset_callback(self, future):
-        try:
-            response = future.result()
-            self.get_logger().info("OK: Odometry reset on turtlebot4")
-            self.odom_reset_confirmed = True
-        except Exception as e:
-            self.get_logger().error(f"Error during odometry reset: {e}\nControl loop will not start...")
-
     def scan_callback(self, msg):
         self.latest_scan = msg
 
     def odom_callback(self, msg):
+        if self.initial_odom is None:
+            self.initial_odom = msg
         self.latest_odom = msg
 
     def get_yaw_from_quaternion(self, q):
@@ -119,13 +93,13 @@ class JessiController(Node):
         return math.atan2(siny_cosp, cosy_cosp)
 
     def control_loop(self):
-        if self.latest_scan is None or self.latest_odom is None or not self.odom_reset_confirmed:
+        if self.latest_scan is None or self.latest_odom is None:
             self.get_logger().warn("Waiting data from sensors...")
             return
 
         # Ranges cleaning
         ranges = np.array(self.latest_scan.ranges)
-        cleaned = np.nan_to_num(ranges, nan=30., posinf=30., neginf=30.)
+        cleaned = np.nan_to_num(ranges, nan=self.lidar_max_dist, posinf=self.lidar_max_dist, neginf=self.lidar_max_dist)
         cleaned[cleaned < 0.15] = self.lidar_max_dist
         cleaned = np.clip(cleaned, 0.0, self.lidar_max_dist)
         # Ranges shifting (first ray of TB4 is at -90, in JESSI first ray is at -self.lidar_angular_range/2)
@@ -134,19 +108,27 @@ class JessiController(Node):
         tb4_num_rays = len(cleaned)
         angular_res_tb4 = (tb4_angle_max - tb4_angle_min) / (tb4_num_rays - 1)
         jessi_angle_min = float(self.lidar_min_angle)
-        shift_rad = (tb4_angle_min - jessi_angle_min) + jnp.deg2rad(jnp.array([90]))
+        shift_rad = tb4_angle_min - jessi_angle_min
         shift_bins = int(round(shift_rad / angular_res_tb4))
         shifted_cleaned = np.roll(cleaned, shift_bins)
         # Ranges resampling (from self.original_num_rays to self.lidar_num_rays)
         x_old = np.linspace(0, 1, tb4_num_rays)
         x_new = np.linspace(0, 1, self.lidar_num_rays)
         lidar_scan = np.interp(x_new, x_old, shifted_cleaned)
-        lidar_scan = np.clip(lidar_scan, 0, self.lidar_max_dist)
 
         # Odometry
-        rx = self.latest_odom.pose.pose.position.x
-        ry = self.latest_odom.pose.pose.position.y
-        r_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        curr_x = self.latest_odom.pose.pose.position.x
+        curr_y = self.latest_odom.pose.pose.position.y
+        curr_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        init_x = self.initial_odom.pose.pose.position.x
+        init_y = self.initial_odom.pose.pose.position.y
+        init_theta = self.get_yaw_from_quaternion(self.initial_odom.pose.pose.orientation)
+        dx = curr_x - init_x
+        dy = curr_y - init_y
+        rx = dx * math.cos(-init_theta) - dy * math.sin(-init_theta)
+        ry = dx * math.sin(-init_theta) + dy * math.cos(-init_theta)
+        r_theta = wrap_angle(curr_theta - init_theta)
+        print(f"Current pose - x: {rx} , y: {ry}, theta: {r_theta}")
         
         # Observation
         current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], lidar_scan))
@@ -221,7 +203,7 @@ def main(args=None):
     parser.add_argument('-x', '--goal_x', type=float, default=2.0, help='Goal X (in meters)')
     parser.add_argument('-y', '--goal_y', type=float, default=0.0, help='Goal Y (in meters)')
     parser.add_argument('--patrol', action='store_true', help='Activate Patrol Mode (back and forth continuously)')
-    parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out_turtlebot.pkl', help='Network weights pickle file name')
+    parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out.pkl', help='Network weights pickle file name')
     parser.add_argument('-s', '--save_file', type=str, default='jessi_recorded_obs.pkl', help='Output pickle file name for recorded data')
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
     rc_goal = np.array([parsed_args.goal_x, parsed_args.goal_y])
