@@ -9,7 +9,7 @@ from sensor_msgs.msg import LaserScan
 import numpy as np
 import os
 import pickle
-from jax import random
+from jax import random, lax
 from collections import deque
 import math
 import jax.numpy as jnp
@@ -22,7 +22,7 @@ from tf2_ros import LookupException, ConnectivityException, ExtrapolationExcepti
 from socialjym.policies.jessi import JESSI
 
 class JessiController(Node):
-    def __init__(self, rc_goal, patrol_mode, network_name, save_file_name):
+    def __init__(self, rc_goal, patrol_mode, network_name, save_file_name, use_virtual):
         super().__init__('jessi_controller')
         
         self.n_stack = 5 
@@ -46,13 +46,33 @@ class JessiController(Node):
         self.lidar_max_angle = 0.46981275   
         self.lidar_max_dist = 4
 
+        self.use_virtual = use_virtual
+        self.num_virtual_points = 100
+        num_points_per_wall = self.num_virtual_points // 2
+        x_coords = np.linspace(0.0, 10.0, num_points_per_wall)
+        y_left = np.full(num_points_per_wall, 2)
+        y_right = np.full(num_points_per_wall, -2)
+        left_wall = np.column_stack((x_coords, y_left))
+        right_wall = np.column_stack((x_coords, y_right))
+        self.virtual_points = jnp.array(np.vstack((left_wall, right_wall)))
+        self.jessi_virtual = JESSI(
+            robot_radius = self.bounding_radius,
+            v_max = 0.6,
+            wheels_distance=0.5,
+            lidar_num_rays=self.lidar_num_rays + self.num_virtual_points,
+            lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
+            lidar_max_dist=self.lidar_max_dist,
+            n_stack_for_action_space_bounding=2
+        )
+
         self.jessi = JESSI(
             robot_radius = self.bounding_radius,
             v_max = 0.6,
+            wheels_distance=0.5,
             lidar_num_rays=self.lidar_num_rays,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
             lidar_max_dist=self.lidar_max_dist,
-            n_stack_for_action_space_bounding=5
+            n_stack_for_action_space_bounding=2
         )
         self.rng_key = random.PRNGKey(0)
         with open(os.path.join(os.path.dirname(__file__), network_name), 'rb') as f:
@@ -136,6 +156,37 @@ class JessiController(Node):
             "robot_goal": jnp.array(self.robot_goal)
         }
 
+        # Virtual points
+        if self.use_virtual:
+            v_points = jnp.array(self.virtual_points)
+            dx = v_points[:, 0] - rx
+            dy = v_points[:, 1] - ry
+            cos_theta = math.cos(-r_theta)
+            sin_theta = math.sin(-r_theta)
+            local_x = dx * cos_theta - dy * sin_theta
+            local_y = dx * sin_theta + dy * cos_theta
+            rc_virtual_points = jnp.column_stack((local_x, local_y))
+            virtual_dists = jnp.sqrt(local_x**2 + local_y**2)
+            virtual_angles = jnp.arctan2(local_y, local_x)
+            base_features = jnp.column_stack((
+                virtual_dists / self.jessi.max_beam_range,            # norm_dist
+                jnp.where(virtual_dists < self.jessi.lidar_max_dist, 1.0, 0.0), # hit
+                local_x,                                              # x
+                local_y,                                              # y
+                jnp.sin(virtual_angles),                              # sin_theta
+                jnp.cos(virtual_angles)                               # cos_theta
+            ))
+            delta_ts = jnp.arange(self.n_stack) * self.dt
+            delta_t_matrix = jnp.broadcast_to(
+                delta_ts[:, None, None], 
+                (self.n_stack, len(local_x), 1)
+            )
+            base_features_broadcasted = jnp.broadcast_to(
+                base_features[None, :, :], 
+                (self.n_stack, len(local_x), 6)
+            )
+            virtual_tokens = jnp.concatenate([base_features_broadcasted, delta_t_matrix], axis=2)
+
         # Check distance to goal
         dist = jnp.linalg.norm(jnp.array([rx, ry]) - self.robot_goal)
 
@@ -159,13 +210,60 @@ class JessiController(Node):
         else:
             # JESSI INFERENCE
             try:
-                action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _ = self.jessi.act(
-                    key=self.rng_key,
-                    obs=obs_matrix,
-                    info=info_dict,
-                    e2e_network_params=self.network_params,
-                    sample=False # Use mean action
+                # action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _ = self.jessi.act(
+                #     key=self.rng_key,
+                #     obs=obs_matrix,
+                #     info=info_dict,
+                #     e2e_network_params=self.network_params,
+                #     sample=False # Use mean action
+                # )
+                # Compute encoder input and last lidar point cloud (for action bounding)
+                # perception_input: lidar_tokens (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
+                # 7 features per token: [norm_dist, hit, x, y, sin_theta (theta of beam in the robot frame), cos_theta (theta of beam in the robot frame), delta_t (time difference from the most recent scan)].
+                # Compute encoder input and last lidar point cloud (for action bounding)
+                perception_input, point_cloud_for_bounding = self.jessi.compute_perception_input(obs_matrix)
+                if self.use_virtual:
+                    perception_input = jnp.concatenate(
+                        [perception_input, virtual_tokens], 
+                        axis=1
+                    )
+                    repeated_virtual_points = jnp.tile(
+                        rc_virtual_points, 
+                        (self.jessi_virtual.n_stack_for_action_space_bounding, 1)
+                    )
+                    point_cloud_for_bounding = jnp.concatenate(
+                        [point_cloud_for_bounding, repeated_virtual_points], 
+                        axis=0
+                    )
+                    # Compute bounded action space parameters and add it to the input
+                    bounding_parameters = self.jessi_virtual.bound_action_space(
+                        point_cloud_for_bounding,  
+                    )
+                else:
+                    bounding_parameters = self.jessi.bound_action_space(
+                        point_cloud_for_bounding,  
+                    )
+                # Prepare input for network
+                robot_position = obs_matrix[0,:2]
+                robot_orientation = obs_matrix[0,2]
+                c, s = jnp.cos(-robot_orientation), jnp.sin(-robot_orientation)
+                R = jnp.array([[c, -s],
+                            [s,  c]])
+                translated_position = info_dict["robot_goal"] - robot_position
+                rc_robot_goal = R @ translated_position
+                robot_state_input = self.jessi.compute_robot_state_input(
+                    bounding_parameters,
+                    rc_robot_goal,
                 )
+                # Compute action
+                perception_output, _, _, actor_distr, _, _, _ = self.jessi.e2e.apply(
+                    self.network_params, 
+                    None, 
+                    perception_input,
+                    robot_state_input,
+                    random_key=self.rng_key
+                )
+                action = self.jessi.dirichlet.mean(actor_distr)
                 v_cmd, w_cmd = float(action[0]), float(action[1])
                 
                 cmd_msg = Twist()
@@ -178,6 +276,7 @@ class JessiController(Node):
 
                 self.recorded_data.append({
                     'observation': np.array(obs_matrix),
+                    'virtual_points': self.virtual_points,
                     'robot_goal': np.array(self.robot_goal),
                     'action': np.array([v_cmd, w_cmd]),
                     'action_registered': np.array([v_real, w_real]),
@@ -207,6 +306,7 @@ def main(args=None):
     parser.add_argument('-x', '--goal_x', type=float, default=2.0, help='Goal X (in meters)')
     parser.add_argument('-y', '--goal_y', type=float, default=0.0, help='Goal Y (in meters)')
     parser.add_argument('--patrol', action='store_true', help='Activate Patrol Mode (back and forth continuously)')
+    parser.add_argument('--virtual', action='store_true', help='Use virtual points as well')
     parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out.pkl', help='Network weights pickle file name')
     parser.add_argument('-s', '--save_file', type=str, default='jessi_recorded_obs.pkl', help='Output pickle file name for recorded data')
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
@@ -218,7 +318,8 @@ def main(args=None):
         rc_goal=rc_goal,
         patrol_mode=parsed_args.patrol,
         network_name=parsed_args.network,
-        save_file_name=parsed_args.save_file
+        save_file_name=parsed_args.save_file,
+        use_virtual=parsed_args.virtual,
     )
     mode_text = "🔄 PATROL MODE" if parsed_args.patrol else "🛑 SINGLE TARGET MODE"
     node.get_logger().info(f"Goal set to: X={rc_goal[0]}m, Y={rc_goal[1]}m in the robot frame | {mode_text}")

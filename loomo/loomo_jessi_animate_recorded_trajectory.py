@@ -61,6 +61,7 @@ def main(args=None):
     print(f"Found {T} steps.")
 
     all_observations = jnp.array([step['observation'] for step in trajectory])
+    all_virtual_points = jnp.array([step['virtual_points'] for step in trajectory])
     all_actions = jnp.array([step['action'] for step in trajectory])
     all_robot_goals = jnp.array([step['robot_goal'] for step in trajectory])
     all_encoder_distrs = tree_map(lambda *xs: jnp.stack(xs), *[step['perception_distr'] for step in trajectory])
@@ -122,6 +123,7 @@ def main(args=None):
         goals=all_robot_goals,
         static_obstacles=None,
         humans_radii=None,
+        virtual_points=all_virtual_points
     )
 
 if __name__ == '__main__':
