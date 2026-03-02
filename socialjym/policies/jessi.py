@@ -1699,9 +1699,10 @@ class JESSI(BasePolicy):
                     zorder=20 + self.n_stack - i,
                 )
             if virtual_points is not None:
+                wc_virtual_points = jnp.dot(virtual_points[frame], rot.T) + robot_poses[frame, :2]
                 axs[1].scatter(
-                    virtual_points[frame][:,0],
-                    virtual_points[frame][:,1],
+                    wc_virtual_points[:,0],
+                    wc_virtual_points[:,1],
                     color='blue',
                     alpha=0.6,
                     zorder=30,
