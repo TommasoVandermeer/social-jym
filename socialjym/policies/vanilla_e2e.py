@@ -1,19 +1,14 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, debug, nn, value_and_grad
+from jax import random, jit, vmap, lax, nn, value_and_grad
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
 from functools import partial
 import haiku as hk
 import optax
-import os
-from matplotlib import rc, rcParams
-from matplotlib.animation import FuncAnimation, FFMpegWriter
-import matplotlib.pyplot as plt
 
-from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, HUMAN_POLICIES
+from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.policies.base_policy import BasePolicy
-from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 
@@ -24,6 +19,7 @@ class MLPActorCritic(hk.Module):
             self,
             v_max: float,
             wheels_distance: float,
+            critic_heads: int = 1,
             mlp_params: dict = {
                 "activation": nn.relu,
                 "activate_final": False,
@@ -33,6 +29,7 @@ class MLPActorCritic(hk.Module):
             action_space_bounding:bool = False,
     ) -> None:
         super().__init__()
+        self.critic_heads = critic_heads
         self.wheels_distance = wheels_distance
         self.vmax = v_max
         self.wmax = 2 * v_max / wheels_distance
@@ -60,7 +57,7 @@ class MLPActorCritic(hk.Module):
         )
         self.critic_head = hk.nets.MLP(
             **mlp_params,
-            output_sizes=[100, 50, 1],
+            output_sizes=[100, 50, critic_heads],
             name="critic_head"
         )
         self.dirichlet = Dirichlet()
@@ -109,8 +106,9 @@ class MLPActorCritic(hk.Module):
         ## Sample action
         sampled_actions = vmap(self.dirichlet.sample)(distributions, keys)
         ### CRITIC
-        state_values = self.critic_head(inputs) # (Batch, 1)
-        state_values = jnp.squeeze(state_values, axis=-1) # (Batch,)
+        state_values = self.critic_head(inputs) # (Batch, critic_heads)
+        if self.critic_heads == 1:
+            state_values = jnp.squeeze(state_values, axis=-1) # (Batch,1) to (Batch,)
         if not has_batch:
             sampled_actions = sampled_actions[0]
             state_values = state_values[0]
@@ -123,7 +121,6 @@ class VanillaE2E(BasePolicy):
         self, 
         robot_radius:float=0.3,
         v_max:float=1., 
-        gamma:float=0.9, 
         dt:float=0.25, 
         wheels_distance:float=0.7, 
         n_stack:int=5,
@@ -134,6 +131,7 @@ class VanillaE2E(BasePolicy):
         network_type:str = "MLP",
         action_space_bounding:bool = False,
         n_stack_for_action_space_bounding:int = 1, # Number of recent observations to consider for action space bounding. If > 1, the LiDAR stacks are concatenated in the bounding process.
+        critic_heads:int = 1,
     ) -> None:
         """
         VANILLA-E2E (Simple E2E RL-based social navigation from LiDAR inputs).
@@ -141,7 +139,6 @@ class VanillaE2E(BasePolicy):
         # Input validation
         assert robot_radius > 0, "Robot radius must be positive"
         assert v_max > 0, "Maximum robot velocity must be positive"
-        assert gamma >= 0 and gamma <= 1, "Discount factor must be in [0, 1]"
         assert dt > 0, "Time step must be positive"
         assert wheels_distance > 0, "Wheels distance must be positive"
         assert n_stack >= 2, "Number of stacked observations must be at least 2, to observe motion"
@@ -150,11 +147,11 @@ class VanillaE2E(BasePolicy):
         assert lidar_num_rays >= 10, "LiDAR number of rays must be at least 10"
         assert network_type in NETWORK_TYPES, f"Network type must be one of {NETWORK_TYPES}"
         # Configurable attributes
-        super().__init__(discount=gamma)
         self.robot_radius = robot_radius
         self.v_max = v_max
         self.dt = dt
         self.wheels_distance = wheels_distance
+        self.critic_heads = critic_heads
         self.n_stack = n_stack
         self.lidar_angular_range = lidar_angular_range
         self.lidar_max_dist = lidar_max_dist
@@ -181,9 +178,10 @@ class VanillaE2E(BasePolicy):
              @hk.transform
              def actor_critic_network(x, y, **kwargs) -> jnp.ndarray:
                  actor_critic = MLPActorCritic(
-                     self.v_max, 
-                     self.wheels_distance, 
-                     action_space_bounding=self.action_space_bounding,
+                    self.v_max, 
+                    self.wheels_distance, 
+                    critic_heads,
+                    action_space_bounding=self.action_space_bounding,
                  ) 
                  return actor_critic(x, y, **kwargs)
              self.actor_critic = actor_critic_network

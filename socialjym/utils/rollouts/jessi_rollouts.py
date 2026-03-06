@@ -36,7 +36,7 @@ def collect_rollout_step(
         actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, values, masks = policy.batch_act(
             p_keys, obses, infos, network_params, sample=True
         )
-        new_states, new_obses, new_infos, rewards, new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
+        new_states, new_obses, new_infos, (rewards, _), new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
             states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True, scenarios_prob=scenarios_prob
         )
         rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(

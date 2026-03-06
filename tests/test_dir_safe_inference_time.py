@@ -79,7 +79,7 @@ for i in range(n_inferences):
     _ = jnp.array(dwa.planning(tuple(map(float, np.append(obs[-1,:2],obs[-1,5]))), tuple(map(float, obs[-1,2:4])), tuple(map(float, info['robot_goal'])), np.array(point_cloud, dtype=np.float32), dwa_config))
     all_times_dwa.append(time.time() - time_before_inference_dwa)
     ### STEP ENV
-    state, obs, info, reward, outcome, reset_key = env.step(state,info,action,test=True,reset_key=reset_key,reset_if_done=True) 
+    state, obs, info, (reward, _), outcome, reset_key = env.step(state,info,action,test=True,reset_key=reset_key,reset_if_done=True) 
 print(f"Average DIR-SAFE inference time over {len(all_times_dir_safe)} inferences (small scenario {len(info['static_obstacles'][0])} obstacles, {env_params['n_humans']} humans)): {np.mean(all_times_dir_safe)*1000:.6f} ms ± {np.std(all_times_dir_safe)*1000:.6f} ms")
 print(f"Average DWA inference time over {len(all_times_dwa)} inferences (small scenario {len(info['static_obstacles'][0])} obstacles, {env_params['n_humans']} humans)): {np.mean(all_times_dwa)*1000:.6f} ms ± {np.std(all_times_dwa)*1000:.6f} ms")
 ### Inferences on larger scenarios

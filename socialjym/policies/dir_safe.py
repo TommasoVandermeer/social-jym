@@ -105,7 +105,6 @@ class DIRSAFE(SARL):
             self, 
             reward_function:FunctionType, 
             v_max:float=1., 
-            gamma:float=0.9, 
             dt:float=0.25, 
             wheels_distance:float=0.7, 
             noise:bool=False, # If True, noise is added to humams positions and velocities
@@ -122,7 +121,6 @@ class DIRSAFE(SARL):
             reward_function=reward_function, 
             v_max=v_max, 
             wheels_distance=wheels_distance,
-            gamma=gamma, 
             dt=dt,
             kinematics='unicycle',
             noise=noise,

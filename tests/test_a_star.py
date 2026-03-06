@@ -457,7 +457,7 @@ while outcome["nothing"]:
     # Environment step
     action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, sample=True)
     action_space_params = [distr["vertices"][2,0]/policy.v_max,distr["vertices"][0,1]/(2*policy.v_max/policy.wheels_distance), distr["vertices"][1,1]/(-2*policy.v_max/policy.wheels_distance)]
-    state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
+    state, obs, info, (reward, _), outcome, _ = env.step(state,info,action,test=True) 
     # Update robot goal
     if (waypoint_idx < path_to_goal.shape[0] - 1) and (jnp.linalg.norm(state[-1,:2]-info['robot_goal']) < env.robot_radius*2):
         print(f"Waypoint {waypoint_idx} reached! at time {info['time']:.2f}s")

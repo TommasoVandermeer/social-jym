@@ -51,7 +51,6 @@ class MPPI(DWA):
         super().__init__(
             robot_radius=robot_radius,
             v_max=v_max, 
-            gamma=gamma, 
             dt=dt, 
             wheels_distance=wheels_distance, 
             n_stack=n_stack,
@@ -63,6 +62,7 @@ class MPPI(DWA):
             use_box_action_space=False, # MPPI uses continuous action space clamped in the triangle
         )
         # Save MPPI hyperparameters
+        self.gamma = gamma
         self.num_samples = num_samples # K
         self.horizon = horizon         # T
         self.temperature = temperature         # Temperature

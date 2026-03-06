@@ -88,7 +88,7 @@ all_normalized_inputs = jnp.zeros((n_steps,)+vnet_input.shape)
 all_inputs = jnp.zeros((n_steps,)+vnet_input.shape)
 for step in range(n_steps):
     action, policy_key, vnet_input = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
-    state, obs, info, reward, outcome, reset_key = env.step(state,info,action,test=True,reset_if_done=True,reset_key=reset_key)
+    state, obs, info, (reward, _), outcome, reset_key = env.step(state,info,action,test=True,reset_if_done=True,reset_key=reset_key)
     # Apply the model (normalize the input)
     clipped_norm_vnet_input, norm_state = _normalize_and_clip_observation_and_update_state(norm_state, vnet_input, bound=clip_obs_bound)
     # Save data

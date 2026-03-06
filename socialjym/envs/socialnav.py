@@ -178,12 +178,15 @@ class SocialNav(BaseEnv):
                 new_state = new_state.at[-1,4].set(jnp.arctan2(*jnp.flip(dp)))
             action = jnp.array([jnp.linalg.norm(dp / self.robot_dt), wrap_angle(new_state[-1,4] - state[-1,4]) / self.robot_dt])
         ### Compute reward and outcome - WARNING: The old state is passed, not the updated one (but with the correct action applied)
-        reward, outcome = self.reward_function(self._get_obs(state, old_info, action), old_info, self.robot_dt)
+        reward, outcome, reward_terms = self.reward_function(self._get_obs(state, old_info, action), old_info, self.robot_dt)
         ### Update step, time and return
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
-        new_info["return"] += pow(self.reward_function.gamma, info["step"] * self.robot_dt * self.reward_function.v_max) * reward
-        return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome
+        gammas = jnp.array(list(reward_terms.keys()))
+        rewards = jnp.array(list(reward_terms.values()))
+        exponent = info["step"] * self.robot_dt * self.reward_function.v_max
+        new_info["return"] += jnp.sum(jnp.power(gammas, exponent) * rewards)
+        return new_state, self._get_obs(new_state, new_info, action), new_info, (reward, reward_terms), outcome
     
     @partial(jit, static_argnames=("self"))
     def step(
@@ -225,7 +228,7 @@ class SocialNav(BaseEnv):
                 (info["robot_goal"], info["robot_goal_index"])
             )
         ### Compute reward and outcome
-        reward, outcome = self.reward_function(self._get_obs(state, info, action), info, self.robot_dt)
+        reward, outcome, reward_terms = self.reward_function(self._get_obs(state, info, action), info, self.robot_dt)
         ### Update state and info
         if self.robot_visible:
             if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
@@ -279,7 +282,10 @@ class SocialNav(BaseEnv):
         ### Update time, step, return
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
-        new_info["return"] += pow(self.reward_function.gamma, info["step"] * self.robot_dt * self.reward_function.v_max) * reward
+        gammas = jnp.array(list(reward_terms.keys()))
+        rewards = jnp.array(list(reward_terms.values()))
+        exponent = info["step"] * self.robot_dt * self.reward_function.v_max
+        new_info["return"] += jnp.sum(jnp.power(gammas, exponent) * rewards)
         ### If done and reset_if_done, automatically reset the environment (available only if using standard scenarios)
         if self.scenario != -1: # Custom scenario, no automatic reset
             new_state, reset_key, new_info = lax.cond(
@@ -289,7 +295,7 @@ class SocialNav(BaseEnv):
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        return new_state, self._get_obs(new_state, new_info, action), new_info, reward, outcome, reset_key
+        return new_state, self._get_obs(new_state, new_info, action), new_info, (reward, reward_terms), outcome, reset_key
 
     @partial(jit, static_argnames=("self"))
     def batch_step(

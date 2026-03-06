@@ -74,7 +74,7 @@ for i in range(n_episodes):
         # Compute action from trained JESSI
         action, u_mean, trajectories, costs, policy_key = policy.act(obs, info, u_mean, policy_key)
         # Step the environment
-        state, obs, info, reward, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
+        state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
         # Save data for animation
         all_states = jnp.vstack((all_states, jnp.array([state])))
         all_observations = jnp.vstack((all_observations, jnp.array([obs])))

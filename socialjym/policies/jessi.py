@@ -473,7 +473,6 @@ class JESSI(BasePolicy):
         self, 
         robot_radius:float=0.3,
         v_max:float=1., 
-        gamma:float=0.9, 
         dt:float=0.25, 
         wheels_distance:float=0.7, 
         n_stack:int=5,
@@ -495,7 +494,6 @@ class JESSI(BasePolicy):
         # Input validation
         assert robot_radius > 0, "Robot radius must be positive"
         assert v_max > 0, "Maximum robot velocity must be positive"
-        assert gamma >= 0 and gamma <= 1, "Discount factor must be in [0, 1]"
         assert dt > 0, "Time step must be positive"
         assert wheels_distance > 0, "Wheels distance must be positive"
         assert n_stack >= 2, "Number of stacked observations must be at least 2, to observe motion"
@@ -505,7 +503,6 @@ class JESSI(BasePolicy):
         assert n_detectable_humans >= 2, "Number of detectable humans must be at least 2"
         assert n_stack_for_action_space_bounding <= n_stack, "n_stack_for_action_space_bounding must be less than or equal to n_stack"
         # Configurable attributes
-        super().__init__(discount=gamma)
         self.robot_radius = robot_radius
         self.v_max = v_max
         self.dt = dt

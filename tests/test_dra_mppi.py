@@ -142,7 +142,7 @@ if use_ground_truth_data:
             # Compute action 
             action, u_mean, beta, trajectories, costs, hum_distrs, policy_key = policy.act(obs, info, u_mean, beta, policy_key)
             # Step the environment (SocialNav)
-            state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
+            state, obs, info, (reward, _), outcome, _ = env.step(state,info,action,test=True)
             # Save data for animation
             all_states = jnp.vstack((all_states, jnp.array([state])))
             all_observations = jnp.vstack((all_observations, jnp.array([obs])))
@@ -250,7 +250,7 @@ else:
             # Compute action 
             action, u_mean, beta, trajectories, costs, hum_distrs, perception_distrs, policy_key = policy.act_on_jessi_perception(jessi, perception_params, policy_key, obs, info, u_mean, beta)
             # # Step the environment (Lasernav)
-            state, obs, info, reward, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
+            state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
             # Save data for animation
             all_states = jnp.vstack((all_states, jnp.array([state])))
             all_observations = jnp.vstack((all_observations, jnp.array([obs])))

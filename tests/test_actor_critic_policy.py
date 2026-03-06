@@ -92,7 +92,7 @@ for i in range(n_episodes):
         action, policy_key, _, _, distr = policy.act(policy_key, obs, info, actor_params, sample=False)
         print(distr)
         print("Action: ", action)
-        state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True) 
+        state, obs, info, (reward, _), outcome, _ = env.step(state,info,action,test=True) 
         # print("Robot state: ", state[-1,:])
         # print(f"Return in steps [0,{info['step']}):", info["return"])
         all_states = np.vstack((all_states, [state]))

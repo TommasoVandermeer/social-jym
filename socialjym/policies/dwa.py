@@ -24,7 +24,6 @@ class DWA(BasePolicy):
         velocity_cost_coeff = 0.2,
         robot_radius:float=0.3,
         v_max:float=1., 
-        gamma:float=0.9, 
         dt:float=0.25, 
         wheels_distance:float=0.7, 
         n_stack:int=5,
@@ -42,7 +41,6 @@ class DWA(BasePolicy):
         # Input validation
         assert robot_radius > 0, "Robot radius must be positive"
         assert v_max > 0, "Maximum robot velocity must be positive"
-        assert gamma >= 0 and gamma <= 1, "Discount factor must be in [0, 1]"
         assert dt > 0, "Time step must be positive"
         assert wheels_distance > 0, "Wheels distance must be positive"
         assert n_stack >= 2, "Number of stacked observations must be at least 2, to observe motion"
@@ -55,7 +53,6 @@ class DWA(BasePolicy):
         assert predict_time_horizon % dt == 0, "Predict time horizon must be a multiple of dt"
         assert actions_discretization >= 3, "Actions discretization must be at least 2"
         # Initialize policy parameters
-        super().__init__(discount=gamma)
         self.predict_time_horizon = predict_time_horizon
         self.heading_cost_coeff = heading_cost_coeff
         self.clearance_cost_coeff = clearance_cost_coeff

@@ -250,7 +250,7 @@ class LaserNav(BaseEnv):
         ### Compute reward and outcome
         obs = self._get_obs(state, info, action, env_key)
         new_env_key, _ = random.split(env_key) # Advance the env_key (we do it here to save the replicate the previous obs in previous_obs)
-        reward, outcome = self.reward_function(state, action, info, self.robot_dt)
+        reward, outcome, reward_terms = self.reward_function(state, action, info, self.robot_dt)
         ### Update state and info
         if self.robot_visible:
             if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
@@ -305,7 +305,10 @@ class LaserNav(BaseEnv):
         ### Update time, step, return, previous observation
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
-        new_info["return"] += pow(self.reward_function.gamma, info["step"] * self.robot_dt * self.reward_function.v_max) * reward
+        gammas = jnp.array(list(reward_terms.keys()))
+        rewards = jnp.array(list(reward_terms.values()))
+        exponent = info["step"] * self.robot_dt * self.reward_function.v_max
+        new_info["return"] += jnp.sum(jnp.power(gammas, exponent) * rewards)
         new_info["previous_obs"] = obs
         ### If done and reset_if_done, automatically reset the environment (available only if using standard scenarios)
         if self.scenario != -1: # Custom scenario, no automatic reset
@@ -316,7 +319,7 @@ class LaserNav(BaseEnv):
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        return new_state, self._get_obs(new_state, new_info, action, new_env_key), new_info, reward, outcome, (reset_key, new_env_key)
+        return new_state, self._get_obs(new_state, new_info, action, new_env_key), new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
 
     @partial(jit, static_argnames=("self"))
     def batch_step(

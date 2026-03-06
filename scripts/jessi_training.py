@@ -156,7 +156,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
                 reset_if_done=True,
             )
             ## Simulate one step LASERNAV to update stacked observations
-            _, final_lasernav_obs, final_lasernav_info, final_lasernav_reward, _, _ = laser_env.batch_step(
+            _, final_lasernav_obs, final_lasernav_info, (final_lasernav_reward, _), _, _ = laser_env.batch_step(
                 state,
                 lasernav_info,
                 action, 

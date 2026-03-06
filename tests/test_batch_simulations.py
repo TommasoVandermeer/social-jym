@@ -67,7 +67,7 @@ def _while_body(val:tuple):
     # Compute actions
     actions, policy_keys, _ = policy.batch_act(policy_keys, obses, infos, vnet_params, 0.)
     # Make environment step (policy_keys just acts as placeholder in this case)
-    states, obses, infos, rewards, outcomes, _ = env.batch_step(states, infos, actions, policy_keys, test=True, reset_if_done=False)
+    states, obses, infos, (rewards, _), outcomes, _ = env.batch_step(states, infos, actions, policy_keys, test=True, reset_if_done=False)
     # Save data
     output['all_outcomes']['nothing'] = output['all_outcomes']['nothing'].at[:,steps].set(outcomes['nothing'])
     output['all_outcomes']['failure'] = output['all_outcomes']['failure'].at[:,steps].set(outcomes['failure'])

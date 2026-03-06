@@ -102,7 +102,7 @@ for i in range(n_episodes):
             action, _, _, _, _, _ = policy.act(random.PRNGKey(0), aux_obs, aux_info, policy_params, 0.)
         else:
             action, _, _, _, _, _ = policy.act(random.PRNGKey(0), obs, info, policy_params, 0.)
-        state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
+        state, obs, info, (reward, _), outcome, _ = env.step(state,info,action,test=True)
         # print(f"Return in steps [0,{info['step']}):", info["return"], f" - time : {info['time']}")
         all_states = jnp.vstack((all_states, jnp.array([state])))
     ## Animate trajectory

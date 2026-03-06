@@ -79,7 +79,7 @@ def _fori_body(i:int, val:tuple):
     # Compute actions
     actions, policy_keys, _, _, _ = policy.batch_act(policy_keys, obses, infos, actor_params, 1.)
     # Step env
-    states, obses, infos, rewards, outcomes, reset_keys = env.batch_step(states, infos, actions, reset_keys, False, True)
+    states, obses, infos, (rewards, _), outcomes, reset_keys = env.batch_step(states, infos, actions, reset_keys, False, True)
     # Compute dones
     all_dones = all_dones.at[:,i].set(outcomes['failure'] | outcomes['success'] | outcomes['timeout'])
     # Save data

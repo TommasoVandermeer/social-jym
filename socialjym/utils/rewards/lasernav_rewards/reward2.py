@@ -1,6 +1,7 @@
 from jax import jit, lax, vmap
 import jax.numpy as jnp
 from functools import partial
+from typing import Union
 
 from socialjym.utils.aux_functions import binary_to_decimal
 from socialjym.utils.rewards.base_reward import BaseReward
@@ -15,6 +16,7 @@ class Reward2(BaseReward):
     def __init__(
         self, 
         robot_radius: float,
+        gamma:Union[float, list, tuple, jnp.ndarray] = 0.9, # Discount factor
         v_max: float=1.0,
         time_limit: float=50.,
         target_reached_reward: bool=True,
@@ -36,7 +38,7 @@ class Reward2(BaseReward):
         accountability_fast_penalty_coeff: float=1,
         accountability_stop_reward_coeff: float=0.01,
     ) -> None:
-        super().__init__(0.9)
+        super().__init__(gamma)
         # Check input parameters
         assert goal_reward > 0, "goal_reward must be positive"
         assert collision_with_humans_penalty < 0, "collision_with_humans_penalty must be negative"
@@ -72,6 +74,39 @@ class Reward2(BaseReward):
         )
         self.decimal_reward = binary_to_decimal(self.binary_reward)
         self.type = f"lasernav_reward2_{self.decimal_reward}"
+        if isinstance(gamma, (list, tuple, jnp.ndarray)):
+            print(
+                "REWARD - Multi-discount mode active. Gammas will be assigned in this order:" \
+                "\n- Rotational penalty" if self.high_rotation_penalty_reward else "" \
+                "\n- Progress to goal" if self.progress_to_goal_reward else "" \
+                "\n- Discomfort" if self.discomfort_distance_penalty_reward else "" \
+                "\n- Collision w/ humans" if self.collision_with_humans_penalty_reward else "" \
+                "\n- Collision w/ obstacles" if self.collision_with_obstacles_penalty_reward else "" \
+                "\n- Target reached" if self.target_reached_reward else "" \
+                "\n- Accountability for proximity" if self.accountability_for_human_proximity_reward else "" \
+            )
+            self.multi_gamma = True
+            gamma_list = [float(g) for g in gamma]
+            assert len(gamma_list) == jnp.sum(self.binary_reward), "Number of gammas must be the same as active reward terms."
+            idx = 0
+            self.g_rot = gamma_list[idx] if self.high_rotation_penalty_reward else None
+            idx += 1 if self.high_rotation_penalty_reward else 0
+            self.g_prog = gamma_list[idx] if self.progress_to_goal_reward else None
+            idx += 1 if self.progress_to_goal_reward else 0
+            self.g_disc = gamma_list[idx] if self.collision_with_obstacles_penalty_reward else None
+            idx += 1 if self.collision_with_obstacles_penalty_reward else 0
+            self.g_coll_hum = gamma_list[idx] if self.collision_with_humans_penalty_reward else None
+            idx += 1 if self.collision_with_humans_penalty_reward else 0
+            self.g_coll_obs = gamma_list[idx] if self.collision_with_obstacles_penalty_reward else None
+            idx += 1 if self.collision_with_obstacles_penalty_reward else 0
+            self.g_goal = gamma_list[idx] if self.target_reached_reward else None
+            idx += 1 if self.target_reached_reward else 0
+            self.g_acc = gamma_list[idx] if self.accountability_for_human_proximity_reward else None
+            idx += 1 if self.accountability_for_human_proximity_reward else 0
+            self.unique_gammas = jnp.array(list(set(gamma_list)))
+        else:
+            self.multi_gamma = False
+            self.unique_gammas = jnp.array([gamma])
         # Initialize reward parameters
         self.v_max = v_max
         self.time_limit = time_limit
@@ -119,6 +154,7 @@ class Reward2(BaseReward):
         output:
         - reward: 0.0 (dummy reward)
         - outcome: dictionary indicating if the episode is finished or not and why.
+        - reward_terms: dictionary of all the reward terms with different discounts
         """
         robot_pos = state[-1,:2]
         robot_yaw = state[-1,4]
@@ -181,56 +217,61 @@ class Reward2(BaseReward):
         }
         ### COMPUTE REWARD ###
         reward = 0.
-        # Reward for reaching the goal
         if self.target_reached_reward:
-            reward = lax.cond(
+            goal_reward = lax.cond(
                 ~(failure) & (reached_goal), 
-                lambda r: r + self.goal_reward, 
-                lambda r: r, 
-                reward
+                lambda: self.goal_reward, 
+                lambda: 0., 
             )
+        else:
+            goal_reward = 0.
         # Penalty for collision with humans
         if self.collision_with_humans_penalty_reward:
-            reward = lax.cond(
+            collision_human_reward = lax.cond(
                 collision_with_human, 
-                lambda r: r + self.collision_with_humans_penalty, 
-                lambda r: r, 
-                reward
+                lambda: self.collision_with_humans_penalty, 
+                lambda: 0., 
             ) 
+        else:
+            collision_human_reward = 0.
         # Penalty for collision with obstacles
         if self.collision_with_obstacles_penalty_reward:
-            reward = lax.cond(
+            collision_obstacle_reward = lax.cond(
                 collision_with_obstacle, 
-                lambda r: r + self.collision_with_obstacles_penalty, 
-                lambda r: r, 
-                reward
+                lambda: self.collision_with_obstacles_penalty, 
+                lambda: 0., 
             )
+        else:
+            collision_obstacle_reward = 0.
         # Penalty for getting too close to humans
         if self.discomfort_distance_penalty_reward:
             discomfort = (~(failure)) & (min_distance < self.discomfort_distance)
-            reward = lax.cond(
+            discomfort_reward = lax.cond(
                 discomfort, 
-                lambda r: r - 0.5 * dt * (self.discomfort_distance - min_distance), 
-                lambda r: r, 
-                reward
+                lambda: - 0.5 * dt * (self.discomfort_distance - min_distance), 
+                lambda: 0., 
             )
+        else:
+            discomfort_reward = 0.
         # Progress to goal reward
         if self.progress_to_goal_reward:
             progress_to_goal = jnp.linalg.norm(robot_pos - robot_goal) - jnp.linalg.norm(next_robot_pos - robot_goal)
-            reward = lax.cond(
+            progress_reward = lax.cond(
                 ~(reached_goal), 
-                lambda r: r + self.progress_to_goal_weight * progress_to_goal, 
-                lambda r: r, 
-                reward
+                lambda: + self.progress_to_goal_weight * progress_to_goal, 
+                lambda: 0., 
             )
+        else:
+            progress_reward = 0.
         # High rotation penalty
         if self.high_rotation_penalty_reward:
-            reward = lax.cond(
+            rotation_reward = lax.cond(
                 jnp.abs(action[1]) > self.angular_speed_bound, 
-                lambda r: r - self.angular_speed_penalty_weight * jnp.abs(action[1]), 
-                lambda r: r, 
-                reward
+                lambda: - self.angular_speed_penalty_weight * jnp.abs(action[1]), 
+                lambda: 0., 
             )
+        else:
+            rotation_reward = 0.
         # Penalty for proximity to human accountability
         if self.accountability_for_human_proximity_reward:
             dists = jnp.linalg.norm(humans_pos - robot_pos, axis=1)
@@ -245,10 +286,30 @@ class Reward2(BaseReward):
             is_fast = v > 0.1
             fast_penalty = -self.accountability_fast_penalty_coeff * urgency * (v / self.v_max)
             stop_reward = self.accountability_stop_reward_coeff * urgency
-            yield_modifier = jnp.where(
+            accountability_reward = jnp.where(
                 in_zone,
                 jnp.where(is_fast, fast_penalty, stop_reward),
                 0.0
             )
-            reward = reward + yield_modifier
-        return reward, outcome
+        else:
+            accountability_reward = 0.
+        reward = goal_reward + collision_human_reward + collision_obstacle_reward + discomfort_reward + progress_reward + rotation_reward + accountability_reward
+        if self.multi_gamma:
+            reward_terms = {g: 0.0 for g in self.unique_gammas}
+            if self.target_reached_reward:
+                reward_terms[self.g_goal] += goal_reward
+            if self.collision_with_humans_penalty_reward:
+                reward_terms[self.g_coll_hum] += collision_human_reward
+            if self.collision_with_obstacles_penalty_reward:
+                reward_terms[self.g_coll_obs] += collision_obstacle_reward
+            if self.discomfort_distance_penalty_reward:
+                reward_terms[self.g_disc] += discomfort_reward
+            if self.progress_to_goal_reward:
+                reward_terms[self.g_prog] += progress_reward
+            if self.high_rotation_penalty_reward:
+                reward_terms[self.g_rot] += rotation_reward
+            if self.accountability_for_human_proximity_reward:
+                reward_terms[self.g_acc] += accountability_reward
+        else:
+            reward_terms = {self.gamma: reward}
+        return reward, outcome, reward_terms

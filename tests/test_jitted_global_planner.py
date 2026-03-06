@@ -126,7 +126,7 @@ for i in range(n_episodes):
     info["humans_parameters"] = info["humans_parameters"].at[:,18].set(jnp.ones((env.n_humans,)) * 0.1) # Set humans' safety space to 0.1
     all_states = jnp.array([state])
     while outcome["nothing"]:
-        state, obs, info, reward, outcome = env.imitation_learning_step(state,info)
+        state, obs, info, (reward, _), outcome = env.imitation_learning_step(state,info)
         all_states = jnp.vstack((all_states, jnp.array([state])))
     # # Animate trajectory
     # animate_trajectory(

@@ -67,7 +67,7 @@ def actor_critic_il_rollout(
                         state, obs, info, outcome, inputs, rewards, actions, steps = val
                         # Step
                         input = policy.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
-                        state, obs, info, reward, outcome = env.imitation_learning_step(state, info)
+                        state, obs, info, (reward, _), outcome = env.imitation_learning_step(state, info)
                         # Save data
                         inputs = inputs.at[steps].set(input)
                         rewards = rewards.at[steps].set(reward)

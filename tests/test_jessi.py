@@ -99,7 +99,7 @@ for i in range(n_episodes):
         print("Dirichlet distribution parameters: ", actor_distr['alphas'])
         # print("Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']])
         # Step the environment
-        state, obs, info, reward, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
+        state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
         # Save data for animation
         all_actions = all_actions.at[step].set(action)
         all_rewards = all_rewards.at[step].set(reward)

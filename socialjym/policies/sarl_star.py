@@ -31,7 +31,6 @@ class SARLStar(SARL):
             use_planner=True,
             planner="A*", # "A*" or "Dijkstra"
             v_max=1., 
-            gamma=0.9, 
             dt=0.25, 
             wheels_distance=0.7, 
             kinematics='holonomic',
@@ -49,7 +48,6 @@ class SARLStar(SARL):
         super().__init__(
             reward_function=reward_function, 
             v_max=v_max, 
-            gamma=gamma, 
             dt=dt, 
             wheels_distance=wheels_distance, 
             kinematics=kinematics,

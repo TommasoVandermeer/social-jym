@@ -62,9 +62,9 @@ for i in range(n_episodes):
     while outcome["nothing"]:
 
         action, policy_key, _, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
-        state, obs, info, reward, outcome, _ = env.step(state,info,action,test=True)
+        state, obs, info, (reward, _), outcome, _ = env.step(state,info,action,test=True)
 
-        # state, obs, info, reward, outcome = env.imitation_learning_step(state,info)
+        # state, obs, info, (reward, _), outcome = env.imitation_learning_step(state,info)
 
         print(f"Return in steps [0,{info['step']}):", info["return"], f" - time : {info['time']}")
         all_states = np.vstack((all_states, [state]))
