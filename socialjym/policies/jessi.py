@@ -990,8 +990,10 @@ class JESSI(BasePolicy):
         7 features per token: [norm_dist, hit, x, y, sin_fixed_theta (theta of beam in the robot frame), cos_fixed_theta (theta of beam in the robot frame), delta_t (time difference from the most recent scan)].
         - last LiDAR point cloud (lidar_num_rays, 2): in robot frame of the most recent observation.
         """
+        # Limit readings to self.lidar_max_dist
+        clipped_obs = obs.at[:, 6:].set(jnp.clip(obs[:, 6:], a_min=0.0, a_max=self.lidar_max_dist))
         # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.
-        aligned_lidar_scans = self.align_lidar(obs)[0]  # Shape: (n_stack, lidar_num_rays, 2)
+        aligned_lidar_scans = self.align_lidar(clipped_obs)[0]  # Shape: (n_stack, lidar_num_rays, 2)
         point_cloud_for_bounding = aligned_lidar_scans[:self.n_stack_for_action_space_bounding,:, :]  # Shape: (n_stack_for_action_space_bounding, lidar_num_rays, 2)
         point_cloud_for_bounding = jnp.reshape(
             point_cloud_for_bounding,
@@ -1565,6 +1567,7 @@ class JESSI(BasePolicy):
         humans_radii=None,
         humans_visibility_mask=None,
         static_obstacles=None,
+        virtual_points=None,
         p_visualization_threshold_hcgs:float=0.05,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
@@ -1695,6 +1698,15 @@ class JESSI(BasePolicy):
                     alpha=0.3 + 0.7 * t,
                     zorder=20 + self.n_stack - i,
                 )
+            if virtual_points is not None:
+                wc_virtual_points = jnp.dot(virtual_points[frame], rot.T) + robot_poses[frame, :2]
+                axs[1].scatter(
+                    wc_virtual_points[:,0],
+                    wc_virtual_points[:,1],
+                    color='blue',
+                    alpha=0.6,
+                    zorder=30,
+                )
             axs[1].set_title("Pointcloud")
             ### SECOND ROW AXS: PERCEPTION + ACTION VISUALIZATION
             frame_humans_distrs = tree_map(lambda x: x[frame], humans_distrs)
@@ -1821,6 +1833,7 @@ class JESSI(BasePolicy):
         goals=None,
         static_obstacles=None,
         humans_radii=None,
+        virtual_points=None,
         p_visualization_threshold_gmm:float=0.05,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
@@ -1879,6 +1892,7 @@ class JESSI(BasePolicy):
             humans_radii,
             humans_visibility_mask,
             static_obstacles,
+            virtual_points,
             p_visualization_threshold_gmm,
             p_visualization_threshold_dir,
             x_lims,

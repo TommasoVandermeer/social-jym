@@ -25,7 +25,7 @@ class JessiController(Node):
     def __init__(self, rc_goal, patrol_mode, network_name, save_file_name, use_virtual):
         super().__init__('jessi_controller')
         
-        self.n_stack = 5
+        self.n_stack = 5 
         self.dt = 0.25 # 4 Hz
         self.radius = 0.3
         self.v_max = .7
@@ -51,14 +51,13 @@ class JessiController(Node):
         self.use_virtual = use_virtual
         self.num_virtual_points = 100
         self.jessi_virtual = JESSI(
-            n_stack=self.n_stack,
             robot_radius = self.bounding_radius,
             v_max = self.v_max,
             wheels_distance=self.wheels_distance,
             lidar_num_rays=self.lidar_num_rays + self.num_virtual_points,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
             lidar_max_dist=self.lidar_max_dist,
-            n_stack_for_action_space_bounding=2
+            n_stack_for_action_space_bounding=3
         )
         ## SIDE WALLS
         # num_points_per_wall = self.num_virtual_points // 2
@@ -75,14 +74,13 @@ class JessiController(Node):
         self.virtual_points = radius * jnp.column_stack((jnp.cos(angles), jnp.sin(angles))) + center_displacement
 
         self.jessi = JESSI(
-            n_stack=self.n_stack,
             robot_radius = self.bounding_radius,
             v_max = self.v_max,
             wheels_distance=self.wheels_distance,
             lidar_num_rays=self.lidar_num_rays,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
             lidar_max_dist=self.lidar_max_dist,
-            n_stack_for_action_space_bounding=2
+            n_stack_for_action_space_bounding=3
         )
         self.rng_key = random.PRNGKey(0)
         with open(os.path.join(os.path.dirname(__file__), network_name), 'rb') as f:
@@ -118,14 +116,15 @@ class JessiController(Node):
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', qos_cmd)
         
         # ROS 2 Timer
-        self.timer = self.create_timer(self.dt, self.control_loop)
+        # self.timer = self.create_timer(self.dt, self.control_loop)
         self.previous_action = jnp.array([0.,0.])
         self.last_control_time = self.get_clock().now().nanoseconds / 1e9
 
-        self.get_logger().info("JESSI Controller initialized at 4Hz!")
+        self.get_logger().info("JESSI Controller initialized!")
 
     def scan_callback(self, msg):
         self.latest_scan = msg
+        self.control_loop()
 
     def odom_callback(self, msg):
         self.latest_odom = msg
@@ -141,8 +140,13 @@ class JessiController(Node):
             return
 
         current_time = self.get_clock().now().nanoseconds / 1e9
+        # if (current_time - self.last_control_time) < self.dt:
+        #     # Sono passati meno di 250ms dall'ultima inferenza, ignoriamo questo scan
+        #     return
         print(f"Delta t: {current_time-self.last_control_time}") 
         self.last_control_time = current_time
+
+        # scan_time = self.latest_scan.header.stamp
 
         try:
             trans = self.tf_buffer.lookup_transform(
@@ -152,7 +156,7 @@ class JessiController(Node):
                 rclpy.duration.Duration(seconds=0.1)
             )
         except (LookupException, ConnectivityException, ExtrapolationException) as e:
-            self.get_logger().warn(f"Impossible to sincronize odom and scan (desync): {e}", throttle_duration_sec=2.0)
+            self.get_logger().warn(f"Desync (ignoring frame): {e}", throttle_duration_sec=2.0)
             return
         rx = trans.transform.translation.x
         ry = trans.transform.translation.y
@@ -241,61 +245,60 @@ class JessiController(Node):
         else:
             # JESSI INFERENCE
             try:
-                action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _ = self.jessi.act(
-                    key=self.rng_key,
-                    obs=obs_matrix,
-                    info=info_dict,
-                    e2e_network_params=self.network_params,
-                    sample=False # Use mean action
-                )
+                # action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _ = self.jessi.act(
+                #     key=self.rng_key,
+                #     obs=obs_matrix,
+                #     info=info_dict,
+                #     e2e_network_params=self.network_params,
+                #     sample=False # Use mean action
+                # )
                 # Compute encoder input and last lidar point cloud (for action bounding)
                 # perception_input: lidar_tokens (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
                 # 7 features per token: [norm_dist, hit, x, y, sin_theta (theta of beam in the robot frame), cos_theta (theta of beam in the robot frame), delta_t (time difference from the most recent scan)].
                 # Compute encoder input and last lidar point cloud (for action bounding)
-                # perception_input, point_cloud_for_bounding = self.jessi.compute_perception_input(obs_matrix)
-                # if self.use_virtual:
-                #     perception_input = jnp.concatenate(
-                #         [perception_input, virtual_tokens], 
-                #         axis=1
-                #     )
-                #     repeated_virtual_points = jnp.tile(
-                #         rc_virtual_points, 
-                #         (self.jessi_virtual.n_stack_for_action_space_bounding, 1)
-                #     )
-                #     point_cloud_for_bounding = jnp.concatenate(
-                #         [point_cloud_for_bounding, repeated_virtual_points], 
-                #         axis=0
-                #     )
-                #     # Compute bounded action space parameters and add it to the input
-                #     bounding_parameters = self.jessi_virtual.bound_action_space(
-                #         point_cloud_for_bounding,  
-                #     )
-                # else:
-                #     bounding_parameters = self.jessi.bound_action_space(
-                #         point_cloud_for_bounding,  
-                #     )
-                # # Prepare input for network
-                # robot_position = obs_matrix[0,:2]
-                # robot_orientation = obs_matrix[0,2]
-                # c, s = jnp.cos(-robot_orientation), jnp.sin(-robot_orientation)
-                # R = jnp.array([[c, -s],
-                #             [s,  c]])
-                # translated_position = info_dict["robot_goal"] - robot_position
-                # rc_robot_goal = R @ translated_position
-                # robot_state_input = self.jessi.compute_robot_state_input(
-                #     bounding_parameters,
-                #     rc_robot_goal,
-                # )
-                # # Compute action
-                # perception_output, _, _, actor_distr, _, _, _ = self.jessi.e2e.apply(
-                #     self.network_params, 
-                #     None, 
-                #     perception_input,
-                #     robot_state_input,
-                #     random_key=self.rng_key
-                # )
-                # action = self.jessi.dirichlet.mean(actor_distr)
-
+                perception_input, point_cloud_for_bounding = self.jessi.compute_perception_input(obs_matrix)
+                if self.use_virtual:
+                    perception_input = jnp.concatenate(
+                        [perception_input, virtual_tokens], 
+                        axis=1
+                    )
+                    repeated_virtual_points = jnp.tile(
+                        rc_virtual_points, 
+                        (self.jessi_virtual.n_stack_for_action_space_bounding, 1)
+                    )
+                    point_cloud_for_bounding = jnp.concatenate(
+                        [point_cloud_for_bounding, repeated_virtual_points], 
+                        axis=0
+                    )
+                    # Compute bounded action space parameters and add it to the input
+                    bounding_parameters = self.jessi_virtual.bound_action_space(
+                        point_cloud_for_bounding,  
+                    )
+                else:
+                    bounding_parameters = self.jessi.bound_action_space(
+                        point_cloud_for_bounding,  
+                    )
+                # Prepare input for network
+                robot_position = obs_matrix[0,:2]
+                robot_orientation = obs_matrix[0,2]
+                c, s = jnp.cos(-robot_orientation), jnp.sin(-robot_orientation)
+                R = jnp.array([[c, -s],
+                            [s,  c]])
+                translated_position = info_dict["robot_goal"] - robot_position
+                rc_robot_goal = R @ translated_position
+                robot_state_input = self.jessi.compute_robot_state_input(
+                    bounding_parameters,
+                    rc_robot_goal,
+                )
+                # Compute action
+                perception_output, _, _, actor_distr, _, _, _ = self.jessi.e2e.apply(
+                    self.network_params, 
+                    None, 
+                    perception_input,
+                    robot_state_input,
+                    random_key=self.rng_key
+                )
+                action = self.jessi.dirichlet.mean(actor_distr)
                 v_cmd, w_cmd = float(action[0]), float(action[1])
                 
                 cmd_msg = Twist()

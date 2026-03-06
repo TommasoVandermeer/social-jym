@@ -40,11 +40,16 @@ class LoomoJessiBridge(Node):
             depth=1
         )
         self.sub_cmd = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, qos_cmd) 
-        self.pub_odom = self.create_publisher(Odometry, '/loomo/odom', 10)
-        
-        self.pub_depth = self.create_publisher(Image, '/loomo/depth', qos_profile_sensor_data)
-        self.pub_camera_info = self.create_publisher(CameraInfo, '/loomo/camera_info', qos_profile_sensor_data)        
-        self.pub_scan = self.create_publisher(LaserScan, '/loomo/scan', qos_profile_sensor_data)
+
+        qos_realtime = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        self.pub_odom = self.create_publisher(Odometry, '/loomo/odom', qos_realtime)
+        self.pub_depth = self.create_publisher(Image, '/loomo/depth', qos_realtime)
+        self.pub_camera_info = self.create_publisher(CameraInfo, '/loomo/camera_info', qos_realtime)        
+        self.pub_scan = self.create_publisher(LaserScan, '/loomo/scan', qos_realtime)
         
         self.tf_broadcaster = TransformBroadcaster(self)
         self.static_broadcaster = StaticTransformBroadcaster(self)
@@ -112,6 +117,8 @@ class LoomoJessiBridge(Node):
         while rclpy.ok() and self.running:
             try:
                 self.sock_cmd = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.sock_cmd.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                
                 self.sock_cmd.connect((self.loomo_ip, self.port_cmd))
                 self.get_logger().info("✅ Connected to cmd (8000)")
                 break
@@ -171,7 +178,7 @@ class LoomoJessiBridge(Node):
                     ros_img.header.frame_id = "loomo_depth_optical_frame"
                     self.pub_depth.publish(ros_img)
 
-                    center_rows = image_np[110:130, :].astype(np.float32)
+                    center_rows = image_np[105:135, :].astype(np.float32)
                     center_rows[center_rows == 0] = np.nan 
                     center_rows[center_rows > 10000] = np.nan 
                     

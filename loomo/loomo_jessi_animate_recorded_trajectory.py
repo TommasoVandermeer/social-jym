@@ -18,7 +18,7 @@ def main(args=None):
     save_file_name = parsed_args.save_file
 
     n_stack = 5
-    lidar_num_rays = 320
+    lidar_num_rays = 100
     lidar_min_angle = -0.46981275  
     lidar_max_angle = 0.46981275   
     lidar_angular_range = lidar_max_angle - lidar_min_angle
@@ -45,6 +45,7 @@ def main(args=None):
 
     env = LaserNav(**env_params)
     jessi = JESSI(
+        robot_radius=0.4,
         n_stack=n_stack,
         lidar_num_rays=lidar_num_rays,
         lidar_angular_range=lidar_angular_range,
@@ -60,6 +61,7 @@ def main(args=None):
     print(f"Found {T} steps.")
 
     all_observations = jnp.array([step['observation'] for step in trajectory])
+    all_virtual_points = jnp.array([step['virtual_points'] for step in trajectory])
     all_actions = jnp.array([step['action'] for step in trajectory])
     all_robot_goals = jnp.array([step['robot_goal'] for step in trajectory])
     all_encoder_distrs = tree_map(lambda *xs: jnp.stack(xs), *[step['perception_distr'] for step in trajectory])
@@ -121,6 +123,7 @@ def main(args=None):
         goals=all_robot_goals,
         static_obstacles=None,
         humans_radii=None,
+        virtual_points=all_virtual_points
     )
 
 if __name__ == '__main__':

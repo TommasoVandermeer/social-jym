@@ -69,14 +69,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             v_max=robot_vmax,
-            robot_radius=0.3,
+            robot_radius=robot_radius,
             collision_with_humans_penalty=-.5,
             time_limit=time_limit,
         )
     elif training_hyperparams['reward_function'] == 'lasernav_reward2':
         reward_function = Reward2(
             v_max=robot_vmax,
-            robot_radius=0.3,
+            robot_radius=robot_radius,
             collision_with_humans_penalty=-.5,
             time_limit=time_limit,
         )
@@ -84,7 +84,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
     # Environment parameters
     env_params = {
-        'robot_radius': 0.3,
+        'robot_radius': robot_radius,
         'n_humans': training_hyperparams['n_humans'],
         'n_obstacles': training_hyperparams['n_obstacles'],
         'robot_dt': 0.25,

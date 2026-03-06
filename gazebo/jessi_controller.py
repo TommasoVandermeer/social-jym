@@ -39,15 +39,15 @@ class JessiController(Node):
         self.initial_position = jnp.array([0.,0.]) # Odometry is reset at the beginning
         self.goal_reached = False
         
-        self.lidar_num_rays = 100
-        self.lidar_min_angle = -jnp.pi/2
-        self.lidar_max_angle = jnp.pi/2
+        self.lidar_num_rays = 200
+        self.lidar_min_angle = -jnp.pi
+        self.lidar_max_angle = jnp.pi
         self.lidar_max_dist = 10
         self.angular_res = (float(self.lidar_max_angle) - float(self.lidar_min_angle)) / self.lidar_num_rays
 
         self.jessi = JESSI(
             v_max=1,
-            wheels_distance=0.8,
+            wheels_distance=0.7,
             robot_radius=self.radius,
             lidar_num_rays=self.lidar_num_rays,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
@@ -56,7 +56,7 @@ class JessiController(Node):
         )
         self.rng_key = random.PRNGKey(0)
         with open(os.path.join(os.path.dirname(__file__), network_name), 'rb') as f:
-            self.network_params, _, _ = pickle.load(f)
+            _, self.network_params, _ = pickle.load(f)
         
         # Reset turtlebot odometry
         self.initial_odom = None
@@ -112,9 +112,8 @@ class JessiController(Node):
         shift_bins = int(round(shift_rad / angular_res_tb4))
         shifted_cleaned = np.roll(cleaned, shift_bins)
         # Ranges resampling (from self.original_num_rays to self.lidar_num_rays)
-        x_old = np.linspace(0, 1, tb4_num_rays)
-        x_new = np.linspace(0, 1, self.lidar_num_rays)
-        lidar_scan = np.interp(x_new, x_old, shifted_cleaned)
+        indices = np.round(np.linspace(0, tb4_num_rays - 1, self.lidar_num_rays)).astype(int)
+        lidar_scan = shifted_cleaned[indices]
 
         # Odometry
         curr_x = self.latest_odom.pose.pose.position.x
@@ -148,7 +147,7 @@ class JessiController(Node):
             self.pub_cmd.publish(stop)
             return
 
-        if dist < self.radius:
+        if dist < self.radius + 0.1:
             if self.patrol:
                 self.get_logger().info(f"🏆🔄 Goal reached, back to the previous goal...")
                 temp_goal = self.robot_goal
@@ -203,7 +202,7 @@ def main(args=None):
     parser.add_argument('-x', '--goal_x', type=float, default=2.0, help='Goal X (in meters)')
     parser.add_argument('-y', '--goal_y', type=float, default=0.0, help='Goal Y (in meters)')
     parser.add_argument('--patrol', action='store_true', help='Activate Patrol Mode (back and forth continuously)')
-    parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out.pkl', help='Network weights pickle file name')
+    parser.add_argument('-n', '--network', type=str, default='jessi_multitask_rl_out.pkl', help='Network weights pickle file name')
     parser.add_argument('-s', '--save_file', type=str, default='jessi_recorded_obs.pkl', help='Output pickle file name for recorded data')
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
     rc_goal = np.array([parsed_args.goal_x, parsed_args.goal_y])

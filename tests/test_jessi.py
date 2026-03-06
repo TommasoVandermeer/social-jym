@@ -10,10 +10,10 @@ from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
-random_seed = 1
-robot_vmax = 0.3
-robot_wheel_distance = 0.235
-time_limit = 120
+random_seed = 3
+robot_vmax = 1
+robot_wheel_distance = 0.7
+time_limit = 50
 n_episodes = 100
 kinematics = 'unicycle'
 n_stack_for_action_space_bounding = 1
@@ -22,13 +22,13 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
-    'n_humans': 3,
+    'n_humans': 5,
     'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'hybrid_scenario', 
+    'scenario': 'perpendicular_traffic', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
@@ -54,7 +54,7 @@ policy = JESSI(
 # with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
 #     actor_params = pickle.load(f)
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
-with open(os.path.join(os.path.dirname(__file__), 'jessi_finetuned_rl_out_turtlebot2.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'jessi_policy_rl_out.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # Test the trained JESSI policy
@@ -130,8 +130,8 @@ for i in range(n_episodes):
     # [print("Step {} -  critic prediction: {:.2f} VS discounted return: {:.2f}".format(i, all_predicted_state_values[i], discounted_returns[i])) for i in range(len(discounted_returns))]
     print("\nOutcome: ", [k for k, v in outcome.items() if v][0], " - Return: {:.2f}".format(info['return']))
     ## Animate only trajectory
-    angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
-    lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,6:], angles)
+    # angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
+    # lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,6:], angles)
     # animate_trajectory(
     #     all_states, 
     #     info['humans_parameters'][:,0], 
