@@ -62,13 +62,13 @@ class Reward2(BaseReward):
         self.type = f"socialnav_reward2_{self.decimal_reward}"
         if isinstance(gamma, (list, tuple, jnp.ndarray)):
             print(
-                "REWARD - Multi-discount mode active. Gammas will be assigned in this order:" \
-                "\n- Rotational penalty" if self.high_rotation_penalty_reward else "" \
-                "\n- Time penalty" if self.time_penalty_reward else "" \
-                "\n- Progress to goal" if self.progress_to_goal_reward else "" \
-                "\n- Discomfort" if self.discomfort_distance_penalty_reward else "" \
-                "\n- Collision" if self.collision_penalty_reward else "" \
-                "\n- Target reached" if self.target_reached_reward else "" \
+                "REWARD - Multi-discount mode active. Gammas will be assigned in this order:",
+                "\n- Rotational penalty" if self.high_rotation_penalty_reward else "",
+                "\n- Time penalty" if self.time_penalty_reward else "",
+                "\n- Progress to goal" if self.progress_to_goal_reward else "",
+                "\n- Discomfort" if self.discomfort_distance_penalty_reward else "",
+                "\n- Collision" if self.collision_penalty_reward else "",
+                "\n- Target reached" if self.target_reached_reward else "",
             )
             self.multi_gamma = True
             gamma_list = [float(g) for g in gamma]
@@ -86,10 +86,10 @@ class Reward2(BaseReward):
             idx += 1 if self.collision_penalty_reward else 0
             self.g_goal = gamma_list[idx] if self.target_reached_reward else None
             idx += 1 if self.target_reached_reward else 0
-            self.unique_gammas = jnp.array(list(set(gamma_list)))
+            self.unique_gammas = tuple(set(gamma_list))
         else:
             self.multi_gamma = False
-            self.unique_gammas = jnp.array([gamma])
+            self.unique_gammas = (float(gamma),)
         # Initialize reward parameters
         self.v_max = v_max
         self.goal_reward = goal_reward

@@ -76,14 +76,14 @@ class Reward2(BaseReward):
         self.type = f"lasernav_reward2_{self.decimal_reward}"
         if isinstance(gamma, (list, tuple, jnp.ndarray)):
             print(
-                "REWARD - Multi-discount mode active. Gammas will be assigned in this order:" \
-                "\n- Rotational penalty" if self.high_rotation_penalty_reward else "" \
-                "\n- Progress to goal" if self.progress_to_goal_reward else "" \
-                "\n- Discomfort" if self.discomfort_distance_penalty_reward else "" \
-                "\n- Collision w/ humans" if self.collision_with_humans_penalty_reward else "" \
-                "\n- Collision w/ obstacles" if self.collision_with_obstacles_penalty_reward else "" \
-                "\n- Target reached" if self.target_reached_reward else "" \
-                "\n- Accountability for proximity" if self.accountability_for_human_proximity_reward else "" \
+                "REWARD - Multi-discount mode active. Gammas will be assigned in this order:",
+                "\n- Rotational penalty" if self.high_rotation_penalty_reward else "",
+                "\n- Progress to goal" if self.progress_to_goal_reward else "",
+                "\n- Discomfort" if self.discomfort_distance_penalty_reward else "",
+                "\n- Collision w/ humans" if self.collision_with_humans_penalty_reward else "",
+                "\n- Collision w/ obstacles" if self.collision_with_obstacles_penalty_reward else "",
+                "\n- Target reached" if self.target_reached_reward else "",
+                "\n- Accountability for proximity" if self.accountability_for_human_proximity_reward else "",
             )
             self.multi_gamma = True
             gamma_list = [float(g) for g in gamma]
@@ -103,10 +103,10 @@ class Reward2(BaseReward):
             idx += 1 if self.target_reached_reward else 0
             self.g_acc = gamma_list[idx] if self.accountability_for_human_proximity_reward else None
             idx += 1 if self.accountability_for_human_proximity_reward else 0
-            self.unique_gammas = jnp.array(list(set(gamma_list)))
+            self.unique_gammas = tuple(set(gamma_list))
         else:
             self.multi_gamma = False
-            self.unique_gammas = jnp.array([gamma])
+            self.unique_gammas = (float(gamma),)
         # Initialize reward parameters
         self.v_max = v_max
         self.time_limit = time_limit

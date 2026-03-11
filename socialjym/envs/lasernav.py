@@ -305,8 +305,8 @@ class LaserNav(BaseEnv):
         ### Update time, step, return, previous observation
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
-        gammas = jnp.array(list(reward_terms.keys()))
-        rewards = jnp.array(list(reward_terms.values()))
+        gammas = jnp.array(tuple(reward_terms.keys()))
+        rewards = jnp.array(tuple(reward_terms.values()))
         exponent = info["step"] * self.robot_dt * self.reward_function.v_max
         new_info["return"] += jnp.sum(jnp.power(gammas, exponent) * rewards)
         new_info["previous_obs"] = obs

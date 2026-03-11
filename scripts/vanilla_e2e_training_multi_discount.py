@@ -49,7 +49,7 @@ training_hyperparams = {
     'rl_micro_batch_size': 500, # 1_000 # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 6, # 6
-    'rl_beta_entropy': 5e-4, # 1e-4
+    'rl_beta_entropy': 5e-3, # 1e-4
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
@@ -68,8 +68,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), unbounded_network_
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
-            collision_with_humans_penalty=-.5,
-            gamma=[0.3,0.3,0.5,0.5,0.4,0.9],
+            collision_with_humans_penalty=-1.,
+            progress_to_goal_weight=0.2,
+            angular_speed_penalty_weight=0.1,
+            gamma=[0.3,0.3,0.6,0.6,0.6,0.9],
         )
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
@@ -346,8 +348,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), bounded_network_na
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
-            collision_with_humans_penalty=-.5,
-            gamma=[0.3,0.3,0.5,0.5,0.4,0.9],
+            collision_with_humans_penalty=-1.,
+            progress_to_goal_weight=0.2,
+            angular_speed_penalty_weight=0.1,
+            gamma=[0.3,0.95,0.6,0.6,0.6,0.95],
         )
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")

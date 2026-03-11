@@ -55,11 +55,22 @@ class MLPActorCritic(hk.Module):
             output_sizes=[100, 50, self.n_outputs], 
             name="actor_head"
         )
-        self.critic_head = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[100, 50, critic_heads],
-            name="critic_head"
-        )
+        if self.critic_heads == 1:
+            self.critic_head = hk.nets.MLP(
+                **mlp_params,
+                output_sizes=[100, 50, 1],
+                name="critic_head"
+            )
+
+        else:
+            self.critic_subnets = [
+                hk.nets.MLP(
+                    **mlp_params,
+                    output_sizes=[100, 50, 1],
+                    name=f"critic_head_{i}"
+                )
+                for i in range(critic_heads)
+            ]
         self.dirichlet = Dirichlet()
 
     def __call__(
@@ -106,15 +117,24 @@ class MLPActorCritic(hk.Module):
         ## Sample action
         sampled_actions = vmap(self.dirichlet.sample)(distributions, keys)
         ### CRITIC
-        state_values = self.critic_head(inputs) # (Batch, critic_heads)
         if self.critic_heads == 1:
+            state_values = self.critic_head(inputs) # (Batch, critic_heads)
             state_values = jnp.squeeze(state_values, axis=-1) # (Batch,1) to (Batch,)
+            log_sigmas = None
+        else:
+            head_outputs = [head(inputs) for head in self.critic_subnets]
+            state_values = jnp.concatenate(head_outputs, axis=-1)
+            log_sigmas = hk.get_parameter(
+                "log_sigmas", 
+                shape=[self.critic_heads], 
+                init=jnp.zeros
+            )
         if not has_batch:
             sampled_actions = sampled_actions[0]
             state_values = state_values[0]
             distributions = tree_map(lambda t: t[0], distributions)
         # Actor head
-        return sampled_actions, distributions, state_values
+        return sampled_actions, distributions, state_values, log_sigmas
 
 class VanillaE2E(BasePolicy):
     def __init__(
@@ -408,7 +428,7 @@ class VanillaE2E(BasePolicy):
         )
         # Compute action
         key, subkey = random.split(key)
-        sampled_action, actor_distr, state_value = self.actor_critic.apply(
+        sampled_action, actor_distr, state_value, _ = self.actor_critic.apply(
             network_params, 
             None, 
             aligned_lidar_readings,
@@ -466,7 +486,7 @@ class VanillaE2E(BasePolicy):
                     returnn:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                    _, predicted_distr, predicted_state_value = self.actor_critic.apply(
+                    _, predicted_distr, predicted_state_value, _ = self.actor_critic.apply(
                         current_actor_params, 
                         None, 
                         input['inputs0'], 

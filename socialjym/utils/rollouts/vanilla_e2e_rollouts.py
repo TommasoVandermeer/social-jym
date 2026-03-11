@@ -66,7 +66,8 @@ def collect_rollout_step(
         }
         new_times = times + (new_outcomes["success"]) * (infos['time'] + policy.dt)
         exponent_matrix = ((infos['step']+1) * policy.dt * policy.v_max)[:, None]
-        discounted_rewards = jnp.power(env.reward_function.unique_gammas, exponent_matrix) * rewards_matrix
+        gammas_array = jnp.array(env.reward_function.unique_gammas)
+        discounted_rewards = jnp.power(gammas_array, exponent_matrix) * rewards_matrix
         summed_discounted_rewards = jnp.sum(discounted_rewards, axis=-1)
         new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + summed_discounted_rewards)
         new_success_per_scenario = {k: success_per_scenario[k] + (new_outcomes["success"]) * (infos["current_scenario"] == k) for k in success_per_scenario}
@@ -115,13 +116,19 @@ def process_buffer_and_gae(
     """
     rc_robot_goals = vmap(policy.robot_centric_goal)(last_obs, last_info['robot_goal'])
     aligned_lidar_scans, robot_state_inputs = vmap(policy.compute_actor_inputs)(last_obs, rc_robot_goals)
-    _, _, last_values = policy.actor_critic.apply(
+    _, _, last_values, _ = policy.actor_critic.apply(
         network_params, None, aligned_lidar_scans, robot_state_inputs
     )
     rewards = history["rewards"]
     values = history["values"]
     dones = history["dones"]
-    values_ext = jnp.concatenate([values, last_values[None, :]], axis=0)
+    if policy.critic_heads == 1:
+        values_norm = jnp.expand_dims(values, axis=-1)
+        last_values_norm = jnp.expand_dims(last_values, axis=-1)
+    else:
+        values_norm = values
+        last_values_norm = last_values
+    values_ext = jnp.concatenate([values_norm, last_values_norm[None, :]], axis=0)
     dones_ext = jnp.concatenate([dones, last_dones[None, :]], axis=0)
     def _gae_step(gae_carry, i):
         adv_next = gae_carry
@@ -131,10 +138,12 @@ def process_buffer_and_gae(
         advantage = delta + jnp.power(gammas_array*lambda_gae,dt*vmax) * adv_next * mask
         return advantage, advantage # Carry, Output
     n_steps = rewards.shape[0]
-    _, advantages = lax.scan(_gae_step, jnp.zeros_like(values[0]), jnp.arange(n_steps)[::-1])
+    _, advantages = lax.scan(_gae_step, jnp.zeros_like(values_norm[0]), jnp.arange(n_steps)[::-1])
     advantages = advantages[::-1]
-    critic_targets = advantages + values # Shape: (n_steps, n_envs, n_gammas)
+    critic_targets = advantages + values_norm # Shape: (n_steps, n_envs, n_gammas)
     total_advantages = jnp.sum(advantages, axis=-1) # Shape: (n_steps, n_envs)
+    if policy.critic_heads == 1:
+        critic_targets = jnp.squeeze(critic_targets, axis=-1)
     def flatten(x):
         return jnp.reshape(x, (-1, *x.shape[2:]))
     flattened_buffer = {
@@ -178,7 +187,7 @@ def train_one_epoch(
         all_mb_advantages = micro_batches["advantages"]
         norm_advantages = (all_mb_advantages - jnp.mean(all_mb_advantages)) / (jnp.std(all_mb_advantages) + 1e-8)
         # We clip the normalized advantages to avoid too large policy updates
-        micro_batches["advantages"] = micro_batches["advantages"].at[:].set(jnp.clip(norm_advantages, -5, 5))
+        # micro_batches["advantages"] = micro_batches["advantages"].at[:].set(jnp.clip(norm_advantages, -5, 5))
 
         def micro_batch_loss_fn(p, u_mb):
             inputs0, inputs1 = u_mb["inputs0"], u_mb["inputs1"]
@@ -187,7 +196,7 @@ def train_one_epoch(
             inputs0_f16 = inputs0.astype(jnp.float16)
             inputs1_f16 = inputs1.astype(jnp.float16)
             # Forward pass (For Actor/Critic)
-            (_, actor_dist, pred_val) = policy.actor_critic.apply(
+            (_, actor_dist, pred_val, critic_log_vars) = policy.actor_critic.apply(
                 p, None, inputs0_f16, inputs1_f16
             )
             # Cast back outputs to float32
@@ -214,7 +223,14 @@ def train_one_epoch(
             v_loss = jnp.square(pred_val - u_mb["critic_targets"])
             v_clipped = u_mb["values"] + jnp.clip(pred_val - u_mb["values"], -clip_range, clip_range)
             v_loss_clipped = jnp.square(v_clipped - u_mb["critic_targets"])
-            critic_loss = 0.5 * jnp.mean(jnp.maximum(v_loss, v_loss_clipped))
+            mse_per_head = jnp.mean(jnp.maximum(v_loss, v_loss_clipped), axis=0)
+            if policy.critic_heads > 1:
+                safe_log_vars = jnp.clip(critic_log_vars, -5.0, 5.0)
+                precision = jnp.exp(-safe_log_vars)
+                weighted_loss_per_head =  .5 * (precision * mse_per_head + safe_log_vars)
+                critic_loss = jnp.sum(weighted_loss_per_head)
+            else:
+                critic_loss = jnp.sum(mse_per_head) # Fake sum: reduces shape from (1,) to ()
             var_y = jnp.var(u_mb["critic_targets"], axis=0) 
             var_res = jnp.var(u_mb["critic_targets"] - pred_val, axis=0)
             explained_var_per_head = 1.0 - var_res / (var_y + 1e-8)
@@ -388,7 +404,7 @@ def vanilla_e2e_rl_rollout(
             best_params = device_get(params)
         # B. PROCESS BUFFER (Parallel)
         buffer_gpu = process_buffer_and_gae(
-            params, current_obs, current_infos, current_dones, history_raw, policy, env.reward_function.unique_gammas, policy.dt, policy.v_max, lambda_gae
+            params, current_obs, current_infos, current_dones, history_raw, policy, jnp.array(env.reward_function.unique_gammas), policy.dt, policy.v_max, lambda_gae
         )
         # C. PREPARE TRAINING DATA
         def get_batched_shape_struct(x):

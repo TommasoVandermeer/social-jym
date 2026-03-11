@@ -30,10 +30,10 @@ class Reward1(BaseReward):
         # If multi-gamma mode
         if isinstance(gamma, (list, tuple, jnp.ndarray)):
             print(
-                "REWARD - Multi-discount mode active. Gammas will be assigned in this order:" \
-                "\n- Discomfort" \
-                "\n- Collision" \
-                "\n- Target reached" \
+                "REWARD - Multi-discount mode active. Gammas will be assigned in this order:",
+                "\n- Discomfort",
+                "\n- Collision",
+                "\n- Target reached",
             )
             self.multi_gamma = True
             gamma_list = [float(g) for g in gamma]
@@ -41,10 +41,10 @@ class Reward1(BaseReward):
             self.g_goal = gamma_list[0] 
             self.g_coll = gamma_list[1] 
             self.g_disc = gamma_list[2] 
-            self.unique_gammas = jnp.array(list(set(gamma_list)))
+            self.unique_gammas = tuple(set(gamma_list))
         else:
             self.multi_gamma = False
-            self.unique_gammas = jnp.array([gamma])
+            self.unique_gammas = (float(gamma),)
         # Initialize reward parameters
         self.type = "socialnav_reward1"
         self.v_max = v_max
