@@ -70,8 +70,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), unbounded_network_
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
-            collision_with_humans_penalty=-3.,
-            collision_with_obstacles_penalty=-0.6,
+            collision_with_humans_penalty=-4.,
+            collision_with_obstacles_penalty=-0.8,
             progress_to_goal_weight=0.2,
             angular_speed_penalty_weight=0.1,
             gamma=0.9,
@@ -351,8 +351,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), bounded_network_na
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
-            collision_with_humans_penalty=-3.,
-            collision_with_obstacles_penalty=-0.6,
+            collision_with_humans_penalty=-4.,
+            collision_with_obstacles_penalty=-0.8,
             progress_to_goal_weight=0.2,
             angular_speed_penalty_weight=0.1,
             gamma=0.9,
@@ -631,8 +631,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), unbounded_network_
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
-            collision_with_humans_penalty=-3.,
-            collision_with_obstacles_penalty=-0.6,
+            collision_with_humans_penalty=-4.,
+            collision_with_obstacles_penalty=-0.8,
             progress_to_goal_weight=0.2,
             angular_speed_penalty_weight=0.1,
             gamma=[0.3,0.3,0.5,0.5,0.5,0.9],
@@ -912,8 +912,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), bounded_network_na
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
-            collision_with_humans_penalty=-3.,
-            collision_with_obstacles_penalty=-0.6,
+            collision_with_humans_penalty=-4.,
+            collision_with_obstacles_penalty=-0.8,
             progress_to_goal_weight=0.2,
             angular_speed_penalty_weight=0.1,
             gamma=[0.3,0.3,0.5,0.5,0.5,0.9],
