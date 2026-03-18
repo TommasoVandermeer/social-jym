@@ -31,7 +31,7 @@ class Reward3(BaseReward):
         discomfort_distance: float=0.2,
         discomfort_k_front: float=1.5, 
         discomfort_alpha: float= 3.0,
-        discomfort_weight: float= 0.5,
+        discomfort_weight: float= 0.1,
         progress_to_goal_weight: float=0.03,
         angular_speed_bound: float=1.,
         angular_speed_penalty_weight: float=0.0075,

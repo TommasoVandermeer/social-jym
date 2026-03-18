@@ -15,14 +15,17 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': 2*jnp.pi,
     'lidar_max_dist': 10.,
-    'n_humans': 7,
-    'n_obstacles': 5,
+    'n_humans': 10, #5,
+    'n_obstacles': 0,#5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
     'robot_visible': False,
-    'scenario': 'hybrid_scenario',
-    'reward_function': DummyReward(robot_radius=0.3),
+    'scenario': 'circular_crossing_with_static_obstacles', #'hybrid_scenario',
+    'ccso_n_static_humans': 5,#0,
+    'ccso_static_humans_radius_mean': 0.3,
+    'ccso_static_humans_radius_std': 0.025,
+    'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
     'kinematics': kinematics,
 }
 
@@ -36,7 +39,7 @@ for i in range(n_episodes):
     all_states = np.array([state])
     all_observations = np.array([obs])
     while outcome["nothing"]:
-        state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,jnp.array([1.,0.]),test=True,env_key=env_key)
+        state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,jnp.array([0.,0.]),test=True,env_key=env_key)
         all_states = np.vstack((all_states, [state]))
         all_observations = np.vstack((all_observations, [obs]))
     print(outcome)

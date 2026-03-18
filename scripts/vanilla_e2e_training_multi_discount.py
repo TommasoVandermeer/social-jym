@@ -13,7 +13,7 @@ rcParams['ps.fonttype'] = 42
 
 from socialjym.policies.vanilla_e2e import VanillaE2E
 from socialjym.envs.lasernav import LaserNav
-from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
+from socialjym.utils.rewards.lasernav_rewards.reward3 import Reward3
 from socialjym.utils.rollouts.vanilla_e2e_rollouts import vanilla_e2e_rl_rollout
 
 unbounded_network_name = 'vanilla_e2e_single_gamma_rl_out.pkl'
@@ -68,7 +68,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), unbounded_network_
     print(f"\nSTARTING UNBOUNDED VANILLA-E2E SINGLE-GAMMA RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
-        reward_function = Reward1(
+        reward_function = Reward3(
             robot_radius=0.3,
             collision_with_humans_penalty=-4.,
             collision_with_obstacles_penalty=-0.8,
@@ -349,7 +349,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), bounded_network_na
     print(f"\nSTARTING BOUNDED VANILLA-E2E SINGLE-GAMMA RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
-        reward_function = Reward1(
+        reward_function = Reward3(
             robot_radius=0.3,
             collision_with_humans_penalty=-4.,
             collision_with_obstacles_penalty=-0.8,
@@ -629,7 +629,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), unbounded_network_
     print(f"\nSTARTING UNBOUNDED VANILLA-E2E MULTI-GAMMA RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
-        reward_function = Reward1(
+        reward_function = Reward3(
             robot_radius=0.3,
             collision_with_humans_penalty=-4.,
             collision_with_obstacles_penalty=-0.8,
@@ -910,7 +910,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), bounded_network_na
     print(f"\nSTARTING BOUNDED VANILLA-E2E MULTI-GAMMA RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
-        reward_function = Reward1(
+        reward_function = Reward3(
             robot_radius=0.3,
             collision_with_humans_penalty=-4.,
             collision_with_obstacles_penalty=-0.8,
