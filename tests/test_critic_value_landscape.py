@@ -14,8 +14,8 @@ rcParams['pdf.fonttype'] = 42
 rcParams['ps.fonttype'] = 42
 
 from socialjym.envs.lasernav import LaserNav
-from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as Reward
-from socialjym.utils.rewards.lasernav_rewards.reward3 import Reward3 as Reward1
+from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as DReward
+from socialjym.utils.rewards.lasernav_rewards.reward3 import Reward3 as Reward
 from socialjym.policies.vanilla_e2e import VanillaE2E
 
 # Hyperparameters
@@ -40,7 +40,7 @@ env_params = {
     'scenario': 'parallel_traffic', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
-    'reward_function': Reward(robot_radius=0.3),
+    'reward_function': DReward(robot_radius=0.3),
     'kinematics': kinematics,
     'lidar_noise': False,
 }
@@ -49,7 +49,7 @@ env_params = {
 env = LaserNav(**env_params)
 
 # Initialize the single gamma policy
-reward_fun_single_gamma = Reward1(
+reward_fun_single_gamma = Reward(
     robot_radius=0.3,
     collision_with_humans_penalty=-4.,
     collision_with_obstacles_penalty=-0.8,
@@ -69,13 +69,13 @@ policy_single_gamma = VanillaE2E(
 with open(os.path.join(os.path.dirname(__file__), 'bounded_vanilla_e2e_single_gamma_rl_out.pkl'), 'rb') as f:
     network_params_single_gamma, _, _ = pickle.load(f)
 # Initialize the multi gamma policy
-reward_fun_multi_gamma = Reward1(
+reward_fun_multi_gamma = Reward(
     robot_radius=0.3,
     collision_with_humans_penalty=-4.,
     collision_with_obstacles_penalty=-0.8,
     progress_to_goal_weight=0.2,
     angular_speed_penalty_weight=0.1,
-    gamma=[0.3,0.3,0.5,0.5,0.5,0.9],
+    gamma=[0.3,0.3,0.3,0.5,0.5,0.9],
 )
 policy_multi_gamma = VanillaE2E(
     lidar_num_rays=env.lidar_num_rays,
