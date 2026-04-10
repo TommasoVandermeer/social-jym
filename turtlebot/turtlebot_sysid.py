@@ -228,17 +228,22 @@ class VelocitySysIdNode(Node):
             return
         elapsed = time.monotonic() - self._phase_t0
 
-        if self._phase == self._PHASE_REST and elapsed >= self.rest_time:
-            self._transition_step()
+        if self._phase == self._PHASE_REST:
+            publish_vel(self.pub_cmd, v=0.0)   # keep sending 0 to satisfy watchdog
+            if elapsed >= self.rest_time:
+                self._transition_step()
 
-        elif self._phase == self._PHASE_STEP and elapsed >= self.hold_time:
-            publish_vel(self.pub_cmd, v=0.0)
-            self._step_idx += 1
-            if self._step_idx >= self.n_steps:
-                self._phase = self._PHASE_DONE
-                self.get_logger().info("[Velocity SysId] All steps complete.")
+        elif self._phase == self._PHASE_STEP:
+            if elapsed >= self.hold_time:
+                publish_vel(self.pub_cmd, v=0.0)
+                self._step_idx += 1
+                if self._step_idx >= self.n_steps:
+                    self._phase = self._PHASE_DONE
+                    self.get_logger().info("[Velocity SysId] All steps complete.")
+                else:
+                    self._transition_rest()
             else:
-                self._transition_rest()
+                publish_vel(self.pub_cmd, v=self.v_target)  # keep sending v_target to satisfy watchdog
 
     # ── transitions ────────────────────────────────────────────────────────
 
@@ -427,6 +432,7 @@ class LatencyDriftSysIdNode(Node):
 
         # ── Latency rest ─────────────────────────────────────────────────
         if self._phase == self._PHASE_LAT_REST:
+            publish_vel(self.pub_cmd, v=0.0)   # keep sending 0 to satisfy watchdog
             if elapsed >= self.LAT_REST_DUR:
                 self._start_lat_step()
 
@@ -447,9 +453,12 @@ class LatencyDriftSysIdNode(Node):
                         future.add_done_callback(self._pre_drift_reset_cb)
                 else:
                     self._start_lat_rest()
+            else:
+                publish_vel(self.pub_cmd, v=self.v_cruise)  # keep sending v_cruise to satisfy watchdog
 
         # ── Pre-drift pause ───────────────────────────────────────────────
         elif self._phase == self._PHASE_PRE_DRIFT:
+            publish_vel(self.pub_cmd, v=0.0)   # keep sending 0 to satisfy watchdog
             if elapsed >= self.PRE_DRIFT_DUR:
                 self._start_drift()
 
@@ -462,6 +471,7 @@ class LatencyDriftSysIdNode(Node):
                 # Latch starting position on first sample after drift begins
                 self._drift_start_px = last['px']
                 self._drift_start_py = last['py']
+                publish_vel(self.pub_cmd, v=self.v_cruise)
                 return
             dist = math.hypot(
                 last['px'] - self._drift_start_px,
@@ -477,6 +487,8 @@ class LatencyDriftSysIdNode(Node):
                 self.get_logger().info(
                     f"[Drift SysId] Done. Distance: {dist:.3f} m | "
                     f"Lateral deviation: {lateral_m * 100:.1f} cm")
+            else:
+                publish_vel(self.pub_cmd, v=self.v_cruise)  # keep sending v_cruise to satisfy watchdog
 
     # ── transitions ────────────────────────────────────────────────────────
 
@@ -541,6 +553,195 @@ class LatencyDriftSysIdNode(Node):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Mode 4 — Velocity Staircase Tracking  (Section 5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_staircase_sequence(seg_strings: list[str]) -> list[tuple[float, float, float]]:
+    """
+    Parse a list of segment strings into a flat sequence of
+    (v_cmd, w_cmd, hold_s) triples.
+
+    Segment formats (order on command line is preserved):
+      lin:v_start:v_end:v_step:hold_s   — linear ramp,  ω = 0
+      ang:w_start:w_end:w_step:hold_s   — angular ramp, v = 0
+      v_start:v_end:v_step:hold_s       — legacy, treated as lin:...
+
+    Consecutive duplicate (v, w) pairs at segment boundaries are merged.
+
+    Examples:
+        ["lin:0:0.3:0.05:0.5", "lin:0.3:0:0.1:0.5"]
+        ["ang:0:0.5:0.1:0.5", "ang:0.5:0:0.1:0.5"]
+        ["lin:0:0.3:0.05:0.5", "lin:0.3:0:0.1:0.5",
+         "ang:0:0.5:0.1:0.5", "ang:0.5:0:0.1:0.5"]
+    """
+    def _ramp(start: float, end: float, step: float) -> list[float]:
+        direction = 1.0 if end >= start else -1.0
+        n = round(abs(end - start) / step) + 1
+        return [round(start + direction * step * i, 6) for i in range(n)]
+
+    sequence: list[tuple[float, float, float]] = []
+
+    for seg_str in seg_strings:
+        parts = seg_str.split(':')
+
+        # Detect prefix
+        if parts[0] in ('lin', 'ang'):
+            kind   = parts[0]
+            values = parts[1:]
+        else:
+            kind   = 'lin'
+            values = parts
+
+        if len(values) != 4:
+            raise ValueError(
+                f"Segment must be '[lin|ang:]start:end:step:hold_s', got: {seg_str!r}")
+        start, end, step, hold = (float(p) for p in values)
+        if step <= 0:
+            raise ValueError(f"step must be > 0, got {step}")
+
+        for level in _ramp(start, end, step):
+            v = level if kind == 'lin' else 0.0
+            w = level if kind == 'ang' else 0.0
+            # Collapse exact duplicate at boundary with previous step
+            if sequence and abs(sequence[-1][0] - v) < 1e-9 and abs(sequence[-1][1] - w) < 1e-9:
+                continue
+            sequence.append((v, w, hold))
+
+    return sequence
+
+
+class StaircaseSysIdNode(Node):
+    """
+    Commands a pre-computed staircase profile and records odometry.
+
+    The profile is a flat sequence of (v_cmd, w_cmd, hold_s) triples built
+    from one or more segments (lin: or ang: prefixes).  Each level is held
+    for hold_s seconds with the command republished at 100 Hz (Create3 watchdog).
+
+    Saved data:
+      - sequence:    list of (v_cmd, w_cmd, hold_s) triples actually commanded
+      - odom_buffer: all odom samples with 'v_cmd', 'w_cmd', 'step_idx' annotations
+    """
+
+    _PHASE_WAIT = 'wait_reset'
+    _PHASE_RUN  = 'run'
+    _PHASE_DONE = 'done'
+
+    def __init__(self, sequence: list[tuple[float, float, float]], save_file: str):
+        super().__init__('staircase_sysid')
+        self._sequence  = sequence
+        self.save_file  = save_file
+        self._step_idx  = 0
+        self._phase     = self._PHASE_WAIT
+        self._phase_t0  = 0.0
+        self._odom_buffer: list[dict] = []
+
+        self.pub_cmd = make_cmd_pub(self)
+        self._sub_odom = self.create_subscription(
+            Odometry, '/odom', self._odom_cb, qos_profile_sensor_data)
+
+        self._reset_client = self.create_client(ResetPose, '/reset_pose')
+        if self._reset_client.wait_for_service(timeout_sec=3.0):
+            future = reset_odom(self, self._reset_client)
+            future.add_done_callback(self._reset_cb)
+        else:
+            self.get_logger().warn("Reset service not found – skipping odom reset.")
+            self._start()
+
+        self._timer = self.create_timer(0.01, self._loop)   # 100 Hz
+
+        total_t = sum(h for _, _, h in sequence)
+        v_vals  = [v for v, _, _ in sequence]
+        w_vals  = [w for _, w, _ in sequence]
+        self.get_logger().info(
+            f"[Staircase SysId] {len(sequence)} levels | "
+            f"v ∈ [{min(v_vals):.2f}, {max(v_vals):.2f}] m/s | "
+            f"ω ∈ [{min(w_vals):.2f}, {max(w_vals):.2f}] rad/s | "
+            f"total ≈ {total_t:.1f} s")
+
+    # ── callbacks ──────────────────────────────────────────────────────────
+
+    def _reset_cb(self, future):
+        try:
+            future.result()
+            self.get_logger().info("Odometry reset OK.")
+        except Exception as e:
+            self.get_logger().warn(f"Odom reset failed: {e}")
+        self._start()
+
+    def _odom_cb(self, msg: Odometry):
+        if self._step_idx < len(self._sequence):
+            v_cmd, w_cmd, _ = self._sequence[self._step_idx]
+        else:
+            v_cmd, w_cmd = 0.0, 0.0
+        self._odom_buffer.append({
+            'ros_time_ns':     self.get_clock().now().nanoseconds,
+            'wall_time':       time.monotonic(),
+            'header_stamp_ns': msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec,
+            'vx':  msg.twist.twist.linear.x,
+            'vy':  msg.twist.twist.linear.y,
+            'wz':  msg.twist.twist.angular.z,
+            'px':  msg.pose.pose.position.x,
+            'py':  msg.pose.pose.position.y,
+            'yaw': quaternion_to_yaw(msg.pose.pose.orientation),
+            'v_cmd':    v_cmd,
+            'w_cmd':    w_cmd,
+            'step_idx': self._step_idx,
+            'phase':    self._phase,
+        })
+
+    def _loop(self):
+        if self._phase in (self._PHASE_WAIT, self._PHASE_DONE):
+            return
+        elapsed = time.monotonic() - self._phase_t0
+        v_cmd, w_cmd, hold = self._sequence[self._step_idx]
+
+        if elapsed >= hold:
+            self._step_idx += 1
+            if self._step_idx >= len(self._sequence):
+                publish_vel(self.pub_cmd, v=0.0, w=0.0)
+                self._phase = self._PHASE_DONE
+                self.get_logger().info("[Staircase SysId] All levels complete.")
+            else:
+                self._phase_t0 = time.monotonic()
+                v_next, w_next, _ = self._sequence[self._step_idx]
+                publish_vel(self.pub_cmd, v=v_next, w=w_next)
+                self.get_logger().info(
+                    f"  Level {self._step_idx + 1}/{len(self._sequence)}: "
+                    f"v={v_next:.3f} m/s  ω={w_next:.3f} rad/s")
+        else:
+            publish_vel(self.pub_cmd, v=v_cmd, w=w_cmd)  # keep sending to satisfy watchdog
+
+    # ── helpers ────────────────────────────────────────────────────────────
+
+    def _start(self):
+        self._phase    = self._PHASE_RUN
+        self._phase_t0 = time.monotonic()
+        v0, w0, _ = self._sequence[0]
+        publish_vel(self.pub_cmd, v=v0, w=w0)
+        self.get_logger().info(
+            f"  Level 1/{len(self._sequence)}: v={v0:.3f} m/s  ω={w0:.3f} rad/s")
+
+    # ── public API ─────────────────────────────────────────────────────────
+
+    @property
+    def done(self) -> bool:
+        return self._phase == self._PHASE_DONE
+
+    def save(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.save_file)
+        payload = {
+            'mode':        'staircase_sysid',
+            'sequence':    self._sequence,
+            'odom_buffer': self._odom_buffer,
+        }
+        with open(path, 'wb') as f:
+            pickle.dump(payload, f)
+        self.get_logger().info(
+            f"[Staircase SysId] Saved {len(self._odom_buffer)} odom samples → {path}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -550,9 +751,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Modes:
-  lidar     Section 1 — Static LiDAR noise + dropout (robot MUST be stationary)
-  velocity  Section 3 — Velocity step-response (identifies low-level τ)
-  latency   Section 4 — Actuator dead-time + differential drive drift
+  lidar      Section 1 — Static LiDAR noise + dropout (robot MUST be stationary)
+  velocity   Section 3 — Velocity step-response (identifies low-level τ)
+  latency    Section 4 — Actuator dead-time + differential drive drift
+  staircase  Section 5 — Multi-level velocity tracking (staircase profile)
         """,
     )
     sub = parser.add_subparsers(dest='mode', required=True)
@@ -566,8 +768,8 @@ Modes:
 
     # ── velocity ──────────────────────────────────────────────────────────
     p_vel = sub.add_parser('velocity', help='Velocity step-response (Section 3)')
-    p_vel.add_argument('-v', '--v_target', type=float, default=0.5,
-                       help='Step target velocity in m/s (default: 0.5)')
+    p_vel.add_argument('-v', '--v_target', type=float, default=0.3,
+                       help='Step target velocity in m/s (default: 0.3)')
     p_vel.add_argument('--hold', type=float, default=4.0,
                        help='Seconds at v_target per step (default: 4.0)')
     p_vel.add_argument('--rest', type=float, default=2.0,
@@ -579,14 +781,46 @@ Modes:
 
     # ── latency ───────────────────────────────────────────────────────────
     p_lat = sub.add_parser('latency', help='Actuator latency + differential drift (Section 4)')
-    p_lat.add_argument('-v', '--v_cruise', type=float, default=0.5,
-                       help='Cruise velocity for both sub-tests in m/s (default: 0.5)')
+    p_lat.add_argument('-v', '--v_cruise', type=float, default=0.3,
+                       help='Cruise velocity for both sub-tests in m/s (default: 0.3)')
     p_lat.add_argument('-d', '--dist', type=float, default=5.0,
                        help='Straight-line distance for drift test in m (default: 5.0)')
     p_lat.add_argument('-n', '--n_trials', type=int, default=10,
                        help='Number of latency trials (default: 10)')
     p_lat.add_argument('-s', '--save_file', type=str, default='sysid_latency.pkl',
                        help='Output pickle filename')
+
+    # ── staircase ─────────────────────────────────────────────────────────
+    p_stair = sub.add_parser('staircase',
+                             help='Multi-level velocity/angular tracking (Section 5)',
+                             formatter_class=argparse.RawDescriptionHelpFormatter,
+                             epilog="""
+Each --seg defines one ramp segment, executed in order.
+
+Formats:
+  lin:v_start:v_end:v_step:hold_s   linear velocity ramp  (ω = 0)
+  ang:w_start:w_end:w_step:hold_s   angular velocity ramp (v = 0)
+  v_start:v_end:v_step:hold_s       legacy shorthand for lin:...
+
+Duplicate (v,ω) pairs at segment boundaries are automatically merged.
+
+Examples:
+  # Linear up then down:
+  staircase --seg lin:0:0.3:0.05:0.5 --seg lin:0.3:0:0.1:0.5
+
+  # Angular up then down:
+  staircase --seg ang:0:0.5:0.1:0.5 --seg ang:0.5:0:0.1:0.5
+
+  # Linear staircase followed by angular staircase:
+  staircase --seg lin:0:0.3:0.05:0.5 --seg lin:0.3:0:0.1:0.5 \\
+            --seg ang:0:0.5:0.1:0.5  --seg ang:0.5:0:0.1:0.5
+""")
+    p_stair.add_argument('--seg', dest='segs',
+                         metavar='[lin|ang:]start:end:step:hold_s',
+                         action='append', required=True,
+                         help='Staircase segment (repeatable, executed in order)')
+    p_stair.add_argument('-s', '--save_file', type=str, default='sysid_staircase.pkl',
+                         help='Output pickle filename (default: sysid_staircase.pkl)')
 
     parsed, ros_args = parser.parse_known_args(sys.argv[1:])
     rclpy.init(args=ros_args)
@@ -622,6 +856,23 @@ Modes:
         try:
             while rclpy.ok() and not node.done:
                 rclpy.spin_once(node, timeout_sec=0.005)
+        except KeyboardInterrupt:
+            publish_vel(node.pub_cmd)
+            node.get_logger().info("Interrupted – saving partial data …")
+        finally:
+            node.save()
+            node.destroy_node()
+
+    elif parsed.mode == 'staircase':
+        try:
+            sequence = _build_staircase_sequence(parsed.segs)
+        except ValueError as e:
+            print(f"[staircase] Bad segment spec: {e}", file=sys.stderr)
+            sys.exit(1)
+        node = StaircaseSysIdNode(sequence, parsed.save_file)
+        try:
+            while rclpy.ok() and not node.done:
+                rclpy.spin_once(node, timeout_sec=0.01)
         except KeyboardInterrupt:
             publish_vel(node.pub_cmd)
             node.get_logger().info("Interrupted – saving partial data …")
