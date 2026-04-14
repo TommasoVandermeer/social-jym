@@ -20,7 +20,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from socialjym.policies.jessi import JESSI
 
 class JessiController(Node):
-    def __init__(self, rc_goal, patrol_mode, network_name, save_file_name):
+    def __init__(self, rc_goal, patrol_mode, interp_mode, network_name, save_file_name):
         super().__init__('jessi_controller')
         
         self.n_stack = 5 
@@ -34,10 +34,12 @@ class JessiController(Node):
 
         self.latest_scan = None
         self.latest_odom = None
+        self.odom_buffer = deque(maxlen=50)
         self.robot_goal = rc_goal
         self.initial_position = jnp.array([0.,0.]) # Odometry is reset at the beginning
         self.goal_reached = False
-        
+        self.interp_mode = interp_mode
+
         #self.original_lidar_num_rays = 1081
         self.lidar_num_rays = 100
         self.lidar_min_angle = -jnp.pi
@@ -109,20 +111,72 @@ class JessiController(Node):
 
     def scan_callback(self, msg):
         self.latest_scan = msg
+        # Since odomoetry runs at higher freq. we save the latest odometry at the moment of receiving the scan, to have them synchronized for the control loop
+        self.latest_scan_odom = self.latest_odom
+        ### DEBUG
+        # t_scan = self.latest_scan.header.stamp
+        # scan_time_sec = t_scan.sec + t_scan.nanosec * 1e-9
+        # t_odom = self.latest_scan_odom.header.stamp
+        # odom_time_sec = t_odom.sec + t_odom.nanosec * 1e-9
+        # print(f"Scan received - Scan timestamp: {scan_time_sec:.2f} s | Odom timestamp: {odom_time_sec:.2f} s | Sync delta: {abs(scan_time_sec - odom_time_sec):.2f} s")
 
     def odom_callback(self, msg):
-        self.latest_odom = msg
+        t_odom = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        theta = self.get_yaw_from_quaternion(msg.pose.pose.orientation)
+        self.odom_buffer.append((t_odom, x, y, theta))
+        self.latest_odom = msg 
 
     def get_yaw_from_quaternion(self, q):
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
+    def interpolate_pose(self, t_target):
+        if len(self.odom_buffer) < 2:
+            return None
+        buffer_list = list(self.odom_buffer)
+        if t_target < buffer_list[0][0]:
+            self.get_logger().warn("Huge latency! The scan is older than the oldest odometry in memory.\nSsh into the turtlebot's Raspberry Pi and run 'sudo chronyc makestep'")
+            return buffer_list[0][1:]
+        if t_target > buffer_list[-1][0]: # Scan time is newer than the latest odometry, we return the latest pose (no extrapolation)
+            return buffer_list[-1][1:]
+
+        for i in range(len(buffer_list) - 1):
+            t0, x0, y0, theta0 = buffer_list[i]
+            t1, x1, y1, theta1 = buffer_list[i+1]
+            if t0 <= t_target <= t1:
+                ratio = (t_target - t0) / (t1 - t0)
+                x_interp = x0 + ratio * (x1 - x0)
+                y_interp = y0 + ratio * (y1 - y0)
+                diff_theta = math.atan2(math.sin(theta1 - theta0), math.cos(theta1 - theta0))
+                theta_interp = theta0 + ratio * diff_theta
+                theta_interp = math.atan2(math.sin(theta_interp), math.cos(theta_interp))
+                return x_interp, y_interp, theta_interp   
+        return None
+
     def control_loop(self):
         if self.latest_scan is None or self.latest_odom is None or not self.odom_reset_confirmed:
             self.get_logger().warn("Waiting data from sensors...")
             return
-
+        # Timestamp extraction
+        t_scan = self.latest_scan.header.stamp
+        scan_time_sec = t_scan.sec + t_scan.nanosec * 1e-9
+        t_odom = self.latest_scan_odom.header.stamp
+        odom_time_sec = t_odom.sec + t_odom.nanosec * 1e-9
+        # Odometry
+        if self.interp_mode:
+            pose_interp = self.interpolate_pose(scan_time_sec)
+            if pose_interp is None:
+                self.get_logger().warn("Impossible to interpolate pose at scan timestamp, skipping this control step...")
+                return
+            rx, ry, r_theta = pose_interp
+        else:
+            rx = self.latest_scan_odom.pose.pose.position.x
+            ry = self.latest_scan_odom.pose.pose.position.y
+            r_theta = self.get_yaw_from_quaternion(self.latest_scan_odom.pose.pose.orientation)
+        print(f"Current pose - x: {rx}, y: {ry}, theta: {r_theta}")
         # Ranges cleaning
         ranges = np.array(self.latest_scan.ranges)
         cleaned = np.nan_to_num(ranges, nan=30., posinf=30., neginf=30.)
@@ -134,7 +188,7 @@ class JessiController(Node):
         tb4_num_rays = len(cleaned)
         angular_res_tb4 = (tb4_angle_max - tb4_angle_min) / (tb4_num_rays - 1)
         jessi_angle_min = float(self.lidar_min_angle)
-        shift_rad = (tb4_angle_min - jessi_angle_min) + jnp.deg2rad(jnp.array([90]))
+        shift_rad = (tb4_angle_min - jessi_angle_min) + jnp.deg2rad(jnp.array([90]))[0]
         shift_bins = int(round(shift_rad / angular_res_tb4))
         shifted_cleaned = np.roll(cleaned, shift_bins)
         # Ranges resampling (from self.original_num_rays to self.lidar_num_rays)
@@ -143,12 +197,6 @@ class JessiController(Node):
         lidar_scan = np.interp(x_new, x_old, shifted_cleaned)
         lidar_scan = np.clip(lidar_scan, 0, self.lidar_max_dist)
 
-        # Odometry
-        rx = self.latest_odom.pose.pose.position.x
-        ry = self.latest_odom.pose.pose.position.y
-        r_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
-        print(f"Current pose - x: {rx}, y: {ry}, theta: {r_theta}")
-        
         # Observation
         current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], lidar_scan))
         self.obs_stack.appendleft(current_step_obs)
@@ -201,6 +249,8 @@ class JessiController(Node):
                     'action': np.array([v_cmd, w_cmd]),
                     'perception_distr': perception_output,
                     'actor_distr': actor_distr,
+                    'scan_timestamp': scan_time_sec,
+                    'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
                 })
             except Exception as e:
                 self.get_logger().error(f"Error during JESSI inference: {e}")
@@ -222,6 +272,7 @@ def main(args=None):
     parser.add_argument('-x', '--goal_x', type=float, default=2.0, help='Goal X (in meters)')
     parser.add_argument('-y', '--goal_y', type=float, default=0.0, help='Goal Y (in meters)')
     parser.add_argument('--patrol', action='store_true', help='Activate Patrol Mode (back and forth continuously)')
+    parser.add_argument('--interp', action='store_true', help='Activate Interpolation Mode for pose with respect to LiDAR timestamp (instead of using the latest odometry)')
     parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out_turtlebot.pkl', help='Network weights pickle file name')
     parser.add_argument('-s', '--save_file', type=str, default='jessi_recorded_obs.pkl', help='Output pickle file name for recorded data')
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
@@ -232,6 +283,7 @@ def main(args=None):
     node = JessiController(
         rc_goal=rc_goal, 
         patrol_mode=parsed_args.patrol,
+        interp_mode=parsed_args.interp,
         network_name=parsed_args.network,
         save_file_name=parsed_args.save_file
     )
@@ -246,6 +298,21 @@ def main(args=None):
         node.get_logger().info("🛑 Stopping control...")
     finally:
         node.save_data()
+        if len(node.recorded_data) > 1:
+            scan_times = np.array([step['scan_timestamp'] for step in node.recorded_data])
+            odom_times = np.array([step['odom_timestamp'] for step in node.recorded_data])
+            # Sync jitter (laser-odom)
+            sync_diffs = np.abs(scan_times - odom_times)
+            mean_sync = np.mean(sync_diffs)
+            std_sync = np.std(sync_diffs)
+            # Control loop jitter
+            step_diffs = np.diff(scan_times)
+            mean_step = np.mean(step_diffs)
+            std_step = np.std(step_diffs)
+            node.get_logger().info("📊 --- TIMING DIAGNOSTICS ---")
+            node.get_logger().info(f"   Odom-Scan Sync Delta : {mean_sync:.2f} s ± {std_sync:.2f} s")
+            node.get_logger().info(f"   Control Loop dt      : {mean_step:.4f} s ± {std_step:.4f} s (Target: {node.dt} s)")
+            node.get_logger().info("-----------------------------")
         node.destroy_node()
         rclpy.shutdown()
 
