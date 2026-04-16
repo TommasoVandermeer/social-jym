@@ -4,6 +4,7 @@ import os
 import pickle
 import sys
 import argparse
+import matplotlib.pyplot as plt
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
@@ -53,6 +54,54 @@ def main(args=None):
         lidar_max_dist=lidar_max_dist,
         n_stack_for_action_space_bounding=1
     )
+
+    if os.path.join(os.path.dirname(__file__), f"lists_{save_file_name}"):
+        print(f"Found lists_{save_file_name} - Loading recorded scan, odom and cmd lists for visualization.")
+        lists_file_path = os.path.join(os.path.dirname(__file__), f"lists_{save_file_name}")
+        with open(lists_file_path, 'rb') as f:
+            lists_data = pickle.load(f)
+        # recorded_scan_list = lists_data['scan'] #UNUSED for now
+        recorded_odom_list = lists_data['odom']
+        recorded_cmd_list = lists_data['cmd']
+
+        print("\n📊 --- TRACKING ANALYSIS: CMDs vs ODOMs ---")
+        odom_times = []
+        odom_v = []
+        odom_w = []
+        cmd_times = []
+        cmd_v = []
+        cmd_w = []
+        for msg in recorded_odom_list:
+            t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            odom_times.append(t)
+            odom_v.append(msg.twist.twist.linear.x)
+            odom_w.append(msg.twist.twist.angular.z)
+        for msg in recorded_cmd_list:
+            t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            cmd_times.append(t)
+            cmd_v.append(msg.twist.linear.x)
+            cmd_w.append(msg.twist.angular.z)
+        t_start = min(odom_times[0], cmd_times[0])
+        odom_times_norm = [t - t_start for t in odom_times]
+        cmd_times_norm  = [t - t_start for t in cmd_times]
+        odom_times_norm = jnp.array(odom_times_norm, dtype=jnp.float32)
+        cmd_times_norm  = jnp.array(cmd_times_norm, dtype=jnp.float32)
+        _, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        ax1.step(cmd_times_norm, cmd_v, label='Cmd Lineare (v)', color='red', linewidth=2, where='post')
+        ax1.plot(odom_times_norm, odom_v, label='Odom Lineare (v)', color='blue', alpha=0.7, linewidth=2)
+        ax1.set_ylabel('Velocità [m/s]', fontsize=12)
+        ax1.set_title('Inseguimento Velocità Lineare', fontsize=14)
+        ax1.grid(True, linestyle='--', alpha=0.6)
+        ax1.legend(loc='upper right')
+        ax2.step(cmd_times_norm, cmd_w, label='Cmd Angolare (w)', color='orange', linewidth=2, where='post')
+        ax2.plot(odom_times_norm, odom_w, label='Odom Angolare (w)', color='green', alpha=0.7, linewidth=2)
+        ax2.set_xlabel('Tempo [s]', fontsize=12)
+        ax2.set_ylabel('Velocità [rad/s]', fontsize=12)
+        ax2.set_title('Inseguimento Velocità Angolare', fontsize=14)
+        ax2.grid(True, linestyle='--', alpha=0.6)
+        ax2.legend(loc='upper right')
+        plt.tight_layout()
+        plt.show()
 
     file_path = os.path.join(os.path.dirname(__file__), save_file_name)
     with open(file_path, 'rb') as f:

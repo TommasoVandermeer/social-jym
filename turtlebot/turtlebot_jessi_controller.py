@@ -3,7 +3,7 @@ import sys
 import argparse
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from irobot_create_msgs.srv import ResetPose
@@ -16,13 +16,16 @@ import math
 import jax.numpy as jnp
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+import time
 
 from socialjym.policies.jessi import JESSI
 
 class JessiController(Node):
-    def __init__(self, rc_goal, patrol_mode, interp_mode, network_name, save_file_name):
+    def __init__(self, rc_goal, patrol_mode, interp_mode, network_name, save_file_name, save_lists):
         super().__init__('jessi_controller')
-        
+        self.init_time = time.time()
+        self.previous_control_time = time.time()
+
         self.n_stack = 5 
         self.dt = 0.25 # 4 Hz
         self.radius = 0.3
@@ -46,6 +49,7 @@ class JessiController(Node):
         self.lidar_max_angle = jnp.pi
         self.lidar_max_dist = 10
         self.angular_res = (float(self.lidar_max_angle) - float(self.lidar_min_angle)) / self.lidar_num_rays
+        self.previous_scan_time = 0.
 
         self.jessi = JESSI(
             v_max=0.3,
@@ -86,6 +90,7 @@ class JessiController(Node):
             qos_profile_sensor_data
         )
         self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_profile_sensor_data)
+        self.sub_cmd = self.create_subscription(TwistStamped, '/cmd_vel_stamped', self.cmd_callback, qos_profile_sensor_data)
         
         # ROS 2 Publisher
         qos_cmd = QoSProfile(
@@ -94,10 +99,17 @@ class JessiController(Node):
             depth=1
         )
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', qos_cmd)
+        self.pub_cmd_stamped = self.create_publisher(TwistStamped, '/cmd_vel_stamped', qos_cmd)
         
         # ROS 2 Timer
         self.timer = self.create_timer(self.dt, self.control_loop)
         self.previous_action = jnp.array([0.,0.])
+
+        # Saving Lists
+        self.save_lists = save_lists
+        self.scan_list = []
+        self.odom_list = []
+        self.cmd_list = []
 
         self.get_logger().info("JESSI Controller initialized at 4Hz!")
 
@@ -118,7 +130,10 @@ class JessiController(Node):
         # scan_time_sec = t_scan.sec + t_scan.nanosec * 1e-9
         # t_odom = self.latest_scan_odom.header.stamp
         # odom_time_sec = t_odom.sec + t_odom.nanosec * 1e-9
-        # print(f"Scan received - Scan timestamp: {scan_time_sec:.2f} s | Odom timestamp: {odom_time_sec:.2f} s | Sync delta: {abs(scan_time_sec - odom_time_sec):.2f} s")
+        # print(f"Scan received - Scan time delta. {abs(scan_time_sec - self.previous_scan_time):.2f} s | Sync delta: {abs(scan_time_sec - odom_time_sec):.2f} s")
+        # self.previous_scan_time = scan_time_sec
+        if self.save_lists:
+            self.scan_list.append(msg)
 
     def odom_callback(self, msg):
         t_odom = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -127,6 +142,12 @@ class JessiController(Node):
         theta = self.get_yaw_from_quaternion(msg.pose.pose.orientation)
         self.odom_buffer.append((t_odom, x, y, theta))
         self.latest_odom = msg 
+        if self.save_lists:
+            self.odom_list.append(msg)
+
+    def cmd_callback(self, msg):
+        if self.save_lists:
+            self.cmd_list.append(msg)
 
     def get_yaw_from_quaternion(self, q):
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
@@ -176,7 +197,8 @@ class JessiController(Node):
             rx = self.latest_scan_odom.pose.pose.position.x
             ry = self.latest_scan_odom.pose.pose.position.y
             r_theta = self.get_yaw_from_quaternion(self.latest_scan_odom.pose.pose.orientation)
-        print(f"Current pose - x: {rx}, y: {ry}, theta: {r_theta}")
+        print(f"Current pose - x: {rx:.2f}, y: {ry:.2f}, theta: {r_theta:.2f}, delta t: {time.time() - self.previous_control_time:.2f} s")
+        self.previous_control_time = time.time()
         # Ranges cleaning
         ranges = np.array(self.latest_scan.ranges)
         cleaned = np.nan_to_num(ranges, nan=30., posinf=30., neginf=30.)
@@ -192,9 +214,8 @@ class JessiController(Node):
         shift_bins = int(round(shift_rad / angular_res_tb4))
         shifted_cleaned = np.roll(cleaned, shift_bins)
         # Ranges resampling (from self.original_num_rays to self.lidar_num_rays)
-        x_old = np.linspace(0, 1, tb4_num_rays)
-        x_new = np.linspace(0, 1, self.lidar_num_rays)
-        lidar_scan = np.interp(x_new, x_old, shifted_cleaned)
+        x_old_indices = np.linspace(0, tb4_num_rays - 1, self.lidar_num_rays).round().astype(int)
+        lidar_scan = shifted_cleaned[x_old_indices]
         lidar_scan = np.clip(lidar_scan, 0, self.lidar_max_dist)
 
         # Observation
@@ -238,10 +259,21 @@ class JessiController(Node):
                     sample=False # Use mean action
                 )
                 v_cmd, w_cmd = float(action[0]), float(action[1])
+                # DEBUG action override
+                # v_cmd = 0.
+                # if (time.time() - self.init_time) % 5.0 > 2.5:
+                #     w_cmd = 2.
+                # else:
+                #     w_cmd = -2.
+                # #
                 cmd_msg = Twist()
                 cmd_msg.linear.x = v_cmd
                 cmd_msg.angular.z = w_cmd
                 self.pub_cmd.publish(cmd_msg)
+                cmd_stamped = TwistStamped()
+                cmd_stamped.header.stamp = self.get_clock().now().to_msg()
+                cmd_stamped.twist = cmd_msg
+                self.pub_cmd_stamped.publish(cmd_stamped)
                 self.previous_action = jnp.array([v_cmd, w_cmd])
                 self.recorded_data.append({
                     'observation': np.array(obs_matrix),
@@ -261,6 +293,14 @@ class JessiController(Node):
             try:
                 with open(save_path, 'wb') as f:
                     pickle.dump(self.recorded_data, f)
+                if self.save_lists:
+                    lists_save_path = os.path.join(os.path.dirname(__file__), f"lists_{self.save_file_name}")
+                    with open(lists_save_path, 'wb') as f:
+                        pickle.dump({
+                            'scan': self.scan_list,
+                            'odom': self.odom_list,
+                            'cmd': self.cmd_list
+                        }, f)
                 self.get_logger().info(f"Record saved! {len(self.recorded_data)} frame saved in: {save_path}")
             except Exception as e:
                 self.get_logger().error(f"Error during saving procedure: {e}")
@@ -273,6 +313,7 @@ def main(args=None):
     parser.add_argument('-y', '--goal_y', type=float, default=0.0, help='Goal Y (in meters)')
     parser.add_argument('--patrol', action='store_true', help='Activate Patrol Mode (back and forth continuously)')
     parser.add_argument('--interp', action='store_true', help='Activate Interpolation Mode for pose with respect to LiDAR timestamp (instead of using the latest odometry)')
+    parser.add_argument('--collect', action='store_true', help='Activate Full Data Collection Mode')
     parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out_turtlebot.pkl', help='Network weights pickle file name')
     parser.add_argument('-s', '--save_file', type=str, default='jessi_recorded_obs.pkl', help='Output pickle file name for recorded data')
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
@@ -285,7 +326,8 @@ def main(args=None):
         patrol_mode=parsed_args.patrol,
         interp_mode=parsed_args.interp,
         network_name=parsed_args.network,
-        save_file_name=parsed_args.save_file
+        save_file_name=parsed_args.save_file,
+        save_lists=parsed_args.collect
     )
     mode_text = "🔄 PATROL MODE" if parsed_args.patrol else "🛑 SINGLE TARGET MODE"
     node.get_logger().info(f"Goal set to: X={rc_goal[0]}m, Y={rc_goal[1]}m in the robot frame | {mode_text}")
@@ -299,8 +341,8 @@ def main(args=None):
     finally:
         node.save_data()
         if len(node.recorded_data) > 1:
-            scan_times = np.array([step['scan_timestamp'] for step in node.recorded_data])
-            odom_times = np.array([step['odom_timestamp'] for step in node.recorded_data])
+            scan_times = np.array([step['scan_timestamp'] for step in node.recorded_data][5:])
+            odom_times = np.array([step['odom_timestamp'] for step in node.recorded_data][5:])
             # Sync jitter (laser-odom)
             sync_diffs = np.abs(scan_times - odom_times)
             mean_sync = np.mean(sync_diffs)
