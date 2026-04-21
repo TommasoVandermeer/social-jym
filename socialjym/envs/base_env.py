@@ -148,6 +148,9 @@ class BaseEnv(ABC):
         lidar_noise:bool,
         lidar_noise_fixed_std:float,
         lidar_noise_proportional_std:float,
+        odometry_noise:bool,
+        odometry_noise_fixed_std:float,
+        odometry_noise_proportional_std:float,
         lidar_salt_and_pepper_prob:float,
         kinematics:str,
         max_cc_delay:float,
@@ -213,6 +216,9 @@ class BaseEnv(ABC):
         self.lidar_noise_fixed_std = lidar_noise_fixed_std
         self.lidar_noise_proportional_std = lidar_noise_proportional_std
         self.lidar_salt_and_pepper_prob = lidar_salt_and_pepper_prob
+        self.odometry_noise = odometry_noise
+        self.odometry_noise_fixed_std = odometry_noise_fixed_std
+        self.odometry_noise_proportional_std = odometry_noise_proportional_std
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
         self.max_cc_delay = max_cc_delay
         self.ccso_n_static_humans = ccso_n_static_humans

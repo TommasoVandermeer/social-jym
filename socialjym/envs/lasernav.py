@@ -39,6 +39,9 @@ class LaserNav(BaseEnv):
             lidar_noise_fixed_std=0.01,  # 1cm base noise
             lidar_noise_proportional_std=0.01, # 1% of the distance noise
             lidar_salt_and_pepper_prob=0.03, # 3% of the rays are affected by salt and pepper noise
+            odometry_noise=False,
+            odometry_noise_fixed_std=0.01, # 1cm/0.01rad base noise
+            odometry_noise_proportional_std=0.01, # 1% of the distance/steering noise
             kinematics='unicycle',
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
@@ -71,6 +74,9 @@ class LaserNav(BaseEnv):
             lidar_noise_fixed_std=lidar_noise_fixed_std,
             lidar_noise_proportional_std=lidar_noise_proportional_std,
             lidar_salt_and_pepper_prob=lidar_salt_and_pepper_prob,
+            odometry_noise=odometry_noise,
+            odometry_noise_fixed_std=odometry_noise_fixed_std,
+            odometry_noise_proportional_std=odometry_noise_proportional_std,
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,
@@ -165,18 +171,28 @@ class LaserNav(BaseEnv):
         output:
         - current_obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements]
         """
+        odom_noise_key, lidar_noise_key = random.split(noise_key)
         measurements = self.get_lidar_measurements(
             state[-1, :2], # Lidar position (robot position)
             state[-1,4], # Lidar yaw angle (robot orientation)
             state[:-1, :2], # Human positions
             humans_radii,
             static_obstacles, 
-            noise_key=noise_key
+            noise_key=lidar_noise_key
         )
+        if self.odometry_noise:
+            pos_key, ori_key = random.split(odom_noise_key)
+            pos_sigma = self.odometry_noise_fixed_std + self.odometry_noise_proportional_std * action[0] * self.robot_dt
+            robot_position = state[-1,:2] + random.normal(pos_key, shape=(2,)) * pos_sigma[None]
+            ori_sigma = self.odometry_noise_fixed_std + self.odometry_noise_proportional_std * jnp.abs(action[1]) * self.robot_dt
+            robot_orientation = state[-1,4] + random.normal(ori_key) * ori_sigma
+        else:
+            robot_position = state[-1,:2]
+            robot_orientation = state[-1,4]
         # Compute the current observation
         current_obs = jnp.array([
-            *state[-1,:2], # Robot position
-            state[-1,4], # Robot orientation
+            *robot_position, # Robot position
+            robot_orientation, # Robot orientation
             self.robot_radius, # Robot radius
             *action, # Robot action (either (vx,vy) or (v,w))
             *measurements[:,0], # LiDAR measurements

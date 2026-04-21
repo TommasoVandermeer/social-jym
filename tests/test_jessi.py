@@ -22,13 +22,16 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
+    'odometry_noise': False,
+    'odometry_noise_fixed_std': 0.03,
+    'odometry_noise_proportional_std': 0.5,
     'n_humans': 5,
     'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'perpendicular_traffic', 
+    'scenario': 'parallel_traffic', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
@@ -122,7 +125,7 @@ for i in range(n_episodes):
     @jit
     def _discounted_cumsum(rewards):
         def scan_fun(carry, reward):
-            new_carry = reward + carry * jnp.power(policy.gamma, policy.dt * policy.v_max)
+            new_carry = reward + carry * jnp.power(0.99, policy.dt * policy.v_max)
             return new_carry, new_carry
         _, discounted_cumsums = lax.scan(scan_fun, 0.0, rewards[::-1])
         return discounted_cumsums[::-1]

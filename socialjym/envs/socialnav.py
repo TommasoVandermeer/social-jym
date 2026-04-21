@@ -70,6 +70,9 @@ class SocialNav(BaseEnv):
             lidar_noise_fixed_std=lidar_noise_fixed_std,
             lidar_noise_proportional_std=lidar_noise_proportional_std,
             lidar_salt_and_pepper_prob=lidar_salt_and_pepper_prob,
+            odometry_noise=False, # Not used in socialnav
+            odometry_noise_fixed_std=0.0, # Not used in socialnav
+            odometry_noise_proportional_std=0.0, # Not used in socialnav
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,

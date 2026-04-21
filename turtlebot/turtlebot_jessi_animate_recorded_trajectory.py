@@ -42,17 +42,21 @@ def main(args=None):
         'kinematics': 'unicycle',
         'lidar_noise': True,
     }
-
     env = LaserNav(**env_params)
+
+    file_path = os.path.join(os.path.dirname(__file__), save_file_name)
+    with open(file_path, 'rb') as f:
+        experiment_data = pickle.load(f)
+
     jessi = JESSI(
-        v_max=0.3,
-        wheels_distance=0.235,
-        robot_radius=0.3,
-        n_stack=n_stack,
-        lidar_num_rays=lidar_num_rays,
-        lidar_angular_range=lidar_angular_range,
-        lidar_max_dist=lidar_max_dist,
-        n_stack_for_action_space_bounding=1
+        v_max=experiment_data['jessi_params']['v_max'],
+        wheels_distance=experiment_data['jessi_params']['wheels_distance'],
+        robot_radius=experiment_data['jessi_params']['robot_radius'],
+        n_stack=experiment_data['jessi_params']['n_stack'],
+        lidar_num_rays=experiment_data['jessi_params']['lidar_num_rays'],
+        lidar_angular_range=experiment_data['jessi_params']['lidar_angular_range'],
+        lidar_max_dist=experiment_data['jessi_params']['lidar_max_dist'],
+        n_stack_for_action_space_bounding=experiment_data['jessi_params']['n_stack_for_action_space_bounding']
     )
 
     if os.path.join(os.path.dirname(__file__), f"lists_{save_file_name}"):
@@ -88,13 +92,13 @@ def main(args=None):
         cmd_times_norm  = jnp.array(cmd_times_norm, dtype=jnp.float32)
         _, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
         ax1.step(cmd_times_norm, cmd_v, label='Cmd Lineare (v)', color='red', linewidth=2, where='post')
-        ax1.plot(odom_times_norm, odom_v, label='Odom Lineare (v)', color='blue', alpha=0.7, linewidth=2)
+        ax1.plot(odom_times_norm[50:], odom_v[50:], label='Odom Lineare (v)', color='blue', alpha=0.7, linewidth=2)
         ax1.set_ylabel('Velocità [m/s]', fontsize=12)
         ax1.set_title('Inseguimento Velocità Lineare', fontsize=14)
         ax1.grid(True, linestyle='--', alpha=0.6)
         ax1.legend(loc='upper right')
         ax2.step(cmd_times_norm, cmd_w, label='Cmd Angolare (w)', color='orange', linewidth=2, where='post')
-        ax2.plot(odom_times_norm, odom_w, label='Odom Angolare (w)', color='green', alpha=0.7, linewidth=2)
+        ax2.plot(odom_times_norm[50:], odom_w[50:], label='Odom Angolare (w)', color='green', alpha=0.7, linewidth=2)
         ax2.set_xlabel('Tempo [s]', fontsize=12)
         ax2.set_ylabel('Velocità [rad/s]', fontsize=12)
         ax2.set_title('Inseguimento Velocità Angolare', fontsize=14)
@@ -103,10 +107,7 @@ def main(args=None):
         plt.tight_layout()
         plt.show()
 
-    file_path = os.path.join(os.path.dirname(__file__), save_file_name)
-    with open(file_path, 'rb') as f:
-        trajectory = pickle.load(f)
-
+    trajectory = experiment_data['trajectory']
     T = len(trajectory)
     print(f"Found {T} steps.")
 

@@ -52,8 +52,8 @@ class JessiController(Node):
         self.previous_scan_time = 0.
 
         self.jessi = JESSI(
-            v_max=0.3,
-            wheels_distance=0.235,
+            v_max=0.42,
+            wheels_distance=2*0.42/1.9,
             robot_radius=self.radius,
             lidar_num_rays=self.lidar_num_rays,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
@@ -291,8 +291,21 @@ class JessiController(Node):
         if len(self.recorded_data) > 0:
             save_path = os.path.join(os.path.dirname(__file__), self.save_file_name)
             try:
+                out = {
+                    'trajectory': self.recorded_data,
+                    'jessi_params': {
+                        'v_max':self.jessi.v_max,
+                        'wheels_distance':self.jessi.wheels_distance,
+                        'robot_radius':self.radius,
+                        'n_stack':self.jessi.n_stack,
+                        'lidar_num_rays':self.lidar_num_rays,
+                        'lidar_angular_range':self.lidar_max_angle-self.lidar_min_angle,
+                        'lidar_max_dist':self.lidar_max_dist,
+                        'n_stack_for_action_space_bounding':self.jessi.n_stack_for_action_space_bounding
+                    },
+                }
                 with open(save_path, 'wb') as f:
-                    pickle.dump(self.recorded_data, f)
+                    pickle.dump(out, f)
                 if self.save_lists:
                     lists_save_path = os.path.join(os.path.dirname(__file__), f"lists_{self.save_file_name}")
                     with open(lists_save_path, 'wb') as f:
