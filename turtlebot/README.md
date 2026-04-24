@@ -4,32 +4,58 @@ Ssh into the turtlebot and add the following script in the home directory (```sy
 ```
 import requests
 import datetime
+import time
 
-def sync_create3_time(create3_ip="192.168.186.2"):
-    now = datetime.datetime.now().replace(microsecond=0)
-    formatted_time = now.isoformat() # Genera esattamente YYYY-MM-DDThh:mm:ss
-    url = f"http://{create3_ip}/api/set-datetime"
-    print(f"📡 Sending POST to: {url}")
+def brute_force_create3_time(create3_ip="192.168.186.2"):
+    base_url = f"http://{create3_ip}"
+   
+    print("🔬 --- CREATE 3 HARDWARE TIME DEBUGGER ---")
+   
+    # 1. PRE-SYNC CHECK (Reading the native HTTP header)
     try:
-        response = requests.post(url, params={'newdatetime': formatted_time}, timeout=5.0)
-        if response.status_code == 200:
-            print("✅ URL query sync successful!")
-            return
-        elif response.status_code == 404:
-            print("⚠️ 404 error on query string... I'm trying native submission via Form-Data.")
-            response_form = requests.post(url, data={'newdatetime': formatted_time}, timeout=5.0)
-            if response_form.status_code == 200:
-                 print("✅ Synchronization via Form-Data successful!")
-            else:
-                 print(f"❌ Form-Data also failed. Return code: {response_form.status_code}")
-        else:
-            print(f"⚠️ Unexpected error from Create 3: Code {response.status_code}")
+        resp = requests.get(f"{base_url}/home", timeout=3.0)
+        print(f"🕵️ Internal time (Pre-Sync) measured via HTTP:  {resp.headers.get('Date', 'Unknown')}")
     except requests.exceptions.RequestException as e:
-        print(f"❌ Unable to connect to Create 3 IP {create3_ip}.")
-        print(f"Network error: {e}")
+        print(f"❌ Unable to connect to Create 3: {e}")
+        return
+
+    # 2. ATTACKING THE NTP DAEMON
+    print("🔨 Sending shutdown/restart signal to the internal NTP daemon...")
+    try:
+        requests.post(f"{base_url}/api/restart-ntpd", timeout=3.0)
+        # Tactical pause: wait for the process to spin down and release the kernel lock
+        time.sleep(0.5)
+    except Exception as e:
+        print(f"⚠️ Error restarting NTP: {e}")
+
+    # 3. FORCING THE NEW TIME
+    # Explicitly adding the trailing 'Z' to force Zulu encoding (UTC)
+    now = datetime.datetime.utcnow().replace(microsecond=0)
+    formatted_time = now.isoformat() + "Z"
+   
+    print(f"📡 Injecting absolute time: {formatted_time}")
+    try:
+        response = requests.post(
+            f"{base_url}/api/set-datetime",
+            data={'newdatetime': formatted_time},
+            timeout=5.0
+        )
+        print(f"Server Response: {response.status_code}")
+    except Exception as e:
+        print(f"⚠️ POST Error: {e}")
+
+    # 4. POST-SYNC CHECK
+    time.sleep(1.0) # Give the kernel time to process the tick
+    try:
+        resp_after = requests.get(f"{base_url}/home", timeout=3.0)
+        print(f"🕵️ Internal time (Post-Sync) measured via HTTP: {resp_after.headers.get('Date', 'Unknown')}")
+    except:
+        pass
+       
+    print("🔬 --- END OF DIAGNOSTICS ---")
 
 if __name__ == "__main__":
-    sync_create3_time()
+    brute_force_create3_time()
 ```
 
 Open ```turtlebot/sync_devices.sh``` and edit ```PI_IP``` to match the IP address given to your turtlebot's Raspberry on the WiFi network.

@@ -37,7 +37,8 @@ class JessiController(Node):
 
         self.latest_scan = None
         self.latest_odom = None
-        self.odom_buffer = deque(maxlen=50)
+        self.odom_buffer = deque(maxlen=200)
+        self.odom_time_offset = None
         self.robot_goal = rc_goal
         self.initial_position = jnp.array([0.,0.]) # Odometry is reset at the beginning
         self.goal_reached = False
@@ -67,7 +68,7 @@ class JessiController(Node):
         # Reset turtlebot odometry
         self.odom_reset_confirmed = False
         self.reset_odom_client = self.create_client(ResetPose, '/reset_pose')
-        if self.reset_odom_client.wait_for_service(timeout_sec=3.0):
+        if self.reset_odom_client.wait_for_service(timeout_sec=10.0):
             self.get_logger().info("Sending odometry reset request...")
             req = ResetPose.Request()
             req.pose.position.x = 0.0
@@ -83,12 +84,13 @@ class JessiController(Node):
             self.get_logger().warn("WARNING: Odometry reset service /reset_pose not found.\nControl loop will not start...")
 
         # ROS 2 Subscribers
-        self.sub_scan = self.create_subscription(
-            LaserScan, 
-            '/scan', 
-            self.scan_callback, 
-            qos_profile_sensor_data
+        qos_scan = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
         )
+
+        self.sub_scan = self.create_subscription(LaserScan, '/scan', self.scan_callback, qos_scan)
         self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_profile_sensor_data)
         self.sub_cmd = self.create_subscription(TwistStamped, '/cmd_vel_stamped', self.cmd_callback, qos_profile_sensor_data)
         
@@ -136,11 +138,18 @@ class JessiController(Node):
             self.scan_list.append(msg)
 
     def odom_callback(self, msg):
-        t_odom = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        raw_odom_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if self.odom_time_offset is None:
+            local_t = self.get_clock().now().nanoseconds * 1e-9
+            self.odom_time_offset = local_t - raw_odom_t
+            self.get_logger().info(f"🕒 Software Time-Sync: Applicato offset di {self.odom_time_offset:+.3f} secondi all'Odometria!")
+        corrected_t = raw_odom_t + self.odom_time_offset
+        msg.header.stamp.sec = int(corrected_t)
+        msg.header.stamp.nanosec = int((corrected_t - int(corrected_t)) * 1e9)
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         theta = self.get_yaw_from_quaternion(msg.pose.pose.orientation)
-        self.odom_buffer.append((t_odom, x, y, theta))
+        self.odom_buffer.append((corrected_t, x, y, theta))
         self.latest_odom = msg 
         if self.save_lists:
             self.odom_list.append(msg)
