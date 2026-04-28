@@ -20,6 +20,8 @@ import time
 
 from socialjym.policies.jessi import JESSI
 
+# TODO: MODIFY INTERP, DO NOT RELY ON SYNCHRONIZED DEVICES BUT COMPUTE THE OFFSET AND USE IT THEN
+
 class JessiController(Node):
     def __init__(self, rc_goal, patrol_mode, interp_mode, network_name, save_file_name, save_lists):
         super().__init__('jessi_controller')
@@ -28,7 +30,7 @@ class JessiController(Node):
 
         self.n_stack = 5 
         self.dt = 0.25 # 4 Hz
-        self.radius = 0.3
+        self.radius = 0.4
         self.patrol = patrol_mode # Back and forth from initial position to goal
         self.save_file_name = save_file_name
 
@@ -44,8 +46,7 @@ class JessiController(Node):
         self.goal_reached = False
         self.interp_mode = interp_mode
 
-        #self.original_lidar_num_rays = 1081
-        self.lidar_num_rays = 100
+        self.lidar_num_rays = 300
         self.lidar_min_angle = -jnp.pi
         self.lidar_max_angle = jnp.pi
         self.lidar_max_dist = 10
@@ -67,7 +68,7 @@ class JessiController(Node):
         
         # Reset turtlebot odometry
         self.odom_reset_confirmed = False
-        self.reset_odom_client = self.create_client(ResetPose, '/reset_pose')
+        self.reset_odom_client = self.create_client(ResetPose, '/turtlebot1/reset_pose')
         if self.reset_odom_client.wait_for_service(timeout_sec=10.0):
             self.get_logger().info("Sending odometry reset request...")
             req = ResetPose.Request()
@@ -81,7 +82,7 @@ class JessiController(Node):
             future = self.reset_odom_client.call_async(req)
             future.add_done_callback(self.odom_reset_callback)
         else:
-            self.get_logger().warn("WARNING: Odometry reset service /reset_pose not found.\nControl loop will not start...")
+            self.get_logger().warn("WARNING: Odometry reset service /turtlebot1/reset_pose not found.\nControl loop will not start...")
 
         # ROS 2 Subscribers
         qos_scan = QoSProfile(
@@ -90,9 +91,9 @@ class JessiController(Node):
             depth=1
         )
 
-        self.sub_scan = self.create_subscription(LaserScan, '/scan', self.scan_callback, qos_scan)
-        self.sub_odom = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_profile_sensor_data)
-        self.sub_cmd = self.create_subscription(TwistStamped, '/cmd_vel_stamped', self.cmd_callback, qos_profile_sensor_data)
+        self.sub_scan = self.create_subscription(LaserScan, '/turtlebot1/scan', self.scan_callback, qos_scan)
+        self.sub_odom = self.create_subscription(Odometry, '/turtlebot1/odom', self.odom_callback, qos_profile_sensor_data)
+        self.sub_cmd = self.create_subscription(TwistStamped, '/turtlebot1/cmd_vel_stamped', self.cmd_callback, qos_profile_sensor_data)
         
         # ROS 2 Publisher
         qos_cmd = QoSProfile(
@@ -100,8 +101,8 @@ class JessiController(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
-        self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', qos_cmd)
-        self.pub_cmd_stamped = self.create_publisher(TwistStamped, '/cmd_vel_stamped', qos_cmd)
+        self.pub_cmd = self.create_publisher(Twist, '/turtlebot1/cmd_vel', qos_cmd)
+        self.pub_cmd_stamped = self.create_publisher(TwistStamped, '/turtlebot1/cmd_vel_stamped', qos_cmd)
         
         # ROS 2 Timer
         self.timer = self.create_timer(self.dt, self.control_loop)
@@ -260,7 +261,7 @@ class JessiController(Node):
         else:
             # JESSI INFERENCE
             try:
-                action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _ = self.jessi.act(
+                action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _, spat_attn, temp_attn = self.jessi.act(
                     key=self.rng_key,
                     obs=obs_matrix,
                     info=info_dict,
@@ -290,6 +291,8 @@ class JessiController(Node):
                     'action': np.array([v_cmd, w_cmd]),
                     'perception_distr': perception_output,
                     'actor_distr': actor_distr,
+                    'spatial_attention': spat_attn[0],
+                    'temporal_attention': temp_attn[0],
                     'scan_timestamp': scan_time_sec,
                     'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
                 })

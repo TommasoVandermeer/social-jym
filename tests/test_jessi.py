@@ -31,7 +31,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'parallel_traffic', 
+    'scenario': 'hybrid_scenario', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
@@ -96,11 +96,16 @@ for i in range(n_episodes):
         "vel_distrs": bigauss,
         "weights": jnp.zeros((max_steps,policy.n_detectable_humans)),
     }
+    all_spatial_attentions = jnp.zeros((max_steps, policy.lidar_num_rays))
+    all_temporal_attentions = jnp.zeros((max_steps, policy.n_stack))
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, _, _, _, _, _, perception_distr, actor_distr, state_value, _ = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
-        print("Dirichlet distribution parameters: ", actor_distr['alphas'])
-        # print("Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']])
+        action, _, _, _, _, _, perception_distr, actor_distr, state_value, _, spat_attn, temp_attn = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
+        # Debug prints
+        print(
+            "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
+            #"Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']],
+        )
         # Step the environment
         state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
         # Save data for animation
@@ -114,12 +119,16 @@ for i in range(n_episodes):
         all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
         all_static_obstacles = jnp.vstack((all_static_obstacles, jnp.array([info['static_obstacles'][-1]])))
         all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
+        all_spatial_attentions = all_spatial_attentions.at[step].set(spat_attn[0])
+        all_temporal_attentions = all_temporal_attentions.at[step].set(temp_attn[0])
         # Increment step
         step += 1
     all_encoder_distrs = tree_map(lambda x: x[:step], all_encoder_distrs)
     all_actor_distrs = tree_map(lambda x: x[:step], all_actor_distrs)
     all_actions = all_actions[:step]
     all_rewards = all_rewards[:step]
+    all_spatial_attentions = all_spatial_attentions[:step]
+    all_temporal_attentions = all_temporal_attentions[:step]
     all_predicted_state_values = all_predicted_state_values[:step]
     ## Check predicted state values and actual discounted returns
     @jit
@@ -158,4 +167,6 @@ for i in range(n_episodes):
         all_robot_goals[:-1],
         all_static_obstacles[:-1],
         all_humans_radii[:-1],
+        spatial_attentions=all_spatial_attentions,
+        temporal_attentions=all_temporal_attentions
     )
