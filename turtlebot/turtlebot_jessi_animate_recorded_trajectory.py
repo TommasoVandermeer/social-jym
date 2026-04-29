@@ -116,6 +116,14 @@ def main(args=None):
     all_robot_goals = jnp.array([step['robot_goal'] for step in trajectory])
     all_encoder_distrs = tree_map(lambda *xs: jnp.stack(xs), *[step['perception_distr'] for step in trajectory])
     all_actor_distrs = tree_map(lambda *xs: jnp.stack(xs), *[step['actor_distr'] for step in trajectory])
+    if 'spatial_attention' in trajectory[0]:
+        all_spatial_attentions = jnp.array([step['spatial_attention'] for step in trajectory])
+    else:
+        all_spatial_attentions = None
+    if 'temporal_attention' in trajectory[0]:
+        all_temporal_attentions = jnp.array([step['temporal_attention'] for step in trajectory])
+    else:
+        all_temporal_attentions = None
 
     # ANIMATION
     jessi.animate_lasernav_trajectory(
@@ -128,6 +136,8 @@ def main(args=None):
         goals=all_robot_goals,
         static_obstacles=None,
         humans_radii=None,
+        spatial_attentions=all_spatial_attentions,
+        temporal_attentions=all_temporal_attentions,
     )
 
 if __name__ == '__main__':

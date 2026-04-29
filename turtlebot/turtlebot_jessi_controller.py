@@ -54,8 +54,8 @@ class JessiController(Node):
         self.previous_scan_time = 0.
 
         self.jessi = JESSI(
-            v_max=0.42,
-            wheels_distance=2*0.42/1.9,
+            v_max=0.45,
+            wheels_distance=2*0.45/1.9,
             robot_radius=self.radius,
             lidar_num_rays=self.lidar_num_rays,
             lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
