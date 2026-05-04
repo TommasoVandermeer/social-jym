@@ -34,7 +34,6 @@ line_blue1, = ax.plot([], [], color='blue', linewidth=1.5, zorder=4)
 line_blue2, = ax.plot([], [], color='blue', linewidth=1.5, zorder=4)
 line_blue3, = ax.plot([], [], color='blue', linewidth=1.5, zorder=4)
 line_blue4, = ax.plot([], [], color='blue', linewidth=1.5, zorder=4)
-safe_v_line = ax.axvline(x=0, color='red', linestyle='--', linewidth=2, zorder=6)
 
 def update_plot(v, w, a_max, dt, alpha, beta, gamma):
     dv = a_max * dt
@@ -69,10 +68,7 @@ def update_plot(v, w, a_max, dt, alpha, beta, gamma):
         fill_patch.set_xy(np.column_stack((x, y)))
     else:
         fill_patch.set_xy(np.empty((0, 2)))
-        
-    v_safe = np.sqrt(2 * a_max * alpha * v_max * dt)
-    safe_v_line.set_xdata([v_safe, v_safe])
-        
+                
     fig.canvas.draw_idle()
 
 update_plot(init_v, init_w, init_amax, init_dt, init_alpha, init_beta, init_gamma)
@@ -103,5 +99,61 @@ slider_dt.on_changed(on_change)
 slider_alpha.on_changed(on_change)
 slider_beta.on_changed(on_change)
 slider_gamma.on_changed(on_change)
+
+plt.show()
+
+### SAFE VELOCITY CONSTRAINT
+
+init_A_max = 0.9
+init_r_robot = 0.2
+
+fig, (ax_lin, ax_ang) = plt.subplots(1, 2, figsize=(12, 6))
+plt.subplots_adjust(bottom=0.3)
+
+d_front = np.linspace(0, 2.0, 500)
+d_lat = np.linspace(0, 1.0, 500)
+
+ax_lin.set_xlim(0, 2.0)
+ax_lin.set_ylim(0, v_max + 0.1)
+ax_lin.set_xlabel('d_front (from center) [m]')
+ax_lin.set_ylabel('v [m/s]')
+ax_lin.grid(True, linestyle='--', alpha=0.6)
+ax_lin.axhline(v_max, color='black', linestyle='--', linewidth=1.5)
+
+ax_ang.set_xlim(0, 1.0)
+ax_ang.set_ylim(0, w_max + 0.5)
+ax_ang.set_xlabel('d_lat (from center) [m]')
+ax_ang.set_ylabel('omega [rad/s]')
+ax_ang.grid(True, linestyle='--', alpha=0.6)
+ax_ang.axhline(w_max, color='black', linestyle='--', linewidth=1.5)
+
+line_lin, = ax_lin.plot([], [], color='green', linewidth=2)
+line_ang, = ax_ang.plot([], [], color='green', linewidth=2)
+
+def update(A_max, r_robot):
+    clearance_front = np.maximum(0, d_front - r_robot)
+    v_safe = np.minimum(v_max, np.sqrt(2 * A_max * clearance_front))
+    
+    clearance_lat = np.maximum(0, d_lat - r_robot)
+    alpha_max = (2 * A_max) / wheels_distance
+    w_safe = np.minimum(w_max, np.sqrt(2 * alpha_max * (clearance_lat / r_robot)))
+    
+    line_lin.set_data(d_front, v_safe)
+    line_ang.set_data(d_lat, w_safe)
+    fig.canvas.draw_idle()
+
+update(init_A_max, init_r_robot)
+
+ax_slider_A = plt.axes([0.15, 0.15, 0.7, 0.03])
+ax_slider_r = plt.axes([0.15, 0.08, 0.7, 0.03])
+
+slider_A = Slider(ax_slider_A, 'A_max (wheels)', 0.1, 2.0, valinit=init_A_max)
+slider_r = Slider(ax_slider_r, 'r_robot', 0.1, 0.5, valinit=init_r_robot)
+
+def on_change(val):
+    update(slider_A.val, slider_r.val)
+
+slider_A.on_changed(on_change)
+slider_r.on_changed(on_change)
 
 plt.show()

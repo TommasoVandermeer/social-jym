@@ -2,7 +2,7 @@
 
 # --- CONFIGURATION ---
 PI_USER="ubuntu"
-PI_IP="192.168.0.111"
+PI_IP="192.168.8.4"
 PI_PASS="turtlebot4"
 SCRIPT_PATH="~/sync_create_time.py"
 # ----------------------
