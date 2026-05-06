@@ -39,7 +39,8 @@ for i in range(n_episodes):
     all_states = np.array([state])
     all_observations = np.array([obs])
     while outcome["nothing"]:
-        state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,jnp.array([0.,0.]),test=True,env_key=env_key)
+        state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,jnp.array([1.,0.]),test=True,env_key=env_key)
+        print(f"Robot state: {state[-1]}")
         all_states = np.vstack((all_states, [state]))
         all_observations = np.vstack((all_observations, [obs]))
     print(outcome)

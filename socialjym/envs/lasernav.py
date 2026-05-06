@@ -283,13 +283,15 @@ class LaserNav(BaseEnv):
                 0., 
                 0., 
                 new_state[-1,4] * int(self.kinematics == ROBOT_KINEMATICS.index('unicycle')), # If robot is holonomic 0 is passed as robot theta
-                0.]))
+                0.
+            ]))
         else:
             new_state, new_info = lax.fori_loop(
                 0,
                 int(self.robot_dt/self.humans_dt),
                 lambda _ , x: self._update_state_info(*x, action),
-                (state, info))
+                (state, info)
+            )
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):
