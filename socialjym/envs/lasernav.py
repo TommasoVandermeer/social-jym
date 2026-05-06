@@ -42,6 +42,8 @@ class LaserNav(BaseEnv):
             odometry_noise=False,
             odometry_noise_fixed_std=0.01, # 1cm/0.01rad base noise
             odometry_noise_proportional_std=0.01, # 1% of the distance/steering noise
+            tau_linear_velocity=0.0, # To model linear velocity dynamics as a first order system
+            tau_angular_velocity=0.0, # To model angular velocity dynamics as a second order system
             kinematics='unicycle',
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
@@ -77,6 +79,8 @@ class LaserNav(BaseEnv):
             odometry_noise=odometry_noise,
             odometry_noise_fixed_std=odometry_noise_fixed_std,
             odometry_noise_proportional_std=odometry_noise_proportional_std,
+            tau_action_0=tau_linear_velocity,
+            tau_action_1=tau_angular_velocity,
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,
@@ -147,26 +151,24 @@ class LaserNav(BaseEnv):
         )
         # Previous observation initialization
         # info["previous_obs"] = jnp.stack([self._get_current_obs(initial_state, humans_parameters[:,0], static_obstacles[-1], jnp.zeros((2,)), random.PRNGKey(0)),]*self.n_stack, axis=0)
-        info["previous_obs"] = vmap(self._get_current_obs, in_axes=(None,None,None,None,0))(
+        info["previous_obs"] = vmap(self._get_current_obs, in_axes=(None,None,None,0))(
             initial_state,
             humans_parameters[:,0],
             static_obstacles[-1],
-            jnp.zeros((2,)),
             random.split(noise_key, self.n_stack),
         )
         return info
 
     @partial(jit, static_argnames=("self"))
-    def _get_current_obs(self, state:jnp.ndarray, humans_radii:jnp.ndarray, static_obstacles:jnp.ndarray, action:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_current_obs(self, state:jnp.ndarray, humans_radii:jnp.ndarray, static_obstacles:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
-        Given the current state, the additional information about the environment, and the robot's action,
+        Given the current state, the additional information about the environment,
         this function computes the current observation of the state.
 
         args:
         - state: current state of the environment.
         - humans_radii: radii of the humans.
         - static_obstacles: static obstacles in the environment.
-        - action: action to be taken by the robot (vx,vy) or (v,w).
 
         output:
         - current_obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements]
@@ -180,11 +182,12 @@ class LaserNav(BaseEnv):
             static_obstacles, 
             noise_key=lidar_noise_key
         )
+        robot_velocity = state[-1,2:4] # Robot action (either (vx,vy) or (v,w))
         if self.odometry_noise:
             pos_key, ori_key = random.split(odom_noise_key)
-            pos_sigma = self.odometry_noise_fixed_std + self.odometry_noise_proportional_std * action[0] * self.robot_dt
+            pos_sigma = self.odometry_noise_fixed_std + self.odometry_noise_proportional_std * robot_velocity[0] * self.robot_dt
             robot_position = state[-1,:2] + random.normal(pos_key, shape=(2,)) * pos_sigma[None]
-            ori_sigma = self.odometry_noise_fixed_std + self.odometry_noise_proportional_std * jnp.abs(action[1]) * self.robot_dt
+            ori_sigma = self.odometry_noise_fixed_std + self.odometry_noise_proportional_std * jnp.abs(robot_velocity[1]) * self.robot_dt
             robot_orientation = state[-1,4] + random.normal(ori_key) * ori_sigma
         else:
             robot_position = state[-1,:2]
@@ -194,28 +197,27 @@ class LaserNav(BaseEnv):
             *robot_position, # Robot position
             robot_orientation, # Robot orientation
             self.robot_radius, # Robot radius
-            *action, # Robot action (either (vx,vy) or (v,w))
+            *robot_velocity, # Robot action (either (vx,vy) or (v,w))
             *measurements[:,0], # LiDAR measurements
         ])
         return current_obs
 
     @partial(jit, static_argnames=("self"))
-    def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_obs(self, state:jnp.ndarray, info:dict, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
-        Given the current state, the additional information about the environment, and the robot's action,
+        Given the current state, the additional information about the environment,
         this function computes the observation of the current state (which is a stack of the last n_stack observations).
 
         args:
         - state: current state of the environment.
         - previous_obs: last observation of the environment.
         - info: dictionary containing additional information about the environment.
-        - action: action to be taken by the robot (vx,vy) or (v,w).
 
         output:
         - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
         The first stack is the most recent one.
         """
-        current_obs = self._get_current_obs(state, info["humans_parameters"][:,0], info["static_obstacles"][-1], action, noise_key)
+        current_obs = self._get_current_obs(state, info["humans_parameters"][:,0], info["static_obstacles"][-1], noise_key)
         # Stack the current observation with the previous ones
         obs = jnp.vstack((current_obs,info["previous_obs"][:-1]))
         return obs
@@ -264,34 +266,16 @@ class LaserNav(BaseEnv):
                 (info["robot_goal"], info["robot_goal_index"])
             )
         ### Compute reward and outcome
-        obs = self._get_obs(state, info, action, env_key)
+        obs = self._get_obs(state, info, env_key)
         new_env_key, _ = random.split(env_key) # Advance the env_key (we do it here to save the replicate the previous obs in previous_obs)
         reward, outcome, reward_terms = self.reward_function(state, action, info, self.robot_dt)
         ### Update state and info
-        if self.robot_visible:
-            if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-                fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*jnp.flip(action)), 0.])]) # HSFM fictitious state
-            elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-                fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], action[0], 0., state[-1,4], action[1]])]) # HSFM fictitious state
-            new_state, new_info = lax.fori_loop(
-                0,
-                int(self.robot_dt/self.humans_dt),
-                lambda _ , x: self._update_state_info(*x, action),
-                (fictitious_state, info))
-            # Overwrite the robot fictitious state with the real one
-            new_state = new_state.at[-1,2:].set(jnp.array([
-                0., 
-                0., 
-                new_state[-1,4] * int(self.kinematics == ROBOT_KINEMATICS.index('unicycle')), # If robot is holonomic 0 is passed as robot theta
-                0.
-            ]))
-        else:
-            new_state, new_info = lax.fori_loop(
-                0,
-                int(self.robot_dt/self.humans_dt),
-                lambda _ , x: self._update_state_info(*x, action),
-                (state, info)
-            )
+        new_state, new_info = lax.fori_loop(
+            0,
+            int(self.robot_dt/self.humans_dt),
+            lambda _ , x: self._update_state_info(*x, action),
+            (state, info)
+        )
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):
@@ -337,7 +321,7 @@ class LaserNav(BaseEnv):
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        return new_state, self._get_obs(new_state, new_info, action, new_env_key), new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
+        return new_state, self._get_obs(new_state, new_info, new_env_key), new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
 
     @partial(jit, static_argnames=("self"))
     def batch_step(

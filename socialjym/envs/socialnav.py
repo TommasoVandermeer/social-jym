@@ -95,15 +95,14 @@ class SocialNav(BaseEnv):
         return str(self.__dict__)
 
     @partial(jit, static_argnames=("self"))
-    def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray) -> jnp.ndarray:
+    def _get_obs(self, state:jnp.ndarray, info:dict) -> jnp.ndarray:
         """
-        Given the current state, the additional information about the environment, and the robot's action,
+        Given the current state, the additional information about the environment,
         this function computes the observation of the current state.
 
         args:
         - state: current state of the environment.
         - info: dictionary containing additional information about the environment.
-        - action: action to be taken by the robot (vx,vy) or (v,w).
 
         output:
         - obs: observation of the current state. It is in the form:
@@ -121,9 +120,9 @@ class SocialNav(BaseEnv):
         elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'): # For sfm and orca policies the state already contains the linear velocities
             obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], state[i,2], state[i,3], info['humans_parameters'][i,0], 0.])), obs)
         if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-            obs = obs.at[-1].set(jnp.array([*state[-1,0:2], *action, self.robot_radius, 0.]))
+            obs = obs.at[-1].set(jnp.array([*state[-1,0:4], self.robot_radius, 0.]))
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-            obs = obs.at[-1].set(jnp.array([*state[-1,0:2], *action, self.robot_radius, state[-1,4]]))
+            obs = obs.at[-1].set(jnp.array([*state[-1,0:4], self.robot_radius, state[-1,4]]))
         return obs
 
     # --- Public methods ---
@@ -181,7 +180,8 @@ class SocialNav(BaseEnv):
                 new_state = new_state.at[-1,4].set(jnp.arctan2(*jnp.flip(dp)))
             action = jnp.array([jnp.linalg.norm(dp / self.robot_dt), wrap_angle(new_state[-1,4] - state[-1,4]) / self.robot_dt])
         ### Compute reward and outcome - WARNING: The old state is passed, not the updated one (but with the correct action applied)
-        reward, outcome, reward_terms = self.reward_function(self._get_obs(state, old_info, action), old_info, self.robot_dt)
+        state_obs = state.at[-1,2:4].set(action)
+        reward, outcome, reward_terms = self.reward_function(self._get_obs(state_obs, old_info), old_info, self.robot_dt)
         ### Update step, time and return
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
@@ -189,7 +189,8 @@ class SocialNav(BaseEnv):
         rewards = jnp.array(list(reward_terms.values()))
         exponent = info["step"] * self.robot_dt * self.reward_function.v_max
         new_info["return"] += jnp.sum(jnp.power(gammas, exponent) * rewards)
-        return new_state, self._get_obs(new_state, new_info, action), new_info, (reward, reward_terms), outcome
+        new_state_obs = new_state.at[-1,2:4].set(action)
+        return new_state, self._get_obs(new_state_obs, new_info), new_info, (reward, reward_terms), outcome
     
     @partial(jit, static_argnames=("self"))
     def step(
@@ -231,36 +232,15 @@ class SocialNav(BaseEnv):
                 (info["robot_goal"], info["robot_goal_index"])
             )
         ### Compute reward and outcome
-        reward, outcome, reward_terms = self.reward_function(self._get_obs(state, info, action), info, self.robot_dt)
+        state_obs = state.at[-1,2:4].set(action)
+        reward, outcome, reward_terms = self.reward_function(self._get_obs(state_obs, info), info, self.robot_dt)
         ### Update state and info
-        if self.robot_visible:
-            if self.humans_policy == HUMAN_POLICIES.index('hsfm'):
-                if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*jnp.flip(action)), 0.])]) # HSFM fictitious state
-                elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], action[0], 0., state[-1,4], action[1]])]) # HSFM fictitious state
-            elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'):
-                if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], *action, 0., 0.])]) # SFM or ORCA fictitious state
-                elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.cos(state[-1,4]) * action[0], jnp.sin(state[-1,4]) * action[0], state[-1,4], 0.])]) # SFM or ORCA fictitious state
-            new_state, new_info = lax.fori_loop(
-                0,
-                int(self.robot_dt/self.humans_dt),
-                lambda _ , x: self._update_state_info(*x, action),
-                (fictitious_state, info))
-            # Overwrite the robot fictitious state with the real one
-            new_state = new_state.at[-1,2:].set(jnp.array([
-                0., 
-                0., 
-                new_state[-1,4] * int(self.kinematics == ROBOT_KINEMATICS.index('unicycle')), # If robot is holonomic 0 is passed as robot theta
-                0.]))
-        else:
-            new_state, new_info = lax.fori_loop(
-                0,
-                int(self.robot_dt/self.humans_dt),
-                lambda _ , x: self._update_state_info(*x, action),
-                (state, info))
+        new_state, new_info = lax.fori_loop(
+            0,
+            int(self.robot_dt/self.humans_dt),
+            lambda _ , x: self._update_state_info(*x, action),
+            (state, info)
+        )
         ### Test outcome computation (during tests we check for INSTANT collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):
@@ -298,7 +278,7 @@ class SocialNav(BaseEnv):
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        return new_state, self._get_obs(new_state, new_info, action), new_info, (reward, reward_terms), outcome, reset_key
+        return new_state, self._get_obs(new_state, new_info), new_info, (reward, reward_terms), outcome, reset_key
 
     @partial(jit, static_argnames=("self"))
     def batch_step(
@@ -347,7 +327,7 @@ class SocialNav(BaseEnv):
         - outcome: dictionary indicating whether the episode is in a terminal state or not.
         """
         initial_state, key, info = self._reset(key)
-        return initial_state, key, self._get_obs(initial_state, info, jnp.zeros((2,))), info, {"success": False, "failure": False, "timeout": False, "nothing": True}
+        return initial_state, key, self._get_obs(initial_state, info), info, {"success": False, "failure": False, "timeout": False, "nothing": True}
     
     @partial(jit, static_argnames=("self"))
     def batch_reset(self, keys):
@@ -423,5 +403,5 @@ class SocialNav(BaseEnv):
             current_scenario=custom_episode["scenario"],
             humans_delay=jnp.zeros((self.n_humans,)),
         )
-        return full_state, key, self._get_obs(full_state, info, jnp.zeros((2,))), info, {"success": False, "failure": False, "timeout": False, "nothing": True}
+        return full_state, key, self._get_obs(full_state, info), info, {"success": False, "failure": False, "timeout": False, "nothing": True}
         

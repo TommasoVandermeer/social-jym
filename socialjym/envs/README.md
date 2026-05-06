@@ -2,7 +2,7 @@
 This module contatins the available Gym-stile RL environments for <b>social navigation</b>. These environments implement the usual methods used in OpenAI Gyms APIs:
 -  <b>step</b>(state, info, action, reset_if_done, reset_key): progresses the state of the environment given the current action and the environment robot_dt (static parameter of the env class). In addition, the env can be automatically reset if the bool reset_if_done = True. The environment will be reset with the given reset_key (for randomness).
 -  <b>reset</b>(reset_key): resets the environment based on the env scenario to its initial state using reset_key for stochasticity.
--  <b>_get_obs</b>(state, info, action): computes the robot observation given the current state and the last action taken by the robot.
+-  <b>_get_obs</b>(state, info): computes the robot observation given the current state.
 
 ### Vectorized environments
 Methods to run multiple instances of the same environments in parallel are included:

@@ -13,7 +13,7 @@ from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_t
 # Hyperparameters
 random_seed = 1
 n_episodes = 50
-kinematics = 'unicycle'
+kinematics = 'holonomic'
 reward_params = {
     'goal_reward': 1.,
     'collision_penalty': -0.25,
@@ -28,7 +28,7 @@ env_params = {
     'n_obstacles': 5,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
-    'robot_visible': False,
+    'robot_visible': True,
     'scenario': 'hybrid_scenario',
     'humans_policy': 'hsfm',
     'reward_function': reward_function,
@@ -61,8 +61,10 @@ for i in range(n_episodes):
     all_states = np.array([state])
     while outcome["nothing"]:
 
-        action, policy_key, _, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
+        # action, policy_key, _, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
+        action = jnp.array([0.,-1.])
         state, obs, info, (reward, _), outcome, _ = env.step(state,info,action,test=True)
+        print(f"Robot state: {state[-1]}")
 
         # state, obs, info, (reward, _), outcome = env.imitation_learning_step(state,info)
 
