@@ -23,6 +23,8 @@ env_params = {
     'robot_visible': True,
     'tau_linear_velocity': 0.39,
     'tau_angular_velocity': 0.19,
+    'control_delay_mean': 0.0,
+    'control_delay_sigma': 0.0,
     'scenario': 'circular_crossing_with_static_obstacles', #'hybrid_scenario',
     'ccso_n_static_humans': 5, #0,
     'ccso_static_humans_radius_mean': 0.3,
@@ -42,7 +44,9 @@ for i in range(n_episodes):
     all_observations = np.array([obs])
     while outcome["nothing"]:
         state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,jnp.array([1.,0.]),test=True,env_key=env_key)
-        print(f"Robot state: {state[-1]}")
+        print(f"Robot velocity: {state[-1,2:4]}")
+        print(f"Actions history: {info['action_history']}")
+        print(f"Robot delay: {info['robot_delay']}")
         all_states = np.vstack((all_states, [state]))
         all_observations = np.vstack((all_observations, [obs]))
     print(outcome)

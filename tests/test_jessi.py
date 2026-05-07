@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from jax.tree_util import tree_map
 import os
 import pickle
+import matplotlib.pyplot as plt
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
@@ -25,13 +26,17 @@ env_params = {
     'odometry_noise': False,
     'odometry_noise_fixed_std': 0.03,
     'odometry_noise_proportional_std': 0.5,
+    'tau_linear_velocity': 0.39,
+    'tau_angular_velocity': 0.19,
+    'control_delay_mean': 0.27, #0.27,
+    'control_delay_sigma': 0.005, #0.005,
     'n_humans': 5,
     'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'hybrid_scenario', 
+    'scenario': 'circular_crossing', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
@@ -75,6 +80,7 @@ for i in range(n_episodes):
     step = 0
     max_steps = int(env.reward_function.time_limit/env.robot_dt)+1
     all_states = jnp.array([state])
+    all_intermediate_states = jnp.zeros((max_steps, int(env.robot_dt/env.humans_dt), state.shape[0], state.shape[1]))
     all_observations = jnp.array([obs])
     all_robot_goals = jnp.array([info['robot_goal']])
     all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
@@ -104,7 +110,7 @@ for i in range(n_episodes):
         # Debug prints
         print(
             "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
-            #"Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']],
+            #"Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']],"\n",
         )
         # Step the environment
         state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
@@ -115,6 +121,7 @@ for i in range(n_episodes):
         all_actor_distrs = tree_map(lambda x, y: x.at[step].set(y), all_actor_distrs, actor_distr)
         all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, perception_distr)
         all_states = jnp.vstack((all_states, jnp.array([state])))
+        all_intermediate_states = all_intermediate_states.at[step].set(info["intermediate_states"])
         all_observations = jnp.vstack((all_observations, jnp.array([obs])))
         all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
         all_static_obstacles = jnp.vstack((all_static_obstacles, jnp.array([info['static_obstacles'][-1]])))
@@ -125,6 +132,7 @@ for i in range(n_episodes):
         step += 1
     all_encoder_distrs = tree_map(lambda x: x[:step], all_encoder_distrs)
     all_actor_distrs = tree_map(lambda x: x[:step], all_actor_distrs)
+    all_intermediate_states = all_intermediate_states[:step]
     all_actions = all_actions[:step]
     all_rewards = all_rewards[:step]
     all_spatial_attentions = all_spatial_attentions[:step]
@@ -156,6 +164,24 @@ for i in range(n_episodes):
     #     # lidar_measurements=lidar_measurements,
     #     kinematics=kinematics,
     # )
+    ## Plot velocity dynamics of the simulator with respect to reference commands
+    robot_velocities = all_intermediate_states[:,:,-1,2:4].reshape(-1, 2)
+    robot_velocities_times = jnp.arange(0, robot_velocities.shape[0]*env.humans_dt, env.humans_dt)
+    reference_velocities = all_actions
+    reference_velocities_times = jnp.arange(0, reference_velocities.shape[0]*env.robot_dt, env.robot_dt)
+    figure, ax = plt.subplots(2, 1, figsize=(15, 10))
+    figure.subplots_adjust(left=0.1, right=0.9, bottom=0.15)
+    ax[0].step(reference_velocities_times, reference_velocities[:,0], label='Action', where='post', color='green', alpha=0.7)
+    ax[0].plot(robot_velocities_times, robot_velocities[:,0], label='Velocity', color='red', linewidth=2)
+    ax[0].set_xlabel('Time [s]')
+    ax[0].set_ylabel('Linear Vel [m/s]')
+    ax[0].legend(fontsize=16)
+    ax[1].step(reference_velocities_times, reference_velocities[:,1], label='Action', where='post', color='green', alpha=0.7)
+    ax[1].plot(robot_velocities_times, robot_velocities[:,1], label='Velocity', color='red', linewidth=2)
+    ax[1].set_xlabel('Time [s]')
+    ax[1].set_ylabel('Angular Vel [m/s]')
+    ax[1].legend(fontsize=16)
+    plt.show()
     ## Animate trajectory with JESSI's perception and action distribution
     policy.animate_lasernav_trajectory(
         env,

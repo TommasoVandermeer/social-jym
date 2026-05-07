@@ -73,6 +73,10 @@ class SocialNav(BaseEnv):
             odometry_noise=False, # Not used in socialnav
             odometry_noise_fixed_std=0.0, # Not used in socialnav
             odometry_noise_proportional_std=0.0, # Not used in socialnav
+            tau_linear_velocity=0.0, # Not used in socialnav
+            tau_angular_velocity=0.0, # Not used in socialnav
+            control_delay_mean=0.0, #  Not used in socialnav
+            control_delay_sigma=0.0, #  Not used in socialnav
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,
@@ -185,6 +189,7 @@ class SocialNav(BaseEnv):
         ### Update step, time and return
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
+        new_info["action_history"] = jnp.concatenate((action[None,:], new_info["action_history"][:-1]), axis=0)
         gammas = jnp.array(list(reward_terms.keys()))
         rewards = jnp.array(list(reward_terms.values()))
         exponent = info["step"] * self.robot_dt * self.reward_function.v_max
@@ -235,11 +240,15 @@ class SocialNav(BaseEnv):
         state_obs = state.at[-1,2:4].set(action)
         reward, outcome, reward_terms = self.reward_function(self._get_obs(state_obs, info), info, self.robot_dt)
         ### Update state and info
-        new_state, new_info = lax.fori_loop(
-            0,
-            int(self.robot_dt/self.humans_dt),
-            lambda _ , x: self._update_state_info(*x, action),
-            (state, info)
+        def scan_step(carry, _):
+            curr_state, curr_info = carry
+            new_state, new_info = self._update_state_info(curr_state, curr_info, action)
+            return (new_state, new_info), new_state
+        (new_state, new_info), state_history = lax.scan(
+            f=scan_step,
+            init=(state, info),
+            xs=None,
+            length=int(self.robot_dt/self.humans_dt)
         )
         ### Test outcome computation (during tests we check for INSTANT collision or reaching goal)
         @jit
@@ -265,6 +274,8 @@ class SocialNav(BaseEnv):
         ### Update time, step, return
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
+        new_info["action_history"] = jnp.concatenate((action[None,:], new_info["action_history"][:-1]), axis=0)
+        new_info["intermediate_states"] = state_history
         gammas = jnp.array(list(reward_terms.keys()))
         rewards = jnp.array(list(reward_terms.values()))
         exponent = info["step"] * self.robot_dt * self.reward_function.v_max

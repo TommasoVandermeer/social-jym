@@ -44,6 +44,8 @@ class LaserNav(BaseEnv):
             odometry_noise_proportional_std=0.01, # 1% of the distance/steering noise
             tau_linear_velocity=0.0, # To model linear velocity dynamics as a first order system
             tau_angular_velocity=0.0, # To model angular velocity dynamics as a second order system
+            control_delay_mean=0.0, # Mean of the control delay distribution (assumed to be Gaussian)
+            control_delay_sigma=0.0, # Standard deviation of the control delay distribution (assumed to be Gaussian)
             kinematics='unicycle',
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
@@ -81,6 +83,8 @@ class LaserNav(BaseEnv):
             odometry_noise_proportional_std=odometry_noise_proportional_std,
             tau_action_0=tau_linear_velocity,
             tau_action_1=tau_angular_velocity,
+            control_delay_mean=control_delay_mean,
+            control_delay_sigma=control_delay_sigma,
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,
@@ -267,14 +271,20 @@ class LaserNav(BaseEnv):
             )
         ### Compute reward and outcome
         obs = self._get_obs(state, info, env_key)
-        new_env_key, _ = random.split(env_key) # Advance the env_key (we do it here to save the replicate the previous obs in previous_obs)
+        new_env_key, delay_key,_ = random.split(env_key, 3) # Advance the env_key (we do it here to save the replicate the previous obs in previous_obs)
         reward, outcome, reward_terms = self.reward_function(state, action, info, self.robot_dt)
+        ### Compute robot delay
+        info["robot_delay"] = jnp.clip(random.normal(delay_key) * self.control_delay_sigma + self.control_delay_mean, 0., self.actions_history_length * self.robot_dt) # Delay must be positive and lower than maximum history length * robot_dt
         ### Update state and info
-        new_state, new_info = lax.fori_loop(
-            0,
-            int(self.robot_dt/self.humans_dt),
-            lambda _ , x: self._update_state_info(*x, action),
-            (state, info)
+        def scan_step(carry, _):
+            curr_state, curr_info = carry
+            new_state, new_info = self._update_state_info(curr_state, curr_info, action)
+            return (new_state, new_info), new_state
+        (new_state, new_info), state_history = lax.scan(
+            f=scan_step,
+            init=(state, info),
+            xs=None,
+            length=int(self.robot_dt/self.humans_dt)
         )
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
@@ -307,6 +317,8 @@ class LaserNav(BaseEnv):
         ### Update time, step, return, previous observation
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
+        new_info["action_history"] = jnp.concatenate((action[None,:], new_info["action_history"][:-1]), axis=0)
+        new_info["intermediate_states"] = state_history
         gammas = jnp.array(tuple(reward_terms.keys()))
         rewards = jnp.array(tuple(reward_terms.values()))
         exponent = info["step"] * self.robot_dt * self.reward_function.v_max

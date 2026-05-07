@@ -153,6 +153,8 @@ class BaseEnv(ABC):
         odometry_noise_proportional_std:float,
         tau_action_0:float,
         tau_action_1:float,
+        control_delay_mean:float,
+        control_delay_sigma:float,
         lidar_salt_and_pepper_prob:float,
         kinematics:str,
         max_cc_delay:float,
@@ -184,6 +186,8 @@ class BaseEnv(ABC):
             assert n_humans > ccso_n_static_humans, "The number of static humans must be less than the total number of humans."
         assert tau_action_0 >= 0., "Time constant of first order system for action 0 should be greater or equal to zero."
         assert tau_action_1 >= 0., "Time constant of first order system for action 1 should be greater or equal to zero."
+        assert control_delay_mean >= 0., "Mean control delay should be greater or equal to zero."
+        assert control_delay_sigma >= 0., "Control delay sigma should be greater or equal to zero."
         ## Env initialization
         self.robot_dt = robot_dt
         self.robot_radius = robot_radius
@@ -225,6 +229,9 @@ class BaseEnv(ABC):
         self.odometry_noise_proportional_std = odometry_noise_proportional_std
         self.tau_action_0 = tau_action_0
         self.tau_action_1 = tau_action_1
+        self.control_delay_mean = control_delay_mean
+        self.control_delay_sigma = control_delay_sigma
+        self.actions_history_length = jnp.max(jnp.array([jnp.ceil((self.control_delay_mean + 3 * self.control_delay_sigma)/self.robot_dt), 1], dtype=jnp.int32))
         self.action_0_dynamics = tau_action_0 > 0.
         self.action_1_dynamics = tau_action_1 > 0.
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
@@ -508,6 +515,9 @@ class BaseEnv(ABC):
             "return": 0.,
             "is_x_flipped": is_x_flipped,
             "is_y_flipped": is_y_flipped,
+            "action_history": jnp.zeros((self.actions_history_length, 2)), # History of taken actions, used for modelling delays
+            "robot_delay": 0., # Current delay of the robot, used for delayed action execution
+            "intermediate_states": jnp.zeros((int(self.robot_dt/self.humans_dt), self.n_humans+1, 6)), # Used to store the intermediate states between two robot steps 
         }
 
     @partial(jit, static_argnames=("self"))
@@ -1524,7 +1534,7 @@ class BaseEnv(ABC):
         self, 
         state:jnp.ndarray, 
         info:dict,
-        action:jnp.ndarray
+        action:jnp.ndarray,
     ) -> tuple:
         """
         This function updates the state and the info of the environment given the current state, the info and the action taken by the robot.
@@ -1547,9 +1557,9 @@ class BaseEnv(ABC):
         if self.humans_policy == HUMAN_POLICIES.index("hsfm"):
             if self.robot_visible:
                 if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*jnp.flip(action)), 0.])]) # HSFM fictitious state
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(state[-1,2:4]), 0., jnp.atan2(*jnp.flip(state[-1,2:4])), 0.])]) # HSFM fictitious state
                 elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], action[0], 0., state[-1,4], action[1]])]) # HSFM fictitious state
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], state[-1,2], 0., state[-1,4], state[-1,3]])]) # HSFM fictitious state
                 new_state = jnp.vstack(
                     [self.humans_step(fictitious_state, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
                     state[-1]])
@@ -1560,9 +1570,9 @@ class BaseEnv(ABC):
         elif self.humans_policy == HUMAN_POLICIES.index("sfm") or self.humans_policy == HUMAN_POLICIES.index("orca"):
             if self.robot_visible:
                 if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], *action, 0., 0.])]) # SFM or ORCA fictitious state
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], *state[-1,2:4], 0., 0.])]) # SFM or ORCA fictitious state
                 elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.cos(state[-1,4]) * action[0], jnp.sin(state[-1,4]) * action[0], state[-1,4], 0.])]) # SFM or ORCA fictitious state
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.cos(state[-1,4]) * state[-1,2], jnp.sin(state[-1,4]) * state[-1,2], state[-1,4], 0.])]) # SFM or ORCA fictitious state
                 new_state = jnp.vstack(
                     [self.humans_step(fictitious_state[:,0:4], goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
                     state[-1,0:4]])
@@ -1573,38 +1583,43 @@ class BaseEnv(ABC):
             new_state = jnp.pad(new_state, ((0,0),(0,2)))
             new_state = new_state.at[-1,4:].set(state[-1,4:])
         ## Robot update
-        robot_velocity = action
+        robot_velocity = lax.cond(
+            info["robot_delay"] == 0,
+            lambda: action,
+            lambda: info["action_history"][(info["robot_delay"] // self.robot_dt).astype(jnp.int32)],
+        )
         if self.action_0_dynamics:
             alpha = jnp.exp(-self.humans_dt/self.tau_action_0)
-            robot_velocity = robot_velocity.at[0].set(alpha * state[-1,2] + (1 - alpha) * action[0])
+            robot_velocity = robot_velocity.at[0].set(alpha * state[-1,2] + (1 - alpha) * robot_velocity[0])
         if self.action_1_dynamics:
             alpha = jnp.exp(-self.humans_dt/self.tau_action_1)
-            robot_velocity = robot_velocity.at[1].set(alpha * state[-1,3] + (1 - alpha) * action[1])
+            robot_velocity = robot_velocity.at[1].set(alpha * state[-1,3] + (1 - alpha) * robot_velocity[1])
         if self.kinematics == ROBOT_KINEMATICS.index("holonomic"):
             new_state = new_state.at[-1,0:4].set(jnp.array([
-                state[-1,0]+action[0]*self.humans_dt, 
-                state[-1,1]+action[1]*self.humans_dt,
+                state[-1,0]+robot_velocity[0]*self.humans_dt, 
+                state[-1,1]+robot_velocity[1]*self.humans_dt,
                 *robot_velocity,
             ]))
         elif self.kinematics == ROBOT_KINEMATICS.index("unicycle"):
             new_state = lax.cond(
-                jnp.abs(action[1]) > EPSILON,
+                jnp.abs(robot_velocity[1]) > EPSILON,
                 lambda x: x.at[-1].set(jnp.array([
-                    state[-1,0]+(action[0]/action[1])*(jnp.sin(state[-1,4]+action[1]*self.humans_dt)-jnp.sin(state[-1,4])),
-                    state[-1,1]+(action[0]/action[1])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+action[1]*self.humans_dt)),
+                    state[-1,0]+(robot_velocity[0]/robot_velocity[1])*(jnp.sin(state[-1,4]+robot_velocity[1]*self.humans_dt)-jnp.sin(state[-1,4])),
+                    state[-1,1]+(robot_velocity[0]/robot_velocity[1])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+robot_velocity[1]*self.humans_dt)),
                     *robot_velocity,
-                    wrap_angle(state[-1,4]+action[1]*self.humans_dt),
+                    wrap_angle(state[-1,4]+robot_velocity[1]*self.humans_dt),
                     state[-1,5]
                 ])),
                 lambda x: x.at[-1].set(jnp.array([
-                    state[-1,0]+action[0]*self.humans_dt*jnp.cos(state[-1,4]),
-                    state[-1,1]+action[0]*self.humans_dt*jnp.sin(state[-1,4]),
+                    state[-1,0]+robot_velocity[0]*self.humans_dt*jnp.cos(state[-1,4]),
+                    state[-1,1]+robot_velocity[0]*self.humans_dt*jnp.sin(state[-1,4]),
                     *robot_velocity,
                     *state[-1,4:]
                 ])),
                 new_state)
         ## Post update stuff
         new_info, new_state = self._scenario_based_state_post_update(new_state, info)
+        new_info["robot_delay"] = jnp.max(jnp.array([0., info["robot_delay"] - self.humans_dt]))
         return (new_state, new_info)
 
     @partial(jit, static_argnames=("self"))
