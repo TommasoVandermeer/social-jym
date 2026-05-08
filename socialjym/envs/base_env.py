@@ -32,6 +32,10 @@ ROBOT_KINEMATICS = [
     "holonomic",
     "unicycle"
 ]
+ROBOT_VELOCITY_DYNAMICS = [
+    "first_order_system",
+    "coupled_slew_rate"
+]
 ENVIRONMENTS = [
     "socialnav",
     "lasernav",
@@ -151,8 +155,11 @@ class BaseEnv(ABC):
         odometry_noise:bool,
         odometry_noise_fixed_std:float,
         odometry_noise_proportional_std:float,
-        tau_action_0:float,
-        tau_action_1:float,
+        velocity_dynamics:str,
+        tau_action_0:float, # Used for First Order System velocity dynamics
+        tau_action_1:float, # Used for First Order System velocity dynamics
+        wheels_max_linear_acceleration:float, # Used for Coupled Slew Rate velocity dynamics
+        wheels_distance:float, # Used for Coupled Slew Rate velocity dynamics
         control_delay_mean:float,
         control_delay_sigma:float,
         lidar_salt_and_pepper_prob:float,
@@ -188,6 +195,9 @@ class BaseEnv(ABC):
         assert tau_action_1 >= 0., "Time constant of first order system for action 1 should be greater or equal to zero."
         assert control_delay_mean >= 0., "Mean control delay should be greater or equal to zero."
         assert control_delay_sigma >= 0., "Control delay sigma should be greater or equal to zero."
+        assert velocity_dynamics in ROBOT_VELOCITY_DYNAMICS, f"Robot velocity dynamics must be one of {ROBOT_VELOCITY_DYNAMICS}"
+        if velocity_dynamics == "coupled_slew_rate":
+            assert kinematics == "unicycle"
         ## Env initialization
         self.robot_dt = robot_dt
         self.robot_radius = robot_radius
@@ -227,13 +237,17 @@ class BaseEnv(ABC):
         self.odometry_noise = odometry_noise
         self.odometry_noise_fixed_std = odometry_noise_fixed_std
         self.odometry_noise_proportional_std = odometry_noise_proportional_std
+        self.robot_velocity_dynamics = ROBOT_VELOCITY_DYNAMICS.index(velocity_dynamics)
         self.tau_action_0 = tau_action_0
         self.tau_action_1 = tau_action_1
+        self.wheels_max_linear_acceleration = wheels_max_linear_acceleration
+        self.wheels_distance = wheels_distance
         self.control_delay_mean = control_delay_mean
         self.control_delay_sigma = control_delay_sigma
         self.actions_history_length = jnp.max(jnp.array([jnp.ceil((self.control_delay_mean + 3 * self.control_delay_sigma)/self.robot_dt), 1], dtype=jnp.int32))
         self.action_0_dynamics = tau_action_0 > 0.
         self.action_1_dynamics = tau_action_1 > 0.
+        self.limited_acceleration = wheels_max_linear_acceleration < jnp.inf
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
         self.max_cc_delay = max_cc_delay
         self.ccso_n_static_humans = ccso_n_static_humans
@@ -1583,36 +1597,52 @@ class BaseEnv(ABC):
             new_state = jnp.pad(new_state, ((0,0),(0,2)))
             new_state = new_state.at[-1,4:].set(state[-1,4:])
         ## Robot update
+        # Compute delayed action
         robot_velocity = lax.cond(
             info["robot_delay"] == 0,
             lambda: action,
             lambda: info["action_history"][(info["robot_delay"] // self.robot_dt).astype(jnp.int32)],
         )
-        if self.action_0_dynamics:
-            alpha = jnp.exp(-self.humans_dt/self.tau_action_0)
-            robot_velocity = robot_velocity.at[0].set(alpha * state[-1,2] + (1 - alpha) * robot_velocity[0])
-        if self.action_1_dynamics:
-            alpha = jnp.exp(-self.humans_dt/self.tau_action_1)
-            robot_velocity = robot_velocity.at[1].set(alpha * state[-1,3] + (1 - alpha) * robot_velocity[1])
+        # Apply velocity dynamics
+        if self.robot_velocity_dynamics == ROBOT_VELOCITY_DYNAMICS.index("first_order_system"):
+            if self.action_0_dynamics:
+                alpha = jnp.exp(-self.humans_dt/self.tau_action_0)
+                robot_velocity = robot_velocity.at[0].set(alpha * state[-1,2] + (1 - alpha) * robot_velocity[0])
+            if self.action_1_dynamics:
+                alpha = jnp.exp(-self.humans_dt/self.tau_action_1)
+                robot_velocity = robot_velocity.at[1].set(alpha * state[-1,3] + (1 - alpha) * robot_velocity[1])
+        elif self.robot_velocity_dynamics == ROBOT_VELOCITY_DYNAMICS.index("coupled_slew_rate"):
+            if self.limited_acceleration:
+                a_req = (robot_velocity[0] - state[-1,2]) / self.humans_dt
+                alpha_req = (robot_velocity[1] - state[-1,3]) / self.humans_dt
+                effort = abs(a_req) + (self.wheels_distance / 2.0) * abs(alpha_req)
+                scale = lax.cond(
+                    (effort > self.wheels_max_linear_acceleration) & (effort > 1e-6),
+                    lambda: self.wheels_max_linear_acceleration / effort, 
+                    lambda: 1.0,
+                )
+                robot_velocity = robot_velocity.at[0].set(state[-1,2] + (a_req * scale) * self.humans_dt)
+                robot_velocity = robot_velocity.at[1].set(state[-1,3] + (alpha_req * scale) * self.humans_dt)
+        # Apply position dynamics
         if self.kinematics == ROBOT_KINEMATICS.index("holonomic"):
             new_state = new_state.at[-1,0:4].set(jnp.array([
-                state[-1,0]+robot_velocity[0]*self.humans_dt, 
-                state[-1,1]+robot_velocity[1]*self.humans_dt,
+                state[-1,0]+state[-1,2]*self.humans_dt, 
+                state[-1,1]+state[-1,3]*self.humans_dt,
                 *robot_velocity,
             ]))
         elif self.kinematics == ROBOT_KINEMATICS.index("unicycle"):
             new_state = lax.cond(
-                jnp.abs(robot_velocity[1]) > EPSILON,
+                jnp.abs(state[-1,3]) > EPSILON,
                 lambda x: x.at[-1].set(jnp.array([
-                    state[-1,0]+(robot_velocity[0]/robot_velocity[1])*(jnp.sin(state[-1,4]+robot_velocity[1]*self.humans_dt)-jnp.sin(state[-1,4])),
-                    state[-1,1]+(robot_velocity[0]/robot_velocity[1])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+robot_velocity[1]*self.humans_dt)),
+                    state[-1,0]+(state[-1,2]/state[-1,3])*(jnp.sin(state[-1,4]+state[-1,3]*self.humans_dt)-jnp.sin(state[-1,4])),
+                    state[-1,1]+(state[-1,2]/state[-1,3])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+state[-1,3]*self.humans_dt)),
                     *robot_velocity,
-                    wrap_angle(state[-1,4]+robot_velocity[1]*self.humans_dt),
+                    wrap_angle(state[-1,4]+state[-1,3]*self.humans_dt),
                     state[-1,5]
                 ])),
                 lambda x: x.at[-1].set(jnp.array([
-                    state[-1,0]+robot_velocity[0]*self.humans_dt*jnp.cos(state[-1,4]),
-                    state[-1,1]+robot_velocity[0]*self.humans_dt*jnp.sin(state[-1,4]),
+                    state[-1,0]+state[-1,2]*self.humans_dt*jnp.cos(state[-1,4]),
+                    state[-1,1]+state[-1,2]*self.humans_dt*jnp.sin(state[-1,4]),
                     *robot_velocity,
                     *state[-1,4:]
                 ])),

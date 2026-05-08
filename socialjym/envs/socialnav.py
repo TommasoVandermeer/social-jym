@@ -73,8 +73,11 @@ class SocialNav(BaseEnv):
             odometry_noise=False, # Not used in socialnav
             odometry_noise_fixed_std=0.0, # Not used in socialnav
             odometry_noise_proportional_std=0.0, # Not used in socialnav
+            velocity_dynamics="first_order_system", # Not used in socialnav
             tau_linear_velocity=0.0, # Not used in socialnav
             tau_angular_velocity=0.0, # Not used in socialnav
+            wheels_max_linear_acceleration=jnp.inf, # Not used in socialnav
+            wheels_distance=0., # Not used in socialnav
             control_delay_mean=0.0, #  Not used in socialnav
             control_delay_sigma=0.0, #  Not used in socialnav
             kinematics=kinematics,

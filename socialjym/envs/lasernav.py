@@ -3,7 +3,7 @@ from jax import random, jit, lax, debug, vmap
 from functools import partial
 from types import FunctionType
 
-from .base_env import BaseEnv, SCENARIOS, ROBOT_KINEMATICS, ENVIRONMENTS
+from .base_env import BaseEnv, SCENARIOS, ENVIRONMENTS
 
 class LaserNav(BaseEnv):
     """
@@ -42,8 +42,11 @@ class LaserNav(BaseEnv):
             odometry_noise=False,
             odometry_noise_fixed_std=0.01, # 1cm/0.01rad base noise
             odometry_noise_proportional_std=0.01, # 1% of the distance/steering noise
+            velocity_dynamics="coupled_slew_rate",
             tau_linear_velocity=0.0, # To model linear velocity dynamics as a first order system
             tau_angular_velocity=0.0, # To model angular velocity dynamics as a second order system
+            wheels_max_linear_acceleration=jnp.inf,
+            wheels_distance=0.,
             control_delay_mean=0.0, # Mean of the control delay distribution (assumed to be Gaussian)
             control_delay_sigma=0.0, # Standard deviation of the control delay distribution (assumed to be Gaussian)
             kinematics='unicycle',
@@ -81,8 +84,11 @@ class LaserNav(BaseEnv):
             odometry_noise=odometry_noise,
             odometry_noise_fixed_std=odometry_noise_fixed_std,
             odometry_noise_proportional_std=odometry_noise_proportional_std,
+            velocity_dynamics=velocity_dynamics,
             tau_action_0=tau_linear_velocity,
             tau_action_1=tau_angular_velocity,
+            wheels_max_linear_acceleration=wheels_max_linear_acceleration,
+            wheels_distance=wheels_distance,
             control_delay_mean=control_delay_mean,
             control_delay_sigma=control_delay_sigma,
             kinematics=kinematics,
