@@ -282,16 +282,7 @@ class LaserNav(BaseEnv):
         ### Compute robot delay
         info["robot_delay"] = jnp.clip(random.normal(delay_key) * self.control_delay_sigma + self.control_delay_mean, 0., self.actions_history_length * self.robot_dt) # Delay must be positive and lower than maximum history length * robot_dt
         ### Update state and info
-        def scan_step(carry, _):
-            curr_state, curr_info = carry
-            new_state, new_info = self._update_state_info(curr_state, curr_info, action)
-            return (new_state, new_info), new_state
-        (new_state, new_info), state_history = lax.scan(
-            f=scan_step,
-            init=(state, info),
-            xs=None,
-            length=int(self.robot_dt/self.humans_dt)
-        )
+        new_state, new_info, state_history = self._step(state, info, action) 
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):

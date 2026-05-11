@@ -243,16 +243,7 @@ class SocialNav(BaseEnv):
         state_obs = state.at[-1,2:4].set(action)
         reward, outcome, reward_terms = self.reward_function(self._get_obs(state_obs, info), info, self.robot_dt)
         ### Update state and info
-        def scan_step(carry, _):
-            curr_state, curr_info = carry
-            new_state, new_info = self._update_state_info(curr_state, curr_info, action)
-            return (new_state, new_info), new_state
-        (new_state, new_info), state_history = lax.scan(
-            f=scan_step,
-            init=(state, info),
-            xs=None,
-            length=int(self.robot_dt/self.humans_dt)
-        )
+        new_state, new_info, state_history = self._step(state, info, action) 
         ### Test outcome computation (during tests we check for INSTANT collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):

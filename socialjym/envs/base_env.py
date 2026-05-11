@@ -1653,6 +1653,25 @@ class BaseEnv(ABC):
         return (new_state, new_info)
 
     @partial(jit, static_argnames=("self"))
+    def _step(
+        self,
+        state:jnp.ndarray,
+        info:dict,
+        action:jnp.ndarray,
+    ):
+        def scan_step(carry, _):
+            curr_state, curr_info = carry
+            new_state, new_info = self._update_state_info(curr_state, curr_info, action)
+            return (new_state, new_info), new_state
+        (new_state, new_info), state_history = lax.scan(
+            f=scan_step,
+            init=(state, info),
+            xs=None,
+            length=int(self.robot_dt/self.humans_dt)
+        )
+        return new_state, new_info, state_history
+
+    @partial(jit, static_argnames=("self"))
     def _update_state_info_imitation_learning(
         self,
         state:jnp.ndarray, 
