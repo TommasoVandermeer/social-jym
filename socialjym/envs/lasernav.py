@@ -3,7 +3,7 @@ from jax import random, jit, lax, debug, vmap
 from functools import partial
 from types import FunctionType
 
-from .base_env import BaseEnv, SCENARIOS, ENVIRONMENTS
+from .base_env import BaseEnv, SCENARIOS, ENVIRONMENTS, is_multiple
 
 class LaserNav(BaseEnv):
     """
@@ -39,6 +39,7 @@ class LaserNav(BaseEnv):
             lidar_noise_fixed_std=0.01,  # 1cm base noise
             lidar_noise_proportional_std=0.01, # 1% of the distance noise
             lidar_salt_and_pepper_prob=0.03, # 3% of the rays are affected by salt and pepper noise
+            lidar_dt=None, # If None, LiDAR is updated at every environment step. Otherwise, it is updated according to the specified frequency (in Hz).
             odometry_noise=False,
             odometry_noise_fixed_std=0.01, # 1cm/0.01rad base noise
             odometry_noise_proportional_std=0.01, # 1% of the distance/steering noise
@@ -104,10 +105,18 @@ class LaserNav(BaseEnv):
         ## Args validation
         assert reward_function.kinematics == self.kinematics, "The reward function's kinematics must be the same as the environment's kinematics."
         assert n_stack >=1, "The number of stacked observations must be at least 1."
+        if lidar_dt is None:
+            self.lidar_dt = self.robot_dt
+        else:
+            self.lidar_dt = lidar_dt
+        assert is_multiple(robot_dt, humans_dt), "The LiDAR update frequency must be a multiple of simulation frequency."
+        assert self.lidar_dt <= self.robot_dt, "The LiDAR update frequency must be higher than or equal to the robot control frequency."
         ## Env initialization
         self.n_stack = n_stack
         self.reward_function = reward_function
         self.environment = ENVIRONMENTS.index('lasernav')
+        self.lidar_substeps = int(self.lidar_dt / self.humans_dt) # Number of simulation steps between two LiDAR updates
+        self.control_substeps = int(self.robot_dt / self.humans_dt) # Number of simulation steps between two robot action updates
 
     # --- Private methods --- #
 
@@ -160,13 +169,15 @@ class LaserNav(BaseEnv):
             noise_key,
         )
         # Previous observation initialization
-        # info["previous_obs"] = jnp.stack([self._get_current_obs(initial_state, humans_parameters[:,0], static_obstacles[-1], jnp.zeros((2,)), random.PRNGKey(0)),]*self.n_stack, axis=0)
         info["previous_obs"] = vmap(self._get_current_obs, in_axes=(None,None,None,0))(
             initial_state,
             humans_parameters[:,0],
             static_obstacles[-1],
             random.split(noise_key, self.n_stack),
         )
+        # Time from last LiDAR scan initialization
+        # TODO: add initial random noise to this
+        info["timesteps_from_last_scan"] = 0
         return info
 
     @partial(jit, static_argnames=("self"))
@@ -316,6 +327,7 @@ class LaserNav(BaseEnv):
         new_info["step"] += 1
         new_info["action_history"] = jnp.concatenate((action[None,:], new_info["action_history"][:-1]), axis=0)
         new_info["intermediate_states"] = state_history
+        new_info["timesteps_from_last_scan"] = (new_info["timesteps_from_last_scan"] + self.control_substeps) % self.lidar_substeps
         gammas = jnp.array(tuple(reward_terms.keys()))
         rewards = jnp.array(tuple(reward_terms.values()))
         exponent = info["step"] * self.robot_dt * self.reward_function.v_max

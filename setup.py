@@ -5,13 +5,13 @@ setup(
     version='0.0.1',
     packages= find_packages(),
     install_requires = [
-    'jax==0.4.30',
-    'jax_tqdm==0.2.2',
-    'matplotlib==3.9.1',
-    'dm-haiku==0.0.12',
-    'optax==0.2.4',
-    'notebook==7.2.2',
-    'pandas==2.2.3',
-    'scipy==1.14.0',
+    'jax>=0.4.30',
+    'jax_tqdm>=0.2.2',
+    'matplotlib>=3.9.1',
+    'dm-haiku>=0.0.12',
+    'optax>=0.2.4',
+    'notebook>=7.2.2',
+    'pandas>=2.2.3',
+    'scipy>=1.14.0',
     ]
 )
