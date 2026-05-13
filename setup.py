@@ -6,6 +6,7 @@ setup(
     packages= find_packages(),
     install_requires = [
     'jax>=0.4.30',
+    'jaxlib>=0.4.30',
     'jax_tqdm>=0.2.2',
     'matplotlib>=3.9.1',
     'dm-haiku>=0.0.12',

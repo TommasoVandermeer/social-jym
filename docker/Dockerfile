@@ -9,12 +9,14 @@ ARG JAX_VARIANT=cpu
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    MPLBACKEND=TkAgg
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-dev \
+    python3.10-tk \
     libgl1-mesa-glx \
     libglib2.0-0 \
     libx11-6 \
@@ -30,18 +32,28 @@ COPY . .
 
 RUN pip3 install --upgrade pip && \
     if [ "$JAX_VARIANT" = "gpu" ]; then \
-        pip3 install "jax[cuda12]==0.4.30"; \
+        pip3 install \
+            "jax[cuda12]==0.4.30" \
+            "jaxlib==0.4.30" \
+            "jax_tqdm==0.2.2" \
+            "matplotlib==3.9.1" \
+            "dm-haiku==0.0.12" \
+            "optax==0.2.4" \
+            "notebook==7.2.2" \
+            "pandas==2.2.3" \
+            "scipy==1.14.0"; \
     else \
-        pip3 install "jax[cpu]==0.4.30"; \
+        pip3 install \
+            "jax[cpu]==0.4.30" \
+            "jaxlib==0.4.30" \
+            "jax_tqdm==0.2.2" \
+            "matplotlib==3.9.1" \
+            "dm-haiku==0.0.12" \
+            "optax==0.2.4" \
+            "notebook==7.2.2" \
+            "pandas==2.2.3" \
+            "scipy==1.14.0"; \
     fi && \
-    pip3 install \
-        "jax_tqdm==0.2.2" \
-        "matplotlib==3.9.1" \
-        "dm-haiku==0.0.12" \
-        "optax==0.2.4" \
-        "notebook==7.2.2" \
-        "pandas==2.2.3" \
-        "scipy==1.14.0" && \
     pip3 install -e JHSFM -e JSFM -e JORCA -e .
 
 CMD ["bash"]
