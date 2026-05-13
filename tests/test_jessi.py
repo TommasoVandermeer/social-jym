@@ -109,6 +109,7 @@ for i in range(n_episodes):
         # Debug prints
         print(
             "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
+            #"Info['previous_obs']: ", info["previous_obs"],"\n",
             #"Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']],"\n",
             # "Substeps from last scan: ", info["substeps_from_last_scan"],"\n",
             # "Substeps from last odom (ref scan): ", info["substeps_from_last_odom_ref_scan"],"\n",

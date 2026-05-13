@@ -71,8 +71,8 @@ class SocialNav(BaseEnv):
             lidar_noise_proportional_std=lidar_noise_proportional_std,
             lidar_salt_and_pepper_prob=lidar_salt_and_pepper_prob,
             velocity_dynamics="first_order_system", # Not used in socialnav
-            tau_linear_velocity=0.0, # Not used in socialnav
-            tau_angular_velocity=0.0, # Not used in socialnav
+            tau_action_0=0.0, # Not used in socialnav
+            tau_action_1=0.0, # Not used in socialnav
             wheels_max_linear_acceleration=jnp.inf, # Not used in socialnav
             wheels_distance=0., # Not used in socialnav
             control_delay_mean=0.0, #  Not used in socialnav

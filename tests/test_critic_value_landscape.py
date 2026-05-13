@@ -107,6 +107,7 @@ def get_grid_current_obses(current_state, base_info):
         modified_state = modified_state.at[-1, 4].set(jnp.atan2(diff[1],diff[0]))
         obs = env._get_current_obs(
             modified_state,
+            modified_state,
             base_info['humans_parameters'][:,0],
             base_info['static_obstacles'][-1],
             jnp.zeros((2,)), # Dummy actions
@@ -122,6 +123,7 @@ def get_grid_next_obses_forward_action(current_state, base_info, action):
         modified_state = modified_state.at[-1, 4].set(jnp.atan2(diff[1],diff[0]))
         next_state, _, _, _, _, _ = env.step(state,info,action,test=True,env_key=random.PRNGKey(0))
         obs = env._get_current_obs(
+            next_state,
             next_state,
             base_info['humans_parameters'][:,0],
             base_info['static_obstacles'][-1],

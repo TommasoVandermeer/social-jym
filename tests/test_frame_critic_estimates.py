@@ -80,16 +80,17 @@ n_cells_total = flat_grid_positions.shape[0]
 @jit
 def get_grid_obses(base_state, base_info):
     def _get_single_obs(pos):
-        modified_state = base_state.at[-1, 0:2].set(pos)
-        base_info["previous_obs"] = vmap(env._get_current_obs, in_axes=(None,None,None,None,0))(
-            modified_state,
+        base_info['intermediate_states'] = base_info['intermediate_states'].at[-1,-1,:2].set(pos)
+        base_info["previous_obs"] = vmap(env._get_current_obs, in_axes=(None,None,None,None,None,0))(
+            base_info['intermediate_states'][-1,-1],
+            base_info['intermediate_states'][-1,-1],
             base_info['humans_parameters'][:,0],
             base_info['static_obstacles'][-1],
             jnp.zeros((2,)),
             random.split(random.PRNGKey(0), env.n_stack),
         )
         dummy_action = jnp.array([0., 0.])
-        return env._get_obs(modified_state, modified_state, base_info, dummy_action, random.PRNGKey(0))
+        return env._get_obs(base_info['intermediate_states'][-1,-1], base_info, dummy_action, random.PRNGKey(0))
     return vmap(_get_single_obs)(flat_grid_positions)
 
 #  Simulate some episodes

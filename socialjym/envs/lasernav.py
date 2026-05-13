@@ -230,14 +230,13 @@ class LaserNav(BaseEnv):
         return current_obs
 
     @partial(jit, static_argnames=("self"))
-    def _get_obs(self, lidar_state:jnp.ndarray, odom_state:jnp.ndarray, info:dict, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_obs(self, state:jnp.ndarray, info:dict, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment,
         this function computes the observation of the current state (which is a stack of the last n_stack observations).
 
         args:
-        - lidar_state: current state at the LiDAR update step.
-        - odom_state: current state at the Odometry update step.
+        - state: current state of the environment. (UNUSED HERE, STATE IS GATHERED FROM INTERMEDIATE_STATES IN INFO BASED ON SENSORS FREQUENCIES)
         - info: dictionary containing additional information about the environment.
         - noise_key: random.PRNGKey for noise generation.
 
@@ -245,6 +244,8 @@ class LaserNav(BaseEnv):
         - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
         The first stack is the most recent one.
         """
+        lidar_state = info['intermediate_states'][-(1+info["substeps_from_last_scan"])]
+        odom_state = info['intermediate_states'][-(1+info["substeps_from_last_odom_ref_scan"])]
         current_obs = self._get_current_obs(lidar_state, odom_state, info["humans_parameters"][:,0], info["static_obstacles"][-1], noise_key)
         # Stack the current observation with the previous ones
         obs = jnp.vstack((current_obs,info["previous_obs"][:-1]))
@@ -283,6 +284,8 @@ class LaserNav(BaseEnv):
         - outcome: dictionary indicating whether the episode is in a terminal state or not.
         - (reset_key, env_key): tuple of random.PRNGKey used to reset the environment (only if reset_if_done is True) and to advance the environment key.
         """
+        ### Advance Environment noise key
+        new_env_key, delay_key,_ = random.split(env_key, 3) 
         ### Robot goal update (next waypoint, if present)
         if self.scenario != -1: # Custom scenario, no automatic goal update
             info["robot_goal"], info["robot_goal_index"] = lax.cond(
@@ -294,8 +297,6 @@ class LaserNav(BaseEnv):
                 (info["robot_goal"], info["robot_goal_index"])
             )
         ### Compute reward and outcome
-        obs = self._get_obs(info['intermediate_states'][-(1+info["substeps_from_last_scan"])], state, info, env_key)
-        new_env_key, delay_key,_ = random.split(env_key, 3) # Advance the env_key (we do it here to save the replicate the previous obs in previous_obs)
         reward, outcome, reward_terms = self.reward_function(state, action, info, self.robot_dt)
         ### Compute robot delay
         info["robot_delay"] = jnp.clip(random.normal(delay_key) * self.control_delay_sigma + self.control_delay_mean, 0., self.actions_history_length * self.robot_dt) # Delay must be positive and lower than maximum history length * robot_dt
@@ -340,7 +341,6 @@ class LaserNav(BaseEnv):
         rewards = jnp.array(tuple(reward_terms.values()))
         exponent = info["step"] * self.robot_dt * self.reward_function.v_max
         new_info["return"] += jnp.sum(jnp.power(gammas, exponent) * rewards)
-        new_info["previous_obs"] = obs
         ### If done and reset_if_done, automatically reset the environment (available only if using standard scenarios)
         if self.scenario != -1: # Custom scenario, no automatic reset
             new_state, reset_key, new_info = lax.cond(
@@ -350,9 +350,9 @@ class LaserNav(BaseEnv):
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        lidar_state = state_history[-(1+new_info["substeps_from_last_scan"])]
-        odom_state = state_history[-(1+new_info["substeps_from_last_odom_ref_scan"])]
-        return new_state, self._get_obs(lidar_state, odom_state, new_info, new_env_key), new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
+        new_obs = self._get_obs(new_state, new_info, new_env_key)
+        new_info["previous_obs"] = new_obs
+        return new_state, new_obs, new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
 
     @partial(jit, static_argnames=("self"))
     def batch_step(
