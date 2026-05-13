@@ -152,9 +152,6 @@ class BaseEnv(ABC):
         lidar_noise:bool,
         lidar_noise_fixed_std:float,
         lidar_noise_proportional_std:float,
-        odometry_noise:bool,
-        odometry_noise_fixed_std:float,
-        odometry_noise_proportional_std:float,
         velocity_dynamics:str,
         tau_action_0:float, # Used for First Order System velocity dynamics
         tau_action_1:float, # Used for First Order System velocity dynamics
@@ -234,9 +231,6 @@ class BaseEnv(ABC):
         self.lidar_noise_fixed_std = lidar_noise_fixed_std
         self.lidar_noise_proportional_std = lidar_noise_proportional_std
         self.lidar_salt_and_pepper_prob = lidar_salt_and_pepper_prob
-        self.odometry_noise = odometry_noise
-        self.odometry_noise_fixed_std = odometry_noise_fixed_std
-        self.odometry_noise_proportional_std = odometry_noise_proportional_std
         self.robot_velocity_dynamics = ROBOT_VELOCITY_DYNAMICS.index(velocity_dynamics)
         self.tau_action_0 = tau_action_0
         self.tau_action_1 = tau_action_1
@@ -531,7 +525,7 @@ class BaseEnv(ABC):
             "is_y_flipped": is_y_flipped,
             "action_history": jnp.zeros((self.actions_history_length, 2)), # History of taken actions, used for modelling delays
             "robot_delay": 0., # Current delay of the robot, used for delayed action execution
-            "intermediate_states": jnp.zeros((int(self.robot_dt/self.humans_dt), self.n_humans+1, 6)), # Used to store the intermediate states between two robot steps 
+            "intermediate_states": jnp.repeat(full_state[None], int(self.robot_dt/self.humans_dt), axis=0), # Used to store the intermediate states between two robot steps 
         }
 
     @partial(jit, static_argnames=("self"))

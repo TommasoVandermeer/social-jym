@@ -70,9 +70,6 @@ class SocialNav(BaseEnv):
             lidar_noise_fixed_std=lidar_noise_fixed_std,
             lidar_noise_proportional_std=lidar_noise_proportional_std,
             lidar_salt_and_pepper_prob=lidar_salt_and_pepper_prob,
-            odometry_noise=False, # Not used in socialnav
-            odometry_noise_fixed_std=0.0, # Not used in socialnav
-            odometry_noise_proportional_std=0.0, # Not used in socialnav
             velocity_dynamics="first_order_system", # Not used in socialnav
             tau_linear_velocity=0.0, # Not used in socialnav
             tau_angular_velocity=0.0, # Not used in socialnav

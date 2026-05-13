@@ -23,14 +23,11 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
-    'odometry_noise': True,
-    'odometry_noise_fixed_std': 0.03,
-    'odometry_noise_proportional_std': 0.05,
-    # 'tau_linear_velocity': 0.39,
-    # 'tau_angular_velocity': 0.19,
-    'control_delay_mean': 0.1, #0.27,
-    'control_delay_sigma': 0.01, #0.01,
-    'wheels_max_linear_acceleration': 0.87,
+    'lidar_dt': 0.13,
+    'odometry_dt': 0.05,
+    'control_delay_mean': 0.1, 
+    'control_delay_sigma': 0.01,
+    'wheels_max_linear_acceleration': 1.8, #0.87,
     'wheels_distance': robot_wheel_distance,
     'n_humans': 5,
     'n_obstacles': 5,
@@ -38,7 +35,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'parallel_traffic', 
+    'scenario': 'hybrid_scenario', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
@@ -113,6 +110,10 @@ for i in range(n_episodes):
         print(
             "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
             #"Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']],"\n",
+            # "Substeps from last scan: ", info["substeps_from_last_scan"],"\n",
+            # "Substeps from last odom (ref scan): ", info["substeps_from_last_odom_ref_scan"],"\n",
+            "Control-sensors delay: ", f"{info['substeps_from_last_scan'] * env.humans_dt:.2f} s","\n",
+            "Sensors-sensors delay: ", f"{(info['substeps_from_last_odom_ref_scan'] - info['substeps_from_last_scan']) * env.humans_dt:.2f} s","\n",
         )
         # Step the environment
         state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)

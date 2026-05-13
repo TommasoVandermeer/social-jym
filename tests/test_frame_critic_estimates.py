@@ -89,7 +89,7 @@ def get_grid_obses(base_state, base_info):
             random.split(random.PRNGKey(0), env.n_stack),
         )
         dummy_action = jnp.array([0., 0.])
-        return env._get_obs(modified_state, base_info, dummy_action, random.PRNGKey(0))
+        return env._get_obs(modified_state, modified_state, base_info, dummy_action, random.PRNGKey(0))
     return vmap(_get_single_obs)(flat_grid_positions)
 
 #  Simulate some episodes

@@ -40,9 +40,7 @@ class LaserNav(BaseEnv):
             lidar_noise_proportional_std=0.01, # 1% of the distance noise
             lidar_salt_and_pepper_prob=0.03, # 3% of the rays are affected by salt and pepper noise
             lidar_dt=None, # If None, LiDAR is updated at every environment step. Otherwise, it is updated according to the specified frequency (in Hz).
-            odometry_noise=False,
-            odometry_noise_fixed_std=0.01, # 1cm/0.01rad base noise
-            odometry_noise_proportional_std=0.01, # 1% of the distance/steering noise
+            odometry_dt=None, # If None, Odometry is updated at every environment step. Otherwise, it is updated according to the specified frequency (in Hz).
             velocity_dynamics="coupled_slew_rate",
             tau_linear_velocity=0.0, # To model linear velocity dynamics as a first order system
             tau_angular_velocity=0.0, # To model angular velocity dynamics as a second order system
@@ -82,9 +80,6 @@ class LaserNav(BaseEnv):
             lidar_noise_fixed_std=lidar_noise_fixed_std,
             lidar_noise_proportional_std=lidar_noise_proportional_std,
             lidar_salt_and_pepper_prob=lidar_salt_and_pepper_prob,
-            odometry_noise=odometry_noise,
-            odometry_noise_fixed_std=odometry_noise_fixed_std,
-            odometry_noise_proportional_std=odometry_noise_proportional_std,
             velocity_dynamics=velocity_dynamics,
             tau_action_0=tau_linear_velocity,
             tau_action_1=tau_angular_velocity,
@@ -107,15 +102,26 @@ class LaserNav(BaseEnv):
         assert n_stack >=1, "The number of stacked observations must be at least 1."
         if lidar_dt is None:
             self.lidar_dt = self.robot_dt
+            self.lidar_misalignment = False
         else:
             self.lidar_dt = lidar_dt
-        assert is_multiple(robot_dt, humans_dt), "The LiDAR update frequency must be a multiple of simulation frequency."
+            self.lidar_misalignment = True
+        assert is_multiple(self.lidar_dt, humans_dt), "The LiDAR update frequency must be a multiple of simulation frequency."
         assert self.lidar_dt <= self.robot_dt, "The LiDAR update frequency must be higher than or equal to the robot control frequency."
+        if odometry_dt is None:
+            self.odometry_dt = self.lidar_dt
+            self.odometry_misalignment = False
+        else:
+            self.odometry_dt = odometry_dt
+            self.odometry_misalignment = True
+        assert is_multiple(self.odometry_dt, humans_dt), "The Odometry update frequency must be a multiple of simulation frequency."
+        assert self.odometry_dt <= self.lidar_dt, "The Odometry update frequency must be higher than or equal to the LiDAR update frequency."
         ## Env initialization
         self.n_stack = n_stack
         self.reward_function = reward_function
         self.environment = ENVIRONMENTS.index('lasernav')
         self.lidar_substeps = int(self.lidar_dt / self.humans_dt) # Number of simulation steps between two LiDAR updates
+        self.odometry_substeps = int(self.odometry_dt / self.humans_dt) # Number of simulation steps between two Odometry updates
         self.control_substeps = int(self.robot_dt / self.humans_dt) # Number of simulation steps between two robot action updates
 
     # --- Private methods --- #
@@ -168,51 +174,51 @@ class LaserNav(BaseEnv):
             is_y_flipped,
             noise_key,
         )
+        noise_key1, noise_key2, noise_key3 = random.split(noise_key, 3)
         # Previous observation initialization
-        info["previous_obs"] = vmap(self._get_current_obs, in_axes=(None,None,None,0))(
+        info["previous_obs"] = vmap(self._get_current_obs, in_axes=(None,None,None,None,0))(
+            initial_state,
             initial_state,
             humans_parameters[:,0],
             static_obstacles[-1],
-            random.split(noise_key, self.n_stack),
+            random.split(noise_key1, self.n_stack),
         )
         # Time from last LiDAR scan initialization
-        # TODO: add initial random noise to this
-        info["timesteps_from_last_scan"] = 0
+        info["substeps_from_last_scan"] = 0
+        if self.lidar_misalignment:
+            info["substeps_from_last_scan"] += random.randint(noise_key2, (), 0, self.lidar_substeps)
+        # Time from last Odometry update initialization
+        info["substeps_from_last_odom_ref_scan"] = info["substeps_from_last_scan"]
+        if self.odometry_misalignment:
+            info["substeps_from_last_odom_ref_scan"] += random.randint(noise_key3, (), 0, self.odometry_substeps)
         return info
 
     @partial(jit, static_argnames=("self"))
-    def _get_current_obs(self, state:jnp.ndarray, humans_radii:jnp.ndarray, static_obstacles:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_current_obs(self, lidar_state:jnp.ndarray, odom_state:jnp.ndarray, humans_radii:jnp.ndarray, static_obstacles:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment,
         this function computes the current observation of the state.
 
         args:
-        - state: current state of the environment.
+        - lidar_state: current state at the LiDAR update step.
+        - odom_state: current state at the Odometry update step.
         - humans_radii: radii of the humans.
         - static_obstacles: static obstacles in the environment.
 
         output:
         - current_obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements]
         """
-        odom_noise_key, lidar_noise_key = random.split(noise_key)
         measurements = self.get_lidar_measurements(
-            state[-1, :2], # Lidar position (robot position)
-            state[-1,4], # Lidar yaw angle (robot orientation)
-            state[:-1, :2], # Human positions
+            lidar_state[-1, :2], # Lidar position (robot position)
+            lidar_state[-1,4], # Lidar yaw angle (robot orientation)
+            lidar_state[:-1, :2], # Human positions
             humans_radii,
             static_obstacles, 
-            noise_key=lidar_noise_key
+            noise_key=noise_key
         )
-        robot_velocity = state[-1,2:4] # Robot action (either (vx,vy) or (v,w))
-        if self.odometry_noise:
-            pos_key, ori_key = random.split(odom_noise_key)
-            pos_sigma = self.odometry_noise_fixed_std + self.odometry_noise_proportional_std * robot_velocity[0] * self.robot_dt
-            robot_position = state[-1,:2] + random.normal(pos_key, shape=(2,)) * pos_sigma[None]
-            ori_sigma = self.odometry_noise_fixed_std + self.odometry_noise_proportional_std * jnp.abs(robot_velocity[1]) * self.robot_dt
-            robot_orientation = state[-1,4] + random.normal(ori_key) * ori_sigma
-        else:
-            robot_position = state[-1,:2]
-            robot_orientation = state[-1,4]
+        robot_velocity = odom_state[-1,2:4] # Robot action (either (vx,vy) or (v,w))
+        robot_position = odom_state[-1,:2]
+        robot_orientation = odom_state[-1,4]
         # Compute the current observation
         current_obs = jnp.array([
             *robot_position, # Robot position
@@ -224,21 +230,22 @@ class LaserNav(BaseEnv):
         return current_obs
 
     @partial(jit, static_argnames=("self"))
-    def _get_obs(self, state:jnp.ndarray, info:dict, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_obs(self, lidar_state:jnp.ndarray, odom_state:jnp.ndarray, info:dict, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment,
         this function computes the observation of the current state (which is a stack of the last n_stack observations).
 
         args:
-        - state: current state of the environment.
-        - previous_obs: last observation of the environment.
+        - lidar_state: current state at the LiDAR update step.
+        - odom_state: current state at the Odometry update step.
         - info: dictionary containing additional information about the environment.
+        - noise_key: random.PRNGKey for noise generation.
 
         output:
         - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
         The first stack is the most recent one.
         """
-        current_obs = self._get_current_obs(state, info["humans_parameters"][:,0], info["static_obstacles"][-1], noise_key)
+        current_obs = self._get_current_obs(lidar_state, odom_state, info["humans_parameters"][:,0], info["static_obstacles"][-1], noise_key)
         # Stack the current observation with the previous ones
         obs = jnp.vstack((current_obs,info["previous_obs"][:-1]))
         return obs
@@ -287,7 +294,7 @@ class LaserNav(BaseEnv):
                 (info["robot_goal"], info["robot_goal_index"])
             )
         ### Compute reward and outcome
-        obs = self._get_obs(state, info, env_key)
+        obs = self._get_obs(info['intermediate_states'][-(1+info["substeps_from_last_scan"])], state, info, env_key)
         new_env_key, delay_key,_ = random.split(env_key, 3) # Advance the env_key (we do it here to save the replicate the previous obs in previous_obs)
         reward, outcome, reward_terms = self.reward_function(state, action, info, self.robot_dt)
         ### Compute robot delay
@@ -327,7 +334,8 @@ class LaserNav(BaseEnv):
         new_info["step"] += 1
         new_info["action_history"] = jnp.concatenate((action[None,:], new_info["action_history"][:-1]), axis=0)
         new_info["intermediate_states"] = state_history
-        new_info["timesteps_from_last_scan"] = (new_info["timesteps_from_last_scan"] + self.control_substeps) % self.lidar_substeps
+        new_info["substeps_from_last_scan"] = (new_info["substeps_from_last_scan"] + self.control_substeps) % self.lidar_substeps
+        new_info["substeps_from_last_odom_ref_scan"] = ((new_info["substeps_from_last_odom_ref_scan"] + self.control_substeps - new_info["substeps_from_last_scan"]) % self.odometry_substeps) + new_info["substeps_from_last_scan"]
         gammas = jnp.array(tuple(reward_terms.keys()))
         rewards = jnp.array(tuple(reward_terms.values()))
         exponent = info["step"] * self.robot_dt * self.reward_function.v_max
@@ -342,7 +350,9 @@ class LaserNav(BaseEnv):
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        return new_state, self._get_obs(new_state, new_info, new_env_key), new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
+        lidar_state = state_history[-(1+new_info["substeps_from_last_scan"])]
+        odom_state = state_history[-(1+new_info["substeps_from_last_odom_ref_scan"])]
+        return new_state, self._get_obs(lidar_state, odom_state, new_info, new_env_key), new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
 
     @partial(jit, static_argnames=("self"))
     def batch_step(
