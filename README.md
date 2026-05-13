@@ -2,6 +2,9 @@
 An environment based on JAX to train mobile robots within crowded environments. Includes several human motion models, several RL algorithms for social navigation and implements fast training and computing thanks to JAX.
 
 ## Installation
+
+### Option 1: Virtual environment (tested on Ubuntu 22.04 with Python 3.10)
+
 Create a virtual environment.
 ```
 virtualenv socialjym
@@ -18,6 +21,38 @@ Install the submodules and the main package.
 ```
 pip install -e social-jym social-jym/JHSFM social-jym/JSFM social-jym/JORCA
 ```
+
+### Option 2: Docker (Ubuntu 22.04, Python 3.10)
+
+Clone the repository and its submodules.
+```
+git clone --recurse-submodules https://github.com/TommasoVandermeer/social-jym.git
+```
+Navigate to the repository root. Build and run the container using the provided script (it will build the image automatically on first run if not already present):
+```
+cd social-jym
+```
+
+**CPU-only:**
+```
+./docker/run.sh
+```
+
+**With NVIDIA GPU** (requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host):
+```
+./docker/run.sh --gpu
+```
+
+To build the images manually:
+```
+# CPU
+docker build --build-arg JAX_VARIANT=cpu -t social-jym:cpu -f docker/Dockerfile .
+
+# GPU
+docker build --build-arg JAX_VARIANT=gpu -t social-jym:gpu -f docker/Dockerfile .
+```
+
+The container supports GUI forwarding (matplotlib windows, notebooks, etc.) via the host X11 server and mounts the repository root at `/opt/social-jym` so code changes are reflected immediately without rebuilding the image.
 
 ## Project structure
 The source code of the project can be found in the folder socialjym which includes all the python modules. 
