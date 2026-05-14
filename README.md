@@ -43,13 +43,10 @@ cd social-jym
 ./docker/run.sh --gpu
 ```
 
-To build the images manually:
+To force a rebuild of the image (e.g. after updating dependencies):
 ```
-# CPU
-docker build --build-arg JAX_VARIANT=cpu -t social-jym:cpu -f docker/Dockerfile .
-
-# GPU
-docker build --build-arg JAX_VARIANT=gpu -t social-jym:gpu -f docker/Dockerfile .
+./docker/run.sh --build
+./docker/run.sh --gpu --build
 ```
 
 The container supports GUI forwarding (matplotlib windows, notebooks, etc.) via the host X11 server and mounts the repository root at `/opt/social-jym` so code changes are reflected immediately without rebuilding the image.
