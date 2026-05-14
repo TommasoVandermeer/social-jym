@@ -101,7 +101,7 @@ for i in range(n_episodes):
     @jit
     def _discounted_cumsum(rewards):
         def scan_fun(carry, reward):
-            new_carry = reward + carry * jnp.power(policy.gamma, policy.dt * policy.v_max)
+            new_carry = reward + carry * jnp.power(env.reward_function.gamma, policy.dt * policy.v_max)
             return new_carry, new_carry
         _, discounted_cumsums = lax.scan(scan_fun, 0.0, rewards[::-1])
         return discounted_cumsums[::-1]

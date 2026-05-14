@@ -214,7 +214,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
         def _discounted_cumsum(rewards, dones):
             def scan_fun(carry, x):
                 reward, done = x
-                new_carry = reward + carry * jnp.power(jessi.gamma, jessi.dt * jessi.v_max) * (1.0 - done)
+                new_carry = reward + carry * jnp.power(laser_env.reward_function.gamma, jessi.dt * jessi.v_max) * (1.0 - done)
                 return new_carry, new_carry
             _, discounted_cumsums = lax.scan(scan_fun, 0.0, (rewards[::-1], dones[::-1]))
             return discounted_cumsums[::-1]

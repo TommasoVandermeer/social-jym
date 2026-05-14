@@ -71,7 +71,7 @@ def collect_rollout_step(
             "stds": policy.dirichlet.batch_std(actor_distrs)
         }
         new_times = times + (new_outcomes["success"]) * (infos['time'] + policy.dt)
-        new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(policy.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards)
+        new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(env.reward_function.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards)
         new_success_per_scenario = {k: success_per_scenario[k] + (new_outcomes["success"]) * (infos["current_scenario"] == k) for k in success_per_scenario}
         new_episodes_per_scenario = {k: episodes_per_scenario[k] + (~new_outcomes["nothing"]) * (infos["current_scenario"] == k) for k in episodes_per_scenario}
         new_outcomes_acc = {k: outcomes_acc[k] + new_outcomes[k] for k in new_outcomes}

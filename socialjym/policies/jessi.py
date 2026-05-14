@@ -10,6 +10,7 @@ from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.patches import Ellipse
 
 from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, HUMAN_POLICIES
 from socialjym.utils.distributions.dirichlet import Dirichlet
@@ -1634,7 +1635,6 @@ class JESSI(BasePolicy):
         virtual_points=None,
         spatial_attentions=None,
         temporal_attentions=None,
-        p_visualization_threshold_hcgs:float=0.05,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -1654,10 +1654,6 @@ class JESSI(BasePolicy):
         rcParams['ps.fonttype'] = 42
         # Compute informations for visualization
         n_steps = len(robot_poses)
-        angs = jnp.linspace(0, 2*jnp.pi, 20, endpoint=False)
-        dists = jnp.linspace(0, 1, 10)
-        gauss_samples = jnp.array(jnp.meshgrid(angs, dists)).T.reshape(-1, 2)
-        gauss_samples = gauss_samples.at[:].set(jnp.stack((gauss_samples[:,1] * jnp.cos(gauss_samples[:,0]), gauss_samples[:,1] * jnp.sin(gauss_samples[:,0])), axis=-1))
         from socialjym.policies.cadrl import CADRL
         from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
         dummy_cadrl = CADRL(DummyReward(kinematics="unicycle", v_max=self.v_max),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
@@ -1812,23 +1808,51 @@ class JESSI(BasePolicy):
             for h in range(self.n_detectable_humans):
                 human_pos_distr = tree_map(lambda x: x[h], pos_distrs)
                 human_vel_distr = tree_map(lambda x: x[h], vel_distrs)
-                pos = rot @ human_pos_distr["means"] + robot_poses[frame,:2]
-                vel = rot @ human_vel_distr["means"] + pos
+                human_pos_distr = self.bivariate_gaussian.roto_translate(
+                    human_pos_distr, 
+                    robot_poses[frame]
+                )
+                human_vel_distr = self.bivariate_gaussian.roto_translate(
+                    human_vel_distr, 
+                    jnp.array([0, 0, robot_poses[frame,2]]) # Velocities are not affected by translation, only rotation
+                )
+                pos = human_pos_distr["means"]
+                vel = human_vel_distr["means"] + pos
                 if probs[h] > 0.5:
                     # Position HCG
-                    test_p = self.bivariate_gaussian.batch_p(human_pos_distr, human_pos_distr["means"] + gauss_samples)
-                    points_high_p = gauss_samples[test_p > p_visualization_threshold_hcgs]
-                    corresponding_colors = test_p[test_p > p_visualization_threshold_hcgs]
-                    rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + pos
-                    axs[2].scatter(pos[0], pos[1], c='red', s=10, marker='x', zorder=100)
-                    axs[2].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+                    cov_matrix = self.bivariate_gaussian.covariance(human_pos_distr)
+                    eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+                    angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+                    width, height = 2 * jnp.sqrt(eigenvalues)
+                    ellipse = Ellipse(
+                        xy=pos,
+                        width=width,
+                        height=height,
+                        angle=jnp.degrees(angle),
+                        edgecolor='blue',
+                        facecolor='lightblue',
+                        alpha=0.8,
+                        zorder=15,
+                    )
+                    axs[2].add_patch(ellipse)
+                    axs[2].scatter(pos[0], pos[1], c='red', s=30, marker='x', zorder=100)
                     # Velocity HCG
-                    test_p = self.bivariate_gaussian.batch_p(human_vel_distr, human_vel_distr["means"] + gauss_samples)
-                    points_high_p = gauss_samples[test_p > p_visualization_threshold_hcgs]
-                    corresponding_colors = test_p[test_p > p_visualization_threshold_hcgs]
-                    rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + vel
-                    axs[3].scatter(vel[0], vel[1], c='red', s=10, marker='x', zorder=100)
-                    axs[3].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+                    cov_matrix = self.bivariate_gaussian.covariance(human_vel_distr)
+                    eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+                    angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+                    width, height = 2 * jnp.sqrt(eigenvalues)
+                    ellipse = Ellipse(
+                        xy=vel,
+                        width=width,
+                        height=height,
+                        angle=jnp.degrees(angle),
+                        edgecolor='blue',
+                        facecolor='lightblue',
+                        alpha=0.8,
+                        zorder=15,
+                    )
+                    axs[3].add_patch(ellipse)
+                    axs[3].scatter(vel[0], vel[1], c='red', s=30, marker='x', zorder=100)
                 else:
                     axs[2].scatter(pos[0], pos[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
                     axs[3].scatter(vel[0], vel[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
@@ -1931,7 +1955,6 @@ class JESSI(BasePolicy):
         virtual_points=None,
         spatial_attentions=None,
         temporal_attentions=None,
-        p_visualization_threshold_gmm:float=0.05,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -1992,7 +2015,6 @@ class JESSI(BasePolicy):
             virtual_points,
             spatial_attentions,
             temporal_attentions,
-            p_visualization_threshold_gmm,
             p_visualization_threshold_dir,
             x_lims,
             y_lims,

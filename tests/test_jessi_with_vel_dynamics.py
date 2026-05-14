@@ -13,6 +13,8 @@ from socialjym.utils.aux_functions import initialize_metrics_dict
 # Hyperparameters
 random_seed = 1_000_000 # Make sure test episodes are not the same as the training ones
 n_trials = 100
+v_max = 0.45
+wheels_distance = 2*v_max/2
 # Tests
 tests_n_humans = [1, 3, 5, 10]
 tests_n_obstacles = [1, 3, 5]
@@ -66,6 +68,8 @@ def jessi_tests(jessi_params):
     metrics_dims = (3,len(tests_n_obstacles),len(tests_n_humans))
     all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
     policy = JESSI(
+        vmax=v_max,
+        wheels_distance=wheels_distance,
         lidar_num_rays=100,
         lidar_angular_range=jnp.pi * 2,
         lidar_max_dist=10.0,
@@ -97,7 +101,7 @@ def jessi_tests(jessi_params):
                 'ccso_n_static_humans': 0,
                 'ccso_static_humans_radius_mean': 0.3,
                 'ccso_static_humans_radius_std': 0.025,
-                'reward_function': LaserReward(robot_radius=0.3,collision_with_humans_penalty=-.5),
+                'reward_function': LaserReward(robot_radius=0.3,collision_with_humans_penalty=-.5,time_limit=100, v_max=policy.v_max),
                 'kinematics': 'unicycle',
                 'lidar_noise': True,
             }
