@@ -77,6 +77,7 @@ class SocialNav(BaseEnv):
             wheels_distance=0., # Not used in socialnav
             control_delay_mean=0.0, #  Not used in socialnav
             control_delay_sigma=0.0, #  Not used in socialnav
+            leg_dynamics=False, # Not used in socialnav
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,

@@ -56,7 +56,8 @@ class LaserNav(BaseEnv):
             thick_default_obstacle:bool = True,
             grid_map_computation:bool = False,
             grid_cell_size:float = 0.9, # Such parameter is suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT)
-            grid_min_size:float = 18. # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
+            grid_min_size:float = 18., # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
+            leg_dynamics:bool = False,
         ) -> None:
         ## BaseEnv initialization
         super().__init__(
@@ -96,7 +97,8 @@ class LaserNav(BaseEnv):
             grid_cell_size=grid_cell_size,
             grid_min_size=grid_min_size,
             thick_default_obstacle=thick_default_obstacle,
-            )
+            leg_dynamics=leg_dynamics,
+        )
         ## Args validation
         assert reward_function.kinematics == self.kinematics, "The reward function's kinematics must be the same as the environment's kinematics."
         assert n_stack >=1, "The number of stacked observations must be at least 1."

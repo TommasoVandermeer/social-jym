@@ -30,7 +30,7 @@ class JessiController(Node):
 
         self.n_stack = 5 
         self.dt = 0.25 # 4 Hz
-        self.radius = 0.4
+        self.radius = 0.3
         self.patrol = patrol_mode # Back and forth from initial position to goal
         self.save_file_name = save_file_name
 

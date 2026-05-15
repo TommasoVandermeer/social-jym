@@ -126,6 +126,68 @@ def thicken_obstacles(obstacles, thickness):
     thick_obstacles = jnp.stack([seg1, seg2, seg3, seg4], axis=-3)
     return thick_obstacles
 
+@partial(jit, static_argnames=("n_humans"))
+def get_humans_standard_leg_parameters(n_humans):
+    single_human_leg_params = jnp.array([
+        0.5, # step length
+        0.75, # legs base percent (percent of human radius at which legs are attached to the body horizontally)
+        0.6, # step duration
+        0.12, # leg radius
+    ])
+    return jnp.repeat(single_human_leg_params[None], n_humans, axis=0)
+
+@partial(jit, static_argnames=("humans_policy"))
+def init_single_human_leg_state(random_key, human_state, human_radius, legs_parameters, humans_policy):
+    if humans_policy == HUMAN_POLICIES.index('hsfm'):
+        orientation = human_state[4]
+    else:
+        orientation = jnp.arctan2(human_state[3], human_state[2])
+    px, py = human_state[0], human_state[1]
+    key1, key2 = random.split(random_key)
+    stance_leg = random.bernoulli(key1, 0.5)
+    stance_leg_phase = random.uniform(key2, minval=0., maxval=.5)
+    swing_leg_phase = stance_leg_phase + 0.5
+    def _left_is_stance():
+        left_x  = px + legs_parameters[1]*human_radius*jnp.cos(orientation+jnp.pi/2) - (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.cos(orientation)
+        left_y  = py + legs_parameters[1]*human_radius*jnp.sin(orientation+jnp.pi/2) - (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.sin(orientation)
+        right_x = px + legs_parameters[1]*human_radius*jnp.cos(orientation-jnp.pi/2) + (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.cos(orientation)
+        right_y = py + legs_parameters[1]*human_radius*jnp.sin(orientation-jnp.pi/2) + (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.sin(orientation)
+        return jnp.array([left_x, left_y, stance_leg_phase, right_x, right_y, swing_leg_phase])
+    def _right_is_stance():
+        left_x  = px + legs_parameters[1]*human_radius*jnp.cos(orientation+jnp.pi/2) + (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.cos(orientation)
+        left_y  = py + legs_parameters[1]*human_radius*jnp.sin(orientation+jnp.pi/2) + (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.sin(orientation)
+        right_x = px + legs_parameters[1]*human_radius*jnp.cos(orientation-jnp.pi/2) - (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.cos(orientation)
+        right_y = py + legs_parameters[1]*human_radius*jnp.sin(orientation-jnp.pi/2) - (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.sin(orientation)
+        return jnp.array([left_x, left_y, swing_leg_phase, right_x, right_y, stance_leg_phase])
+    return lax.cond(stance_leg == 1, _left_is_stance, _right_is_stance)
+
+@partial(jit, static_argnames=("dt","humans_policy"))
+def update_single_human_leg(human_state, human_leg_state, human_radius, dt, legs_parameters, humans_policy):
+    if humans_policy == HUMAN_POLICIES.index('hsfm'):
+        orientation = human_state[4]
+    else:
+        orientation = jnp.arctan2(human_state[3], human_state[2])
+    position = human_state[0:2]
+    com_left  = position + legs_parameters[1]*human_radius*jnp.array([jnp.cos(orientation+jnp.pi/2), jnp.sin(orientation+jnp.pi/2)])
+    com_right = position + legs_parameters[1]*human_radius*jnp.array([jnp.cos(orientation-jnp.pi/2), jnp.sin(orientation-jnp.pi/2)])
+
+    def stance(lx, ly): return lx, ly
+    def swing(com, lx, ly, phase):
+        alpha = (phase - 0.5) * 2
+        tx = com[0] + (legs_parameters[0]/2)*jnp.cos(orientation)
+        ty = com[1] + (legs_parameters[0]/2)*jnp.sin(orientation)
+        return (1-alpha)*lx + alpha*tx, (1-alpha)*ly + alpha*ty
+
+    lx, ly = lax.cond(
+        human_leg_state[2] < 0.5,
+        lambda: stance(human_leg_state[0], human_leg_state[1]),
+        lambda: swing(com_left, human_leg_state[0], human_leg_state[1], human_leg_state[2]))
+    rx, ry = lax.cond(
+        human_leg_state[5] < 0.5,
+        lambda: stance(human_leg_state[3], human_leg_state[4]),
+        lambda: swing(com_right, human_leg_state[3], human_leg_state[4], human_leg_state[5]))
+    return jnp.array([lx, ly, (human_leg_state[2]+dt/legs_parameters[2])%1.0, rx, ry, (human_leg_state[5]+dt/legs_parameters[2])%1.0])
+
 class BaseEnv(ABC):
     """
     Base class for social navigation environments.
@@ -168,7 +230,8 @@ class BaseEnv(ABC):
         grid_map_computation:bool,
         grid_cell_size:float,
         grid_min_size:float,
-        thick_default_obstacle:bool
+        thick_default_obstacle:bool,
+        leg_dynamics:bool,
     ) -> None:
         ## Args validation
         assert (scenario in SCENARIOS) or (scenario is None) or (scenario in ['training_scenario','testing_scenario']), f"Invalid scenario. Choose one of {SCENARIOS}, None for custom scenario, or training_scenario for a mixture of scenarios for training, or testing_scenario for a mixture of scenarios for testing."
@@ -254,6 +317,7 @@ class BaseEnv(ABC):
         self.grid_map_computation = grid_map_computation
         self.grid_cell_size = grid_cell_size
         self.grid_min_size = grid_min_size
+        self.leg_dynamics = leg_dynamics
         ## Static obstacles initialization
         self.static_obstacles_per_scenario = jnp.array([
             [ # Circular crossing
@@ -509,13 +573,13 @@ class BaseEnv(ABC):
         output:
         - info: dictionary containing the initialized values.
         """
-        return {
-            "humans_goal": humans_goal, 
-            "robot_goal": robot_goal, 
+        info = {
+            "humans_goal": humans_goal,
+            "robot_goal": robot_goal,
             "robot_goal_index": 0, # If robot has a waypoint list, this is the index of the next waypoint to reach
             "robot_goal_list": robot_goal_list, # If robot has a waypoint list, this is the list of waypoints
-            "humans_parameters": humans_parameters, 
-            "static_obstacles": static_obstacles, 
+            "humans_parameters": humans_parameters,
+            "static_obstacles": static_obstacles,
             "time": 0.,
             "current_scenario": current_scenario,
             "humans_delay": humans_delay,
@@ -525,8 +589,20 @@ class BaseEnv(ABC):
             "is_y_flipped": is_y_flipped,
             "action_history": jnp.zeros((self.actions_history_length, 2)), # History of taken actions, used for modelling delays
             "robot_delay": 0., # Current delay of the robot, used for delayed action execution
-            "intermediate_states": jnp.repeat(full_state[None], int(self.robot_dt/self.humans_dt), axis=0), # Used to store the intermediate states between two robot steps 
+            "intermediate_states": jnp.repeat(full_state[None], int(self.robot_dt/self.humans_dt), axis=0), # Used to store the intermediate states between two robot steps
         }
+        if self.leg_dynamics:
+            leg_param_key, leg_init_key = random.split(noise_key)
+            info["humans_leg_parameters"] = get_humans_standard_leg_parameters(self.n_humans)
+            keys = random.split(leg_init_key, self.n_humans)
+            info["humans_leg_state"] = vmap(init_single_human_leg_state, in_axes=(0, 0, 0, 0, None))(
+                keys,
+                full_state[0:self.n_humans], 
+                humans_parameters[:, 0], 
+                info["humans_leg_parameters"],
+                self.humans_policy,
+            )
+        return info
 
     @partial(jit, static_argnames=("self"))
     def _init_obstacles(self, key:random.PRNGKey, scenario:int) -> jnp.ndarray:
@@ -1337,10 +1413,34 @@ class BaseEnv(ABC):
         @jit
         def _update_traffic_scenarios(val:tuple):
             @jit
+            def _update_human_state_and_goal_leg_dynamics(position:jnp.ndarray, goal:jnp.ndarray, radius:float, legs_state:jnp.ndarray, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray, is_x_flipped:bool) -> tuple:
+                flip_x = lax.cond(is_x_flipped,lambda _: -1.,lambda _: 1.,None)
+                new_position, new_goal = lax.cond(
+                    jnp.linalg.norm(position - goal) <= 3, 
+                    lambda _: (
+                        jnp.array([
+                        # flip_x * jnp.max(jnp.append(positions[:,0]+(jnp.max(jnp.append(radiuses,self.robot_radius))*2)+(jnp.max(safety_spaces)*2)+0.05, self.traffic_length/2+1)), 
+                        flip_x * jnp.max(jnp.append(positions[:,0] + (jnp.max(jnp.append(radiuses, self.robot_radius))*2)+(jnp.max(safety_spaces)*2), self.traffic_length/2)), # Compliant with Social-Navigation-PyEnvs
+                        jnp.clip(position[1], -self.traffic_height/2, self.traffic_height/2)]
+                        ),
+                        jnp.array([goal[0], position[1]]),
+                    ),
+                    lambda x: x,
+                    (position, goal))
+                transition = new_position - position
+                new_legs_state = jnp.array([
+                    legs_state[0] + transition[0], 
+                    legs_state[1] + transition[1], 
+                    legs_state[2], 
+                    legs_state[3] + transition[0], 
+                    legs_state[4] + transition[1], 
+                    legs_state[5],
+                ])
+                return new_position, new_goal, new_legs_state
+            @jit
             def _update_human_state_and_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray, is_x_flipped:bool) -> tuple:
                 flip_x = lax.cond(is_x_flipped,lambda _: -1.,lambda _: 1.,None)
                 position, goal = lax.cond(
-                    # jnp.linalg.norm(position - goal) <= radius + 2,
                     jnp.linalg.norm(position - goal) <= 3, # Compliant with Social-Navigation-PyEnvs
                     lambda _: (
                         jnp.array([
@@ -1354,15 +1454,27 @@ class BaseEnv(ABC):
                     (position, goal))
                 return position, goal
             info, state = val
-            new_positions, new_goals = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None, None))(
-                state[:-1,0:2], 
-                info["humans_goal"], 
-                info["humans_parameters"][:,0], 
-                state[:,0:2], 
-                info["humans_parameters"][:,0], 
-                info["humans_parameters"][:,-1],
-                info['is_x_flipped']
-            )
+            if self.leg_dynamics:
+                new_positions, new_goals, info["humans_leg_state"] = vmap(_update_human_state_and_goal_leg_dynamics, in_axes=(0,0,0,0,None,None,None, None))(
+                    state[:-1,0:2], 
+                    info["humans_goal"], 
+                    info["humans_parameters"][:,0], 
+                    info["humans_leg_state"],
+                    state[:,0:2], 
+                    info["humans_parameters"][:,0], 
+                    info["humans_parameters"][:,-1],
+                    info['is_x_flipped'],
+                )
+            else:
+                new_positions, new_goals = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None, None))(
+                    state[:-1,0:2], 
+                    info["humans_goal"], 
+                    info["humans_parameters"][:,0], 
+                    state[:,0:2], 
+                    info["humans_parameters"][:,0], 
+                    info["humans_parameters"][:,-1],
+                    info['is_x_flipped'],
+                )
             state = state.at[:-1,0:2].set(new_positions)
             info["humans_goal"] = info["humans_goal"].at[:].set(new_goals)
             return info, state
@@ -1641,6 +1753,16 @@ class BaseEnv(ABC):
                     *state[-1,4:]
                 ])),
                 new_state)
+        ## Legs dynamics
+        if self.leg_dynamics:
+            info["humans_leg_state"] = vmap(update_single_human_leg, in_axes=(0, 0, 0, None, 0, None))(
+                new_state[0:self.n_humans], 
+                info["humans_leg_state"], 
+                info["humans_parameters"][:, 0],
+                self.humans_dt,
+                info["humans_leg_parameters"],
+                self.humans_policy,
+            )
         ## Post update stuff
         new_info, new_state = self._scenario_based_state_post_update(new_state, info)
         new_info["robot_delay"] = jnp.max(jnp.array([0., info["robot_delay"] - self.humans_dt]))

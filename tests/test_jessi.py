@@ -41,6 +41,7 @@ env_params = {
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
     'lidar_noise': True,
+    'leg_dynamics': True,
 }
 
 # Initialize the environment
@@ -103,6 +104,9 @@ for i in range(n_episodes):
     }
     all_spatial_attentions = jnp.zeros((max_steps, policy.lidar_num_rays))
     all_temporal_attentions = jnp.zeros((max_steps, policy.n_stack))
+    if env.leg_dynamics:
+        all_humans_leg_radii = jnp.array([info['humans_leg_parameters'][:,-1]])
+        all_humans_leg_states = jnp.array([info['humans_leg_state']])
     while outcome["nothing"]:
         # Compute action from trained JESSI
         action, _, _, _, _, _, perception_distr, actor_distr, state_value, _, spat_attn, temp_attn = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
@@ -132,6 +136,9 @@ for i in range(n_episodes):
         all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
         all_spatial_attentions = all_spatial_attentions.at[step].set(spat_attn[0])
         all_temporal_attentions = all_temporal_attentions.at[step].set(temp_attn[0])
+        if env.leg_dynamics:
+            all_humans_leg_radii = jnp.vstack((all_humans_leg_radii, jnp.array([info['humans_leg_parameters'][:,-1]])))
+            all_humans_leg_states = jnp.vstack((all_humans_leg_states, jnp.array([info['humans_leg_state']])))
         # Increment step
         step += 1
     all_encoder_distrs = tree_map(lambda x: x[:step], all_encoder_distrs)
@@ -190,6 +197,7 @@ for i in range(n_episodes):
     policy.animate_lasernav_trajectory(
         env,
         all_states[:-1],
+        all_humans_leg_states[:-1] if env.leg_dynamics else None,
         all_observations[:-1],
         all_actions,
         all_actor_distrs,
@@ -197,6 +205,7 @@ for i in range(n_episodes):
         all_robot_goals[:-1],
         all_static_obstacles[:-1],
         all_humans_radii[:-1],
+        all_humans_leg_radii[:-1] if env.leg_dynamics else None,
         spatial_attentions=all_spatial_attentions,
         temporal_attentions=all_temporal_attentions
     )

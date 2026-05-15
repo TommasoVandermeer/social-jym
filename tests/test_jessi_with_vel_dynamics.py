@@ -68,7 +68,7 @@ def jessi_tests(jessi_params):
     metrics_dims = (3,len(tests_n_obstacles),len(tests_n_humans))
     all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
     policy = JESSI(
-        vmax=v_max,
+        v_max=v_max,
         wheels_distance=wheels_distance,
         lidar_num_rays=100,
         lidar_angular_range=jnp.pi * 2,
@@ -85,8 +85,6 @@ def jessi_tests(jessi_params):
                 'lidar_max_dist': 10.0,
                 'lidar_dt': 0.13,
                 'odometry_dt': 0.05,
-                # 'tau_linear_velocity': 0.39,
-                # 'tau_angular_velocity': 0.19,
                 'control_delay_mean': 0.1, #0.27,
                 'control_delay_sigma': 0.01, #0.01,
                 'wheels_max_linear_acceleration': 0.87,

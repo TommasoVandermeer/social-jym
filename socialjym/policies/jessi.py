@@ -1631,6 +1631,8 @@ class JESSI(BasePolicy):
         humans_velocities=None, # vx, vy (in global frame)
         humans_radii=None,
         humans_visibility_mask=None,
+        humans_leg_states=None,
+        humans_leg_radii=None,
         static_obstacles=None,
         virtual_points=None,
         spatial_attentions=None,
@@ -1692,6 +1694,12 @@ class JESSI(BasePolicy):
                     for h in range(len(humans_poses[frame])):
                         color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
                         alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
+                        if humans_leg_states is not None and humans_leg_radii is not None:
+                            l_leg = plt.Circle((humans_leg_states[frame][h,0], humans_leg_states[frame][h,1]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                            ax.add_patch(l_leg)
+                            r_leg = plt.Circle((humans_leg_states[frame][h,3], humans_leg_states[frame][h,4]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                            ax.add_patch(r_leg)
+                            alpha = 0.3
                         head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
                         ax.add_patch(head)
                         circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
@@ -1852,7 +1860,17 @@ class JESSI(BasePolicy):
                         zorder=15,
                     )
                     axs[3].add_patch(ellipse)
-                    axs[3].scatter(vel[0], vel[1], c='red', s=30, marker='x', zorder=100)
+                    axs[3].arrow(
+                        pos[0],
+                        pos[1],
+                        vel[0] - pos[0],
+                        vel[1] - pos[1],
+                        head_width=0.2,
+                        head_length=0.2,
+                        fc='red',
+                        ec='red',
+                        zorder=100,
+                    )
                 else:
                     axs[2].scatter(pos[0], pos[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
                     axs[3].scatter(vel[0], vel[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
@@ -1945,6 +1963,7 @@ class JESSI(BasePolicy):
         self,
         lasernav_env:LaserNav,
         states=None,
+        humans_leg_states=None,
         observations=None,
         actions=None,
         actor_distrs=None,
@@ -1952,6 +1971,7 @@ class JESSI(BasePolicy):
         goals=None,
         static_obstacles=None,
         humans_radii=None,
+        humans_leg_radii=None,
         virtual_points=None,
         spatial_attentions=None,
         temporal_attentions=None,
@@ -2011,6 +2031,8 @@ class JESSI(BasePolicy):
             humans_velocities,
             humans_radii,
             humans_visibility_mask,
+            humans_leg_states,
+            humans_leg_radii,
             static_obstacles,
             virtual_points,
             spatial_attentions,
