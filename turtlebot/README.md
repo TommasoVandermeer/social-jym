@@ -74,11 +74,11 @@ Instructions to deploy JESSI on the Turtlebot:
 
 - Save your trained policy in the ```turtlebot``` folder.
 - Turn on the Turtlebot4 and wait for it to become fully operative (all the LEDs over the display should be green).
-- Launch the following script ```turtlebot_jessi_controller.py``` on your remote device using the following command on terminal. 
+- Launch the following script ```turtlebot_controller.py``` on your remote device using the following command on terminal. 
 ```
-python3 turtlebot_jessi_controller.py -x REPLACE_WITH_GOAL_X -y REPLACE_WITH_GOAL_Y -n REPLACE_WITH_NETWORK_NAME --patrol --interp --collect -s REPLACE_WITH_EXPERIMENT_NAME
+python3 turtlebot_controller.py --planner JESSI -g REPLACE_WITH_GOALS_X_AND_Y -n REPLACE_WITH_NETWORK_NAME -s REPLACE_WITH_EXPERIMENT_NAME
 ```
-The ```x``` and ```y``` flags indicate the position of the goal in the robot frame (<b>positive x axis is on the front of the robot, positive y axis is on the left of the robot</b>). The trained network used for control will be the one indicated after the ```n``` flag (include .pkl at the end). The ```patrol``` flag is a boolean indicating whether the robot should go back and forth from its initial position to its goal (True, keep the flag), or if it should just reach its goal once and then stop (False, remove the flag). The ```interp``` flag is a boolean indicating whether the robot pose should be interpolated to match exactly the LiDAR timestamp (True, keep the flag), or if the latest available pose at inference should be used (False, remove the flag). The ```collect``` flag is a boolean indicating whether the entire messages published on /odom, /scan and /cmd_vel should be saved (True, keep the flag), or not (False, remove the flag). The trajectory data will be saved in the ```turtlebot``` folder under the name indicated after the ```s``` flag (include .pkl at the end).
+The ```g``` flag indicate the position of the goals in the robot frame (<b>positive x axis is on the front of the robot, positive y axis is on the left of the robot</b>). Goals Xs and Ys must be indicated consecutively. The trained network used for control will be the one indicated after the ```n``` flag (include .pkl at the end). The trajectory data will be saved in the ```turtlebot``` folder under the name indicated after the ```s``` flag (include .pkl at the end). For other interesting options, checkout the ```--help```.
 
 Note that, to sync the timestamps of each topic (for debugging purposes), it is necessary to run ```sudo chronyc makestep``` on the turtlebot raspberrypi (connect with ssh).
 

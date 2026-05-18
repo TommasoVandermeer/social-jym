@@ -49,14 +49,14 @@ def main(args=None):
         experiment_data = pickle.load(f)
 
     jessi = JESSI(
-        v_max=experiment_data['jessi_params']['v_max'],
-        wheels_distance=experiment_data['jessi_params']['wheels_distance'],
-        robot_radius=experiment_data['jessi_params']['robot_radius'],
-        n_stack=experiment_data['jessi_params']['n_stack'],
-        lidar_num_rays=experiment_data['jessi_params']['lidar_num_rays'],
-        lidar_angular_range=experiment_data['jessi_params']['lidar_angular_range'],
-        lidar_max_dist=experiment_data['jessi_params']['lidar_max_dist'],
-        n_stack_for_action_space_bounding=experiment_data['jessi_params']['n_stack_for_action_space_bounding']
+        v_max=experiment_data['params']['v_max'],
+        wheels_distance=experiment_data['params']['wheels_distance'],
+        robot_radius=experiment_data['params']['robot_radius'],
+        n_stack=experiment_data['params']['n_stack'],
+        lidar_num_rays=experiment_data['params']['lidar_num_rays'],
+        lidar_angular_range=experiment_data['params']['lidar_angular_range'],
+        lidar_max_dist=experiment_data['params']['lidar_max_dist'],
+        n_stack_for_action_space_bounding=experiment_data['params']['n_stack_for_action_space_bounding']
     )
 
     if os.path.join(os.path.dirname(__file__), f"lists_{save_file_name}"):
