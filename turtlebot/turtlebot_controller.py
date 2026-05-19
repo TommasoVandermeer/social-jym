@@ -29,10 +29,11 @@ PLANNERS = [
     'DWA',
     'MPPI',
     'VANILLA-E2E',
+    'BOUNDED-VANILLA-E2E',
 ]
 
 class TB4Controller(Node):
-    def __init__(self, frequency, planner, rc_goal_list, patrol_mode, interp_mode, network_name, save_file_name, save_lists, align, diagnostics):
+    def __init__(self, frequency, lidar_num_rays, planner, rc_goal_list, patrol_mode, interp_mode, network_name, save_file_name, save_lists, align, diagnostics):
         super().__init__('TB4_controller')
         self.frequency = frequency
         self.planner = planner
@@ -49,7 +50,7 @@ class TB4Controller(Node):
             self.ax.set_ylim(-5.0, 5.0)
             self.ax.grid(True, linestyle='--', alpha=0.7)
             self.ax.legend(loc='upper right')
-            self.ax.set_title("JESSI Live Diagnostics (Robot Frame)")
+            self.ax.set_title("Live Diagnostics (Robot Frame)")
             self.ax.set_xlabel("X [m]")
             self.ax.set_ylabel("Y [m]")
             self.fig.canvas.draw()
@@ -72,7 +73,8 @@ class TB4Controller(Node):
         self.latest_scan = None
         self.latest_odom = None
         self.odom_buffer = deque(maxlen=200)
-        self.odom_time_offset = None
+        self.odom_cmd_time_offset = None
+        self.odom_scan_time_offset = None
         self.robot_goal_list = jnp.array([[0., 0.]] + rc_goal_list)
         self.robot_goal_index = 1
         self.robot_goal = self.robot_goal_list[self.robot_goal_index]  # Set the first goal as the current goal
@@ -80,7 +82,7 @@ class TB4Controller(Node):
         self.goal_reached = False
         self.interp_mode = interp_mode
 
-        self.lidar_num_rays = 300
+        self.lidar_num_rays = lidar_num_rays
         self.lidar_min_angle = -jnp.pi
         self.lidar_max_angle = jnp.pi
         self.lidar_max_dist = 10
@@ -131,6 +133,18 @@ class TB4Controller(Node):
                 lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
                 lidar_max_dist=self.lidar_max_dist,
                 n_stack_for_action_space_bounding=1
+            )
+        elif planner == 'BOUNDED-VANILLA-E2E':
+            self.policy = VanillaE2E(
+                v_max=0.45,
+                wheels_distance=2*0.45/1.9,
+                robot_radius=self.radius,
+                n_stack=self.n_stack,
+                lidar_num_rays=self.lidar_num_rays,
+                lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
+                lidar_max_dist=self.lidar_max_dist,
+                n_stack_for_action_space_bounding=1,
+                action_space_bounding=True,
             )
         self.rng_key = random.PRNGKey(0)
         with open(os.path.join(os.path.dirname(__file__), network_name), 'rb') as f:
@@ -234,6 +248,14 @@ class TB4Controller(Node):
             self.get_logger().error(f"Error during odometry reset: {e}\nControl loop will not start...")
 
     def scan_callback(self, msg):
+        raw_scan_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if self.latest_odom is not None and self.odom_scan_time_offset is None:
+            raw_odom_t = self.latest_odom.header.stamp.sec + self.latest_odom.header.stamp.nanosec * 1e-9
+            self.odom_scan_time_offset = raw_scan_t - raw_odom_t
+            self.get_logger().info(f"🕒 Software Time-Sync: Applied offset {self.odom_scan_time_offset:+.3f}s to Scan w.r.t. Odometry!")
+        corrected_t = raw_scan_t - self.odom_scan_time_offset
+        msg.header.stamp.sec = int(corrected_t)
+        msg.header.stamp.nanosec = int((corrected_t - int(corrected_t)) * 1e9)
         self.latest_scan = msg
         # Since odomoetry runs at higher freq. we save the latest odometry at the moment of receiving the scan, to have them synchronized for the control loop
         self.latest_scan_odom = self.latest_odom
@@ -275,11 +297,11 @@ class TB4Controller(Node):
 
     def odom_callback(self, msg):
         raw_odom_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        if self.odom_time_offset is None:
+        if self.odom_cmd_time_offset is None:
             local_t = self.get_clock().now().nanoseconds * 1e-9
-            self.odom_time_offset = local_t - raw_odom_t
-            self.get_logger().info(f"🕒 Software Time-Sync: Applicato offset di {self.odom_time_offset:+.3f} secondi all'Odometria!")
-        corrected_t = raw_odom_t + self.odom_time_offset
+            self.odom_cmd_time_offset = local_t - raw_odom_t
+            self.get_logger().info(f"🕒 Software Time-Sync: Applied offset {self.odom_cmd_time_offset:+.3f}s to Odometry w.r.t. Commands!")
+        corrected_t = raw_odom_t + self.odom_cmd_time_offset
         msg.header.stamp.sec = int(corrected_t)
         msg.header.stamp.nanosec = int((corrected_t - int(corrected_t)) * 1e9)
         x = msg.pose.pose.position.x
@@ -331,6 +353,7 @@ class TB4Controller(Node):
         scan_time_sec = t_scan.sec + t_scan.nanosec * 1e-9
         t_odom = self.latest_scan_odom.header.stamp
         odom_time_sec = t_odom.sec + t_odom.nanosec * 1e-9
+        # print(f"Scan time: {scan_time_sec}\nOdom time: {odom_time_sec}\nCmd time: {self.get_clock().now().nanoseconds * 1e-9}")
         # Odometry
         if self.interp_mode:
             pose_interp = self.interpolate_pose(scan_time_sec)
@@ -456,12 +479,12 @@ class TB4Controller(Node):
                         'scan_timestamp': scan_time_sec,
                         'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
                     })
-                elif self.planner == 'VANILLA-E2E':
+                elif self.planner == 'VANILLA-E2E' or self.planner == 'BOUNDED-VANILLA-E2E':
                     action, self.rng_key, _, _, _, actor_distr, _ = self.policy.act(
                         self.rng_key,
                         obs=obs_matrix,
                         info=info_dict,
-                        e2e_network_params=self.network_params,
+                        network_params=self.network_params,
                         sample=False # Use mean action
                     )
                     v_cmd, w_cmd = float(action[0]), float(action[1])
@@ -512,7 +535,7 @@ class TB4Controller(Node):
                         'n_stack':self.policy.n_stack
                     },
                 }
-                if self.planner == 'JESSI' or self.planner == 'VANILLA-E2E':
+                if self.planner == 'JESSI' or self.planner == 'BOUNDED-VANILLA-E2E':
                     out['params']['n_stack_for_action_space_bounding'] = self.policy.n_stack_for_action_space_bounding
                 with open(save_path, 'wb') as f:
                     pickle.dump(out, f)
@@ -542,6 +565,7 @@ def main(args=None):
     parser.add_argument('-d', '--diagnostics', action='store_true', help='Activate diagnostic during control to debug')
     parser.add_argument('-a', '--align', action='store_true', help='Activate alignement of waypoints with Hough Transform of LiDAR scan')
     parser.add_argument('-f', '--frequency', type=float, default=4.0, help='Control frequency in Hz')
+    parser.add_argument('-l', '--lidar_rays', type=int, default=300, help='Number of rays used to infer the policy action')
 
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
 
@@ -556,6 +580,7 @@ def main(args=None):
     
     node = TB4Controller(
         frequency=parsed_args.frequency,
+        lidar_num_rays=parsed_args.lidar_rays,
         planner=parsed_args.planner,
         rc_goal_list=rc_goals_list, 
         patrol_mode=parsed_args.patrol,

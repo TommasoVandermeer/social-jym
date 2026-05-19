@@ -393,3 +393,68 @@ class LaserNav(BaseEnv):
     @partial(jit, static_argnames=("self"))
     def batch_reset(self, keys):
         return vmap(LaserNav.reset, in_axes=(None,0))(self, keys)
+
+    @partial(jit, static_argnames=("self"))
+    def reset_custom_episode(self, key:random.PRNGKey, custom_episode:dict) -> tuple:
+        """
+        Resets the environment to a user-specified episode (custom scenario, scenario index -1).
+
+        args:
+        - key: PRNG key (also used to seed sensor/leg noise).
+        - custom_episode: dictionary with keys:
+            full_state (n_humans+1, 6): initial full state. WARNING: humans' velocities
+                must be given in the GLOBAL frame; they are converted to the body frame
+                here since LaserNav humans are driven by HSFM.
+            humans_goal (n_humans, 2): humans' goal positions.
+            robot_goal (2,): robot's goal position.
+            static_obstacles (n_humans+1, n_obstacles, 1, 2, 2): static obstacles.
+            scenario (int): scenario index (use -1 for custom scenario).
+            humans_radius (n_humans,): humans' radii.
+            humans_speed (n_humans,): humans' desired speeds.
+
+        output:
+        - initial_state, key, obs (previous_obs stack), info, outcome
+          (same format as LaserNav.reset).
+        """
+        full_state = jnp.array(custom_episode["full_state"])
+        # LaserNav humans are always HSFM: convert global-frame velocities to the body frame
+        full_state = lax.fori_loop(
+            0,
+            self.n_humans,
+            lambda i, x: x.at[i].set(jnp.array(
+                [x[i,0],
+                 x[i,1],
+                 *jnp.matmul(jnp.array([[jnp.cos(x[i,4]), -jnp.sin(x[i,4])], [jnp.sin(x[i,4]), jnp.cos(x[i,4])]]), x[i,2:4]),
+                 x[i,4],
+                 x[i,5]])),
+            full_state)
+        humans_goal = jnp.array(custom_episode["humans_goal"])
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        humans_parameters = humans_parameters.at[:,0].set(jnp.array(custom_episode["humans_radius"]))
+        humans_parameters = humans_parameters.at[:,2].set(jnp.array(custom_episode["humans_speed"]))
+        robot_goal = jnp.array(custom_episode["robot_goal"])
+        robot_goal_list = jnp.array([robot_goal, jnp.full((2,), jnp.nan)]) # Dummy waypoint list (unused for custom scenario)
+        if self.n_obstacles == 0:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan)
+        else:
+            static_obstacles = jnp.array(custom_episode["static_obstacles"])
+        key, noise_key = random.split(key)
+        info = self._init_info(
+            full_state,
+            humans_goal,
+            robot_goal,
+            robot_goal_list,
+            humans_parameters,
+            static_obstacles,
+            custom_episode["scenario"],
+            jnp.zeros((self.n_humans,)),
+            False,
+            False,
+            noise_key,
+        )
+        return \
+            full_state, \
+            key, \
+            info["previous_obs"], \
+            info, \
+            {"success": False, "collision_with_human": False, "collision_with_obstacle": False, "timeout": False, "nothing": True}
