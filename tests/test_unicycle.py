@@ -14,7 +14,7 @@ from socialjym.utils.rewards.socialnav_rewards.reward1 import Reward1
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import linear_decay, test_k_trials, save_policy_params
-from socialjym.utils.replay_buffers.uniform_vnet_replay_buffer import UniformVNetReplayBuffer
+from socialjym.utils.replay_buffers.base_vnet_replay_buffer import BaseVNetReplayBuffer
 from socialjym.utils.rollouts.vnet_rollouts import vnet_il_rollout, vnet_rl_rollout
 
 ### Hyperparameters
@@ -153,7 +153,7 @@ returns_after_il = np.empty((1000,))
 returns_during_rl = np.empty((10_000,))
 returns_after_rl = np.empty((1000,))
 # Initialize replay buffer
-replay_buffer = UniformVNetReplayBuffer(training_hyperparams['buffer_size'], training_hyperparams['batch_size'])
+replay_buffer = BaseVNetReplayBuffer(training_hyperparams['buffer_size'], training_hyperparams['batch_size'])
 # Initialize IL optimizer
 optimizer = optax.sgd(learning_rate=training_hyperparams['il_learning_rate'], momentum=0.9)
 # Initialize buffer state
