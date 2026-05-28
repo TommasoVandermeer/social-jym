@@ -145,7 +145,8 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
    (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_2.eps'))) or \
    (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_3.eps'))) or \
    (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_4.eps'))) or \
-   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_summary.eps'))):
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_summary.eps'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_proof.eps'))):
     vs = jnp.concatenate([
         jnp.zeros(n_actions_per_dim),
         jnp.linspace(0, v_max, n_actions_per_dim),
@@ -590,7 +591,132 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_summary.eps'), format='eps')
     plt.close()
 
-### FIG4: scenarios.eps
+### FIG5: action_space_bounding_proof.eps
+    figure, ax = plt.subplots(1,2,figsize=(12, 6))
+    policy = JESSI(
+        radius, 
+        v_max, 
+        dt, 
+        L,
+        5,
+        lidar_angular_range,
+        10.,
+        lidar_num_rays,
+    )
+    env_params = {
+        'n_stack': 5,
+        'lidar_num_rays': lidar_num_rays,
+        'lidar_angular_range': lidar_angular_range,
+        'lidar_max_dist': 10.,
+        'n_humans': 1, #5,
+        'n_obstacles': 0, #5,
+        'robot_radius': 0.3,
+        'robot_dt': dt,
+        'humans_dt': 0.01,
+        'robot_visible': True,
+        'scenario': 'hybrid_scenario',
+        'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
+        'kinematics': 'unicycle',
+    }
+    env = LaserNav(**env_params)
+    vs = jnp.concatenate([
+        jnp.zeros(n_actions_per_dim),
+        jnp.linspace(0, v_max, n_actions_per_dim),
+        jnp.linspace(0, v_max, n_actions_per_dim),
+    ])
+    ws = jnp.concatenate([
+        jnp.linspace(-w_max, w_max, n_actions_per_dim),
+        jnp.linspace(-w_max, 0, n_actions_per_dim),
+        jnp.linspace(w_max, 0, n_actions_per_dim),
+    ])
+    actions = jnp.stack((vs, ws), axis=-1)
+    displacements = jnp.array([[
+        a[0]/a[1] * jnp.sin(a[1]*dt) if a[1] != 0 else a[0]*dt,
+        a[0]/a[1] * (1 - jnp.cos(a[1]*dt)) if a[1] != 0 else 0,
+    ] for a in actions])
+    envelope_points = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    hull = ConvexHull(envelope_points)
+    angles = jnp.linspace(-lidar_angular_range/2, lidar_angular_range/2, lidar_num_rays)
+    directions = jnp.array([
+        jnp.array([jnp.cos(angle), jnp.sin(angle)]) for angle in angles
+    ])
+    dist, _ = vmap(env._obstacle_ray_intersect, in_axes=(0, None, None))(
+        directions,
+        obstacles,
+        jnp.array([0., 0.]),
+    )
+    collision_points = jnp.array([dist[i] * directions[i] for i in range(lidar_num_rays)])
+    ax[0].set_aspect('equal')
+    ax[0].fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightcoral', edgecolor='red', zorder=2)
+    omegas = jnp.linspace(0.01, w_max, n_actions_per_dim, endpoint=True)
+    vs = v_max * (1 - (omegas / (w_max)))
+    delta_y = (v_max * dt**2 / 2) * omegas - (v_max * dt**2 / (2 * w_max)) * omegas**2
+    delta_x = (vs / omegas) * jnp.sin(omegas*dt)
+    displacements = jnp.vstack((delta_x, delta_y)).T
+    envelope_points_1 = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    omegas = jnp.linspace(-0.01, -w_max, n_actions_per_dim, endpoint=True)
+    vs = v_max * (1 + (omegas / (w_max)))
+    delta_y = (v_max * dt**2 / 2) * omegas + (v_max * dt**2 / (2 * w_max)) * omegas**2
+    delta_x = (vs / omegas) * jnp.sin(omegas*dt)
+    displacements = jnp.vstack((delta_x, delta_y)).T
+    envelope_points_2 = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    envelope_points = jnp.vstack((envelope_points_1, envelope_points_2))
+    hull = ConvexHull(envelope_points)
+    closed_vertices = jnp.append(hull.vertices, hull.vertices[0])
+    ax[0].plot(envelope_points[closed_vertices, 0], envelope_points[closed_vertices, 1], color='black', linewidth=2, zorder=3, linestyle='--')
+    # ax(1)
+    alpha, beta, gamma = policy.bound_action_space(collision_points)
+    vs = jnp.concatenate([
+        jnp.zeros(n_actions_per_dim),
+        jnp.linspace(0, alpha * v_max, n_actions_per_dim),
+        jnp.linspace(0, alpha * v_max, n_actions_per_dim),
+    ])
+    ws = jnp.concatenate([
+        jnp.linspace(-gamma * w_max, beta * w_max, n_actions_per_dim),
+        jnp.linspace(-gamma * w_max, 0, n_actions_per_dim),
+        jnp.linspace(beta * w_max, 0, n_actions_per_dim),
+    ])
+    actions = jnp.stack((vs, ws), axis=-1)
+    displacements = jnp.array([[
+        a[0]/a[1] * jnp.sin(a[1]*dt) if a[1] != 0 else a[0]*dt,
+        a[0]/a[1] * (1 - jnp.cos(a[1]*dt)) if a[1] != 0 else 0,
+    ] for a in actions])
+    envelope_points = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    hull = ConvexHull(envelope_points)
+    ax[1].set_aspect('equal')
+    ax[1].fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightgreen', edgecolor='green', zorder=2)
+    omegas = jnp.linspace(0.01, beta * w_max, n_actions_per_dim, endpoint=True)
+    vs = alpha * v_max * (1 - (omegas / (beta * w_max)))
+    delta_y = (alpha * v_max * dt**2 / 2) * omegas - (alpha *v_max * dt**2 / (2 * beta * w_max)) * omegas**2
+    delta_x = (vs / omegas) * jnp.sin(omegas*dt)
+    displacements = jnp.vstack((delta_x, delta_y)).T
+    envelope_points_1 = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    omegas = jnp.linspace(-0.01, -gamma * w_max, n_actions_per_dim, endpoint=True)
+    vs = alpha * v_max * (1 + (omegas / (gamma * w_max)))
+    delta_y = (alpha * v_max * dt**2 / 2) * omegas + (alpha *v_max * dt**2 / (2 * gamma * w_max)) * omegas**2
+    delta_x = (vs / omegas) * jnp.sin(omegas*dt)
+    displacements = jnp.vstack((delta_x, delta_y)).T
+    envelope_points_2 = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    envelope_points = jnp.vstack((envelope_points_1, envelope_points_2))
+    hull = ConvexHull(envelope_points)
+    closed_vertices = jnp.append(hull.vertices, hull.vertices[0])
+    ax[1].plot(envelope_points[closed_vertices, 0], envelope_points[closed_vertices, 1], color='black', linewidth=2, zorder=3, linestyle='--')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_proof.eps'), format='eps')
+    plt.close()
+
+### FIG6: scenarios.eps
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'scenarios.eps')):
     env_params = {
         'n_stack': 5,
