@@ -89,14 +89,14 @@ for a, ablation_mode in enumerate([1,2,3]):
             # Save actor inputs
             with open(os.path.join(os.path.dirname(__file__), 'controller_training_dataset.pkl'), 'wb') as f:
                 pickle.dump(controller_dataset, f)
+            # FREE UNUSED MEMORY
+            del dataset
+            del robot_centric_data
+            del raw_data
         else:
             # Load actor inputs
             with open(os.path.join(os.path.dirname(__file__), 'controller_training_dataset.pkl'), 'rb') as f:
                 controller_dataset = pickle.load(f)
-        # FREE UNUSED MEMORY
-        del dataset
-        del robot_centric_data
-        del raw_data
         # INITIALIZE ACTOR NETWORK
         jessi = JESSI(
             v_max=robot_vmax, 
