@@ -21,6 +21,10 @@ Install the submodules and the main package.
 ```
 pip install -e social-jym social-jym/JHSFM social-jym/JSFM social-jym/JORCA
 ```
+Instead, if you want to run JAX on your GPU (with CUDA12) run:
+```
+pip install -e social-jym[cuda12] social-jym/JHSFM social-jym/JSFM social-jym/JORCA
+```
 
 ### Option 2: Docker (Ubuntu 22.04, Python 3.10)
 

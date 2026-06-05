@@ -34,5 +34,15 @@ setup(
         'optax==0.2.4',
         'notebook==7.2.2',
         'pandas==2.2.3',
-    ]
+    ],
+    extras_require={
+        'cuda12': [
+            'jax[cuda12]==0.4.30; python_version == "3.10"',
+            'jax[cuda12]==0.4.34; python_version == "3.13"',
+        ],
+        'cuda11': [
+            'jax[cuda11]==0.4.30; python_version == "3.10"',
+            'jax[cuda11]==0.4.34; python_version == "3.13"',
+        ]
+    }
 )
