@@ -107,6 +107,7 @@ for a, ablation_mode in enumerate([1,2,3]):
             n_stack=n_stack, 
             ablation_mode=ablation_mode,
         )
+        print(f"\nSTARTING JESSI-MULTITASK IL TRAINING - ABLATION MODE {ablation_mode}\n")
         # Initialize actor network
         _, actor_critic_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
         # Count network parameters

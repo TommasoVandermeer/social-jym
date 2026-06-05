@@ -457,7 +457,7 @@ def jessi_multitask_rl_rollout(
             best_params = device_get(params)
         # B. PROCESS BUFFER (Parallel)
         buffer_gpu = process_buffer_and_gae(
-            params, current_obs, current_infos, current_dones, history_raw, policy, policy.gamma, policy.dt, policy.v_max, lambda_gae
+            params, current_obs, current_infos, current_dones, history_raw, policy, env.reward_function.gamma, policy.dt, policy.v_max, lambda_gae
         )
         # C. PREPARE TRAINING DATA
         def get_batched_shape_struct(x):
