@@ -62,8 +62,11 @@ policy = JESSI(
 # with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
 #     actor_params = pickle.load(f)
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
+
 with open(os.path.join(os.path.dirname(__file__), 'jessi_policy_rl_out.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
+
+# _, _, network_params = policy.init_nns(random.PRNGKey(random_seed))
 
 # Test the trained JESSI policy
 # metrics = policy.evaluate(

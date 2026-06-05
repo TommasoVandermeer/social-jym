@@ -343,14 +343,15 @@ class ActorCritic(hk.Module):
         # Scan embedding reducer
         self.scan_reducer = hk.Linear(1, name="scan_reducer")
         # 2. Self Attention Mechanism
+        add_size = 20 if self.ablation_mode != 2 else 14 # Ablation: No human uncertainty params, so input size is smaller
         self.attention = MultiHeadAttention(
             num_heads=2,
-            key_size=(n_sectors + 20)//2,
+            key_size=(n_sectors + add_size)//2,
             w_init=hk.initializers.VarianceScaling(1.0, "fan_avg", "uniform"),
             name="hcg_self_attention"
         )
         self.layer_norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-        self.att_ffn = hk.nets.MLP([n_sectors + 20], activation=nn.gelu, activate_final=True)
+        self.att_ffn = hk.nets.MLP([n_sectors + add_size], activation=nn.gelu, activate_final=True)
         self.layer_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
         # 2.5 Simple MLP (in place of scene-attention for ablation)
         if self.ablation_mode == 3: # Ablation: No scene attention, simple MLP instead
@@ -403,7 +404,7 @@ class ActorCritic(hk.Module):
         global_robot_state = x[:, 0, 11:] 
         action_space_params = global_robot_state[:, :3]
         if self.ablation_mode == 2:
-            x = x[:,:,[0,1,5,6,10]] # Keep only mean positions, mean velocities and weights            
+            x = x[:,:,[0,1,5,6,10,11,12,13,14,15,16,17,18,19]] # Keep only mean positions, mean velocities and weights            
         ### CONTEXT EXTRACTION
         scalar_scan = self.scan_reducer(y)  # (Batch, n_sectors, 1)
         y = jnp.squeeze(scalar_scan, axis=-1) # (Batch, n_sectors)
