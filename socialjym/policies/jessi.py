@@ -11,6 +11,7 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.patches import Ellipse
+from typing import Optional
 
 from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, HUMAN_POLICIES
 from socialjym.utils.distributions.dirichlet import Dirichlet
@@ -325,6 +326,7 @@ class ActorCritic(hk.Module):
                 "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             },
             initial_concentration: float = 0.,
+            ablation_mode: Optional[int] = None,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -333,6 +335,7 @@ class ActorCritic(hk.Module):
         self.wmax = 2 * v_max / wheels_distance
         self.wmin = -2 * v_max / wheels_distance
         self.initial_concentration = initial_concentration
+        self.ablation_mode = ablation_mode
         # Dimensions
         self.n_sectors = n_sectors
         self.n_outputs = 3  # Dirichlet distribution over 3 action vertices
@@ -349,6 +352,13 @@ class ActorCritic(hk.Module):
         self.layer_norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
         self.att_ffn = hk.nets.MLP([n_sectors + 20], activation=nn.gelu, activate_final=True)
         self.layer_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        # 2.5 Simple MLP (in place of scene-attention for ablation)
+        if self.ablation_mode == 3: # Ablation: No scene attention, simple MLP instead
+            self.simple_mlp = hk.nets.MLP(
+                **mlp_params,
+                output_sizes=[200, 100, n_sectors + 20], 
+                name="simple_mlp"
+            )
         # 3. Final Output MLP
         self.actor_head = hk.nets.MLP(
             **mlp_params,
@@ -386,31 +396,40 @@ class ActorCritic(hk.Module):
         if not has_batch:
             x = jnp.expand_dims(x, 0)
             y = jnp.expand_dims(y, 0)
+        # Ablation 2: no human uncertainties
         batch_size = x.shape[0]
         keys = random.split(random_key, batch_size)
         hcg_scores = x[..., 10:11] 
         global_robot_state = x[:, 0, 11:] 
         action_space_params = global_robot_state[:, :3]
+        if self.ablation_mode == 2:
+            x = x[:,:,[0,1,5,6,10]] # Keep only mean positions, mean velocities and weights            
         ### CONTEXT EXTRACTION
         scalar_scan = self.scan_reducer(y)  # (Batch, n_sectors, 1)
         y = jnp.squeeze(scalar_scan, axis=-1) # (Batch, n_sectors)
-        y_tiled = jnp.broadcast_to(y[:, None, :], (batch_size, self.n_detectable_humans, y.shape[-1]))
-        embeddings = jnp.concatenate([x, y_tiled], axis=-1) # [Batch, N_Humans, 20 + n_sectors]
         # SCENE-ATTENTION MECHANISM
-        att_out, att_mtrx = self.attention(embeddings, embeddings, embeddings) # (Batch, N, 20 + n_sectors)
-        att_embeddings = self.layer_norm1(embeddings + att_out) # (Batch, N, 20 + n_sectors)
-        ffn_out = self.att_ffn(att_embeddings)
-        att_embeddings = self.layer_norm2(att_embeddings + ffn_out)
-        summed_embeddings = jnp.sum(att_embeddings * hcg_scores, axis=1) # (Batch, 20 + n_sectors)
-        sum_of_weights = jnp.sum(hcg_scores, axis=1) # (Batch, 1)
-        base_mean = summed_embeddings / (sum_of_weights + 1e-5)  # (Batch, 20 + n_sectors)
-        presence_gate = jnp.tanh(sum_of_weights) # (Batch, 1) Encodes if humans are present in the scene
-        pooled_hcg_context = base_mean * presence_gate # (Batch, 20 + n_sectors)
+        if self.ablation_mode == 3: # Ablation: No scene attention, simple MLP instead
+            humans_state = x[..., :11] # (Batch, N, 11)
+            robot_state = x[:, 0, 11:] # (Batch, 9)
+            mlp_input = jnp.concatenate([humans_state.reshape(batch_size, -1), robot_state, y], axis=-1) # (Batch, N*11 + 9 + n_sectors)
+            pooled_hcg_context = self.simple_mlp(mlp_input) # (Batch, 20 + n_sectors)
+        else:
+            y_tiled = jnp.broadcast_to(y[:, None, :], (batch_size, self.n_detectable_humans, y.shape[-1]))
+            embeddings = jnp.concatenate([x, y_tiled], axis=-1) # [Batch, N_Humans, 20 + n_sectors]
+            att_out, att_mtrx = self.attention(embeddings, embeddings, embeddings) # (Batch, N, 20 + n_sectors)
+            att_embeddings = self.layer_norm1(embeddings + att_out) # (Batch, N, 20 + n_sectors)
+            ffn_out = self.att_ffn(att_embeddings)
+            att_embeddings = self.layer_norm2(att_embeddings + ffn_out)
+            summed_embeddings = jnp.sum(att_embeddings * hcg_scores, axis=1) # (Batch, 20 + n_sectors)
+            sum_of_weights = jnp.sum(hcg_scores, axis=1) # (Batch, 1)
+            base_mean = summed_embeddings / (sum_of_weights + 1e-5)  # (Batch, 20 + n_sectors)
+            presence_gate = jnp.tanh(sum_of_weights) # (Batch, 1) Encodes if humans are present in the scene
+            pooled_hcg_context = base_mean * presence_gate # (Batch, 20 + n_sectors)
         context = jnp.concatenate([
             pooled_hcg_context, 
             global_robot_state, 
             y
-        ], axis=-1)  # (20 + n_sectors + 9 + n_sectors,)
+        ], axis=-1)  # (Batch, 20 + n_sectors + 9 + n_sectors,)
         ### ACTOR
         ## Compute Dirichlet distribution parameters
         alphas = nn.softplus(self.actor_head(context)) + 1  # (Batch, 3)
@@ -455,6 +474,7 @@ class E2E(hk.Module):
         },
         initial_concentration: float = 0.,
         beam_dropout_rate: float = 0.0,
+        ablation_mode: Optional[int] = None,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -465,6 +485,7 @@ class E2E(hk.Module):
         self.initial_concentration = initial_concentration
         self.max_humans_velocity = max_humans_velocity
         self.max_lidar_distance = max_lidar_distance
+        self.ablation_mode = ablation_mode
         # Dimensions
         self.embed_dim = embed_dim
         self.n_sectors = n_sectors
@@ -491,6 +512,7 @@ class E2E(hk.Module):
             mlp_params=mlp_params,
             initial_concentration=initial_concentration,
             n_sectors=n_sectors,
+            ablation_mode=ablation_mode,
         )
 
     def __call__(
@@ -555,6 +577,7 @@ class JESSI(BasePolicy):
         n_sectors:int=60,
         n_stack_for_action_space_bounding:int=1,
         beam_dropout_rate:float=0.0,
+        ablation_mode: Optional[int] = None, # Options: 1 (no bounding), 2 (no humans uncertainty), 3 (no scene attention)
     ) -> None:
         """
         JESSI (JAX-based E2E Safe Social Interpretable autonomous navigation).
@@ -570,6 +593,7 @@ class JESSI(BasePolicy):
         assert lidar_num_rays >= 10, "LiDAR number of rays must be at least 10"
         assert n_detectable_humans >= 2, "Number of detectable humans must be at least 2"
         assert n_stack_for_action_space_bounding <= n_stack, "n_stack_for_action_space_bounding must be less than or equal to n_stack"
+        assert ablation_mode is None or ablation_mode in [1, 2, 3], "ablation_mode must be either None, 1, 2, or 3"
         # Configurable attributes
         self.robot_radius = robot_radius
         self.v_max = v_max
@@ -591,6 +615,7 @@ class JESSI(BasePolicy):
         self.embedding_dim = embedding_dim
         self.n_sectors = n_sectors
         self.beam_dropout_rate = beam_dropout_rate
+        self.ablation_mode = ablation_mode
         # Default attributes
         self.name = "JESSI"
         self.kinematics = ROBOT_KINEMATICS.index("unicycle")
@@ -621,7 +646,8 @@ class JESSI(BasePolicy):
                 self.n_detectable_humans, 
                 self.v_max, 
                 self.wheels_distance, 
-                n_sectors=self.n_sectors
+                n_sectors=self.n_sectors,
+                ablation_mode=self.ablation_mode,
             ) 
             return actor_critic(x, y, **kwargs)
         self.actor_critic = actor_critic_network
@@ -642,6 +668,7 @@ class JESSI(BasePolicy):
                 embed_dim=self.embedding_dim,
                 n_sectors=self.n_sectors,
                 beam_dropout_rate=self.beam_dropout_rate,
+                ablation_mode=self.ablation_mode,
             ) 
             return e2e(x, y, stop_perception_gradient=stop_perception_gradient, only_perception=only_perception, **kwargs)
         self.e2e = e2e_network
@@ -1106,9 +1133,12 @@ class JESSI(BasePolicy):
         # Compute encoder input and last lidar point cloud (for action bounding)
         perception_input, point_cloud_for_bounding = self.compute_perception_input(obs)
         # Compute bounded action space parameters and add it to the input
-        bounding_parameters = self.bound_action_space(
-            point_cloud_for_bounding,  
-        )
+        if self.ablation_mode == 1: # Ablation: No action space bounding
+            bounding_parameters = jnp.ones((3,), dtype=jnp.float32)
+        else:
+            bounding_parameters = self.bound_action_space(
+                point_cloud_for_bounding,  
+            )
         # Prepare input for network
         robot_position = obs[0,:2]
         robot_orientation = obs[0,2]
@@ -1844,6 +1874,7 @@ class JESSI(BasePolicy):
                     )
                     axs[2].add_patch(ellipse)
                     axs[2].scatter(pos[0], pos[1], c='red', s=30, marker='x', zorder=100)
+                    axs[2].text(pos[0]+0.1, pos[1]+0.1, f"{probs[h]:.2f}", fontsize=8, color="red", fontweight="bold", zorder=101)
                     # Velocity HCG
                     cov_matrix = self.bivariate_gaussian.covariance(human_vel_distr)
                     eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)

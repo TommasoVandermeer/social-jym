@@ -16,11 +16,12 @@ from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward
 from socialjym.policies.jessi import JESSI
 from jhsfm.hsfm import get_linear_velocity
+from socialjym.envs.base_env import SCENARIOS
 
 ### PARAMETERS
-L = 0.7 # Distance between the wheels of the robot
+L = 0.3 # Distance between the wheels of the robot
 v_max = 1. # Maximum linear velocity of the robot
-dt = 0.75
+dt = 1.5
 radius = 0.3
 n_actions_per_dim = 50 # Number of actions per dimension to plot the action space boundaries
 n_points_per_per_circle = 50 # Number of points to plot the circles around the envelope points
@@ -718,81 +719,102 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
 
 ### FIG6: scenarios.eps
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'scenarios.eps')):
-    env_params = {
-        'n_stack': 5,
-        'lidar_num_rays': lidar_num_rays,
-        'lidar_angular_range': lidar_angular_range,
-        'lidar_max_dist': 10.,
-        'n_humans': 5, #5,
-        'n_obstacles': 5, #5,
-        'robot_radius': 0.3,
-        'robot_dt': dt,
-        'humans_dt': 0.01,
-        'robot_visible': True,
-        'scenario': 'parallel_traffic',
-        'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
-        'kinematics': 'unicycle',
-    }
-    env = LaserNav(**env_params)
-    key = random.PRNGKey(0)
-    state, key, obs, info, outcome = env.reset(key)
-    # PLOT INITIAL STATE
-    figure, ax = plt.subplots(1,1, figsize=(9, 4))
-    figure.subplots_adjust(left=0.09, right=0.96, top=0.99, bottom=0.15)
-    ax.set(xlim=[-10,10], ylim=[-4,4])
-    ax.set_xlabel('X', labelpad=-2)
-    ax.set_ylabel('Y', labelpad=-2)
-    ax.set_aspect('equal', adjustable='box')
-    # Plot humans
-    humans_positions = state[:-1,:2]
-    humans_orientations = state[:-1,4]
-    humans_poses = jnp.concatenate([humans_positions, humans_orientations[:,None]], axis=-1)
-    humans_body_velocities = state[:-1,2:4]
-    humans_velocities = vmap(get_linear_velocity, in_axes=(0,0))(
-        humans_orientations,
-        humans_body_velocities,
-    )
-    for h in range(len(humans_poses)):
-        color = 'blue'
-        alpha = 0.6
-        head = plt.Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * info['humans_parameters'][h,0], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
-        ax.add_patch(head)
-        circle = plt.Circle((humans_poses[h,0], humans_poses[h,1]), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-        ax.add_patch(circle)
-    # Plot human velocities
-    for h in range(len(humans_poses)):
-        color = 'blue'
-        alpha = 0.6
-        ax.arrow(
-            humans_poses[h,0],
-            humans_poses[h,1],
-            humans_velocities[h,0],
-            humans_velocities[h,1],
-            head_width=0.15,
-            head_length=0.15,
-            fc=color,
-            ec=color,
-            alpha=alpha,
-            zorder=30,
+    def plot_initial_state(ax, state, info):
+        humans_positions = state[:-1,:2]
+        humans_orientations = state[:-1,4]
+        humans_poses = jnp.concatenate([humans_positions, humans_orientations[:,None]], axis=-1)
+        humans_body_velocities = state[:-1,2:4]
+        humans_velocities = vmap(get_linear_velocity, in_axes=(0,0))(
+            humans_orientations,
+            humans_body_velocities,
         )
-    # Plot robot
-    robot_position = state[-1,:2]
-    head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
-    ax.add_patch(head)
-    circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
-    ax.add_patch(circle)
-    # Plot robot goal
-    ax.plot(
-        info['robot_goal'][0],
-        info['robot_goal'][1],
-        marker='*',
-        markersize=7,
-        color='red',
-        zorder=5,
-    )
-    # Plot static obstacles
-    if info['static_obstacles'][-1].shape[1] > 1: # Polygon obstacles
-        for o in info['static_obstacles'][-1]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
-    else: # One segment obstacles
-        for o in info['static_obstacles'][-1]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
-    figure.savefig(os.path.join(os.path.dirname(__file__), "episode_example.eps"), format='eps')
+        robot_position = state[-1,:2]
+        robot_goal = info['robot_goal']
+        obstacles = info['static_obstacles'][-1]
+        min_x = min(robot_position[0], robot_goal[0])
+        max_x = max(robot_position[0], robot_goal[0])
+        min_y = min(robot_position[1], robot_goal[1])
+        max_y = max(robot_position[1], robot_goal[1])
+        if len(humans_positions) > 0:
+            min_x = min(min_x, jnp.min(humans_positions[:, 0]))
+            max_x = max(max_x, jnp.max(humans_positions[:, 0]))
+            min_y = min(min_y, jnp.min(humans_positions[:, 1]))
+            max_y = max(max_y, jnp.max(humans_positions[:, 1]))
+        for o in obstacles:
+            if o.size > 0:
+                min_x = min(min_x, jnp.min(o[..., 0]))
+                max_x = max(max_x, jnp.max(o[..., 0]))
+                min_y = min(min_y, jnp.min(o[..., 1]))
+                max_y = max(max_y, jnp.max(o[..., 1]))
+        margin_x = (max_x - min_x) * 0.1 + 1.0
+        margin_y = (max_y - min_y) * 0.1 + 1.0
+        ax.set_xlim([min_x - margin_x, max_x + margin_x])
+        ax.set_ylim([min_y - margin_y, max_y + margin_y])
+        ax.set_aspect('equal', adjustable='datalim')
+        for h in range(len(humans_poses)):
+            color = 'blue'
+            alpha = 0.6
+            head = plt.Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * info['humans_parameters'][h,0], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
+            ax.add_patch(head)
+            circle = plt.Circle((humans_poses[h,0], humans_poses[h,1]), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            ax.add_patch(circle)
+        for h in range(len(humans_poses)):
+            color = 'blue'
+            alpha = 0.6
+            ax.arrow(
+                humans_poses[h,0],
+                humans_poses[h,1],
+                humans_velocities[h,0],
+                humans_velocities[h,1],
+                head_width=0.15,
+                head_length=0.15,
+                fc=color,
+                ec=color,
+                alpha=alpha,
+                zorder=30,
+            )
+        head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+        ax.add_patch(head)
+        circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+        ax.add_patch(circle)
+        ax.plot(
+            info['robot_goal'][0],
+            info['robot_goal'][1],
+            marker='*',
+            markersize=7,
+            color='red',
+            zorder=5,
+        )
+        if info['static_obstacles'][-1].shape[1] > 1: # Polygon obstacles
+            for o in info['static_obstacles'][-1]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+        else: # One segment obstacles
+            for o in info['static_obstacles'][-1]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+    random_keys = jnp.zeros(len(SCENARIOS)-1, dtype=jnp.uint32)
+    random_keys = random_keys.at[1].set(1)
+    figure, ax = plt.subplots(2, 5, figsize=(20, 8), layout="constrained")
+    for s, scenario in enumerate(SCENARIOS[:-1]):
+        env_params = {
+            'n_stack': 5,
+            'lidar_num_rays': lidar_num_rays,
+            'lidar_angular_range': lidar_angular_range,
+            'lidar_max_dist': 10.,
+            'n_humans': 5, #5,
+            'n_obstacles': 5, #5,
+            'robot_radius': 0.3,
+            'robot_dt': dt,
+            'humans_dt': 0.01,
+            'robot_visible': True,
+            'scenario': scenario,
+            'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
+            'kinematics': 'unicycle',
+        }
+        env = LaserNav(**env_params)
+        key = random.PRNGKey(random_keys[s])
+        state, key, obs, info, outcome = env.reset(key)
+        row, col = s // 5, s % 5
+        plot_initial_state(ax[row, col], state, info)
+        ax[row, col].set_title(scenario.replace('_', ' ').title(), fontsize=12)
+        ax[row, col].set_xlabel("X (m)")
+        ax[row, col].set_ylabel("Y (m)")
+        
+    figure.savefig(os.path.join(os.path.dirname(__file__), "scenarios_test.eps"), format='eps')
