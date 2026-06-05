@@ -3,7 +3,7 @@ An environment based on JAX to train mobile robots within crowded environments. 
 
 ## Installation
 
-### Option 1: Virtual environment (tested on Ubuntu 22.04 with Python 3.10)
+### Option 1: Virtual environment (tested on Ubuntu 22.04 with Python 3.10 and Debian 13 with Python 3.13)
 
 Create a virtual environment.
 ```
