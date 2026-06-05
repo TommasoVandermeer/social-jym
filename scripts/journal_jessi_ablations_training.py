@@ -314,9 +314,9 @@ for a, ablation_mode in enumerate([1,2,3]):
         def label_params(params):
             labels = {}
             for module_name, module_params in params.items():
-                if jessi.perception_name in module_name.lower(): 
+                if policy.perception_name in module_name.lower(): 
                     label = 'perception'
-                elif jessi.actor_critic_name in module_name.lower():
+                elif policy.actor_critic_name in module_name.lower():
                     label = 'actor_critic'
                 labels[module_name] = {k: label for k in module_params.keys()}
             return labels
