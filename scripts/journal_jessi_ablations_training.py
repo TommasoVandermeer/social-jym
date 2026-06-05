@@ -70,15 +70,15 @@ for a, ablation_mode in enumerate([1,2,3]):
         # Load trained perception parameters
         with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
             encoder_params = pickle.load(f)
-        # LOAD DATASETs
-        with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'rb') as f:
-            raw_data = pickle.load(f)
-        with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
-            robot_centric_data = pickle.load(f)
-        with open(os.path.join(os.path.dirname(__file__), 'final_hcg_training_dataset.pkl'), 'rb') as f:
-            dataset = pickle.load(f)
         # CREATE ACTOR INPUTS DATASET
         if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_training_dataset.pkl')):
+            # LOAD DATASETs
+            with open(os.path.join(os.path.dirname(__file__), 'dir_safe_experiences_dataset.pkl'), 'rb') as f:
+                raw_data = pickle.load(f)
+            with open(os.path.join(os.path.dirname(__file__), 'robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
+                robot_centric_data = pickle.load(f)
+            with open(os.path.join(os.path.dirname(__file__), 'final_hcg_training_dataset.pkl'), 'rb') as f:
+                dataset = pickle.load(f)
             # Compute actor-critic inputs for the entire dataset
             controller_dataset = {
                 "observations": dataset['observations'],
