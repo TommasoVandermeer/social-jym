@@ -162,7 +162,7 @@ class JessiController(Node):
         else:
             # JESSI INFERENCE
             try:
-                action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _ = self.jessi.act(
+                action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _, _ = self.jessi.act(
                     key=self.rng_key,
                     obs=obs_matrix,
                     info=info_dict,

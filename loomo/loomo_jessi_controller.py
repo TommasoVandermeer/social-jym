@@ -241,7 +241,7 @@ class JessiController(Node):
         else:
             # JESSI INFERENCE
             try:
-                action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _ = self.jessi.act(
+                action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _, _, _, _ = self.jessi.act(
                     key=self.rng_key,
                     obs=obs_matrix,
                     info=info_dict,
@@ -287,7 +287,7 @@ class JessiController(Node):
                 #     rc_robot_goal,
                 # )
                 # # Compute action
-                # perception_output, _, _, actor_distr, _, _, _ = self.jessi.e2e.apply(
+                # perception_output, _, _, actor_distr, _, _, _, _, _, _ = self.jessi.e2e.apply(
                 #     self.network_params, 
                 #     None, 
                 #     perception_input,

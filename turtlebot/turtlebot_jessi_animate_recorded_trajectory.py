@@ -124,6 +124,10 @@ def main(args=None):
         all_temporal_attentions = jnp.array([step['temporal_attention'] for step in trajectory])
     else:
         all_temporal_attentions = None
+    if 'human_attention' in trajectory[0]:
+        all_human_attentions = jnp.array([step['human_attention'] for step in trajectory])  
+    else:
+        all_human_attentions = None
 
     # ANIMATION
     jessi.animate_lasernav_trajectory(
@@ -138,6 +142,7 @@ def main(args=None):
         humans_radii=None,
         spatial_attentions=all_spatial_attentions,
         temporal_attentions=all_temporal_attentions,
+        human_attentions=all_human_attentions,
     )
 
 if __name__ == '__main__':

@@ -107,12 +107,13 @@ for i in range(n_episodes):
     }
     all_spatial_attentions = jnp.zeros((max_steps, policy.lidar_num_rays))
     all_temporal_attentions = jnp.zeros((max_steps, policy.n_stack))
+    all_human_attentions = jnp.zeros((max_steps, policy.n_detectable_humans))
     if env.leg_dynamics:
         all_humans_leg_radii = jnp.array([info['humans_leg_parameters'][:,-1]])
         all_humans_leg_states = jnp.array([info['humans_leg_state']])
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, _, _, _, _, _, perception_distr, actor_distr, state_value, _, spat_attn, temp_attn = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
+        action, _, _, _, _, _, perception_distr, actor_distr, state_value, _, spat_attn, temp_attn, human_attn = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
         # Debug prints
         print(
             "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
@@ -139,6 +140,7 @@ for i in range(n_episodes):
         all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
         all_spatial_attentions = all_spatial_attentions.at[step].set(spat_attn[0])
         all_temporal_attentions = all_temporal_attentions.at[step].set(temp_attn[0])
+        all_human_attentions = all_human_attentions.at[step].set(human_attn[0])
         if env.leg_dynamics:
             all_humans_leg_radii = jnp.vstack((all_humans_leg_radii, jnp.array([info['humans_leg_parameters'][:,-1]])))
             all_humans_leg_states = jnp.vstack((all_humans_leg_states, jnp.array([info['humans_leg_state']])))
@@ -151,6 +153,7 @@ for i in range(n_episodes):
     all_rewards = all_rewards[:step]
     all_spatial_attentions = all_spatial_attentions[:step]
     all_temporal_attentions = all_temporal_attentions[:step]
+    all_human_attentions = all_human_attentions[:step]
     all_predicted_state_values = all_predicted_state_values[:step]
     ## Check predicted state values and actual discounted returns
     @jit
@@ -210,5 +213,6 @@ for i in range(n_episodes):
         all_humans_radii[:-1],
         all_humans_leg_radii[:-1] if env.leg_dynamics else None,
         spatial_attentions=all_spatial_attentions,
-        temporal_attentions=all_temporal_attentions
+        temporal_attentions=all_temporal_attentions,
+        human_attentions=all_human_attentions,
     )

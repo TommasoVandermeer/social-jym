@@ -429,7 +429,7 @@ class TB4Controller(Node):
             # ACTION INFERENCE
             try:
                 if self.planner == 'JESSI':
-                    action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _, spat_attn, temp_attn = self.policy.act(
+                    action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _, spat_attn, temp_attn, human_attn = self.policy.act(
                         key=self.rng_key,
                         obs=obs_matrix,
                         info=info_dict,
@@ -445,6 +445,7 @@ class TB4Controller(Node):
                         'actor_distr': actor_distr,
                         'spatial_attention': spat_attn[0],
                         'temporal_attention': temp_attn[0],
+                        'human_attention': human_attn[0],
                         'scan_timestamp': scan_time_sec,
                         'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
                     })

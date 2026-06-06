@@ -414,10 +414,12 @@ class ActorCritic(hk.Module):
             robot_state = x[:, 0, 11:] # (Batch, 9)
             mlp_input = jnp.concatenate([humans_state.reshape(batch_size, -1), robot_state, y], axis=-1) # (Batch, N*11 + 9 + n_sectors)
             pooled_hcg_context = self.simple_mlp(mlp_input) # (Batch, 20 + n_sectors)
+            human_attention = jnp.full((batch_size, self.n_detectable_humans), jnp.nan) # No attention in this ablation
         else:
             y_tiled = jnp.broadcast_to(y[:, None, :], (batch_size, self.n_detectable_humans, y.shape[-1]))
             embeddings = jnp.concatenate([x, y_tiled], axis=-1) # [Batch, N_Humans, 20 + n_sectors]
             att_out, att_mtrx = self.attention(embeddings, embeddings, embeddings) # (Batch, N, 20 + n_sectors)
+            # debug.print("Attention matrix shape: {s}", s=att_mtrx.shape) # (Batch, N, N)
             att_embeddings = self.layer_norm1(embeddings + att_out) # (Batch, N, 20 + n_sectors)
             ffn_out = self.att_ffn(att_embeddings)
             att_embeddings = self.layer_norm2(att_embeddings + ffn_out)
@@ -426,6 +428,10 @@ class ActorCritic(hk.Module):
             base_mean = summed_embeddings / (sum_of_weights + 1e-5)  # (Batch, 20 + n_sectors)
             presence_gate = jnp.tanh(sum_of_weights) # (Batch, 1) Encodes if humans are present in the scene
             pooled_hcg_context = base_mean * presence_gate # (Batch, 20 + n_sectors)
+            # Attention (wighted by HCG scores) computation for visualization
+            mean_att_mtrx = jnp.mean(att_mtrx, axis=1)
+            norm_hcg_scores = hcg_scores / (sum_of_weights + 1e-5)
+            human_attention = jnp.sum(mean_att_mtrx * norm_hcg_scores, axis=1) # (Batch, N)
         context = jnp.concatenate([
             pooled_hcg_context, 
             global_robot_state, 
@@ -451,7 +457,7 @@ class ActorCritic(hk.Module):
             sampled_actions = sampled_actions[0]
             state_values = state_values[0]
             distributions = tree_map(lambda t: t[0], distributions)
-        return sampled_actions, distributions, concentration, state_values
+        return sampled_actions, distributions, concentration, state_values, human_attention
 
 class E2E(hk.Module):
     def __init__(
@@ -552,12 +558,12 @@ class E2E(hk.Module):
             state_values = None
         else:
             ## CONTROL
-            sampled_actions, distributions, concentration, state_values = self.actor_critic(
+            sampled_actions, distributions, concentration, state_values, human_attention = self.actor_critic(
                 actor_input,
                 scan_embedding,
                 random_key=action_sample_key
             )
-        return perception_output, actor_input, sampled_actions, distributions, concentration, state_values, mask, spatial_attention, temporal_attention
+        return perception_output, actor_input, sampled_actions, distributions, concentration, state_values, mask, spatial_attention, temporal_attention, human_attention
 
 class JESSI(BasePolicy):
     def __init__(
@@ -1170,7 +1176,7 @@ class JESSI(BasePolicy):
         )
         # Compute action
         key, subkey = random.split(key)
-        perception_output, actor_input, sampled_action, actor_distr, concentration, state_value, mask, spat_attn, temp_attn = self.e2e.apply(
+        perception_output, actor_input, sampled_action, actor_distr, concentration, state_value, mask, spat_attn, temp_attn, human_attn = self.e2e.apply(
             e2e_network_params, 
             None, 
             perception_input,
@@ -1178,8 +1184,8 @@ class JESSI(BasePolicy):
             random_key=subkey
         )
         action = lax.cond(sample, lambda _: sampled_action, lambda _: self.dirichlet.mean(actor_distr), None)
-        return action, key, perception_input, robot_state_input, actor_input, sampled_action, perception_output, actor_distr, state_value, mask, spat_attn, temp_attn
-    
+        return action, key, perception_input, robot_state_input, actor_input, sampled_action, perception_output, actor_distr, state_value, mask, spat_attn, temp_attn, human_attn
+
     @partial(jit, static_argnames=("self"))
     def batch_act(
         self,
@@ -1250,7 +1256,7 @@ class JESSI(BasePolicy):
                     returnn:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                    _, predicted_distr, _, predicted_state_value = self.actor_critic.apply(
+                    _, predicted_distr, _, predicted_state_value, _ = self.actor_critic.apply(
                         current_actor_params, 
                         None, 
                         input['actor_input'], 
@@ -1509,7 +1515,7 @@ class JESSI(BasePolicy):
             def _while_body(while_val:tuple):
                 # Retrieve data from the tuple
                 state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states = while_val
-                action, policy_key, _, _, _, _, _, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
+                action, policy_key, _, _, _, _, _, _, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
                 state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
                 # Save data
                 all_actions = all_actions.at[steps].set(action)
@@ -1601,7 +1607,7 @@ class JESSI(BasePolicy):
             # Retrieve data from the tuple
             state, obs, info, outcome, policy_key, reset_key, env_key, steps, perception_distrs, gt_targets = for_val
             # Compute action and perception out
-            action, policy_key, _, _, _, _, perception_out, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
+            action, policy_key, _, _, _, _, perception_out, _, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
             # Save perception outputs and ground truth
             rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.robot_centric_transform(
                 state[:-1,:2], 
@@ -1668,6 +1674,7 @@ class JESSI(BasePolicy):
         virtual_points=None,
         spatial_attentions=None,
         temporal_attentions=None,
+        human_attentions=None,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -1875,7 +1882,7 @@ class JESSI(BasePolicy):
                     )
                     axs[2].add_patch(ellipse)
                     axs[2].scatter(pos[0], pos[1], c='red', s=30, marker='x', zorder=100)
-                    axs[2].text(pos[0]+0.1, pos[1]+0.1, f"{probs[h]:.2f}", fontsize=8, color="red", fontweight="bold", zorder=101)
+                    axs[2].text(pos[0]+0.15, pos[1]+0.17, f"{probs[h]:.2f}", fontsize=8, color="red", fontweight="bold", zorder=101)
                     # Velocity HCG
                     cov_matrix = self.bivariate_gaussian.covariance(human_vel_distr)
                     eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
@@ -1903,6 +1910,9 @@ class JESSI(BasePolicy):
                         ec='red',
                         zorder=100,
                     )
+                    if human_attentions is not None:
+                        attention = float(human_attentions[frame, h])
+                        axs[3].text(pos[0]+0.15, pos[1]-0.17, f"{attention:.2f}", fontsize=8, color="black", fontweight="bold", zorder=101)
                 else:
                     axs[2].scatter(pos[0], pos[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
                     axs[3].scatter(vel[0], vel[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
@@ -2007,6 +2017,7 @@ class JESSI(BasePolicy):
         virtual_points=None,
         spatial_attentions=None,
         temporal_attentions=None,
+        human_attentions=None,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -2069,6 +2080,7 @@ class JESSI(BasePolicy):
             virtual_points,
             spatial_attentions,
             temporal_attentions,
+            human_attentions,
             p_visualization_threshold_dir,
             x_lims,
             y_lims,
