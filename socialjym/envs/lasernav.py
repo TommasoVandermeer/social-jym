@@ -178,10 +178,12 @@ class LaserNav(BaseEnv):
         )
         noise_key1, noise_key2, noise_key3 = random.split(noise_key, 3)
         # Previous observation initialization
-        info["previous_obs"] = vmap(self._get_current_obs, in_axes=(None,None,None,None,0))(
+        info["previous_obs"] = vmap(self._get_current_obs, in_axes=(None,None,None,None,None,None,0))(
             initial_state,
+            info["humans_leg_state"],
             initial_state,
             humans_parameters[:,0],
+            info["humans_leg_parameters"][:,-1],
             static_obstacles[-1],
             random.split(noise_key1, self.n_stack),
         )
@@ -196,15 +198,17 @@ class LaserNav(BaseEnv):
         return info
 
     @partial(jit, static_argnames=("self"))
-    def _get_current_obs(self, lidar_state:jnp.ndarray, odom_state:jnp.ndarray, humans_radii:jnp.ndarray, static_obstacles:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_current_obs(self, lidar_state:jnp.ndarray, legs_lidar_state:jnp.ndarray, odom_state:jnp.ndarray, humans_radii:jnp.ndarray, legs_radii:jnp.ndarray, static_obstacles:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment,
         this function computes the current observation of the state.
 
         args:
         - lidar_state: current state at the LiDAR update step.
+        - legs_lidar_state: current state of humans' legs at the LiDAR update step.
         - odom_state: current state at the Odometry update step.
         - humans_radii: radii of the humans.
+        - legs_radii: radii of the humans' legs.
         - static_obstacles: static obstacles in the environment.
 
         output:
@@ -214,7 +218,9 @@ class LaserNav(BaseEnv):
             lidar_state[-1, :2], # Lidar position (robot position)
             lidar_state[-1,4], # Lidar yaw angle (robot orientation)
             lidar_state[:-1, :2], # Human positions
+            legs_lidar_state[:,[0,1,3,4]], # Humans legs positions (lx, ly, rx, ry)
             humans_radii,
+            legs_radii,
             static_obstacles, 
             noise_key=noise_key
         )
@@ -247,8 +253,17 @@ class LaserNav(BaseEnv):
         The first stack is the most recent one.
         """
         lidar_state = info['intermediate_states'][-(1+info["substeps_from_last_scan"])]
+        legs_lidar_state = info['intermediate_leg_states'][-(1+info["substeps_from_last_scan"])]
         odom_state = info['intermediate_states'][-(1+info["substeps_from_last_odom_ref_scan"])]
-        current_obs = self._get_current_obs(lidar_state, odom_state, info["humans_parameters"][:,0], info["static_obstacles"][-1], noise_key)
+        current_obs = self._get_current_obs(
+            lidar_state, 
+            legs_lidar_state, 
+            odom_state, 
+            info["humans_parameters"][:,0], 
+            info["humans_leg_parameters"][:,-1], 
+            info["static_obstacles"][-1], 
+            noise_key
+        )
         # Stack the current observation with the previous ones
         obs = jnp.vstack((current_obs,info["previous_obs"][:-1]))
         return obs
@@ -303,7 +318,7 @@ class LaserNav(BaseEnv):
         ### Compute robot delay
         info["robot_delay"] = jnp.clip(random.normal(delay_key) * self.control_delay_sigma + self.control_delay_mean, 0., self.actions_history_length * self.robot_dt) # Delay must be positive and lower than maximum history length * robot_dt
         ### Update state and info
-        new_state, new_info, state_history = self._step(state, info, action) 
+        new_state, new_info, (state_history, humans_leg_state_history) = self._step(state, info, action) 
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):
@@ -337,6 +352,7 @@ class LaserNav(BaseEnv):
         new_info["step"] += 1
         new_info["action_history"] = jnp.concatenate((action[None,:], new_info["action_history"][:-1]), axis=0)
         new_info["intermediate_states"] = state_history
+        new_info["intermediate_leg_states"] = humans_leg_state_history
         new_info["substeps_from_last_scan"] = (new_info["substeps_from_last_scan"] + self.control_substeps) % self.lidar_substeps
         new_info["substeps_from_last_odom_ref_scan"] = ((new_info["substeps_from_last_odom_ref_scan"] + self.control_substeps - new_info["substeps_from_last_scan"]) % self.odometry_substeps) + new_info["substeps_from_last_scan"]
         gammas = jnp.array(tuple(reward_terms.keys()))

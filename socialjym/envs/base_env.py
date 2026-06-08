@@ -132,7 +132,7 @@ def get_humans_standard_leg_parameters(n_humans):
         0.5, # step length
         0.75, # legs base percent (percent of human radius at which legs are attached to the body horizontally)
         0.6, # step duration
-        0.12, # leg radius
+        0.12, # leg radius (ALWAYS KEEP LAST)
     ])
     return jnp.repeat(single_human_leg_params[None], n_humans, axis=0)
 
@@ -573,6 +573,15 @@ class BaseEnv(ABC):
         output:
         - info: dictionary containing the initialized values.
         """
+        leg_param_key, leg_init_key = random.split(noise_key)
+        leg_parameters = get_humans_standard_leg_parameters(self.n_humans)
+        leg_state = vmap(init_single_human_leg_state, in_axes=(0, 0, 0, 0, None))(
+                random.split(leg_init_key, self.n_humans),
+                full_state[0:self.n_humans], 
+                humans_parameters[:, 0], 
+                leg_parameters,
+                self.humans_policy,
+            )
         info = {
             "humans_goal": humans_goal,
             "robot_goal": robot_goal,
@@ -590,18 +599,10 @@ class BaseEnv(ABC):
             "action_history": jnp.zeros((self.actions_history_length, 2)), # History of taken actions, used for modelling delays
             "robot_delay": 0., # Current delay of the robot, used for delayed action execution
             "intermediate_states": jnp.repeat(full_state[None], int(self.robot_dt/self.humans_dt), axis=0), # Used to store the intermediate states between two robot steps
+            "humans_leg_parameters": leg_parameters,
+            "humans_leg_state": leg_state,
+            "intermediate_leg_states": jnp.repeat(leg_state[None], int(self.robot_dt/self.humans_dt), axis=0), # Used to store the intermediate leg states between two robot steps
         }
-        if self.leg_dynamics:
-            leg_param_key, leg_init_key = random.split(noise_key)
-            info["humans_leg_parameters"] = get_humans_standard_leg_parameters(self.n_humans)
-            keys = random.split(leg_init_key, self.n_humans)
-            info["humans_leg_state"] = vmap(init_single_human_leg_state, in_axes=(0, 0, 0, 0, None))(
-                keys,
-                full_state[0:self.n_humans], 
-                humans_parameters[:, 0], 
-                info["humans_leg_parameters"],
-                self.humans_policy,
-            )
         return info
 
     @partial(jit, static_argnames=("self"))
@@ -1778,14 +1779,14 @@ class BaseEnv(ABC):
         def scan_step(carry, _):
             curr_state, curr_info = carry
             new_state, new_info = self._update_state_info(curr_state, curr_info, action)
-            return (new_state, new_info), new_state
-        (new_state, new_info), state_history = lax.scan(
+            return (new_state, new_info), (new_state, new_info["humans_leg_state"])
+        (new_state, new_info), (state_history, humans_leg_state_history) = lax.scan(
             f=scan_step,
             init=(state, info),
             xs=None,
             length=int(self.robot_dt/self.humans_dt)
         )
-        return new_state, new_info, state_history
+        return new_state, new_info, (state_history, humans_leg_state_history)
 
     @partial(jit, static_argnames=("self"))
     def _update_state_info_imitation_learning(
@@ -1859,19 +1860,26 @@ class BaseEnv(ABC):
         lidar_position:jnp.ndarray, 
         lidar_yaw:float,  
         human_positions:jnp.ndarray, 
-        human_radiuses:jnp.ndarray,
+        human_legs_positions:jnp.ndarray,
+        human_radii:jnp.ndarray,
+        human_legs_radii:jnp.ndarray,
         static_obstacles:jnp.ndarray,
         noise_key=random.PRNGKey(0)
     ) -> jnp.ndarray:
         """
         Given the current state of the environment, the robot orientation and the additional information about the environment,
         this function computes the lidar measurements of the robot. The lidar measurements are given as a set of distances and angles (in the global frame) for each ray.
+        If LEG_DYNAMICS = False: the LiDAR rays will collide with the humans, which are modeled as circles with radius given by human_radii and positions given by human_positions.
+        If LEG_DYNAMICS = True: the LiDAR rays will collide with the legs of the humans, which are modeled as circles with radius given by human_legs_radii and positions given by human_legs_positions.
+        NOTICE: in the current implementation, to compute LiDAR measurements with legs, we feed humans'legs positions and radii in the downstream functions as if they were humans.
 
         args:
         - lidar_position (2,): jnp.ndarray containing the x and y coordinates of the lidar.
         - lidar_yaw (1,): float containing the orientation of the lidar.
         - human_positions (self.n_humans,2): jnp.ndarray containing the x and y coordinates of the humans.
-        - human_radiuses (self.n_humans,): jnp.ndarray containing the radius of the humans.
+        - human_legs_positions (self.n_humans,4): jnp.ndarray containing the x and y coordinates of the humans legs (only used if leg_dynamics is True).
+        - human_radii (self.n_humans,): jnp.ndarray containing the radius of the humans.
+        - human_legs_radii (self.n_humans,): jnp.ndarray containing the radius of the humans' legs (only used if leg_dynamics is True).
         - static_obstacles (self.n_obstacles, m, 2, 2): jnp.ndarray containing the static obstacles as line segments (m is the number of segments per obstacle).
 
         output:
@@ -1879,7 +1887,11 @@ class BaseEnv(ABC):
           WARNING: the angles are in the global frame, not in the robot frame.
         """
         angles = jnp.linspace(lidar_yaw - self.lidar_angular_range/2, lidar_yaw + self.lidar_angular_range/2, self.lidar_num_rays)
-        measurements, _, _ = self.batch_ray_cast(angles, lidar_position, human_positions, human_radiuses, static_obstacles)
+        if self.leg_dynamics:
+            # To compute the LiDAR measurements with leg dynamics, we treat the legs as separate entities that can occlude the rays. Therefore, we need to reshape the human legs positions and radii to be fed into the ray casting function as if they were humans.
+            human_positions = jnp.reshape(human_legs_positions, (self.n_humans*2, 2))
+            human_radii = jnp.repeat(human_legs_radii, 2)
+        measurements, _, _ = self.batch_ray_cast(angles, lidar_position, human_positions, human_radii, static_obstacles)
         if self.lidar_noise:
             measurements = self.add_lidar_noise(measurements,noise_key)
         lidar_output = jnp.stack((measurements, angles), axis=-1)
