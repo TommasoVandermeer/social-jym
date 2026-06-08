@@ -1882,7 +1882,23 @@ class JESSI(BasePolicy):
                     )
                     axs[2].add_patch(ellipse)
                     axs[2].scatter(pos[0], pos[1], c='red', s=30, marker='x', zorder=100)
-                    axs[2].text(pos[0]+0.15, pos[1]+0.17, f"{probs[h]:.2f}", fontsize=8, color="red", fontweight="bold", zorder=101)
+                    text_dir = jnp.arctan2(-(vel[1] - pos[1]), -(vel[0] - pos[0]))
+                    axs[2].text(
+                        pos[0] + jnp.cos(text_dir), 
+                        pos[1] - jnp.sin(text_dir), 
+                        f"s\n{probs[h]:.2f}", 
+                        fontsize=8, 
+                        color="red", 
+                        fontweight="bold", 
+                        zorder=101,
+                        horizontalalignment='center',
+                        verticalalignment='center',
+                        bbox=dict(
+                            boxstyle='round,pad=0.2', 
+                            facecolor='white', 
+                            alpha=0.5, 
+                        )
+                    )
                     # Velocity HCG
                     cov_matrix = self.bivariate_gaussian.covariance(human_vel_distr)
                     eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
@@ -1912,7 +1928,22 @@ class JESSI(BasePolicy):
                     )
                     if human_attentions is not None:
                         attention = float(human_attentions[frame, h])
-                        axs[3].text(pos[0]+0.15, pos[1]-0.17, f"{attention:.2f}", fontsize=8, color="black", fontweight="bold", zorder=101)
+                        axs[3].text(
+                            pos[0] + jnp.cos(text_dir), 
+                            pos[1] - jnp.sin(text_dir), 
+                            f"a\n{attention:.2f}", 
+                            fontsize=8, 
+                            color="black", 
+                            fontweight="bold", 
+                            zorder=101,
+                            horizontalalignment='center',
+                            verticalalignment='center',
+                            bbox=dict(
+                                boxstyle='round,pad=0.2', 
+                                facecolor='white', 
+                                alpha=0.5, 
+                            )
+                           )
                 else:
                     axs[2].scatter(pos[0], pos[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
                     axs[3].scatter(vel[0], vel[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
