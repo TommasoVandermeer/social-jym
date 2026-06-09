@@ -430,7 +430,7 @@ class ActorCritic(hk.Module):
             pooled_hcg_context = base_mean * presence_gate # (Batch, 20 + n_sectors)
             # Attention (wighted by HCG scores) computation for visualization
             mean_att_mtrx = jnp.mean(att_mtrx, axis=1)
-            norm_hcg_scores = hcg_scores / (sum_of_weights + 1e-5)
+            norm_hcg_scores = hcg_scores / (sum_of_weights[:, None, :] + 1e-5)
             human_attention = jnp.sum(mean_att_mtrx * norm_hcg_scores, axis=1) # (Batch, N)
         context = jnp.concatenate([
             pooled_hcg_context, 
