@@ -41,7 +41,7 @@ env_params = {
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
     'lidar_noise': True,
-    'leg_dynamics': False,
+    'leg_dynamics': True,
 }
 
 # Initialize the environment

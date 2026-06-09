@@ -178,7 +178,7 @@ class LaserNav(BaseEnv):
         )
         noise_key1, noise_key2, noise_key3 = random.split(noise_key, 3)
         # Previous observation initialization
-        info["previous_obs"] = vmap(self._get_current_obs, in_axes=(None,None,None,None,None,None,0))(
+        info["previous_obs"], humans_visibility_mask, obstacles_visibility_mask = vmap(self._get_current_obs, in_axes=(None,None,None,None,None,None,0))(
             initial_state,
             info["humans_leg_state"],
             initial_state,
@@ -187,6 +187,8 @@ class LaserNav(BaseEnv):
             static_obstacles[-1],
             random.split(noise_key1, self.n_stack),
         )
+        info["humans_visibility_mask"] = humans_visibility_mask[0]
+        info["obstacles_visibility_mask"] = obstacles_visibility_mask[0]
         # Time from last LiDAR scan initialization
         info["substeps_from_last_scan"] = 0
         if self.lidar_misalignment:
@@ -214,7 +216,7 @@ class LaserNav(BaseEnv):
         output:
         - current_obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements]
         """
-        measurements = self.get_lidar_measurements(
+        measurements, humans_visibility_mask, obstacles_visibility_mask = self.get_lidar_measurements(
             lidar_state[-1, :2], # Lidar position (robot position)
             lidar_state[-1,4], # Lidar yaw angle (robot orientation)
             lidar_state[:-1, :2], # Human positions
@@ -235,7 +237,7 @@ class LaserNav(BaseEnv):
             *robot_velocity, # Robot action (either (vx,vy) or (v,w))
             *measurements[:,0], # LiDAR measurements
         ])
-        return current_obs
+        return current_obs, humans_visibility_mask, obstacles_visibility_mask
 
     @partial(jit, static_argnames=("self"))
     def _get_obs(self, state:jnp.ndarray, info:dict, noise_key:random.PRNGKey) -> jnp.ndarray:
@@ -255,7 +257,7 @@ class LaserNav(BaseEnv):
         lidar_state = info['intermediate_states'][-(1+info["substeps_from_last_scan"])]
         legs_lidar_state = info['intermediate_leg_states'][-(1+info["substeps_from_last_scan"])]
         odom_state = info['intermediate_states'][-(1+info["substeps_from_last_odom_ref_scan"])]
-        current_obs = self._get_current_obs(
+        current_obs, humans_visibility_mask, obstacles_visibility_mask = self._get_current_obs(
             lidar_state, 
             legs_lidar_state, 
             odom_state, 
@@ -266,7 +268,7 @@ class LaserNav(BaseEnv):
         )
         # Stack the current observation with the previous ones
         obs = jnp.vstack((current_obs,info["previous_obs"][:-1]))
-        return obs
+        return obs, humans_visibility_mask, obstacles_visibility_mask
         
     # --- Public methods --- #
 
@@ -368,7 +370,7 @@ class LaserNav(BaseEnv):
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        new_obs = self._get_obs(new_state, new_info, new_env_key)
+        new_obs, new_info["humans_visibility_mask"], new_info["obstacles_visibility_mask"] = self._get_obs(new_state, new_info, new_env_key)
         new_info["previous_obs"] = new_obs
         return new_state, new_obs, new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
 

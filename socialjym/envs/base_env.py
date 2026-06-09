@@ -1885,17 +1885,35 @@ class BaseEnv(ABC):
         output:
         - lidar_output (self.lidar_num_rays,2): jnp.ndarray containing the lidar measurements of the robot and the angle (IN THE GLOBAL FRAME) for each ray.
           WARNING: the angles are in the global frame, not in the robot frame.
+        - human_visibility_mask (self.n_humans,): boolean jnp.ndarray indicating which humans are visible by the LiDAR (i.e. at least one ray collides with them).
+        - obstacles_visibility_mask (self.n_obstacles, m): boolean jnp.ndarray indicating which static obstacle segments are visible by the LiDAR (i.e. at least one ray collides with them).
         """
         angles = jnp.linspace(lidar_yaw - self.lidar_angular_range/2, lidar_yaw + self.lidar_angular_range/2, self.lidar_num_rays)
         if self.leg_dynamics:
             # To compute the LiDAR measurements with leg dynamics, we treat the legs as separate entities that can occlude the rays. Therefore, we need to reshape the human legs positions and radii to be fed into the ray casting function as if they were humans.
             human_positions = jnp.reshape(human_legs_positions, (self.n_humans*2, 2))
             human_radii = jnp.repeat(human_legs_radii, 2)
-        measurements, _, _ = self.batch_ray_cast(angles, lidar_position, human_positions, human_radii, static_obstacles)
+        measurements, human_collision_idxs, obstacle_collision_idxs = self.batch_ray_cast(angles, lidar_position, human_positions, human_radii, static_obstacles)
+        if self.leg_dynamics:
+            # With leg dynamics, we consider a human visible if at least one of the legs is collided by a ray.
+            humans_visibility_mask = vmap(lambda idx: (jnp.any(human_collision_idxs == 2 * idx) | jnp.any(human_collision_idxs == 2 * idx + 1)))(jnp.arange(self.n_humans))  # Shape: (n_humans,)
+        else:
+            humans_visibility_mask = vmap(lambda idx: jnp.any(human_collision_idxs == idx))(jnp.arange(self.n_humans))  # Shape: (n_humans,)
+        @jit
+        def segment_visibility(obstacle_idx, segment_idx, obstacle_collision_idxs):
+            return jnp.any(jnp.all(obstacle_collision_idxs == jnp.array([obstacle_idx, segment_idx]), axis=1))
+        @jit
+        def obstacle_segments_visibility(obstacle_idx, segment_idxs, obstacle_collision_idxs):
+            return vmap(segment_visibility, in_axes=(None, 0, None))(obstacle_idx, segment_idxs, obstacle_collision_idxs)
+        obstacles_visibility_mask = vmap(obstacle_segments_visibility, in_axes=(0, None, None))(
+            jnp.arange(self.n_obstacles), 
+            jnp.arange(self.static_obstacles_per_scenario.shape[2]), 
+            obstacle_collision_idxs
+        ) # Shape: (n_obstacles, n_segments)
         if self.lidar_noise:
             measurements = self.add_lidar_noise(measurements,noise_key)
         lidar_output = jnp.stack((measurements, angles), axis=-1)
-        return lidar_output
+        return lidar_output, humans_visibility_mask, obstacles_visibility_mask
     
     @partial(jit, static_argnames=("self"))
     def add_lidar_noise(self, measurements:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
@@ -1957,10 +1975,10 @@ class BaseEnv(ABC):
         # Wrap around for midpoint computation
         sorted_all_edge_angles = jnp.append(sorted_all_edge_angles, sorted_all_edge_angles[0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1,)
         ### Compute midpoint angles between consecutive object endpoints
-        sorted_all_verors = jnp.array([jnp.cos(sorted_all_edge_angles), jnp.sin(sorted_all_edge_angles)]).T  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1, 2)
-        midpoint_verors = (sorted_all_verors[:-1] + sorted_all_verors[1:])  # Shape: (2*n_humans + 2*n_obstacles*n_segments, 2)
-        midpoint_verors = midpoint_verors / jnp.linalg.norm(midpoint_verors, axis=1, keepdims=True)  # Normalize
-        midpoint_angles = jnp.arctan2(midpoint_verors[:,1], midpoint_verors[:,0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
+        sorted_all_versors = jnp.array([jnp.cos(sorted_all_edge_angles), jnp.sin(sorted_all_edge_angles)]).T  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1, 2)
+        midpoint_versors = (sorted_all_versors[:-1] + sorted_all_versors[1:])  # Shape: (2*n_humans + 2*n_obstacles*n_segments, 2)
+        midpoint_versors = midpoint_versors / jnp.linalg.norm(midpoint_versors, axis=1, keepdims=True)  # Normalize
+        midpoint_angles = jnp.arctan2(midpoint_versors[:,1], midpoint_versors[:,0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
         all_angles = jnp.concatenate((all_edge_angles, midpoint_angles)) # Shape: (4*n_humans + 4*n_obstacles*n_segments,)
         ### Ray-cast all computed angles and assess visibility of all objects (human_collision_idxs shape: (n_rays,), obstacle_collision_idxs shape: (n_rays, 2))
         _, human_collision_idxs, obstacle_collision_idxs = self.batch_ray_cast(
