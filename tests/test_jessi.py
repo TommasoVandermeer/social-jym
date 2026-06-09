@@ -23,11 +23,11 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
-    'lidar_dt': 0.13,
-    'odometry_dt': 0.05,
-    'control_delay_mean': 0.1, 
-    'control_delay_sigma': 0.01,
-    'wheels_max_linear_acceleration': 1.8, #0.87,
+    # 'lidar_dt': 0.13,
+    # 'odometry_dt': 0.05,
+    # 'control_delay_mean': 0.1, 
+    # 'control_delay_sigma': 0.01,
+    # 'wheels_max_linear_acceleration': 1.8, #0.87,
     'wheels_distance': robot_wheel_distance,
     'n_humans': 5,
     'n_obstacles': 5,
@@ -41,7 +41,7 @@ env_params = {
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
     'lidar_noise': True,
-    'leg_dynamics': True,
+    'leg_dynamics': False,
 }
 
 # Initialize the environment

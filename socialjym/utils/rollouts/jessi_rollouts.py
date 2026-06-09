@@ -48,12 +48,6 @@ def collect_rollout_step(
             states[:,-1,4], 
             infos["robot_goal"],
         )
-        humans_visibility, _ = env.batch_object_visibility(
-            rc_humans_positions, infos["humans_parameters"][:,:,0], rc_obstacles
-        )
-        humans_in_range = env.batch_humans_inside_lidar_range(
-            rc_humans_positions, infos["humans_parameters"][:,:,0]
-        )
         step_data = {
             # "obs": obses,
             # "robot_goal": infos["robot_goal"],
@@ -62,7 +56,7 @@ def collect_rollout_step(
             "masks": masks.astype(jnp.bool),
             "gt_poses": rc_humans_positions,
             "gt_vels": rc_humans_velocities,
-            "gt_mask": humans_visibility & humans_in_range,
+            "gt_mask": infos["humans_visibility_mask"],
             "values": values,
             "actions": sampled_actions,
             "rewards": rewards,
