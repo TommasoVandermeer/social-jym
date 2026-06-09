@@ -556,6 +556,7 @@ class E2E(hk.Module):
             distributions = None
             concentration = None
             state_values = None
+            human_attention = None
         else:
             ## CONTROL
             sampled_actions, distributions, concentration, state_values, human_attention = self.actor_critic(
