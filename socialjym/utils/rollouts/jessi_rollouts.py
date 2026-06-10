@@ -184,19 +184,19 @@ def train_one_epoch(
         micro_batches["advantages"] = micro_batches["advantages"].at[:].set(jnp.clip(norm_advantages, -5, 5))
 
         def micro_batch_loss_fn(p, u_mb, micro_batch_key):
-            inputs0, inputs1, masks = u_mb["inputs0"], u_mb["inputs1"], u_mb["masks"]
+            inputs0, inputs1 = u_mb["inputs0"], u_mb["inputs1"]
             # Lowe input precision to save memory
             if multitask_training or modular_training:
                 inputs0_f16 = inputs0.astype(jnp.bfloat16)
                 inputs1_f16 = inputs1.astype(jnp.bfloat16)
                 # Forward pass (For Actor/Critic)
                 (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training), external_mask=masks
+                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training)
                 )
             else:
                 # Forward pass (For Actor/Critic)
                 (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training), external_mask=masks
+                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training)
                 )
             # Cast back to higher precision for loss computation
             if multitask_training or modular_training:
