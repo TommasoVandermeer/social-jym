@@ -674,7 +674,7 @@ class JESSI(BasePolicy):
     def _align_lidar_stack(self, obs_stack, ref_position, ref_orientation):
         """
         args:
-        - obs_stack (lidar_num_rays + 6):  [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs_stack (n_stack, lidar_num_rays + 9): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
 
         outputs:
         - pointcloud_and_action (lidar_num_rays, 2): LiDAR points in robot reference frame
@@ -685,7 +685,7 @@ class JESSI(BasePolicy):
         robot_orientation = obs_stack[2]  # Shape: ()
         #robot_radius = obs_stack[3]  # Shape: ()
         #robot_action = obs_stack[4:6]  # Shape: (2,)
-        lidar_measurements = obs_stack[6:]  # Shape: (lidar_num_rays)
+        lidar_measurements = obs_stack[9:]  # Shape: (lidar_num_rays)
         ## Align scan to reference frame
         # Compute LiDAR angles in world frame
         lidar_angles = self.lidar_angles_robot_frame + robot_orientation  # Shape: (lidar_num_rays)
@@ -1004,7 +1004,7 @@ class JESSI(BasePolicy):
         Prepare the input for the encoder network.
 
         args:
-        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
 
         output:
@@ -1069,16 +1069,16 @@ class JESSI(BasePolicy):
         Prepare the input for the encoder network.
 
         args:
-        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
 
         output:
-        - lidar_tokens (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
+        - lidar_tokens (n_stack, lidar_num_rays, 7 + max_sector_attendance): aligned LiDAR tokens for transformer encoder.
         7 features per token: [norm_dist, hit, x, y, sin_fixed_theta (theta of beam in the robot frame), cos_fixed_theta (theta of beam in the robot frame), delta_t (time difference from the most recent scan)].
         - last LiDAR point cloud (lidar_num_rays, 2): in robot frame of the most recent observation.
         """
         # Limit readings to self.lidar_max_dist
-        clipped_obs = obs.at[:, 6:].set(jnp.clip(obs[:, 6:], a_min=0.0, a_max=self.lidar_max_dist))
+        clipped_obs = obs.at[:, 9:].set(jnp.clip(obs[:, 9:], a_min=0.0, a_max=self.lidar_max_dist))
         # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.
         aligned_lidar_scans = self.align_lidar(clipped_obs)[0]  # Shape: (n_stack, lidar_num_rays, 2)
         point_cloud_for_bounding = aligned_lidar_scans[:self.n_stack_for_action_space_bounding,:, :]  # Shape: (n_stack_for_action_space_bounding, lidar_num_rays, 2)
@@ -1101,14 +1101,13 @@ class JESSI(BasePolicy):
             cos_current_theta = jnp.cos(current_theta)
             hit = jnp.where(distance < self.lidar_max_dist, 1.0, 0.0)
             # Compute stack index features
-            delta_t = scan_index * self.dt
+            delta_t = obs[scan_index, 6] - obs[0, 6]  # Time difference from the most recent scan
             # Sector attendance
             beam_dir = jnp.array([sin_current_theta, cos_current_theta])
             cos_diffs = jnp.dot(self.sectors_latent_vecs, beam_dir)
-            sector_index = jnp.argmax(cos_diffs).astype(jnp.int32)
             top_cos, top_indices = lax.top_k(cos_diffs, self.max_sector_attendance)
             attended_sectors = jnp.where(top_cos >= self.sectors_threshold, top_indices, -1)
-            attended_sectors = attended_sectors.astype(jnp.float32)
+            attended_sectors = attended_sectors.astype(jnp.int32)
             return jnp.array([
                 distance/self.max_beam_range,  # Normalize distance
                 hit,
@@ -1781,7 +1780,7 @@ class JESSI(BasePolicy):
             c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
             rot = jnp.array([[c, -s], [s, c]])
             # AX 0,0: Simulation with LiDAR ranges
-            lidar_scan = observations[frame,0,6:]
+            lidar_scan = observations[frame,0,9:]
             for ray in range(len(lidar_scan)):
                 if spatial_attentions is not None:
                     attention = float(spatial_attentions[frame, ray])

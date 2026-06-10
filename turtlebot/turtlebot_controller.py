@@ -376,7 +376,7 @@ class TB4Controller(Node):
         lidar_scan = np.clip(lidar_scan, 0, self.lidar_max_dist)
 
         # Observation
-        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], lidar_scan))
+        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], [scan_time_sec], [odom_time_sec], [self.get_clock().now().nanoseconds * 1e-9], lidar_scan))
         self.obs_stack.appendleft(current_step_obs)
         while len(self.obs_stack) < self.n_stack:
             self.obs_stack.appendleft(current_step_obs) 

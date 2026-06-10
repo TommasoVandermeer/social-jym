@@ -216,7 +216,7 @@ class VanillaE2E(BasePolicy):
     def _align_lidar_stack(self, obs_stack, ref_position, ref_orientation):
         """
         args:
-        - obs_stack (lidar_num_rays + 6):  [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs_stack (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
 
         outputs:
         - pointcloud_and_action (lidar_num_rays, 2): LiDAR points in robot reference frame
@@ -227,7 +227,7 @@ class VanillaE2E(BasePolicy):
         robot_orientation = obs_stack[2]  # Shape: ()
         #robot_radius = obs_stack[3]  # Shape: ()
         #robot_action = obs_stack[4:6]  # Shape: (2,)
-        lidar_measurements = obs_stack[6:]  # Shape: (lidar_num_rays)
+        lidar_measurements = obs_stack[9:]  # Shape: (lidar_num_rays)
         ## Align scan to reference frame
         # Compute LiDAR angles in world frame
         lidar_angles = self.lidar_angles_robot_frame + robot_orientation  # Shape: (lidar_num_rays)
@@ -381,7 +381,7 @@ class VanillaE2E(BasePolicy):
         Compute the inputs for the actor network from the raw observation.
 
         args:
-        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
         - rc_robot_goal (2,): Goal position in the robot frame
 

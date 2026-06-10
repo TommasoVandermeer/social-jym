@@ -177,18 +177,6 @@ class LaserNav(BaseEnv):
             noise_key,
         )
         noise_key1, noise_key2, noise_key3 = random.split(noise_key, 3)
-        # Previous observation initialization
-        info["previous_obs"], humans_visibility_mask, obstacles_visibility_mask = vmap(self._get_current_obs, in_axes=(None,None,None,None,None,None,0))(
-            initial_state,
-            info["humans_leg_state"],
-            initial_state,
-            humans_parameters[:,0],
-            info["humans_leg_parameters"][:,-1],
-            static_obstacles[-1],
-            random.split(noise_key1, self.n_stack),
-        )
-        info["humans_visibility_mask"] = humans_visibility_mask[0]
-        info["obstacles_visibility_mask"] = obstacles_visibility_mask[0]
         # Time from last LiDAR scan initialization
         info["substeps_from_last_scan"] = 0
         if self.lidar_misalignment:
@@ -197,10 +185,37 @@ class LaserNav(BaseEnv):
         info["substeps_from_last_odom_ref_scan"] = info["substeps_from_last_scan"]
         if self.odometry_misalignment:
             info["substeps_from_last_odom_ref_scan"] += random.randint(noise_key3, (), 0, self.odometry_substeps)
+        # Previous observation initialization
+        info["previous_obs"], humans_visibility_mask, obstacles_visibility_mask = vmap(self._get_current_obs, in_axes=(None,None,None,None,None,None,None,None,None,0))(
+            initial_state,
+            info["humans_leg_state"],
+            initial_state,
+            humans_parameters[:,0],
+            info["humans_leg_parameters"][:,-1],
+            static_obstacles[-1],
+            info["time"] - info["substeps_from_last_scan"]*self.humans_dt,
+            info["time"] - info["substeps_from_last_odom_ref_scan"]*self.humans_dt,
+            info["time"],
+            random.split(noise_key1, self.n_stack),
+        )
+        info["humans_visibility_mask"] = humans_visibility_mask[0]
+        info["obstacles_visibility_mask"] = obstacles_visibility_mask[0]
         return info
 
     @partial(jit, static_argnames=("self"))
-    def _get_current_obs(self, lidar_state:jnp.ndarray, legs_lidar_state:jnp.ndarray, odom_state:jnp.ndarray, humans_radii:jnp.ndarray, legs_radii:jnp.ndarray, static_obstacles:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_current_obs(
+        self,
+        lidar_state:jnp.ndarray, 
+        legs_lidar_state:jnp.ndarray, 
+        odom_state:jnp.ndarray, 
+        humans_radii:jnp.ndarray, 
+        legs_radii:jnp.ndarray, 
+        static_obstacles:jnp.ndarray, 
+        lidar_timestamp:float,
+        odom_timestamp:float,
+        control_timestamp:float,
+        noise_key:random.PRNGKey,
+    ) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment,
         this function computes the current observation of the state.
@@ -212,9 +227,13 @@ class LaserNav(BaseEnv):
         - humans_radii: radii of the humans.
         - legs_radii: radii of the humans' legs.
         - static_obstacles: static obstacles in the environment.
+        - lidar_timestamp: timestamp of the current LiDAR state.
+        - odom_timestamp: timestamp of the current Odometry state.
+        - control_timestamp: timestamp of the current control step (environment step).
+        - noise_key: random.PRNGKey for noise generation.
 
         output:
-        - current_obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements]
+        - current_obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements]
         """
         measurements, humans_visibility_mask, obstacles_visibility_mask = self.get_lidar_measurements(
             lidar_state[-1, :2], # Lidar position (robot position)
@@ -235,6 +254,9 @@ class LaserNav(BaseEnv):
             robot_orientation, # Robot orientation
             self.robot_radius, # Robot radius
             *robot_velocity, # Robot action (either (vx,vy) or (v,w))
+            lidar_timestamp,
+            odom_timestamp,
+            control_timestamp,
             *measurements[:,0], # LiDAR measurements
         ])
         return current_obs, humans_visibility_mask, obstacles_visibility_mask
@@ -251,7 +273,7 @@ class LaserNav(BaseEnv):
         - noise_key: random.PRNGKey for noise generation.
 
         output:
-        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
         """
         lidar_state = info['intermediate_states'][-(1+info["substeps_from_last_scan"])]
@@ -264,6 +286,9 @@ class LaserNav(BaseEnv):
             info["humans_parameters"][:,0], 
             info["humans_leg_parameters"][:,-1], 
             info["static_obstacles"][-1], 
+            info["time"] - info["substeps_from_last_scan"]*self.humans_dt,
+            info["time"] - info["substeps_from_last_odom_ref_scan"]*self.humans_dt,
+            info["time"],
             noise_key
         )
         # Stack the current observation with the previous ones
