@@ -1,17 +1,23 @@
-from jax import random, vmap, jit, lax
+from jax import random, vmap
+from jax import jit, lax, tree_map
 import jax.numpy as jnp
-from jax.tree_util import tree_map
-import os
-import pickle
+import numpy as np
 import matplotlib.pyplot as plt
+import pickle
+import os
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
 from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 
+custom_obstacles_dir = os.path.join(os.path.dirname(__file__), "san_niccolo_socialjym.pkl")
+with open(custom_obstacles_dir, 'rb') as f:
+    custom_obstacles = pickle.load(f)
+    print("Custom obstacles shape: ", custom_obstacles.shape)
+
 # Hyperparameters
-random_seed = 3
+random_seed = 0
 robot_vmax = 1
 robot_wheel_distance = 0.7
 time_limit = 50
@@ -29,24 +35,43 @@ env_params = {
     'control_delay_sigma': 0.01,
     'wheels_max_linear_acceleration': 1.8, #0.87,
     'wheels_distance': robot_wheel_distance,
-    'n_humans': 5,
-    'n_obstacles': 5,
+    'n_humans': 1,
+    'n_obstacles': custom_obstacles.shape[0],
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'hybrid_scenario', 
-    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
-    'ccso_n_static_humans': 0,
+    'scenario': None, 
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
     'lidar_noise': True,
     'leg_dynamics': True,
 }
+custom_obstacles = jnp.repeat(custom_obstacles[jnp.newaxis], env_params['n_humans']+1, axis=0) # (n_humans+1, n_obstacles, 1, 2, 2)
 
-# Initialize the environment
+# Generate custom_episode_dict
+# custom_episode: dictionary with keys:
+#             full_state (n_humans+1, 6): initial full state. WARNING: humans' velocities
+#                 must be given in the GLOBAL frame; they are converted to the body frame
+#                 here since LaserNav humans are driven by HSFM.
+#             humans_goal (n_humans, 2): humans' goal positions.
+#             robot_goal (2,): robot's goal position.
+#             static_obstacles (n_humans+1, n_obstacles, 1, 2, 2): static obstacles.
+#             scenario (int): scenario index (use -1 for custom scenario).
+#             humans_radius (n_humans,): humans' radii.
+#             humans_speed (n_humans,): humans' desired speeds.
+custom_episode = {
+    'full_state': jnp.array([[10_000., 10_000., 0., 0., 0., 0.], [0., 0., 0., 0., 0., 0.]]),
+    'humans_goal': jnp.array([[10_000., 10_000.]]),
+    'robot_goal': jnp.array([2., -1.]),
+    'static_obstacles': custom_obstacles,
+    'scenario': -1,
+    'humans_radius': jnp.array([0.3]),
+    'humans_speed': jnp.array([1.]),
+}
+
+# Initialize and reset environment
 env = LaserNav(**env_params)
-
 # Initialize the policy
 policy = JESSI(
     v_max=robot_vmax,
@@ -66,20 +91,10 @@ policy = JESSI(
 with open(os.path.join(os.path.dirname(__file__), 'jessi_policy_rl_out.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
-# _, _, network_params = policy.init_nns(random.PRNGKey(random_seed))
-
-# Test the trained JESSI policy
-# metrics = policy.evaluate(
-#     n_episodes,
-#     random_seed,
-#     env,
-#     network_params,
-# )
-
 # Simulate some episodes
 for i in range(n_episodes):
     policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
-    state, reset_key, obs, info, outcome = env.reset(reset_key)
+    state, reset_key, obs, info, outcome = env.reset_custom_episode(reset_key, custom_episode)
     step = 0
     max_steps = int(env.reward_function.time_limit/env.robot_dt)+1
     all_states = jnp.array([state])
@@ -116,14 +131,10 @@ for i in range(n_episodes):
         action, _, _, _, _, _, perception_distr, actor_distr, state_value, spat_attn, temp_attn, human_attn = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
         # Debug prints
         print(
+            f"Step {step} - Goal: {info['robot_goal']}", "\n",
             "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
-            #"Info['previous_obs']: ", info["previous_obs"],"\n",
-            #"Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']],"\n",
-            # "Substeps from last scan: ", info["substeps_from_last_scan"],"\n",
-            # "Substeps from last odom (ref scan): ", info["substeps_from_last_odom_ref_scan"],"\n",
             "Control-sensors delay: ", f"{info['substeps_from_last_scan'] * env.humans_dt:.2f} s","\n",
             "Sensors-sensors delay: ", f"{(info['substeps_from_last_odom_ref_scan'] - info['substeps_from_last_scan']) * env.humans_dt:.2f} s","\n",
-            f"Lasers dt (stack): {obs[0,6] - obs[:,6]}",
         )
         # Step the environment
         state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
@@ -168,38 +179,20 @@ for i in range(n_episodes):
     # [print("Step {} -  critic prediction: {:.2f} VS discounted return: {:.2f}".format(i, all_predicted_state_values[i], discounted_returns[i])) for i in range(len(discounted_returns))]
     print("\nOutcome: ", [k for k, v in outcome.items() if v][0], " - Return: {:.2f}".format(info['return']))
     ## Animate only trajectory
-    # angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
-    # lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,9:], angles)
-    # animate_trajectory(
-    #     all_states, 
-    #     info['humans_parameters'][:,0], 
-    #     env.robot_radius, 
-    #     'hsfm',
-    #     info['robot_goal'],
-    #     info['current_scenario'],
-    #     static_obstacles=info['static_obstacles'][-1],
-    #     robot_dt=env_params['robot_dt'],
-    #     # lidar_measurements=lidar_measurements,
-    #     kinematics=kinematics,
-    # )
-    ## Plot velocity dynamics of the simulator with respect to reference commands
-    robot_velocities = all_intermediate_states[:,:,-1,2:4].reshape(-1, 2)
-    robot_velocities_times = jnp.arange(0, robot_velocities.shape[0]*env.humans_dt, env.humans_dt)
-    reference_velocities = all_actions
-    reference_velocities_times = jnp.arange(0, reference_velocities.shape[0]*env.robot_dt, env.robot_dt)
-    figure, ax = plt.subplots(2, 1, figsize=(15, 10))
-    figure.subplots_adjust(left=0.1, right=0.9, bottom=0.15)
-    ax[0].step(reference_velocities_times, reference_velocities[:,0], label='Action', where='post', color='green', alpha=0.7)
-    ax[0].plot(robot_velocities_times, robot_velocities[:,0], label='Velocity', color='red', linewidth=2)
-    ax[0].set_xlabel('Time [s]')
-    ax[0].set_ylabel('Linear Vel [m/s]')
-    ax[0].legend(fontsize=16)
-    ax[1].step(reference_velocities_times, reference_velocities[:,1], label='Action', where='post', color='green', alpha=0.7)
-    ax[1].plot(robot_velocities_times, robot_velocities[:,1], label='Velocity', color='red', linewidth=2)
-    ax[1].set_xlabel('Time [s]')
-    ax[1].set_ylabel('Angular Vel [m/s]')
-    ax[1].legend(fontsize=16)
-    plt.show()
+    angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
+    lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,9:], angles)
+    animate_trajectory(
+        all_states, 
+        info['humans_parameters'][:,0], 
+        env.robot_radius, 
+        'hsfm',
+        info['robot_goal'],
+        None,
+        static_obstacles=info['static_obstacles'][-1],
+        robot_dt=env_params['robot_dt'],
+        # lidar_measurements=lidar_measurements,
+        kinematics=kinematics,
+    )
     ## Animate trajectory with JESSI's perception and action distribution
     policy.animate_lasernav_trajectory(
         env,

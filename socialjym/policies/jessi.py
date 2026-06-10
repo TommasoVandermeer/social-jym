@@ -1101,7 +1101,7 @@ class JESSI(BasePolicy):
             cos_current_theta = jnp.cos(current_theta)
             hit = jnp.where(distance < self.lidar_max_dist, 1.0, 0.0)
             # Compute stack index features
-            delta_t = obs[scan_index, 6] - obs[0, 6]  # Time difference from the most recent scan
+            delta_t = obs[0, 6] - obs[scan_index, 6] # Time difference from the most recent scan
             # Sector attendance
             beam_dir = jnp.array([sin_current_theta, cos_current_theta])
             cos_diffs = jnp.dot(self.sectors_latent_vecs, beam_dir)
