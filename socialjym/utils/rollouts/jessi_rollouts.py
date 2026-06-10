@@ -33,7 +33,7 @@ def collect_rollout_step(
 ):
     def _scan_step(carry, _):
         (states, obses, infos, outcomes, returns, times, success_per_scenario, episodes_per_scenario, p_keys, r_keys, e_keys, outcomes_acc) = carry
-        actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, values, masks, _, _, _ = policy.batch_act(
+        actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, values, _, _, _ = policy.batch_act(
             p_keys, obses, infos, network_params, sample=True
         )
         new_states, new_obses, new_infos, (rewards, _), new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
@@ -53,7 +53,6 @@ def collect_rollout_step(
             # "robot_goal": infos["robot_goal"],
             "inputs0": inputs0,
             "inputs1": inputs1,
-            "masks": masks.astype(jnp.bool),
             "gt_poses": rc_humans_positions,
             "gt_vels": rc_humans_velocities,
             "gt_mask": infos["humans_visibility_mask"],
@@ -113,7 +112,7 @@ def process_buffer_and_gae(
     perception_inputs, robot_state_inputs = vmap(policy.compute_e2e_input, in_axes=(0,0))(
         last_obs, last_info['robot_goal']
     )
-    _, _, _, _, _, last_values, _, _, _, _ = policy.e2e.apply(
+    _, _, _, _, _, last_values, _, _, _ = policy.e2e.apply(
         network_params, None, perception_inputs, robot_state_inputs
     )
     rewards = history["rewards"]
@@ -138,7 +137,6 @@ def process_buffer_and_gae(
         # "robot_goals": flatten(history["robot_goal"]),
         "inputs0": flatten(history["inputs0"]),
         "inputs1": flatten(history["inputs1"]),
-        "masks": flatten(history["masks"]),
         "gt_poses": flatten(history["gt_poses"]),
         "gt_vels": flatten(history["gt_vels"]),
         "gt_mask": flatten(history["gt_mask"]),
@@ -192,12 +190,12 @@ def train_one_epoch(
                 inputs0_f16 = inputs0.astype(jnp.bfloat16)
                 inputs1_f16 = inputs1.astype(jnp.bfloat16)
                 # Forward pass (For Actor/Critic)
-                (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _, _) = policy.e2e.apply(
+                (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _) = policy.e2e.apply(
                     p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training), external_mask=masks
                 )
             else:
                 # Forward pass (For Actor/Critic)
-                (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _, _) = policy.e2e.apply(
+                (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _) = policy.e2e.apply(
                     p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training), external_mask=masks
                 )
             # Cast back to higher precision for loss computation
@@ -259,7 +257,7 @@ def train_one_epoch(
                 # Cast corrupted input to float16 to save memory during forward pass
                 inputs0_corrupt_f16 = inputs0_corrupt.astype(jnp.bfloat16)
                 # Forward pass through perception head
-                (perc_dist, _, _, _, _, _, _, _, _, _) = policy.e2e.apply(
+                (perc_dist, _, _, _, _, _, _, _, _) = policy.e2e.apply(
                     p, None, inputs0_corrupt_f16, inputs1, stop_perception_gradient=False, only_perception=True, perception_key=mask_drop_key
                 )
                 # Compute perception loss

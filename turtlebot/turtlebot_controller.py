@@ -429,7 +429,7 @@ class TB4Controller(Node):
             # ACTION INFERENCE
             try:
                 if self.planner == 'JESSI':
-                    action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _, spat_attn, temp_attn, human_attn = self.policy.act(
+                    action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, spat_attn, temp_attn, human_attn = self.policy.act(
                         key=self.rng_key,
                         obs=obs_matrix,
                         info=info_dict,

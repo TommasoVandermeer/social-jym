@@ -23,11 +23,11 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
-    # 'lidar_dt': 0.13,
-    # 'odometry_dt': 0.05,
-    # 'control_delay_mean': 0.1, 
-    # 'control_delay_sigma': 0.01,
-    # 'wheels_max_linear_acceleration': 1.8, #0.87,
+    'lidar_dt': 0.13,
+    'odometry_dt': 0.05,
+    'control_delay_mean': 0.1, 
+    'control_delay_sigma': 0.01,
+    'wheels_max_linear_acceleration': 1.8, #0.87,
     'wheels_distance': robot_wheel_distance,
     'n_humans': 5,
     'n_obstacles': 5,
@@ -41,7 +41,7 @@ env_params = {
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
     'lidar_noise': True,
-    'leg_dynamics': False,
+    'leg_dynamics': True,
 }
 
 # Initialize the environment
@@ -57,9 +57,9 @@ policy = JESSI(
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
 )
-# with open(os.path.join(os.path.dirname(__file__), 'pre_perception_network.pkl'), 'rb') as f:
+# with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_perception_network.pkl'), 'rb') as f:
 #     encoder_params = pickle.load(f)
-# with open(os.path.join(os.path.dirname(__file__), 'pre_controller_network.pkl'), 'rb') as f:
+# with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_controller_network.pkl'), 'rb') as f:
 #     actor_params = pickle.load(f)
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
 
@@ -113,7 +113,7 @@ for i in range(n_episodes):
         all_humans_leg_states = jnp.array([info['humans_leg_state']])
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, _, _, _, _, _, perception_distr, actor_distr, state_value, _, spat_attn, temp_attn, human_attn = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
+        action, _, _, _, _, _, perception_distr, actor_distr, state_value, spat_attn, temp_attn, human_attn = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
         # Debug prints
         print(
             "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
