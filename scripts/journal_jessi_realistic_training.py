@@ -910,8 +910,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     # Environment parameters
     env_params = {
         'robot_radius': 0.3,
-        'n_humans': training_hyperparams['n_humans'],
-        'n_obstacles': training_hyperparams['n_obstacles'],
+        'n_humans': 4,
+        'n_obstacles': 5,
         'robot_dt': 0.25,
         'humans_dt': 0.01,
         'robot_visible': False,
