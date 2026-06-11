@@ -54,6 +54,8 @@ class LaserNav(BaseEnv):
             ccso_static_humans_radius_mean:float = 1.,
             ccso_static_humans_radius_std:float = 0.2,
             thick_default_obstacle:bool = True,
+            obstacles_noise:float = 0.,
+            noisy_walls:bool = False,
             grid_map_computation:bool = False,
             grid_cell_size:float = 0.9, # Such parameter is suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT)
             grid_min_size:float = 18., # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
@@ -97,6 +99,8 @@ class LaserNav(BaseEnv):
             grid_cell_size=grid_cell_size,
             grid_min_size=grid_min_size,
             thick_default_obstacle=thick_default_obstacle,
+            obstacles_noise=obstacles_noise,
+            noisy_walls=noisy_walls,
             leg_dynamics=leg_dynamics,
         )
         ## Args validation

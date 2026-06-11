@@ -916,7 +916,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'humans_dt': 0.01,
         'robot_visible': False,
         'scenario': training_hyperparams['scenario'],
-        'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
+        'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5,6,10,11,12,13,14,15]),
         'circle_radius': 7,
         'reward_function': reward_function,
         'kinematics': 'unicycle',
@@ -928,6 +928,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'control_delay_sigma': control_delay_sigma,
         'wheels_max_linear_acceleration': wheels_max_linear_acceleration,
         'leg_dynamics': leg_dynamics,
+        'noisy_walls': True,
+        'obstacles_noise': 0.15,
     }
     # Initialize environment
     env = LaserNav(**env_params)

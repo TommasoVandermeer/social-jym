@@ -87,6 +87,8 @@ class SocialNav(BaseEnv):
             grid_cell_size=grid_cell_size,
             grid_min_size=grid_min_size,
             thick_default_obstacle=thick_default_obstacle,
+            obstacles_noise=0., # Not used in Socialnav
+            noisy_walls=False, # Not used in Socialnav
         )
         ## Args validation
         assert reward_function.kinematics == self.kinematics, "The reward function's kinematics must be the same as the environment's kinematics."

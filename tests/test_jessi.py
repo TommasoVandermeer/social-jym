@@ -63,7 +63,7 @@ policy = JESSI(
 #     actor_params = pickle.load(f)
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
 
-with open(os.path.join(os.path.dirname(__file__), 'jessi_policy_rl_out.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'realistic_jessi_multitask_rl_out.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # _, _, network_params = policy.init_nns(random.PRNGKey(random_seed))
@@ -123,7 +123,7 @@ for i in range(n_episodes):
             # "Substeps from last odom (ref scan): ", info["substeps_from_last_odom_ref_scan"],"\n",
             "Control-sensors delay: ", f"{info['substeps_from_last_scan'] * env.humans_dt:.2f} s","\n",
             "Sensors-sensors delay: ", f"{(info['substeps_from_last_odom_ref_scan'] - info['substeps_from_last_scan']) * env.humans_dt:.2f} s","\n",
-            f"Lasers dt (stack): {obs[0,6] - obs[:,6]}",
+            f"Lasers dt (stack): {obs[0,8] - obs[:,6]}",
         )
         # Step the environment
         state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)

@@ -11,6 +11,7 @@ from jsfm.utils import get_standard_humans_parameters as sfm_get_standard_humans
 from jorca.utils import get_standard_humans_parameters as orca_get_standard_humans_parameters
 
 SCENARIOS = [
+    # Social scenarios
     "circular_crossing", 
     "parallel_traffic", 
     "perpendicular_traffic", 
@@ -18,9 +19,17 @@ SCENARIOS = [
     "delayed_circular_crossing",
     "circular_crossing_with_static_obstacles",
     "crowd_navigation",
-    "corner_traffic",
-    "door_crossing",
-    "crowd_chasing",
+    # Realistic scenarios (testing)
+    "corner_traffic", # Double waypoint
+    "door_crossing", # Double waypoint
+    "crowd_chasing", # Double waypoint
+    # Navigation scenarios
+    "turn_l",
+    "narrow_passage",
+    "slalom",
+    "random_obstacle",
+    "narrow_corridor",
+    "random_room",
     "hybrid_scenario" # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
 ] 
 HUMAN_POLICIES = [
@@ -125,6 +134,54 @@ def thicken_obstacles(obstacles, thickness):
     seg4 = jnp.stack([c4, c1], axis=-2)
     thick_obstacles = jnp.stack([seg1, seg2, seg3, seg4], axis=-3)
     return thick_obstacles
+
+@partial(jit, static_argnames=("N", "max_attempts"))
+def generate_wall_noise(
+    key: random.PRNGKey,
+    obstacles: jnp.ndarray,    # Shape: (O, 1, 2, 2)
+    robot_position: jnp.ndarray, # Shape: (2,)
+    robot_goal: jnp.ndarray,     # Shape: (2,)
+    N: int,                    # Numero di micro-segmenti da generare
+    noise_length: float = 0.4,  # Lunghezza del micro-segmento (es. 5 cm)
+    noise_offset: float = 0.05,  # Spostamento ortogonale dal muro (es. 2 cm)
+    safe_distance: float = 1.0,  # Distanza minima da robot e goal
+    max_attempts: int = 5       # Limite loop per evitare loop infiniti nel JIT
+) -> jnp.ndarray:
+    walls = obstacles.reshape(-1, 2, 2)
+    num_walls = walls.shape[0]
+    def generate_single_noise(k_init):
+        def cond_fn(state):
+            step, _, valid, _ = state
+            return (step < max_attempts) & (~valid)
+        def body_fn(state):
+            step, k_curr, _, _ = state
+            k1, k2, k3, k4, k_next = random.split(k_curr, 5)
+            w_idx = random.randint(k1, shape=(), minval=0, maxval=num_walls)
+            wall = walls[w_idx] # (2, 2)
+            p1, p2 = wall[0], wall[1]
+            t = random.uniform(k2, shape=())
+            c = p1 + t * (p2 - p1)
+            dist_robot = jnp.linalg.norm(c - robot_position)
+            dist_goal = jnp.linalg.norm(c - robot_goal)
+            valid = (dist_robot >= safe_distance) & (dist_goal >= safe_distance)
+            wall_vec = p2 - p1
+            wall_angle = jnp.arctan2(wall_vec[1], wall_vec[0])
+            angle_noise = random.uniform(k3, shape=(), minval=-jnp.pi/4, maxval=jnp.pi/4)
+            final_angle = wall_angle + angle_noise
+            dir_vec = jnp.array([jnp.cos(final_angle), jnp.sin(final_angle)])
+            normal_vec = jnp.array([-jnp.sin(wall_angle), jnp.cos(wall_angle)])
+            c_offset = c + normal_vec * random.uniform(k4, shape=(), minval=-noise_offset, maxval=noise_offset)
+            seg = jnp.stack([
+                c_offset - (noise_length / 2) * dir_vec,
+                c_offset + (noise_length / 2) * dir_vec
+            ])
+            return step + 1, k_next, valid, seg
+        init_state = (0, k_init, False, jnp.zeros((2, 2)))
+        _, _, is_valid, final_seg = lax.while_loop(cond_fn, body_fn, init_state)
+        return jnp.where(is_valid, final_seg, jnp.full((2, 2), jnp.nan))
+    keys = random.split(key, N)
+    noise_segments = vmap(generate_single_noise)(keys)
+    return noise_segments[:, None, :, :]
 
 @partial(jit, static_argnames=("n_humans"))
 def get_humans_standard_leg_parameters(n_humans):
@@ -231,6 +288,8 @@ class BaseEnv(ABC):
         grid_cell_size:float,
         grid_min_size:float,
         thick_default_obstacle:bool,
+        obstacles_noise:float,
+        noisy_walls:bool,
         leg_dynamics:bool,
     ) -> None:
         ## Args validation
@@ -258,6 +317,7 @@ class BaseEnv(ABC):
         assert velocity_dynamics in ROBOT_VELOCITY_DYNAMICS, f"Robot velocity dynamics must be one of {ROBOT_VELOCITY_DYNAMICS}"
         if velocity_dynamics == "coupled_slew_rate":
             assert kinematics == "unicycle"
+        assert obstacles_noise <= 0.2, "Obstacles noise should be kept low (<=0.2) as otherwise episodes construction might be too random"
         ## Env initialization
         self.robot_dt = robot_dt
         self.robot_radius = robot_radius
@@ -318,6 +378,8 @@ class BaseEnv(ABC):
         self.grid_cell_size = grid_cell_size
         self.grid_min_size = grid_min_size
         self.leg_dynamics = leg_dynamics
+        self.obstacles_noise = obstacles_noise
+        self.noisy_walls = noisy_walls
         ## Static obstacles initialization
         self.static_obstacles_per_scenario = jnp.array([
             [ # Circular crossing
@@ -390,9 +452,49 @@ class BaseEnv(ABC):
                 [[[-self.traffic_length/2-3, self.traffic_height/2 + 0.7],[-self.traffic_length/2-3, -(self.traffic_height/2 + 0.7)]]],
                 [[[self.traffic_length/2+3, self.traffic_height/2 + 0.7],[self.traffic_length/2+3, -(self.traffic_height/2 + 0.7)]]],
             ],
+            [ # L-turn
+                [[[-1.,-5.],[1.,-5.]]],
+                [[[1.,-5.],[1.,3.]]],
+                [[[1.,3.],[-3., 3.]]],
+                [[[-3., 1.],[-1., 1.]]],
+                [[[-1., 1.],[-1., -5.]]],
+            ],
+            [ # Narrow passage
+                [[[-3., -4.],[3., -4.]]],
+                [[[3., -4.],[3., 2.]]],
+                [[[3., 2.],[0.65, 2.]]],
+                [[[-0.65, 2.],[-3., 2.]]],
+                [[[-3., 2.],[-3., -4.]]],
+            ],
+            [ # Slalom
+                [[[-1.5, 8.],[-1.5, -5.]]],
+                [[[-1.5, -5.],[1.5, -5.]]],
+                [[[1.5, -5.],[1.5, 8.]]],
+                [[[-1.5, -2.],[0., -2.]]],
+                [[[1.5, 2.],[0., 2.]]],
+            ],
+            [ # Random obstacle
+                [[[-6.,-6.],[-6.,6.]]],
+                [[[-6.,6.],[6.,6.]]],
+                [[[6.,6.],[6.,-6.]]],
+                [[[6.,-6.],[-6.,-6.]]],
+                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+            ],
+            [ # Narrow corridor
+                [[[-0.9,6.],[-0.9,-6.]]],
+                [[[0.9,6.],[0.9,1.2]]],
+                [[[0.9,1.2],[1.2,0.]]],
+                [[[1.2,0.],[0.9,-1.2]]],
+                [[[0.9,-1.2],[0.9,-6.]]],
+            ],
+            [ # Random room
+                [[[0.5,0.5],[0.5,-0.5]]],
+                [[[0.5,-0.5],[-0.5,-0.5]]],
+                [[[-0.5,-0.5],[-0.5,0.5]]],
+                [[[-0.5,0.5],[0.5,0.5]]],
+                [[[-0.1,0.],[0.1,0.]]],
+            ],
         ])
-        if thick_default_obstacle:
-            self.static_obstacles_per_scenario = thicken_obstacles(self.static_obstacles_per_scenario, thickness=0.1)
         if n_obstacles > 5:
             assert self.scenario == -1, "Standard scenarios with more than 5 obstacles are not supported yet. Only with custom scenarios."
         ## Robot goals initialization
@@ -407,6 +509,12 @@ class BaseEnv(ABC):
             [[self.traffic_length/2-self.traffic_height/4, self.traffic_length/2-self.traffic_height/4],[self.traffic_length/2, 1.]], # Corner traffic
             [[0., 0.],[5., 0.]], # Door crossing
             [[0, -0.75],[self.traffic_length/2-1, 0.]], # Crowd chasing
+            [[-2., 2.],[jnp.nan, jnp.nan]], # L-turn
+            [[0., 3.],[jnp.nan, jnp.nan]], # Narrow passage
+            [[0.,7.],[jnp.nan, jnp.nan]], # Slalom
+            [[0.,5.],[jnp.nan, jnp.nan]], # Random obstacle
+            [[0.7, 0.],[jnp.nan, jnp.nan]], # Narrow corridor
+            [[0., 1.],[jnp.nan, jnp.nan]], # Random room
         ])
         ## Possible delays for delayed circular crossing scenario
         self.possible_delays = jnp.arange(0., self.max_cc_delay + self.robot_dt, self.robot_dt)
@@ -450,9 +558,29 @@ class BaseEnv(ABC):
                 self._generate_corner_traffic_episode,
                 self._generate_door_crossing_episode,
                 self._generate_crowd_chasing_episode,
+                self._generate_l_turn_episode,
+                self._generate_narrow_passage_episode,
+                self._generate_slalom_episode,
+                self._generate_random_obstacle_episode,
+                self._generate_narrow_corridor_episode,
+                self._generate_random_room_episode,
             ], 
             scen_key
         )
+        if self.noisy_walls:
+            key, subkey = random.split(key, 2)
+            noisy_walls = generate_wall_noise(
+                subkey,
+                static_obstacles, 
+                full_state[-1,:2], 
+                robot_goal, 
+                5,                    
+            )
+            static_obstacles = jnp.concatenate([static_obstacles, noisy_walls], axis=0)
+        if self.thick_default_obstacle:
+            static_obstacles = thicken_obstacles(static_obstacles, thickness=0.1)
+        static_obstacles = jnp.repeat(jnp.array([static_obstacles]), self.n_humans+1, axis=0)
+        # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
         full_state, humans_goal, robot_goal, robot_goal_list, static_obstacles, is_x_flipped, is_y_flipped = self._random_flip(
             full_state, 
             humans_goal, 
@@ -610,12 +738,16 @@ class BaseEnv(ABC):
         if self.n_obstacles == 0:
             return jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan)
         else:
+            perm_key, noise_key = random.split(key)
+            # Pick obstacles
             obstacles = self.static_obstacles_per_scenario[scenario]
-            perm = random.permutation(key, obstacles.shape[0])
+            perm = random.permutation(perm_key, obstacles.shape[0])
             shuffled_obstacles = obstacles[perm]
             picked_obstacles = shuffled_obstacles[:self.n_obstacles]
-            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-            return jnp.repeat(jnp.array([picked_obstacles]), self.n_humans+1, axis=0)
+            # Add small random noise to vertices
+            noise = random.uniform(noise_key, (self.n_obstacles,1,2,2)) * self.obstacles_noise
+            noised_obstacles = picked_obstacles + noise
+            return noised_obstacles
 
     @partial(jit, static_argnames=("self"))
     def _init_robot_goal(self, scenario:int) -> jnp.ndarray:
@@ -629,7 +761,7 @@ class BaseEnv(ABC):
         - robot_goal: array containing the robot's goal.
         """
         return self.robot_goals_per_scenario[scenario][0]
-    
+
     @partial(jit, static_argnames=("self"))
     def _generate_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
         full_state = jnp.zeros((self.n_humans+1, 6))
@@ -1288,6 +1420,180 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
+    def _generate_l_turn_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, obs_key, rob_key, rob_goal_key = random.split(key, 4)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        humans_goal = points
+        full_state = full_state.at[:-1,:2].set(points)
+        # Robot
+        robot_position = jnp.array([0., -3.5]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([0.4, 0.9])
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., jnp.pi/2, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('turn_l'))
+        robot_goal = robot_goal + random.uniform(rob_goal_key, (2,),minval=-1.) * jnp.array([0.5, 0.5])
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('turn_l'))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_narrow_passage_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, obs_key, rob_key, delay_key = random.split(key, 4)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        points = points.at[-1].set(jnp.array([0., 1.65]) + random.uniform(hum_key, (2,),minval=-1.) * jnp.array([0., 0.4]))
+        humans_goal = points
+        humans_goal = humans_goal.at[-1].set(jnp.array([0., 5.]))
+        full_state = full_state.at[:-1,:2].set(points)
+        humans_delay = random.choice(delay_key, self.possible_delays, shape=(self.n_humans,))
+        # Robot
+        robot_position = jnp.array([0., -3.]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([2., 0.5])
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., jnp.pi/2, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('narrow_passage'))
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('narrow_passage'))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, humans_delay
+    
+    @partial(jit, static_argnames=("self"))
+    def _generate_slalom_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, obs_key, rob_key, rob_orient_key, rob_goal_key = random.split(key, 5)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        humans_goal = points
+        full_state = full_state.at[:-1,:2].set(points)
+        # Robot
+        robot_position = jnp.array([0., -4.]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([0.4, 0.4])
+        robot_orientation = jnp.pi/2  + random.uniform(rob_orient_key, (), minval=-1.) * jnp.pi/4
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., robot_orientation, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('slalom'))
+        robot_goal = robot_goal + random.uniform(rob_goal_key, (2,),minval=-1.) * jnp.array([0.5, 0.5])
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('slalom'))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+    
+    @partial(jit, static_argnames=("self"))
+    def _generate_random_obstacle_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, hum_goal_key, obs_key, random_obs_key, rob_key, rob_orient_key, rob_goal_key = random.split(key, 7)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        points = points.at[-1].set(random.uniform(hum_key, (2,),minval=-1.) * jnp.array([4.,2.]))
+        humans_goal = points
+        humans_goal = humans_goal.at[-1].set(random.uniform(hum_goal_key, (2,),minval=-1.) * jnp.array([4.,2.]))
+        full_state = full_state.at[:-1,:2].set(points)
+        # Robot
+        robot_position = jnp.array([0., -5.]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([4, 0.1])
+        robot_orientation = jnp.pi/2  + random.uniform(rob_orient_key, (), minval=-1.) * jnp.pi/4
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., robot_orientation, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('random_obstacle'))
+        robot_goal = robot_goal + random.uniform(rob_goal_key, (2,),minval=-1.) * jnp.array([4, 0.1])
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('random_obstacle'))
+        if self.n_obstacles > 0:
+            key1, key2, key3 = random.split(random_obs_key, 3)
+            center = random.uniform(key1, (2,), minval=-1) * jnp.array([4, 2])
+            orientation = random.uniform(key2, (), minval=-1.) * jnp.pi
+            length = random.uniform(key3, (), minval=1.5, maxval=1.5)
+            displacement = jnp.array([jnp.cos(orientation), jnp.sin(orientation)]) * length / 2
+            vertex1 = center + displacement
+            vertex2 = center - displacement
+            # Spawn random obstacle in place of last one
+            static_obstacles = static_obstacles.at[-1].set(jnp.array(
+                [[vertex1,vertex2]]
+            ))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+    
+    @partial(jit, static_argnames=("self"))
+    def _generate_narrow_corridor_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, hum_goal_key, obs_key, rob_key, rob_side_key, rob_orient_key, rob_goal_key = random.split(key, 7)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        points = points.at[-1].set(jnp.array([0.,4.]) + random.uniform(hum_key, (2,),minval=-1.) * jnp.array([0.05, 0.5]))
+        humans_goal = points
+        humans_goal = humans_goal.at[-1].set(jnp.array([0.,-4.]) + random.uniform(hum_key, (2,),minval=-1.) * jnp.array([0.05, 0.5]))
+        full_state = full_state.at[:-1,:2].set(points)
+        # Robot
+        side = random.bernoulli(rob_side_key) * 2 - 1
+        robot_position = jnp.array([0., side * 5]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([0.05, 0.5])
+        robot_orientation = jnp.pi/2  + random.uniform(rob_orient_key, (), minval=-1.) * jnp.pi/4
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., robot_orientation, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('narrow_corridor'))
+        robot_goal = robot_goal + random.uniform(rob_goal_key, (2,),minval=-1.) * jnp.array([0.05, 0.05])
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('narrow_corridor'))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_random_room_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, obs_key, rob_key, rob_orient_key, room_key = random.split(key, 5)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        humans_goal = points
+        full_state = full_state.at[:-1,:2].set(points)
+        # Room
+        room_side = random.uniform(room_key) * 4 + 5
+        # Robot
+        robot_position = jnp.array([0., -room_side/2 + 1.5]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([0.1, 0.1])
+        robot_orientation = jnp.pi/2  + random.uniform(rob_orient_key, (), minval=-1.) * jnp.pi/2
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., robot_orientation, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('random_room')) * room_side / 2 + jnp.array([0.,-1.])
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('random_room')) * room_side
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+
+    @partial(jit, static_argnames=("self"))
     def _human_ray_intersect(self, direction:jnp.ndarray, human_position:jnp.ndarray, lidar_position:jnp.ndarray, human_radius:float) -> float:
         s = lidar_position - human_position
         b = jnp.dot(s, direction)
@@ -1398,7 +1704,7 @@ class BaseEnv(ABC):
             return (info, state)
         
         @jit
-        def _update_delayed_circular_crossing(val:tuple):
+        def _update_delayed_episodes(val:tuple):
             @jit
             def _update_human_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, delay:float, time:float) -> jnp.ndarray:
                 goal = lax.cond(
@@ -1636,12 +1942,18 @@ class BaseEnv(ABC):
                     _update_traffic_scenarios, 
                     _update_traffic_scenarios, 
                     lambda x: x,
-                    _update_delayed_circular_crossing,
+                    _update_delayed_episodes,
                     _update_circular_crossing_with_static_obstacles,
                     _update_crowd_navigation,
                     _update_corner_traffic,
                     _update_door_crossing,
                     _update_crowd_chasing,
+                    lambda x: x,
+                    _update_delayed_episodes,
+                    lambda x: x,
+                    lambda x: x,
+                    lambda x: x,
+                    lambda x: x,
                 ], 
                 (info, state),
             )

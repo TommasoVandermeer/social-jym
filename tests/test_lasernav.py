@@ -16,7 +16,7 @@ env_params = {
     'lidar_angular_range': 2*jnp.pi,
     'lidar_max_dist': 10.,
     'n_humans': 10, #5,
-    'n_obstacles': 0, #5,
+    'n_obstacles': 5, #5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,
@@ -25,12 +25,14 @@ env_params = {
     'tau_angular_velocity': 0.19,
     'control_delay_mean': 0.0,
     'control_delay_sigma': 0.0,
-    'scenario': 'circular_crossing_with_static_obstacles', #'hybrid_scenario',
+    'scenario': 'hybrid_scenario', #'hybrid_scenario',
     'ccso_n_static_humans': 5, #0,
     'ccso_static_humans_radius_mean': 0.3,
     'ccso_static_humans_radius_std': 0.025,
     'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
     'kinematics': kinematics,
+    'obstacles_noise': 0.15,
+    'noisy_walls': True,
 }
 
 # Initialize the environment
@@ -52,7 +54,7 @@ for i in range(n_episodes):
     print(outcome)
     ## Animate trajectory
     angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
-    lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,6:], angles)
+    lidar_measurements = vmap(lambda mes, ang: jnp.stack((mes, ang), axis=-1))(all_observations[:,0,9:], angles)
     animate_trajectory(
         all_states, 
         info['humans_parameters'][:,0], 

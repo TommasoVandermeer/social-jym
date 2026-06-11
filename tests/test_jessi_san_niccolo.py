@@ -18,9 +18,10 @@ with open(custom_obstacles_dir, 'rb') as f:
 
 # Hyperparameters
 random_seed = 0
-robot_vmax = 1
-robot_wheel_distance = 0.7
-time_limit = 50
+robot_vmax = 0.46
+robot_wmax = 1.9
+robot_wheel_distance = 2*robot_vmax / robot_wmax
+time_limit = 10
 n_episodes = 100
 kinematics = 'unicycle'
 n_stack_for_action_space_bounding = 1
@@ -50,6 +51,37 @@ env_params = {
 custom_obstacles = jnp.repeat(custom_obstacles[jnp.newaxis], env_params['n_humans']+1, axis=0) # (n_humans+1, n_obstacles, 1, 2, 2)
 
 # Generate custom_episode_dict
+robot_goals = jnp.array([
+    [17.6, 22.3],       # 0
+    [14.956, 22.618],   # 1
+    [1.503, 22.633],    # 2
+    [-5.893, 22.991],   # 3
+    [-6.873, 19.245],   # 4
+    [-6.873, 8.458],    # 5
+    [-6.584, 0.597],    # 6
+    [-5.107, -6.143],   # 7
+    [4.02, -8.118],     # 8
+    [11.00, -8.134],    # 9
+    [17.511, -2.1],     # 10
+    [17.593, 4.008],    # 11
+    [17.593, 12.719],   # 12
+    [17.617, 20.306],   # 13
+    [17.6, 22.3],       # 14, start again
+    [14.956, 22.618],   # 15
+    [1.503, 22.633],    # 16
+    [-5.893, 22.991],   # 17
+    [-6.873, 19.245],   # 18
+    [-6.873, 8.458],    # 19
+    [-7.162, 3.347],    # 20
+    [-6.584, 0.597],    # 21
+    [-5.107, -6.143],   # 22
+    [4.02, -8.118],     # 23
+    [11.00, -8.134],    # 24
+    [17.511, -2.1],     # 25
+    [17.593, 4.008],    # 26
+    [17.593, 12.719],   # 27
+    [17.617, 20.306],   # 28
+])
 # custom_episode: dictionary with keys:
 #             full_state (n_humans+1, 6): initial full state. WARNING: humans' velocities
 #                 must be given in the GLOBAL frame; they are converted to the body frame
@@ -61,9 +93,9 @@ custom_obstacles = jnp.repeat(custom_obstacles[jnp.newaxis], env_params['n_human
 #             humans_radius (n_humans,): humans' radii.
 #             humans_speed (n_humans,): humans' desired speeds.
 custom_episode = {
-    'full_state': jnp.array([[10_000., 10_000., 0., 0., 0., 0.], [0., 0., 0., 0., 0., 0.]]),
+    'full_state': jnp.array([[10_000., 10_000., 0., 0., 0., 0.], [17.62, 20.306, 0., 0., jnp.pi/2, 0.]]),
     'humans_goal': jnp.array([[10_000., 10_000.]]),
-    'robot_goal': jnp.array([2., -1.]),
+    'robot_goal': robot_goals[0],
     'static_obstacles': custom_obstacles,
     'scenario': -1,
     'humans_radius': jnp.array([0.3]),
@@ -82,13 +114,7 @@ policy = JESSI(
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
 )
-# with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_perception_network.pkl'), 'rb') as f:
-#     encoder_params = pickle.load(f)
-# with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_controller_network.pkl'), 'rb') as f:
-#     actor_params = pickle.load(f)
-# network_params = policy.merge_nns_params(encoder_params, actor_params)
-
-with open(os.path.join(os.path.dirname(__file__), 'jessi_policy_rl_out.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'realistic_jessi_multitask_rl_out.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # Simulate some episodes
@@ -98,85 +124,31 @@ for i in range(n_episodes):
     step = 0
     max_steps = int(env.reward_function.time_limit/env.robot_dt)+1
     all_states = jnp.array([state])
-    all_intermediate_states = jnp.zeros((max_steps, int(env.robot_dt/env.humans_dt), state.shape[0], state.shape[1]))
     all_observations = jnp.array([obs])
     all_robot_goals = jnp.array([info['robot_goal']])
-    all_static_obstacles = jnp.array([info['static_obstacles'][-1]])
-    all_humans_radii = jnp.array([info['humans_parameters'][:,0]])
-    all_actions = jnp.zeros((max_steps, 2))
-    all_rewards = jnp.zeros((max_steps,))
-    all_predicted_state_values = jnp.zeros((max_steps,))
-    all_actor_distrs = {
-        'alphas': jnp.zeros((max_steps, 3)),
-        'vertices': jnp.zeros((max_steps, 3, 2)),
-    }
-    bigauss = {
-        "means": jnp.zeros((max_steps,policy.n_detectable_humans,2)),
-        "logsigmas": jnp.zeros((max_steps,policy.n_detectable_humans,2)),
-        "correlation": jnp.zeros((max_steps,policy.n_detectable_humans)),
-    }
-    all_encoder_distrs = {
-        "pos_distrs": bigauss,
-        "vel_distrs": bigauss,
-        "weights": jnp.zeros((max_steps,policy.n_detectable_humans)),
-    }
-    all_spatial_attentions = jnp.zeros((max_steps, policy.lidar_num_rays))
-    all_temporal_attentions = jnp.zeros((max_steps, policy.n_stack))
-    all_human_attentions = jnp.zeros((max_steps, policy.n_detectable_humans))
-    if env.leg_dynamics:
-        all_humans_leg_radii = jnp.array([info['humans_leg_parameters'][:,-1]])
-        all_humans_leg_states = jnp.array([info['humans_leg_state']])
+    waypoint_idx = 0
     while outcome["nothing"]:
         # Compute action from trained JESSI
         action, _, _, _, _, _, perception_distr, actor_distr, state_value, spat_attn, temp_attn, human_attn = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
         # Debug prints
-        print(
-            f"Step {step} - Goal: {info['robot_goal']}", "\n",
-            "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
-            "Control-sensors delay: ", f"{info['substeps_from_last_scan'] * env.humans_dt:.2f} s","\n",
-            "Sensors-sensors delay: ", f"{(info['substeps_from_last_odom_ref_scan'] - info['substeps_from_last_scan']) * env.humans_dt:.2f} s","\n",
-        )
+        # print(
+        #     f"Step {step} - Goal: {info['robot_goal']}", "\n",
+        #     "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
+        #     "Control-sensors delay: ", f"{info['substeps_from_last_scan'] * env.humans_dt:.2f} s","\n",
+        #     "Sensors-sensors delay: ", f"{(info['substeps_from_last_odom_ref_scan'] - info['substeps_from_last_scan']) * env.humans_dt:.2f} s","\n",
+        # )
+        # Update robot goal
+        if (waypoint_idx < robot_goals.shape[0] - 1) and (jnp.linalg.norm(state[-1,:2]-info['robot_goal']) < env.robot_radius*2):
+            print(f"Waypoint {waypoint_idx} reached! at time {info['time']:.2f}s")
+            waypoint_idx += 1
+            info['robot_goal'] = info["robot_goal"].at[:].set(robot_goals[waypoint_idx])
         # Step the environment
         state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
         # Save data for animation
-        all_actions = all_actions.at[step].set(action)
-        all_rewards = all_rewards.at[step].set(reward)
-        all_predicted_state_values = all_predicted_state_values.at[step].set(state_value)
-        all_actor_distrs = tree_map(lambda x, y: x.at[step].set(y), all_actor_distrs, actor_distr)
-        all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, perception_distr)
         all_states = jnp.vstack((all_states, jnp.array([state])))
-        all_intermediate_states = all_intermediate_states.at[step].set(info["intermediate_states"])
         all_observations = jnp.vstack((all_observations, jnp.array([obs])))
         all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
-        all_static_obstacles = jnp.vstack((all_static_obstacles, jnp.array([info['static_obstacles'][-1]])))
-        all_humans_radii = jnp.vstack((all_humans_radii, jnp.array([info['humans_parameters'][:,0]])))
-        all_spatial_attentions = all_spatial_attentions.at[step].set(spat_attn[0])
-        all_temporal_attentions = all_temporal_attentions.at[step].set(temp_attn[0])
-        all_human_attentions = all_human_attentions.at[step].set(human_attn[0])
-        if env.leg_dynamics:
-            all_humans_leg_radii = jnp.vstack((all_humans_leg_radii, jnp.array([info['humans_leg_parameters'][:,-1]])))
-            all_humans_leg_states = jnp.vstack((all_humans_leg_states, jnp.array([info['humans_leg_state']])))
         # Increment step
-        step += 1
-    all_encoder_distrs = tree_map(lambda x: x[:step], all_encoder_distrs)
-    all_actor_distrs = tree_map(lambda x: x[:step], all_actor_distrs)
-    all_intermediate_states = all_intermediate_states[:step]
-    all_actions = all_actions[:step]
-    all_rewards = all_rewards[:step]
-    all_spatial_attentions = all_spatial_attentions[:step]
-    all_temporal_attentions = all_temporal_attentions[:step]
-    all_human_attentions = all_human_attentions[:step]
-    all_predicted_state_values = all_predicted_state_values[:step]
-    ## Check predicted state values and actual discounted returns
-    @jit
-    def _discounted_cumsum(rewards):
-        def scan_fun(carry, reward):
-            new_carry = reward + carry * jnp.power(0.99, policy.dt * policy.v_max)
-            return new_carry, new_carry
-        _, discounted_cumsums = lax.scan(scan_fun, 0.0, rewards[::-1])
-        return discounted_cumsums[::-1]
-    discounted_returns = _discounted_cumsum(all_rewards)
-    # [print("Step {} -  critic prediction: {:.2f} VS discounted return: {:.2f}".format(i, all_predicted_state_values[i], discounted_returns[i])) for i in range(len(discounted_returns))]
     print("\nOutcome: ", [k for k, v in outcome.items() if v][0], " - Return: {:.2f}".format(info['return']))
     ## Animate only trajectory
     angles = vmap(lambda robot_yaw: jnp.linspace(robot_yaw - env.lidar_angular_range/2, robot_yaw + env.lidar_angular_range/2, env.lidar_num_rays))(all_states[:,-1,4])
@@ -186,27 +158,10 @@ for i in range(n_episodes):
         info['humans_parameters'][:,0], 
         env.robot_radius, 
         'hsfm',
-        info['robot_goal'],
+        all_robot_goals,
         None,
         static_obstacles=info['static_obstacles'][-1],
         robot_dt=env_params['robot_dt'],
-        # lidar_measurements=lidar_measurements,
+        lidar_measurements=lidar_measurements,
         kinematics=kinematics,
-    )
-    ## Animate trajectory with JESSI's perception and action distribution
-    policy.animate_lasernav_trajectory(
-        env,
-        all_states[:-1],
-        all_humans_leg_states[:-1] if env.leg_dynamics else None,
-        all_observations[:-1],
-        all_actions,
-        all_actor_distrs,
-        all_encoder_distrs,
-        all_robot_goals[:-1],
-        all_static_obstacles[:-1],
-        all_humans_radii[:-1],
-        all_humans_leg_radii[:-1] if env.leg_dynamics else None,
-        spatial_attentions=all_spatial_attentions,
-        temporal_attentions=all_temporal_attentions,
-        human_attentions=all_human_attentions,
     )
