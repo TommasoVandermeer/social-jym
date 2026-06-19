@@ -1,8 +1,6 @@
 from jax import random, vmap
-from jax import jit, lax, tree_map
 import jax.numpy as jnp
 import numpy as np
-import matplotlib.pyplot as plt
 import pickle
 import os
 
@@ -11,6 +9,7 @@ from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
 from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 
+with_humans = True
 custom_obstacles_dir = os.path.join(os.path.dirname(__file__), "san_niccolo_socialjym.pkl")
 with open(custom_obstacles_dir, 'rb') as f:
     custom_obstacles = pickle.load(f)
@@ -21,10 +20,35 @@ random_seed = 0
 robot_vmax = 0.46
 robot_wmax = 1.9
 robot_wheel_distance = 2*robot_vmax / robot_wmax
-time_limit = 10
+time_limit = 600
 n_episodes = 100
 kinematics = 'unicycle'
 n_stack_for_action_space_bounding = 1
+if with_humans:
+    full_state = jnp.array([
+        [-3., 23.61, 0., 0., 0., 0.], # Human 1
+        [-3., 22.7, 0., 0., 0., 0.], # Human 2
+        # [-6.45, 4.38, 0., 0., 0., 0.], # Human 3
+        [-3.77, -9.81, 0., 0., 0., 0.], # Human 4
+        [14.69, -10.51, 0., 0., 0., 0.], # Human 5        
+        [1.69, -5.69, 0., 0., 0., 0.], # Human 6
+        [17.62, 20.306, 0., 0., jnp.pi/2, 0.] # Robot
+    ])
+    humans_goal = jnp.array([
+        [10.5, 23.61], # Human 1
+        [10.5, 22.7], # Human 2
+        # [-6.45, 18.29], # Human 3
+        [16.47, -7.3], # Human 4
+        [4.88, -5.57], # Human 5
+        [1.93, -10.63], # Human 6
+    ])
+    humans_radius = jnp.ones((len(humans_goal),)) * 0.3
+    humans_speed = jnp.ones((len(humans_goal),)) * 1.
+else:
+    full_state = jnp.array([[10_000., 10_000., 0., 0., 0., 0.], [17.62, 20.306, 0., 0., jnp.pi/2, 0.]])
+    humans_goal = jnp.array([[10_000., 10_000.]])
+    humans_radius = jnp.array([0.3])
+    humans_speed = jnp.array([1.])
 env_params = {
     'n_stack': 5,
     'lidar_num_rays': 100,
@@ -34,9 +58,9 @@ env_params = {
     'odometry_dt': 0.05,
     'control_delay_mean': 0.1, 
     'control_delay_sigma': 0.01,
-    'wheels_max_linear_acceleration': 1.8, #0.87,
+    'wheels_max_linear_acceleration': 0.87,
     'wheels_distance': robot_wheel_distance,
-    'n_humans': 1,
+    'n_humans': len(humans_goal),
     'n_obstacles': custom_obstacles.shape[0],
     'robot_radius': 0.3,
     'robot_dt': 0.25,
@@ -93,13 +117,13 @@ robot_goals = jnp.array([
 #             humans_radius (n_humans,): humans' radii.
 #             humans_speed (n_humans,): humans' desired speeds.
 custom_episode = {
-    'full_state': jnp.array([[10_000., 10_000., 0., 0., 0., 0.], [17.62, 20.306, 0., 0., jnp.pi/2, 0.]]),
-    'humans_goal': jnp.array([[10_000., 10_000.]]),
+    'full_state': full_state,
+    'humans_goal': humans_goal,
     'robot_goal': robot_goals[0],
     'static_obstacles': custom_obstacles,
     'scenario': -1,
-    'humans_radius': jnp.array([0.3]),
-    'humans_speed': jnp.array([1.]),
+    'humans_radius': humans_radius,
+    'humans_speed': humans_speed,
 }
 
 # Initialize and reset environment
@@ -114,7 +138,7 @@ policy = JESSI(
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
 )
-with open(os.path.join(os.path.dirname(__file__), 'realistic_jessi_multitask_rl_out.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'realistic_jessi_multitask_rl_out_2.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # Simulate some episodes
@@ -127,6 +151,7 @@ for i in range(n_episodes):
     all_observations = jnp.array([obs])
     all_robot_goals = jnp.array([info['robot_goal']])
     waypoint_idx = 0
+    humans_chase_goal = jnp.ones(env_params['n_humans'], dtype=bool)  # All humans chase their goals initially
     while outcome["nothing"]:
         # Compute action from trained JESSI
         action, _, _, _, _, _, perception_distr, actor_distr, state_value, spat_attn, temp_attn, human_attn = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
@@ -142,6 +167,11 @@ for i in range(n_episodes):
             print(f"Waypoint {waypoint_idx} reached! at time {info['time']:.2f}s")
             waypoint_idx += 1
             info['robot_goal'] = info["robot_goal"].at[:].set(robot_goals[waypoint_idx])
+        # Update humans goals
+        for i in range(len(full_state)-1):
+            if jnp.linalg.norm(state[i,:2] - info['humans_goal'][i]) < info['humans_parameters'][i,0]:
+                humans_chase_goal = humans_chase_goal.at[i].set(not humans_chase_goal[i])  # Toggle chasing goal
+                info['humans_goal'] = info['humans_goal'].at[i].set(humans_goal[i] if humans_chase_goal[i] else full_state[i,:2])   
         # Step the environment
         state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
         # Save data for animation

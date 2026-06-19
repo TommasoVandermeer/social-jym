@@ -33,8 +33,49 @@ PLANNERS = [
 ]
 
 class TB4Controller(Node):
-    def __init__(self, frequency, lidar_num_rays, planner, rc_goal_list, patrol_mode, interp_mode, network_name, save_file_name, save_lists, align, diagnostics):
+    def __init__(self, frequency, lidar_num_rays, planner, rc_goal_list, patrol_mode, interp_mode, network_name, save_file_name, save_lists, align, diagnostics, san_niccolo):
         super().__init__('TB4_controller')
+
+        # San Niccolò Waypoints
+        if san_niccolo:
+            waypoints = jnp.array([
+                [17.6, 22.3],       # 0
+                [14.956, 22.618],   # 1
+                [1.503, 22.633],    # 2
+                [-5.893, 22.991],   # 3
+                [-6.873, 19.245],   # 4
+                [-6.873, 8.458],    # 5
+                [-6.584, 0.597],    # 6
+                [-5.107, -6.143],   # 7
+                [4.02, -8.118],     # 8
+                [11.00, -8.134],    # 9
+                [17.511, -2.1],     # 10
+                [17.593, 4.008],    # 11
+                [17.593, 12.719],   # 12
+                [17.617, 20.306],   # 13
+                [17.6, 22.3],       # 14, start again
+                [14.956, 22.618],   # 15
+                [1.503, 22.633],    # 16
+                [-5.893, 22.991],   # 17
+                [-6.873, 19.245],   # 18
+                [-6.873, 8.458],    # 19
+                [-7.162, 3.347],    # 20
+                [-6.584, 0.597],    # 21
+                [-5.107, -6.143],   # 22
+                [4.02, -8.118],     # 23
+                [11.00, -8.134],    # 24
+                [17.511, -2.1],     # 25
+                [17.593, 4.008],    # 26
+                [17.593, 12.719],   # 27
+                [17.617, 20.306],   # 28
+            ])
+            initial_pose = jnp.array([17.62, 20.306, jnp.pi/2])
+            inv_rotation_matrix = jnp.array([
+                [jnp.cos(-initial_pose[3]), jnp.sin(-initial_pose[3])],
+                [-jnp.sin(-initial_pose[3]), jnp.cos(-initial_pose[3])],
+            ])
+            waypoints = (waypoints - initial_pose[:2][None,:]) @ inv_rotation_matrix
+
         self.frequency = frequency
         self.planner = planner
         self.diagnostics = diagnostics
@@ -63,8 +104,11 @@ class TB4Controller(Node):
 
         self.n_stack = 5 
         self.dt = 1.0 / self.frequency  # Control frequency
-        self.radius = 0.35
-        self.patrol = patrol_mode # Back and forth from initial position to goal
+        self.radius = 0.3
+        if san_niccolo:
+            self.patrol = False
+        else:
+            self.patrol = patrol_mode # Back and forth from initial position to goal
         self.save_file_name = save_file_name
 
         self.obs_stack = deque(maxlen=self.n_stack)
@@ -75,8 +119,12 @@ class TB4Controller(Node):
         self.odom_buffer = deque(maxlen=200)
         self.odom_cmd_time_offset = None
         self.odom_scan_time_offset = None
-        self.robot_goal_list = jnp.array([[0., 0.]] + rc_goal_list)
-        self.robot_goal_index = 1
+        if san_niccolo:
+            self.robot_goal_list = waypoints
+            self.robot_goal_index = 0
+        else:
+            self.robot_goal_list = jnp.array([[0., 0.]] + rc_goal_list)
+            self.robot_goal_index = 1
         self.robot_goal = self.robot_goal_list[self.robot_goal_index]  # Set the first goal as the current goal
         self.robot_goal_forward = True # Direction for patrol mode
         self.goal_reached = False
@@ -567,6 +615,7 @@ def main(args=None):
     parser.add_argument('-a', '--align', action='store_true', help='Activate alignement of waypoints with Hough Transform of LiDAR scan')
     parser.add_argument('-f', '--frequency', type=float, default=4.0, help='Control frequency in Hz')
     parser.add_argument('-l', '--lidar_rays', type=int, default=300, help='Number of rays used to infer the policy action')
+    parser.add_argument('-sn', '--san_niccolo', action='store_true', help='Activare mode San Niccolò experiment with hardcoded waypoints')
 
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
 
@@ -591,6 +640,7 @@ def main(args=None):
         save_lists=parsed_args.collect,
         align=parsed_args.align,
         diagnostics=parsed_args.diagnostics,
+        san_niccolo=parsed_args.san_niccolo,
     )
     mode_text = "🔄 PATROL MODE" if parsed_args.patrol else "🛑 SINGLE TARGET MODE"
     node.get_logger().info(f"Goals set to: {rc_goals_list} in the robot frame | {mode_text}")
