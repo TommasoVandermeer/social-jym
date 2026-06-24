@@ -1511,7 +1511,7 @@ class JESSI(BasePolicy):
             def _while_body(while_val:tuple):
                 # Retrieve data from the tuple
                 state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states = while_val
-                action, policy_key, _, _, _, _, _, _, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
+                action, policy_key, _, _, _, _, _, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
                 state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
                 # Save data
                 all_actions = all_actions.at[steps].set(action)
@@ -1603,7 +1603,7 @@ class JESSI(BasePolicy):
             # Retrieve data from the tuple
             state, obs, info, outcome, policy_key, reset_key, env_key, steps, perception_distrs, gt_targets = for_val
             # Compute action and perception out
-            action, policy_key, _, _, _, _, perception_out, _, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
+            action, policy_key, _, _, _, _, perception_out, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
             # Save perception outputs and ground truth
             rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.robot_centric_transform(
                 state[:-1,:2], 
