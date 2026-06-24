@@ -65,10 +65,11 @@ scenarios = {
     "crowd_chasing": {"label": "CrC"},
 }
 policies = {
-    "jessi_full": {"label": "JESSI-MULTITASK-FULL", "short": "JESSI-F", "only_ccso": False, "color": "tab:blue"},
-    "jessi_ablation_1": {"label": "JESSI-MULTITASK-ABLATION1", "short": "JESSI-A1", "only_ccso": False, "color": "tab:orange"},
-    "jessi_ablation_2": {"label": "JESSI-MULTITASK-ABLATION2", "short": "JESSI-A2", "only_ccso": False, "color": "tab:green"},
-    "jessi_ablation_3": {"label": "JESSI-MULTITASK-ABLATION3", "short": "JESSI-A3", "only_ccso": False, "color": "tab:red"},
+    "jessi_efficiency_32": {"label": "JESSI-MULTITASK-32", "short": "JESSI-32", "only_ccso": False, "color": "tab:blue"},
+    "jessi_efficiency_64": {"label": "JESSI-MULTITASK-64", "short": "JESSI-64", "only_ccso": False, "color": "tab:orange"},
+    "jessi_efficiency_96": {"label": "JESSI-MULTITASK-96", "short": "JESSI-96", "only_ccso": False, "color": "tab:green"},
+    "jessi_efficiency_128": {"label": "JESSI-MULTITASK-128", "short": "JESSI-128", "only_ccso": False, "color": "tab:red"},
+    "jessi_efficiency_160": {"label": "JESSI-MULTITASK-160", "short": "JESSI-160", "only_ccso": False, "color": "tab:purple"},
 }
 
 def jessi_tests(policy, jessi_params):
