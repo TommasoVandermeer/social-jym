@@ -81,15 +81,15 @@ policies = {
     for n, conf in enumerate(lidar_configurations)
 }
 
-def jessi_tests(policy, jessi_params):
+def jessi_tests(policy, jessi_params, lidar_conf):
     metrics_dims = (3,len(tests_n_obstacles),len(tests_n_humans))
     all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
     for i, n_obstacle in enumerate(tests_n_obstacles):
         for j, n_human in enumerate(tests_n_humans):
             seen_env_params = {
-                'n_stack': 5,
-                'lidar_num_rays': 100,
-                'lidar_angular_range': jnp.pi * 2,
+                'n_stack': lidar_conf[2],
+                'lidar_num_rays': lidar_conf[0],
+                'lidar_angular_range': lidar_conf[1],
                 'lidar_max_dist': 10.0,
                 'n_humans': n_human,
                 'n_obstacles': n_obstacle,
@@ -156,7 +156,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_agnost
                 n_stack=conf[2],
                 n_stack_for_action_space_bounding=1,
             )
-            all_metrics = jessi_tests(policy, jessi_params)
+            all_metrics = jessi_tests(policy, jessi_params, conf)
             with open(os.path.join(os.path.dirname(__file__),f"jessi_multitask_lidar_agnostic_{conf[0]}R_{(conf[1]/jnp.pi)*180:.0f}AR_{conf[1]}NS_tests.pkl"), 'wb') as f:
                 pickle.dump(all_metrics, f)
             
