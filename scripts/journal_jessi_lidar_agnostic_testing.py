@@ -143,7 +143,7 @@ def jessi_tests(policy, jessi_params):
 if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_agnostic_tests.pkl")):
 
     ### JESSI-MULTITASK ABLATIONS ###
-    for n, conf in lidar_configurations:
+    for n, conf in enumerate(lidar_configurations):
         if not os.path.exists(os.path.join(os.path.dirname(__file__),f"jessi_multitask_lidar_agnostic_{conf[0]}R_{(conf[1]/jnp.pi)*180:.0f}AR_{conf[1]}NS_tests.pkl")):
             # Load JESSI-MULTITASK policy parameters
             with open(os.path.join(os.path.dirname(__file__), f"jessi_multitask_rl_out.pkl"), 'rb') as f:
@@ -163,7 +163,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_agnost
     ### AGGREGATE ALL RESULTS ###
     # Load all test results and aggregate them in a single dictionary
     all_results = {}
-    for n, conf in lidar_configurations:
+    for n, conf in enumerate(lidar_configurations):
          with open(os.path.join(os.path.dirname(__file__),f"jessi_multitask_lidar_agnostic_{conf[0]}R_{(conf[1]/jnp.pi)*180:.0f}AR_{conf[1]}NS_tests.pkl"), 'rb') as f:
             all_results[f"jessi_lidar_{n}"] = pickle.load(f)
     with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_agnostic_tests.pkl"), 'wb') as f:
