@@ -143,6 +143,49 @@ class Gaussian(BaseDistribution):
         return constrained_action
     
     @partial(jit, static_argnames=("self"))
+    def bound_action_safety(
+        self,
+        sampled_action:jnp.ndarray,
+        vertices:jnp.ndarray
+    ) -> jnp.ndarray:
+        """
+        This function is only used to limit the values of a 2D Diagonal Gaussian within a given range for unicycle kinematics.
+        ONLY FOR UNICYCLE KINEMATICS
+
+        args:
+        - sampled_action (jnp.ndarray): sampled action from the Gaussian distribution.
+        - vertices (jnp.ndarray): wmax, wmin and vmax for the unicycle robot.
+
+        returns:
+        - constrained_action (jnp.ndarray): action bounded by the robot kinematics.
+        """
+        w_max = vertices[0,1]
+        w_min = vertices[1,1]
+        v_max = vertices[2,0]
+        x, y = sampled_action
+        cases = jnp.array([
+            x <= 0,
+            (y == 0) & (x > 0),
+            (y > 0) & (y <= (v_max - x)*(w_max/v_max)) & (x > 0),
+            (y < 0) & (y >= (v_max - x)*(w_min/v_max)) & (x > 0),
+            (y > 0) & (y > (v_max - x)*(w_max/v_max)) & (x > 0),
+            (y < 0) & (y < (v_max - x)*(w_min/v_max)) & (x > 0)
+        ], dtype=jnp.int32)
+        bounded_action = lax.switch(
+            jnp.argmax(cases),
+            [
+                lambda _: jnp.array([0., jnp.clip(y, w_max, w_max)]),
+                lambda _: jnp.array([jnp.min(jnp.array([v_max,x])), 0.]),
+                lambda _: jnp.array([x, y]),
+                lambda _: jnp.array([x, y]),
+                lambda _: jnp.array([x*v_max*w_max/(x*w_max+v_max*y), y*v_max*w_max/(x*w_max+v_max*y)]),
+                lambda _: jnp.array([x*v_max*w_min/(x*w_min+v_max*y), y*v_max*w_min/(x*w_min+v_max*y)]),
+            ],
+            None,
+        )
+        return bounded_action
+
+    @partial(jit, static_argnames=("self"))
     def batch_std(self, distributions:dict) -> jnp.ndarray:
         """
         Compute the standard deviations of a batch of Gaussian distributions.

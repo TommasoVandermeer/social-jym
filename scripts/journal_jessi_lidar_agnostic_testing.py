@@ -77,7 +77,7 @@ scenarios = {
 }
 colors = list(mcolors.TABLEAU_COLORS.values())
 policies = {
-    f"jessi_lidar_{n}": {"label": f"JESSI-LIDAR-{n}", "short": f"JESSI-{conf[0]}R-{(conf[1]/jnp.pi)*180:.0f}AR-{conf[1]}NS", "only_ccso": False, "color": colors[n]} \
+    f"jessi_lidar_{n}": {"label": f"JESSI-LIDAR-{n}", "short": f"JESSI-{conf[0]}R-{(conf[1]/jnp.pi)*180:.0f}AR-{conf[2]}NS", "only_ccso": False, "color": colors[n]} \
     for n, conf in enumerate(lidar_configurations)
 }
 
@@ -144,7 +144,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_agnost
 
     ### JESSI-MULTITASK ABLATIONS ###
     for n, conf in enumerate(lidar_configurations):
-        if not os.path.exists(os.path.join(os.path.dirname(__file__),f"jessi_multitask_lidar_agnostic_{conf[0]}R_{(conf[1]/jnp.pi)*180:.0f}AR_{conf[1]}NS_tests.pkl")):
+        if not os.path.exists(os.path.join(os.path.dirname(__file__),f"jessi_multitask_lidar_agnostic_{conf[0]}R_{(conf[1]/jnp.pi)*180:.0f}AR_{conf[2]}NS_tests.pkl")):
             # Load JESSI-MULTITASK policy parameters
             with open(os.path.join(os.path.dirname(__file__), f"jessi_multitask_rl_out.pkl"), 'rb') as f:
                 _, jessi_params, _ = pickle.load(f)
@@ -157,14 +157,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_lidar_agnost
                 n_stack_for_action_space_bounding=1,
             )
             all_metrics = jessi_tests(policy, jessi_params, conf)
-            with open(os.path.join(os.path.dirname(__file__),f"jessi_multitask_lidar_agnostic_{conf[0]}R_{(conf[1]/jnp.pi)*180:.0f}AR_{conf[1]}NS_tests.pkl"), 'wb') as f:
+            with open(os.path.join(os.path.dirname(__file__),f"jessi_multitask_lidar_agnostic_{conf[0]}R_{(conf[1]/jnp.pi)*180:.0f}AR_{conf[2]}NS_tests.pkl"), 'wb') as f:
                 pickle.dump(all_metrics, f)
             
     ### AGGREGATE ALL RESULTS ###
     # Load all test results and aggregate them in a single dictionary
     all_results = {}
     for n, conf in enumerate(lidar_configurations):
-         with open(os.path.join(os.path.dirname(__file__),f"jessi_multitask_lidar_agnostic_{conf[0]}R_{(conf[1]/jnp.pi)*180:.0f}AR_{conf[1]}NS_tests.pkl"), 'rb') as f:
+         with open(os.path.join(os.path.dirname(__file__),f"jessi_multitask_lidar_agnostic_{conf[0]}R_{(conf[1]/jnp.pi)*180:.0f}AR_{conf[2]}NS_tests.pkl"), 'rb') as f:
             all_results[f"jessi_lidar_{n}"] = pickle.load(f)
     with open(os.path.join(os.path.dirname(__file__),"jessi_lidar_agnostic_tests.pkl"), 'wb') as f:
         pickle.dump(all_results, f)

@@ -298,7 +298,7 @@ class JessiController(Node):
                     robot_state_input,
                     random_key=self.rng_key
                 )
-                action = self.jessi.dirichlet.mean(actor_distr)
+                action = self.jessi.action_distribution.mean(actor_distr)
                 v_cmd, w_cmd = float(action[0]), float(action[1])
                 
                 cmd_msg = Twist()

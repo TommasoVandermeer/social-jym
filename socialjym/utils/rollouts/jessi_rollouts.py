@@ -60,8 +60,8 @@ def collect_rollout_step(
             "actions": sampled_actions,
             "rewards": rewards,
             "dones": ~(outcomes["nothing"]),
-            "neglogpdfs": policy.dirichlet.batch_neglogp(actor_distrs, sampled_actions),
-            "stds": policy.dirichlet.batch_std(actor_distrs)
+            "neglogpdfs": policy.action_distribution.batch_neglogp(actor_distrs, sampled_actions),
+            "stds": policy.action_distribution.batch_std(actor_distrs)
         }
         new_times = times + (new_outcomes["success"]) * (infos['time'] + policy.dt)
         new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(env.reward_function.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards)
@@ -206,7 +206,7 @@ def train_one_epoch(
                 actor_dist = dist_to_f32(actor_dist)  
                 safety_perc_dist = dist_to_f32(safety_perc_dist)
             # Actor
-            new_neglogp = policy.dirichlet.batch_neglogp(actor_dist, u_mb["actions"])
+            new_neglogp = policy.action_distribution.batch_neglogp(actor_dist, u_mb["actions"])
             log_ratio = u_mb["neglogpdfs"] - new_neglogp
             # log_ratio = jnp.clip(log_ratio, -10, 10) # MORE STABLE
             ratio = jnp.exp(log_ratio)
@@ -230,7 +230,7 @@ def train_one_epoch(
             var_y = jnp.var(y_true)
             explained_var = 1 - jnp.var(y_true - y_pred) / (var_y + 1e-8)
             # Entropy
-            entropy = jnp.mean(policy.dirichlet.batch_entropy(actor_dist))
+            entropy = jnp.mean(policy.action_distribution.batch_entropy(actor_dist))
             entropy_loss = -beta_entropy * entropy
             policy_loss = actor_loss + entropy_loss
             # Perception

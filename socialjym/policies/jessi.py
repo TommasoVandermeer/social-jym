@@ -15,11 +15,19 @@ from typing import Optional
 
 from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, HUMAN_POLICIES
 from socialjym.utils.distributions.dirichlet import Dirichlet
-from socialjym.utils.distributions.gaussian import BivariateGaussian
+from socialjym.utils.distributions.gaussian import Gaussian, BivariateGaussian
 from socialjym.policies.base_policy import BasePolicy
 from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
+
+ABLATIONS = [
+    1, # No action space bounding
+    2, # No uncertainty on human detection for actor critic module
+    3, # MLP in place of scene self-attention
+    4, # Gaussian parameterization of the action space (in place of Dirichlet)
+    5, # CNN + attention perception (loss of lidar agnosticity)
+]
 
 class MultiHeadAttention(hk.MultiHeadAttention):
   """Override of Haiku Multi-headed attention (MHA) module to output also attention matrix.
@@ -211,6 +219,7 @@ class Perception(hk.Module):
             n_sectors: int,
             lidar_angles_robot_frame: jnp.ndarray,
             beam_dropout_rate: float = 0.0,
+            ablation_mode: Optional[int] = None,
         ):
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -219,6 +228,7 @@ class Perception(hk.Module):
         self.max_lidar_distance = max_lidar_distance
         self.lidar_angles_robot_frame = lidar_angles_robot_frame
         self.n_sectors = n_sectors
+        self.ablation_mode = ablation_mode
         # Modules
         self.input_proj = hk.Linear(embed_dim, name="input_projection")
         self.perception = SpatioTemporalEncoder(
@@ -320,7 +330,7 @@ class ActorCritic(hk.Module):
         self.ablation_mode = ablation_mode
         # Dimensions
         self.n_sectors = n_sectors
-        self.n_outputs = 3  # Dirichlet distribution over 3 action vertices
+        self.n_outputs = 3 if self.ablation_mode != 4 else 2  # Dirichlet distribution over 3 action vertices (Gaussian with 2 actions if ablation)
         self.mlp_params = mlp_params
         # Scan embedding reducer
         self.scan_reducer = hk.Linear(1, name="scan_reducer")
@@ -353,7 +363,8 @@ class ActorCritic(hk.Module):
             output_sizes=[100, 50, 1],
             name="critic_head"
         )
-        self.dirichlet = Dirichlet()
+        if ablation_mode == 4: self.action_distribution = Gaussian()
+        else: self.action_distribution = Dirichlet()
 
     def __call__(
             self, 
@@ -420,18 +431,38 @@ class ActorCritic(hk.Module):
             y
         ], axis=-1)  # (Batch, 20 + n_sectors + 9 + n_sectors,)
         ### ACTOR
-        ## Compute Dirichlet distribution parameters
-        alphas = nn.softplus(self.actor_head(context)) + 1  # (Batch, 3)
-        concentration = jnp.sum(alphas, axis=-1)  # (Batch,)
         ## Compute dirchlet distribution vetices
         zeros = jnp.zeros((batch_size,))
         v1 = jnp.stack([zeros, action_space_params[:, 1] * self.wmax], axis=-1)
         v2 = jnp.stack([zeros, action_space_params[:, 2] * self.wmin], axis=-1)
         v3 = jnp.stack([action_space_params[:, 0] * self.vmax, zeros], axis=-1)
         vertices = jnp.stack([v1, v2, v3], axis=1)  # Shape: (batch_size, 3, 2)
-        distributions = {"alphas": alphas, "vertices": vertices}
+        distributions = {"vertices": vertices}
+        if self.ablation_mode == 4:
+            ## Compute Gaussian distribution parameters
+            scaled_vmax = action_space_params[:, 0] * self.vmax
+            scaled_wmax = action_space_params[:, 1] * self.wmax
+            scaled_wmin = action_space_params[:, 2] * self.wmin
+            actor_out = self.actor_head(context) # [mu_v, mu_w]
+            raw_mu_v = actor_out[..., 0]
+            raw_mu_w = actor_out[..., 1]
+            mu_v = nn.sigmoid(raw_mu_v) * scaled_vmax
+            w_scale = (scaled_wmax - scaled_wmin) / 2.0
+            w_shift = (scaled_wmax + scaled_wmin) / 2.0
+            mu_w = nn.tanh(raw_mu_w) * w_scale + w_shift
+            means = jnp.stack([mu_v, mu_w], axis=-1)  # Shape: (batch_size, 2)
+            raw_logsigmas_param = hk.get_parameter("raw_logsigmas", shape=[2], init=hk.initializers.Constant(0.))
+            logsigmas_bounded = jnp.tanh(raw_logsigmas_param) * 11 - 9 # Bound logsigmas between [-20,2]
+            logsigmas = jnp.broadcast_to(logsigmas_bounded, means.shape)
+            distributions["means"] = means
+            distributions["logsigmas"] = logsigmas
+        else:
+            ## Compute Dirichlet distribution parameters
+            alphas = nn.softplus(self.actor_head(context)) + 1  # (Batch, 3)
+            concentration = jnp.sum(alphas, axis=-1)  # (Batch,)
+            distributions["alphas"] = alphas
         ## Sample action
-        sampled_actions = vmap(self.dirichlet.sample)(distributions, keys)
+        sampled_actions = vmap(self.action_distribution.sample)(distributions, keys)
         ### CRITIC
         state_values = self.critic_head(context) # (Batch, 1)
         state_values = jnp.squeeze(state_values, axis=-1) # (Batch,)
@@ -491,6 +522,7 @@ class E2E(hk.Module):
             n_sectors=n_sectors,
             lidar_angles_robot_frame=lidar_angles_robot_frame,
             beam_dropout_rate=beam_dropout_rate,
+            ablation_mode=ablation_mode,
         )
         # Initialize Actor-Critic module
         self.actor_critic = ActorCritic(
@@ -583,7 +615,7 @@ class JESSI(BasePolicy):
         assert lidar_num_rays >= 10, "LiDAR number of rays must be at least 10"
         assert n_detectable_humans >= 2, "Number of detectable humans must be at least 2"
         assert n_stack_for_action_space_bounding <= n_stack, "n_stack_for_action_space_bounding must be less than or equal to n_stack"
-        assert ablation_mode is None or ablation_mode in [1, 2, 3], "ablation_mode must be either None, 1, 2, or 3"
+        assert ablation_mode is None or ablation_mode in ABLATIONS, f"ablation_mode must be either None or one of {ABLATIONS}"
         # Configurable attributes
         self.robot_radius = robot_radius
         self.v_max = v_max
@@ -610,7 +642,10 @@ class JESSI(BasePolicy):
         # Default attributes
         self.name = "JESSI"
         self.kinematics = ROBOT_KINEMATICS.index("unicycle")
-        self.dirichlet = Dirichlet()
+        if ablation_mode == 4:
+            self.action_distribution = Gaussian()
+        else:
+            self.action_distribution = Dirichlet()
         self.bivariate_gaussian = BivariateGaussian()
         self.sectors_threshold = jnp.cos(jnp.deg2rad(angular_sectors_width_deg/2))     
         query_angles = jnp.linspace(0, 2 * jnp.pi, self.n_sectors, endpoint=False)
@@ -629,6 +664,7 @@ class JESSI(BasePolicy):
                 n_sectors=n_sectors,
                 lidar_angles_robot_frame=self.lidar_angles_robot_frame,
                 beam_dropout_rate=self.beam_dropout_rate,
+                ablation_mode=ablation_mode
             )
             return net(x, stop_gradient=stop_gradient, key=key)
         self.perception = perception_network
@@ -827,7 +863,7 @@ class JESSI(BasePolicy):
         distance_mask = jnp.linalg.norm(h_pos_0, axis=-1) <= distance_threshold
         final_mask = score_mask & distance_mask  # Shape: (B, M)
         ### Compute mean actions
-        mean_actions = vmap(self.dirichlet.mean)(actor_distributions)  # Shape: (B, 2)
+        mean_actions = vmap(self.action_distribution.mean)(actor_distributions)  # Shape: (B, 2)
         v_cmd = mean_actions[:, 0]
         w_cmd = mean_actions[:, 1]
         ### Compute next positions
@@ -1179,7 +1215,9 @@ class JESSI(BasePolicy):
             robot_state_input,
             random_key=subkey
         )
-        action = lax.cond(sample, lambda _: sampled_action, lambda _: self.dirichlet.mean(actor_distr), None)
+        action = lax.cond(sample, lambda _: sampled_action, lambda _: self.action_distribution.mean(actor_distr), None)
+        if self.ablation_mode == 4:
+            action = self.action_distribution.bound_action_safety(action, actor_distr["vertices"])
         return action, key, perception_input, robot_state_input, actor_input, sampled_action, perception_output, actor_distr, state_value, spat_attn, temp_attn, human_attn
 
     @partial(jit, static_argnames=("self"))
@@ -1259,7 +1297,7 @@ class JESSI(BasePolicy):
                         input['scan_embedding']
                     )                    
                     ## Compute actor loss (MSE between expert action and predicted mean action)
-                    predicted_action = self.dirichlet.mean(predicted_distr)
+                    predicted_action = self.action_distribution.mean(predicted_distr)
                     actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
                     # Compute critic loss
                     critic_loss = jnp.square(predicted_state_value - returnn)
@@ -2008,8 +2046,8 @@ class JESSI(BasePolicy):
                 ),
             )
             actor_distr = tree_map(lambda x: x[frame], actor_distrs)
-            samples = test_action_samples[self.dirichlet.batch_is_in_support(actor_distr, test_action_samples)]
-            test_action_p = self.dirichlet.batch_p(actor_distr, samples)
+            samples = test_action_samples[self.action_distribution.batch_is_in_support(actor_distr, test_action_samples)]
+            test_action_p = self.action_distribution.batch_p(actor_distr, samples)
             points_high_p = samples[test_action_p > p_visualization_threshold_dir]
             corresponding_colors = test_action_p[test_action_p > p_visualization_threshold_dir]
             axs[4].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
