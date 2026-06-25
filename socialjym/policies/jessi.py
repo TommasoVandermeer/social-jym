@@ -26,7 +26,7 @@ ABLATIONS = [
     2, # No uncertainty on human detection for actor critic module
     3, # MLP in place of scene self-attention
     4, # Gaussian parameterization of the action space (in place of Dirichlet)
-    5, # CNN + attention perception (loss of lidar agnosticity)
+    5, # CNN + temporal attention perception (loss of lidar agnosticity)
 ]
 
 class MultiHeadAttention(hk.MultiHeadAttention):
@@ -107,6 +107,27 @@ class SinusoidalPositionalEncoding(hk.Module):
         seq_len = x.shape[1]
         return x + self.pe_table[None, :seq_len, :]
 
+class SpatialCNNEncoder(hk.Module):
+    def __init__(self, embed_dim, n_sectors, name="spatial_cnn_encoder"):
+        super().__init__(name=name)
+        self.embed_dim = embed_dim
+        self.n_sectors = n_sectors
+
+    def __call__(self, x_emb, key=None):
+        # x_emb shape: [B*T, L, embed_dim]
+        B_T, L, D = x_emb.shape
+        c = hk.Conv1D(output_channels=self.embed_dim, kernel_shape=5, padding="SAME")(x_emb)
+        c = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(c)
+        c = nn.gelu(c)
+        c = hk.Conv1D(output_channels=self.embed_dim, kernel_shape=5, padding="SAME")(c)
+        c = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(c)
+        c = nn.gelu(c) # Shape: [B*T, L, embed_dim]
+        c_transposed = jnp.transpose(c, (0, 2, 1))
+        c_sectors = hk.Linear(self.n_sectors, name="spatial_downsample")(c_transposed) # [B*T, embed_dim, n_sectors]
+        out = jnp.transpose(c_sectors, (0, 2, 1))
+        dummy_attn = jnp.zeros((B_T, 1, self.n_sectors, L))
+        return out, dummy_attn
+
 class AngularLocalCrossAttention(hk.Module):
     def __init__(self, embed_dim, n_sectors, name="angular_local_cross_attn", beam_dropout_rate=0.0):
         super().__init__(name=name)
@@ -139,13 +160,17 @@ class AngularLocalCrossAttention(hk.Module):
         return self.norm2(q + ffn_out), attn_mtrx
 
 class SpatioTemporalEncoder(hk.Module):
-    def __init__(self, embed_dim, n_sectors, lidar_angles_robot_frame, name=None, beam_dropout_rate=0.0): 
+    def __init__(self, embed_dim, n_sectors, lidar_angles_robot_frame, name=None, beam_dropout_rate=0.0, ablation_mode=None): 
         super().__init__(name=name)
         self.embed_dim = embed_dim
         self.n_sectors = n_sectors
         self.lidar_angles_robot_frame = lidar_angles_robot_frame # UNUSED
+        self.ablation_mode = ablation_mode
         # 1. Spatial Feature Extraction
-        self.angular_spatial_attn = AngularLocalCrossAttention(embed_dim, n_sectors=n_sectors, beam_dropout_rate=beam_dropout_rate)
+        if self.ablation_mode == 5:
+            self.spatial_encoder = SpatialCNNEncoder(embed_dim, n_sectors=n_sectors)
+        else:
+            self.spatial_encoder = AngularLocalCrossAttention(embed_dim, n_sectors=n_sectors, beam_dropout_rate=beam_dropout_rate)
         # 2. Temporal Positional Encodings
         self.pos_encoder_time = SinusoidalPositionalEncoding(embed_dim, max_len=100)
         # 3. Temporal Attention
@@ -158,8 +183,11 @@ class SpatioTemporalEncoder(hk.Module):
         # x shape: [Batch, Time, Beams, Features]
         B, T, L, F = x.shape
         x_flat = x.reshape(B * T, L, self.embed_dim)
-        beam_sectors_flat = beam_sectors.reshape(B * T, L, beam_sectors.shape[-1])
-        h_spatial, s_attn_matrix = self.angular_spatial_attn(x_flat, beam_sectors_flat, key=key) # [B*T, L, embed_dim]
+        if self.ablation_mode == 5:
+            h_spatial, s_attn_matrix = self.spatial_encoder(x_flat, key=key)
+        else:
+            beam_sectors_flat = beam_sectors.reshape(B * T, L, beam_sectors.shape[-1])
+            h_spatial, s_attn_matrix = self.spatial_encoder(x_flat, beam_sectors_flat, key=key)
         L_new = h_spatial.shape[1]
         h_spatial = h_spatial.reshape(B, T, L_new, self.embed_dim)
         h_time_in = h_spatial.transpose(0, 2, 1, 3).reshape(B * L_new, T, self.embed_dim)
@@ -236,7 +264,8 @@ class Perception(hk.Module):
             n_sectors=n_sectors, 
             name="spatio_temporal_encoder", 
             lidar_angles_robot_frame=lidar_angles_robot_frame, 
-            beam_dropout_rate=beam_dropout_rate
+            beam_dropout_rate=beam_dropout_rate,
+            ablation_mode=ablation_mode,
         )
         self.decoder = HCGQueryDecoder(n_detectable_humans, embed_dim, name="decoder")
         # Head: 11 params (weight, mu_x, mu_y, log_sig_x, log_sig_y, corr, mu_vx, mu_vy, log_sig_vx, log_sig_vy, corr_v)
@@ -451,11 +480,13 @@ class ActorCritic(hk.Module):
             w_shift = (scaled_wmax + scaled_wmin) / 2.0
             mu_w = nn.tanh(raw_mu_w) * w_scale + w_shift
             means = jnp.stack([mu_v, mu_w], axis=-1)  # Shape: (batch_size, 2)
-            raw_logsigmas_param = hk.get_parameter("raw_logsigmas", shape=[2], init=hk.initializers.Constant(0.))
+            raw_logsigmas_param = hk.get_parameter("raw_logsigmas", shape=[2], init=hk.initializers.Constant(jnp.arctanh(9/11)))
             logsigmas_bounded = jnp.tanh(raw_logsigmas_param) * 11 - 9 # Bound logsigmas between [-20,2]
             logsigmas = jnp.broadcast_to(logsigmas_bounded, means.shape)
             distributions["means"] = means
             distributions["logsigmas"] = logsigmas
+            # Dummy
+            concentration = jnp.zeros((batch_size,))
         else:
             ## Compute Dirichlet distribution parameters
             alphas = nn.softplus(self.actor_head(context)) + 1  # (Batch, 3)
@@ -946,9 +977,9 @@ class JESSI(BasePolicy):
         key:random.PRNGKey, 
     ) -> tuple:
         # Input is shaped (self.n_stack, self.lidar_num_rays, 7)
-        perception_params = self.perception.init(key, jnp.zeros((2, 2, 7))) # Cardinality invariant for n_stack and lidar_num_rays
+        perception_params = self.perception.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7))) # Cardinality invariant for n_stack and lidar_num_rays
         actor_critic_params = self.actor_critic.init(key, jnp.zeros((self.n_detectable_humans, 20)), jnp.zeros((self.n_sectors, self.embedding_dim)))
-        e2e_params = self.e2e.init(key, jnp.zeros((2, 2, 7)), jnp.zeros((self.n_detectable_humans, 9))) # Cardinality invariant for n_stack and lidar_num_rays
+        e2e_params = self.e2e.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7)), jnp.zeros((self.n_detectable_humans, 9))) # Cardinality invariant for n_stack and lidar_num_rays
         return perception_params, actor_critic_params, e2e_params
 
     @partial(jit, static_argnames=("self"))
@@ -1720,7 +1751,7 @@ class JESSI(BasePolicy):
             len(robot_actions) == \
             len(robot_goals) == \
             len(observations) == \
-            len(actor_distrs['alphas']) == \
+            len(actor_distrs['vertices']) == \
             len(humans_distrs['pos_distrs']['means']), "All primary inputs must have the same length"
         # Set matplotlib fonts
         rc('font', weight='regular', size=20)

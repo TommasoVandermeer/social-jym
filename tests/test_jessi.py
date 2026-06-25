@@ -14,7 +14,7 @@ from socialjym.utils.aux_functions import animate_trajectory
 random_seed = 3
 robot_vmax = 1
 robot_wheel_distance = 0.7
-time_limit = 50
+time_limit = 5
 n_episodes = 100
 kinematics = 'unicycle'
 n_stack_for_action_space_bounding = 1
@@ -56,6 +56,7 @@ policy = JESSI(
     lidar_max_dist=env.lidar_max_dist,
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
+    # ablation_mode=4,
 )
 # with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_perception_network.pkl'), 'rb') as f:
 #     encoder_params = pickle.load(f)
@@ -91,10 +92,17 @@ for i in range(n_episodes):
     all_actions = jnp.zeros((max_steps, 2))
     all_rewards = jnp.zeros((max_steps,))
     all_predicted_state_values = jnp.zeros((max_steps,))
-    all_actor_distrs = {
-        'alphas': jnp.zeros((max_steps, 3)),
-        'vertices': jnp.zeros((max_steps, 3, 2)),
-    }
+    if policy.ablation_mode != 4:
+        all_actor_distrs = {
+            'alphas': jnp.zeros((max_steps, 3)),
+            'vertices': jnp.zeros((max_steps, 3, 2)),
+        }
+    else:
+        all_actor_distrs = {
+            'means': jnp.zeros((max_steps, 2)),
+            'logsigmas': jnp.zeros((max_steps, 2)),
+            'vertices': jnp.zeros((max_steps, 3, 2)),
+        }
     bigauss = {
         "means": jnp.zeros((max_steps,policy.n_detectable_humans,2)),
         "logsigmas": jnp.zeros((max_steps,policy.n_detectable_humans,2)),
@@ -116,9 +124,9 @@ for i in range(n_episodes):
         action, _, _, _, _, _, perception_distr, actor_distr, state_value, spat_attn, temp_attn, human_attn = policy.act(random.PRNGKey(0), obs, info, network_params, sample=False)
         # Debug prints
         print(
-            "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
-            #"Info['previous_obs']: ", info["previous_obs"],"\n",
-            #"Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']],"\n",
+            # "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
+            # "Info['previous_obs']: ", info["previous_obs"],"\n",
+            # "Predicted HCGs scores", [f"{w:.2f}" for w in perception_distr['weights']],"\n",
             # "Substeps from last scan: ", info["substeps_from_last_scan"],"\n",
             # "Substeps from last odom (ref scan): ", info["substeps_from_last_odom_ref_scan"],"\n",
             "Control-sensors delay: ", f"{info['substeps_from_last_scan'] * env.humans_dt:.2f} s","\n",

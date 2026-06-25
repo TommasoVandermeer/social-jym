@@ -192,6 +192,15 @@ class Gaussian(BaseDistribution):
         """
         return jnp.exp(distributions["logsigmas"])
     
+    @partial(jit, static_argnames=("self"))
+    def is_in_support(self, distribution:dict, action:jnp.ndarray) -> bool:
+        vertices = distribution["vertices"]
+        sample = jnp.linalg.solve(jnp.vstack((vertices.T,jnp.ones((len(vertices),)))), jnp.append(action, 1.))
+        return jnp.all(sample >= 0) & jnp.isclose(jnp.sum(sample), 1.0)
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_is_in_support(self, distribution:dict, actions:jnp.ndarray) -> jnp.ndarray:
+        return vmap(Gaussian.is_in_support, in_axes=(None,None,0))(self, distribution, actions) 
 class BivariateGaussian(BaseDistribution):
     def __init__(self, epsilon=1e-6) -> None:
         """

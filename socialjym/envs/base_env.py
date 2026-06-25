@@ -371,6 +371,7 @@ class BaseEnv(ABC):
         self.ccso_static_humans_radius_mean = ccso_static_humans_radius_mean
         self.ccso_static_humans_radius_std = ccso_static_humans_radius_std
         self.thick_default_obstacle = thick_default_obstacle
+        self.n_segments = 4 if self.thick_default_obstacle else 1
         # Global planning parameters
         if grid_map_computation:
             print("\nWARNING: Grid map computation is enabled. This will slow down the simulation, especially if many static obstacles are present.\n")
@@ -2219,7 +2220,7 @@ class BaseEnv(ABC):
             return vmap(segment_visibility, in_axes=(None, 0, None))(obstacle_idx, segment_idxs, obstacle_collision_idxs)
         obstacles_visibility_mask = vmap(obstacle_segments_visibility, in_axes=(0, None, None))(
             jnp.arange(self.n_obstacles), 
-            jnp.arange(self.static_obstacles_per_scenario.shape[2]), 
+            jnp.arange(self.n_segments), 
             obstacle_collision_idxs
         ) # Shape: (n_obstacles, n_segments)
         if self.lidar_noise:
@@ -2272,7 +2273,7 @@ class BaseEnv(ABC):
         humans_right_angles = jnp.arctan2(humans_right_edge_points[:,1], humans_right_edge_points[:,0]) # Shape: (n_humans,)
         humans_edge_angles = jnp.concatenate((humans_left_angles, humans_right_angles))  # Shape: (2*n_humans,)
         ## Obstacles
-        obstacle_segments = rc_static_obstacles.reshape((self.n_obstacles*self.static_obstacles_per_scenario.shape[2], 2, 2))  # Shape: (n_obstacles*n_segments, 2, 2)
+        obstacle_segments = rc_static_obstacles.reshape((self.n_obstacles*self.n_segments, 2, 2))  # Shape: (n_obstacles*n_segments, 2, 2)
         obstacle_first_edge_points = obstacle_segments[:,0,:]  # Shape: (n_obstacles*n_segments, 2)
         obstacle_second_edge_points = obstacle_segments[:,1,:]  # Shape: (n_obstacles*n_segments, 2)
         first_to_second_versors = obstacle_second_edge_points - obstacle_first_edge_points / jnp.linalg.norm(obstacle_second_edge_points - obstacle_first_edge_points, axis=1, keepdims=True)  # Shape: (n_obstacles*n_segments, 2)
@@ -2309,7 +2310,7 @@ class BaseEnv(ABC):
             return vmap(segment_visibility, in_axes=(None, 0, None))(obstacle_idx, segment_idxs, obstacle_collision_idxs)
         obstacles_visibility_mask = vmap(obstacle_segments_visibility, in_axes=(0, None, None))(
             jnp.arange(self.n_obstacles), 
-            jnp.arange(self.static_obstacles_per_scenario.shape[2]), 
+            jnp.arange(self.n_segments), 
             obstacle_collision_idxs
         ) # Shape: (n_obstacles, n_segments)
         return humans_visibility_mask, obstacles_visibility_mask

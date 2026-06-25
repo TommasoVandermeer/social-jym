@@ -4,6 +4,7 @@ import os
 import pickle
 from tabulate import tabulate
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from matplotlib import rc, rcParams
 font = {
     'weight' : 'regular',
@@ -16,7 +17,7 @@ rcParams['ps.fonttype'] = 42
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as LaserReward
 from socialjym.utils.aux_functions import initialize_metrics_dict
-from socialjym.policies.jessi import JESSI
+from socialjym.policies.jessi import JESSI, ABLATIONS
 
 # Hyperparameters
 random_seed = 1_000_000 # Make sure test episodes are not the same as the training ones
@@ -63,12 +64,12 @@ scenarios = {
     "door_crossing": {"label": "DoC"},
     "crowd_chasing": {"label": "CrC"},
 }
+colors = list(mcolors.TABLEAU_COLORS.values())
 policies = {
-    "jessi_full": {"label": "JESSI-MULTITASK-FULL", "short": "JESSI-F", "only_ccso": False, "color": "tab:blue"},
-    "jessi_ablation_1": {"label": "JESSI-MULTITASK-ABLATION1", "short": "JESSI-A1", "only_ccso": False, "color": "tab:orange"},
-    "jessi_ablation_2": {"label": "JESSI-MULTITASK-ABLATION2", "short": "JESSI-A2", "only_ccso": False, "color": "tab:green"},
-    "jessi_ablation_3": {"label": "JESSI-MULTITASK-ABLATION3", "short": "JESSI-A3", "only_ccso": False, "color": "tab:red"},
+    f"jessi_ablation_{n}": {"label": f"JESSI-MULTITASK-ABLATION{n}", "short": f"JESSI-A{n}", "only_ccso": False, "color": colors[n]} \
+    for n in ABLATIONS
 }
+policies["jessi_full"] = {"label": "JESSI-MULTITASK-FULL", "short": "JESSI-F", "only_ccso": False, "color": "tab:blue"}
 
 def jessi_tests(policy, jessi_params):
     metrics_dims = (3,len(tests_n_obstacles),len(tests_n_humans))
@@ -149,7 +150,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_ablation_tes
             pickle.dump(all_metrics, f)
 
     ### JESSI-MULTITASK ABLATIONS ###
-    for a, ablation_mode in enumerate([1,2,3]):
+    for a, ablation_mode in enumerate(ABLATIONS):
         if not os.path.exists(os.path.join(os.path.dirname(__file__),f"jessi_multitask_ablation_{ablation_mode}_tests.pkl")):
             # Load JESSI-MULTITASK policy parameters
             with open(os.path.join(os.path.dirname(__file__), f"jessi_multitask_rl_out_ablation_{ablation_mode}.pkl"), 'rb') as f:
@@ -172,7 +173,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_ablation_tes
     all_results = {}
     with open(os.path.join(os.path.dirname(__file__),"jessi_multitask_full_tests.pkl"), 'rb') as f:
             all_results["jessi_full"] = pickle.load(f)  
-    for a, ablation_mode in enumerate([1,2,3]):
+    for a, ablation_mode in enumerate(ABLATIONS):
          with open(os.path.join(os.path.dirname(__file__),f"jessi_multitask_ablation_{ablation_mode}_tests.pkl"), 'rb') as f:
             all_results[f"jessi_ablation_{ablation_mode}"] = pickle.load(f)
     with open(os.path.join(os.path.dirname(__file__),"jessi_ablation_tests.pkl"), 'wb') as f:

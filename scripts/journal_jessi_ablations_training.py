@@ -11,7 +11,7 @@ rc('font', weight='regular', size=20)
 rcParams['pdf.fonttype'] = 42
 rcParams['ps.fonttype'] = 42
 
-from socialjym.policies.jessi import JESSI
+from socialjym.policies.jessi import JESSI, ABLATIONS
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
@@ -64,7 +64,7 @@ training_hyperparams = {
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 
-for a, ablation_mode in enumerate([1,2,3]):
+for a, ablation_mode in enumerate(ABLATIONS):
     ### PRE-TRAIN POLICY NETWORK (IMITATION LEARNING)
     if not os.path.exists(os.path.join(os.path.dirname(__file__), f"jessi_il_out_ablation_{ablation_mode}.pkl")):
         # Load trained perception parameters
