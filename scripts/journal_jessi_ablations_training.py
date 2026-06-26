@@ -74,11 +74,25 @@ for a, ablation_mode in enumerate(ABLATIONS):
         patience = 100  # Early stopping patience
         delta_improvement = 0.001  # Minimum validation improvement to reset early stopping patience
         data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
+        embeddings_dim = 96  # Dimension of the embeddings used in JESSI policy
+        n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
+        max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
         # Load dataset
         with open(os.path.join(os.path.dirname(__file__), 'final_hcg_training_dataset.pkl'), 'rb') as f:
             dataset = pickle.load(f)
         ### PRE-TRAIN PERCEPTION NETWORK
         if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name)):
+            jessi = JESSI(
+                v_max=robot_vmax, 
+                dt=robot_dt, 
+                lidar_num_rays=lidar_num_rays, 
+                lidar_max_dist=lidar_max_dist,
+                lidar_angular_range=lidar_angular_range,
+                n_stack=n_stack, 
+                n_detectable_humans=n_detectable_humans, 
+                max_humans_velocity=max_humans_velocity,
+                embedding_dim=embeddings_dim,
+            )
             # Initialize network
             params, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
             # Count network parameters
