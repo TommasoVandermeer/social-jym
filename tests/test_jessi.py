@@ -14,7 +14,7 @@ from socialjym.utils.aux_functions import animate_trajectory
 random_seed = 3
 robot_vmax = 1
 robot_wheel_distance = 0.7
-time_limit = 5
+time_limit = 50
 n_episodes = 100
 kinematics = 'unicycle'
 n_stack_for_action_space_bounding = 1
@@ -56,7 +56,7 @@ policy = JESSI(
     lidar_max_dist=env.lidar_max_dist,
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
-    # ablation_mode=4,
+    # ablation_mode=6,
 )
 # with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_perception_network.pkl'), 'rb') as f:
 #     encoder_params = pickle.load(f)
@@ -92,15 +92,21 @@ for i in range(n_episodes):
     all_actions = jnp.zeros((max_steps, 2))
     all_rewards = jnp.zeros((max_steps,))
     all_predicted_state_values = jnp.zeros((max_steps,))
-    if policy.ablation_mode != 4:
+    if policy.ablation_mode == 4:
         all_actor_distrs = {
-            'alphas': jnp.zeros((max_steps, 3)),
+            'means': jnp.zeros((max_steps, 2)),
+            'logsigmas': jnp.zeros((max_steps, 2)),
+            'vertices': jnp.zeros((max_steps, 3, 2)),
+        }
+    elif policy.ablation_mode == 6:
+        all_actor_distrs = {
+            'locs': jnp.zeros((max_steps, 3)),
+            'log_scales': jnp.zeros((max_steps, 3)),
             'vertices': jnp.zeros((max_steps, 3, 2)),
         }
     else:
         all_actor_distrs = {
-            'means': jnp.zeros((max_steps, 2)),
-            'logsigmas': jnp.zeros((max_steps, 2)),
+            'alphas': jnp.zeros((max_steps, 3)),
             'vertices': jnp.zeros((max_steps, 3, 2)),
         }
     bigauss = {

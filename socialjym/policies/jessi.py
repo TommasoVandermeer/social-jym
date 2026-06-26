@@ -16,6 +16,7 @@ from typing import Optional
 from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, HUMAN_POLICIES
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.utils.distributions.gaussian import Gaussian, BivariateGaussian
+from socialjym.utils.distributions.logistic_normal import LogisticNormal
 from socialjym.policies.base_policy import BasePolicy
 from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.lasernav import LaserNav
@@ -27,6 +28,7 @@ ABLATIONS = [
     3, # MLP in place of scene self-attention
     4, # Gaussian parameterization of the action space (in place of Dirichlet)
     5, # CNN + temporal attention perception (loss of lidar agnosticity)
+    6, # Logistic normal parameterization of the action space (in place of Dirichlet)
 ]
 
 class MultiHeadAttention(hk.MultiHeadAttention):
@@ -359,7 +361,9 @@ class ActorCritic(hk.Module):
         self.ablation_mode = ablation_mode
         # Dimensions
         self.n_sectors = n_sectors
-        self.n_outputs = 3 if self.ablation_mode != 4 else 2  # Dirichlet distribution over 3 action vertices (Gaussian with 2 actions if ablation)
+        if self.ablation_mode == 4: self.n_outputs = 2 # Gaussian (2 means, 1 per action)
+        elif self.ablation_mode == 6: self.n_outputs = 3 # Logistic-Normal (3 means, 1 per vertex)
+        else: self.n_outputs = 3 # Dirichlet (3 alphas, 1 per vertex)
         self.mlp_params = mlp_params
         # Scan embedding reducer
         self.scan_reducer = hk.Linear(1, name="scan_reducer")
@@ -393,6 +397,7 @@ class ActorCritic(hk.Module):
             name="critic_head"
         )
         if ablation_mode == 4: self.action_distribution = Gaussian()
+        elif ablation_mode == 6: self.action_distribution = LogisticNormal()
         else: self.action_distribution = Dirichlet()
 
     def __call__(
@@ -485,6 +490,15 @@ class ActorCritic(hk.Module):
             logsigmas = jnp.broadcast_to(logsigmas_bounded, means.shape)
             distributions["means"] = means
             distributions["logsigmas"] = logsigmas
+            # Dummy
+            concentration = jnp.zeros((batch_size,))
+        elif self.ablation_mode == 6:
+            locs = self.actor_head(context)
+            raw_logscales_param = hk.get_parameter("raw_logscales", shape=[3], init=hk.initializers.Constant(jnp.arctanh(9/11)))
+            logscales_bounded = jnp.tanh(raw_logscales_param) * 11 - 9 # Bound logscales between [-20,2]
+            logscales = jnp.broadcast_to(logscales_bounded, locs.shape)
+            distributions["locs"] = locs
+            distributions["log_scales"] = logscales
             # Dummy
             concentration = jnp.zeros((batch_size,))
         else:
@@ -673,10 +687,9 @@ class JESSI(BasePolicy):
         # Default attributes
         self.name = "JESSI"
         self.kinematics = ROBOT_KINEMATICS.index("unicycle")
-        if ablation_mode == 4:
-            self.action_distribution = Gaussian()
-        else:
-            self.action_distribution = Dirichlet()
+        if ablation_mode == 4: self.action_distribution = Gaussian()
+        elif ablation_mode == 6: self.action_distribution = LogisticNormal()
+        else: self.action_distribution = Dirichlet()
         self.bivariate_gaussian = BivariateGaussian()
         self.sectors_threshold = jnp.cos(jnp.deg2rad(angular_sectors_width_deg/2))     
         query_angles = jnp.linspace(0, 2 * jnp.pi, self.n_sectors, endpoint=False)
