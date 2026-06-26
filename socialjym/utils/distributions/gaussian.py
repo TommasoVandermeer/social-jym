@@ -174,7 +174,7 @@ class Gaussian(BaseDistribution):
         bounded_action = lax.switch(
             jnp.argmax(cases),
             [
-                lambda _: jnp.array([0., jnp.clip(y, w_max, w_max)]),
+                lambda _: jnp.array([0., jnp.clip(y, w_min, w_max)]),
                 lambda _: jnp.array([jnp.min(jnp.array([v_max,x])), 0.]),
                 lambda _: jnp.array([x, y]),
                 lambda _: jnp.array([x, y]),
