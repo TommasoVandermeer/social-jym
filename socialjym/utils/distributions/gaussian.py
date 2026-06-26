@@ -21,7 +21,7 @@ class Gaussian(BaseDistribution):
 
     @partial(jit, static_argnames=("self"))
     def batch_entropy(self, distributions:dict) -> float:
-        return vmap(Gaussian.entropy, in_axes=(None,0))(distributions)
+        return vmap(Gaussian.entropy, in_axes=(None,0))(self, distributions)
 
     @partial(jit, static_argnames=("self"))
     def sample(self, distribution:dict, key:random.PRNGKey):
