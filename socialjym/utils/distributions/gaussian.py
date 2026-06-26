@@ -20,6 +20,10 @@ class Gaussian(BaseDistribution):
         return .5 * jnp.log(2*jnp.pi*jnp.exp(1)) * len(logsigmas)  + jnp.sum(logsigmas)
 
     @partial(jit, static_argnames=("self"))
+    def batch_entropy(self, distributions:dict) -> float:
+        return vmap(Gaussian.entropy, in_axes=(None,0))(distributions)
+
+    @partial(jit, static_argnames=("self"))
     def sample(self, distribution:dict, key:random.PRNGKey):
         means = distribution["means"]
         sigmas = jnp.exp(distribution["logsigmas"])
