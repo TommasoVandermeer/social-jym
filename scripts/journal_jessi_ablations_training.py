@@ -65,319 +65,320 @@ training_hyperparams = {
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 
 for a, ablation_mode in enumerate(ABLATIONS):
-    if ablation_mode == 5:
-        perception_nn_name = 'pre_perception_network_ablation_5.pkl'
-        # For ablation 5 it is necesary to re-pre-train the perception network
-        perception_learning_rate = 0.0005
-        perception_batch_size = 100
-        n_max_epochs = 1000
-        patience = 100  # Early stopping patience
-        delta_improvement = 0.001  # Minimum validation improvement to reset early stopping patience
-        data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
-        embeddings_dim = 96  # Dimension of the embeddings used in JESSI policy
-        n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
-        max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
-        # Load dataset
-        with open(os.path.join(os.path.dirname(__file__), 'final_hcg_training_dataset.pkl'), 'rb') as f:
-            dataset = pickle.load(f)
-        ### PRE-TRAIN PERCEPTION NETWORK
-        if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name)):
-            jessi = JESSI(
-                v_max=robot_vmax, 
-                dt=robot_dt, 
-                lidar_num_rays=lidar_num_rays, 
-                lidar_max_dist=lidar_max_dist,
-                lidar_angular_range=lidar_angular_range,
-                n_stack=n_stack, 
-                n_detectable_humans=n_detectable_humans, 
-                max_humans_velocity=max_humans_velocity,
-                embedding_dim=embeddings_dim,
-                ablation_mode=ablation_mode,
-            )
-            # Initialize network
-            params, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
-            # Count network parameters
-            def count_params(params):
-                return sum(jnp.prod(jnp.array(p.shape)) for layer in params.values() for p in layer.values())
-            n_params = count_params(params)
-            print(f"# Perception network parameters: {n_params}")
-            # Split dataset into TRAIN, VAL, TEST
-            n_data = dataset["observations"].shape[0]
-            n_train_data = int(data_split[0] * n_data)
-            n_val_data = int(data_split[1] * n_data)
-            n_test_data = n_data - n_train_data - n_val_data
-            print(f"# Training dataset size: {n_data} experiences")
-            print(f"-> TRAIN size: {n_train_data} experiences")
-            print(f"-> VAL size: {n_val_data} experiences")
-            print(f"-> TEST size: {n_test_data} experiences")
-            shuffle_key = random.PRNGKey(random_seed + 1_000_000)
-            indexes = jnp.arange(n_data)
-            shuffled_indexes = random.permutation(shuffle_key, indexes)
-            train_indexes = shuffled_indexes[:n_train_data]
-            val_indexes = shuffled_indexes[n_train_data:n_train_data + n_val_data]
-            test_indexes = shuffled_indexes[n_train_data + n_val_data:]
-            train_dataset =  tree_map(lambda x: x[train_indexes], dataset)
-            val_dataset =  tree_map(lambda x: x[val_indexes], dataset)
-            test_dataset =  tree_map(lambda x: x[test_indexes], dataset)
-            # Free memory
-            del dataset 
-            del indexes
-            del shuffled_indexes
-            del train_indexes
-            del val_indexes
-            del test_indexes
-            # Initialize optimizer and its state
-            optimizer = optax.chain(
-                optax.clip_by_global_norm(0.5),
-                optax.adamw(
-                    learning_rate=optax.warmup_cosine_decay_schedule(
-                        init_value=0.0,
-                        peak_value=perception_learning_rate,
-                        warmup_steps=n_max_epochs // 100 * (n_train_data // perception_batch_size),
-                        decay_steps=n_max_epochs * (n_train_data // perception_batch_size),
-                        end_value=perception_learning_rate/100,
-                    ),
-                    weight_decay=1e-2,
-                ),
-            )
-            optimizer_state = optimizer.init(params)
-
-            @jit
-            def batch_val_test_loss(
-                batch:dict,
-                params:dict,
-                seed:int,
-            ) -> tuple:
-                # TODO: Shutdown dropout layers and stochasticity during validation
-                inputs = vmap(jessi.compute_perception_input, in_axes=(0))(batch["observations"])[0]
-                targets = batch["targets"]
-                # Compute loss
-                loss = jessi.perception_loss(
-                    params, 
-                    inputs,
-                    targets,
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), f"jessi_il_out_ablation_{ablation_mode}.pkl")):
+        ### PRE-TRAIN PERCEPTION NETWORK (SUPERVISED LEARNING)
+        if ablation_mode == 5:
+            perception_nn_name = 'pre_perception_network_ablation_5.pkl'
+            # For ablation 5 it is necesary to re-pre-train the perception network
+            perception_learning_rate = 0.0005
+            perception_batch_size = 100
+            n_max_epochs = 1000
+            patience = 100  # Early stopping patience
+            delta_improvement = 0.001  # Minimum validation improvement to reset early stopping patience
+            data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
+            embeddings_dim = 96  # Dimension of the embeddings used in JESSI policy
+            n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
+            max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
+            # Load dataset
+            with open(os.path.join(os.path.dirname(__file__), 'final_hcg_training_dataset.pkl'), 'rb') as f:
+                dataset = pickle.load(f)
+            ### PRE-TRAIN PERCEPTION NETWORK
+            if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name)):
+                jessi = JESSI(
+                    v_max=robot_vmax, 
+                    dt=robot_dt, 
+                    lidar_num_rays=lidar_num_rays, 
+                    lidar_max_dist=lidar_max_dist,
+                    lidar_angular_range=lidar_angular_range,
+                    n_stack=n_stack, 
+                    n_detectable_humans=n_detectable_humans, 
+                    max_humans_velocity=max_humans_velocity,
+                    embedding_dim=embeddings_dim,
+                    ablation_mode=ablation_mode,
                 )
-                return loss
-            @jit
-            def val_test_loss(
-                batches:dict,
-                params:dict,
-                seeds:int,
-            ):
-                # VMAP version (fast, much memory consumption)
-                #return vmap(batch_val_test_loss, in_axes=(0, None, 0))(batches, params, seeds)
-                # SCAN version (slow, low memory consumption)
-                def _scan_loop(carry, x):
-                    params = carry
-                    batch, seed = x
-                    loss = batch_val_test_loss(
-                        batch,
-                        params,
-                        seed,
-                    )
-                    return params, loss
-                _, losses = lax.scan(
-                    _scan_loop,
-                    params,
-                    (batches, seeds),
-                )
-                return losses
-            @jit
-            def batch_augment_data(
-                batch:dict,
-                keys:random.PRNGKey,
-                base_lidar_noise_std:float = 0.01, # 1cm base noise
-                proportional_lidar_noise_std:float = 0.01, # 1% proportional noise
-                beam_dropout_prob:float = 0.03, # 3% beams dropout
-            ) -> dict:
-                return vmap(augment_data, in_axes=(0, 0, None, None, None))(batch, keys, base_lidar_noise_std, proportional_lidar_noise_std, beam_dropout_prob)
-            @jit 
-            def augment_data(
-                data:dict,
-                key:random.PRNGKey,
-                base_lidar_noise_std:float,
-                proportional_lidar_noise_std:float,
-                beam_dropout_prob:float,
-            ) -> dict:
-                # data = {
-                #     "inputs": shape (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
-                #               each token: [norm_dist, hit, x, y, sin_fixed_theta, cos_fixed_theta, delta_t]
-                #     "targets": {
-                #         "gt_mask": shape (n_humans,),
-                #         "gt_poses": shape (n_humans, 2),
-                #         "gt_vels": shape (n_humans, 2),
-                #     }
-                # }
-                input_key, rotation_key, beam_dropout_key = random.split(key, 3)
-                ## Gaussian noise to LiDAR scans + Beam dropout
-                raw_distances = data['inputs'][:,:,0] * jessi.max_beam_range  # (n_stack, lidar_num_rays)
-                sigma = base_lidar_noise_std + proportional_lidar_noise_std * raw_distances  # (n_stack, lidar_num_rays)
-                noise = random.normal(input_key, shape=raw_distances.shape) * sigma * data['inputs'][:,:,1]  # (n_stack, lidar_num_rays)
-                noisy_distances = jnp.clip(raw_distances + noise, 0., jessi.max_beam_range) # (n_stack, lidar_num_rays)
-                is_dropout = random.bernoulli(beam_dropout_key, p=beam_dropout_prob, shape=raw_distances.shape)
-                noisy_distances = jnp.where(is_dropout, jessi.max_beam_range, noisy_distances)  # (n_stack, lidar_num_rays)
-                new_hit = jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0) * (1.0 - is_dropout)  # (n_stack, lidar_num_rays)
-                x = noisy_distances * data['inputs'][:,:,4]  # (n_stack, lidar_num_rays)
-                y = noisy_distances * data['inputs'][:,:,5]  # (n_stack, lidar_num_rays)
-                data['inputs'] = data['inputs'].at[:,:,0].set(noisy_distances / jessi.max_beam_range)
-                data['inputs'] = data['inputs'].at[:,:,1].set(new_hit)
-                data['inputs'] = data['inputs'].at[:,:,2].set(x)
-                data['inputs'] = data['inputs'].at[:,:,3].set(y)
-                ## Random rotation
-                alpha = random.uniform(rotation_key, minval=-jnp.pi, maxval=jnp.pi)
-                ca, sa = jnp.cos(alpha), jnp.sin(alpha)
-                rot_mat = jnp.array([[ca, -sa], [sa, ca]])
-                s_new = data['inputs'][..., 4] * ca + data['inputs'][..., 5] * sa
-                c_new = data['inputs'][..., 5] * ca - data['inputs'][..., 4] * sa
-                xy_rotated = data['inputs'][..., 2:4]  @ rot_mat.T
-                data['inputs'] = data['inputs'].at[..., 2:4].set(xy_rotated)
-                data['inputs'] = data['inputs'].at[..., 4].set(s_new) 
-                data['inputs'] = data['inputs'].at[..., 5].set(c_new) 
-                data['targets']['gt_poses'] = data['targets']['gt_poses'] @ rot_mat.T
-                data['targets']['gt_vels'] = data['targets']['gt_vels'] @ rot_mat.T
-                return data
-            @jit 
-            def _epoch_loop(
-                epoch_for_val:tuple,
-            ) -> tuple:
-                early_stopping_info, train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses = epoch_for_val
-                i = early_stopping_info['epoch']
-                ## TRAINING
-                shuffle_key = random.PRNGKey(random_seed + i)
-                indexes = jnp.arange(n_train_data)
+                # Initialize network
+                params, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
+                # Count network parameters
+                def count_params(params):
+                    return sum(jnp.prod(jnp.array(p.shape)) for layer in params.values() for p in layer.values())
+                n_params = count_params(params)
+                print(f"# Perception network parameters: {n_params}")
+                # Split dataset into TRAIN, VAL, TEST
+                n_data = dataset["observations"].shape[0]
+                n_train_data = int(data_split[0] * n_data)
+                n_val_data = int(data_split[1] * n_data)
+                n_test_data = n_data - n_train_data - n_val_data
+                print(f"# Training dataset size: {n_data} experiences")
+                print(f"-> TRAIN size: {n_train_data} experiences")
+                print(f"-> VAL size: {n_val_data} experiences")
+                print(f"-> TEST size: {n_test_data} experiences")
+                shuffle_key = random.PRNGKey(random_seed + 1_000_000)
+                indexes = jnp.arange(n_data)
                 shuffled_indexes = random.permutation(shuffle_key, indexes)
-                train_epoch_data = tree_map(lambda x: x[shuffled_indexes], train_dataset)
-                n_train_batches = n_train_data // perception_batch_size
+                train_indexes = shuffled_indexes[:n_train_data]
+                val_indexes = shuffled_indexes[n_train_data:n_train_data + n_val_data]
+                test_indexes = shuffled_indexes[n_train_data + n_val_data:]
+                train_dataset =  tree_map(lambda x: x[train_indexes], dataset)
+                val_dataset =  tree_map(lambda x: x[val_indexes], dataset)
+                test_dataset =  tree_map(lambda x: x[test_indexes], dataset)
+                # Free memory
+                del dataset 
+                del indexes
+                del shuffled_indexes
+                del train_indexes
+                del val_indexes
+                del test_indexes
+                # Initialize optimizer and its state
+                optimizer = optax.chain(
+                    optax.clip_by_global_norm(0.5),
+                    optax.adamw(
+                        learning_rate=optax.warmup_cosine_decay_schedule(
+                            init_value=0.0,
+                            peak_value=perception_learning_rate,
+                            warmup_steps=n_max_epochs // 100 * (n_train_data // perception_batch_size),
+                            decay_steps=n_max_epochs * (n_train_data // perception_batch_size),
+                            end_value=perception_learning_rate/100,
+                        ),
+                        weight_decay=1e-2,
+                    ),
+                )
+                optimizer_state = optimizer.init(params)
+
                 @jit
-                def _batch_train_loop(
-                    j:int,
-                    batch_for_val:tuple
+                def batch_val_test_loss(
+                    batch:dict,
+                    params:dict,
+                    seed:int,
                 ) -> tuple:
-                    train_epoch_data, params, optimizer_state, losses, grads_norms = batch_for_val
-                    # Retrieve batch experiences
-                    indexes = (jnp.arange(perception_batch_size) + j * perception_batch_size).astype(jnp.int32)
-                    batch = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, train_epoch_data)
-                    ## Tranform batch into training_batch data (it is done during training loop to save memory)
-                    # training_batch = {
-                    #     "inputs": jnp.zeros((perception_batch_size, n_stack * lidar_num_rays, 7)),
+                    # TODO: Shutdown dropout layers and stochasticity during validation
+                    inputs = vmap(jessi.compute_perception_input, in_axes=(0))(batch["observations"])[0]
+                    targets = batch["targets"]
+                    # Compute loss
+                    loss = jessi.perception_loss(
+                        params, 
+                        inputs,
+                        targets,
+                    )
+                    return loss
+                @jit
+                def val_test_loss(
+                    batches:dict,
+                    params:dict,
+                    seeds:int,
+                ):
+                    # VMAP version (fast, much memory consumption)
+                    #return vmap(batch_val_test_loss, in_axes=(0, None, 0))(batches, params, seeds)
+                    # SCAN version (slow, low memory consumption)
+                    def _scan_loop(carry, x):
+                        params = carry
+                        batch, seed = x
+                        loss = batch_val_test_loss(
+                            batch,
+                            params,
+                            seed,
+                        )
+                        return params, loss
+                    _, losses = lax.scan(
+                        _scan_loop,
+                        params,
+                        (batches, seeds),
+                    )
+                    return losses
+                @jit
+                def batch_augment_data(
+                    batch:dict,
+                    keys:random.PRNGKey,
+                    base_lidar_noise_std:float = 0.01, # 1cm base noise
+                    proportional_lidar_noise_std:float = 0.01, # 1% proportional noise
+                    beam_dropout_prob:float = 0.03, # 3% beams dropout
+                ) -> dict:
+                    return vmap(augment_data, in_axes=(0, 0, None, None, None))(batch, keys, base_lidar_noise_std, proportional_lidar_noise_std, beam_dropout_prob)
+                @jit 
+                def augment_data(
+                    data:dict,
+                    key:random.PRNGKey,
+                    base_lidar_noise_std:float,
+                    proportional_lidar_noise_std:float,
+                    beam_dropout_prob:float,
+                ) -> dict:
+                    # data = {
+                    #     "inputs": shape (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
+                    #               each token: [norm_dist, hit, x, y, sin_fixed_theta, cos_fixed_theta, delta_t]
                     #     "targets": {
-                    #         "gt_mask": jnp.zeros((perception_batch_size, n_humans,)),
-                    #         "gt_poses": jnp.zeros((perception_batch_size, n_humans, 2)),
-                    #         "gt_vels": jnp.zeros((perception_batch_size, n_humans, 2)),
+                    #         "gt_mask": shape (n_humans,),
+                    #         "gt_poses": shape (n_humans, 2),
+                    #         "gt_vels": shape (n_humans, 2),
                     #     }
                     # }
-                    training_batch = {}
-                    training_batch["inputs"] = vmap(jessi.compute_perception_input, in_axes=(0))(batch["observations"])[0]
-                    training_batch["targets"] = batch["targets"]
-                    ## DATA AUGMENTATION
-                    training_batch = batch_augment_data(
-                        training_batch,
-                        random.split(random.PRNGKey(i * n_train_batches + j), perception_batch_size),
+                    input_key, rotation_key, beam_dropout_key = random.split(key, 3)
+                    ## Gaussian noise to LiDAR scans + Beam dropout
+                    raw_distances = data['inputs'][:,:,0] * jessi.max_beam_range  # (n_stack, lidar_num_rays)
+                    sigma = base_lidar_noise_std + proportional_lidar_noise_std * raw_distances  # (n_stack, lidar_num_rays)
+                    noise = random.normal(input_key, shape=raw_distances.shape) * sigma * data['inputs'][:,:,1]  # (n_stack, lidar_num_rays)
+                    noisy_distances = jnp.clip(raw_distances + noise, 0., jessi.max_beam_range) # (n_stack, lidar_num_rays)
+                    is_dropout = random.bernoulli(beam_dropout_key, p=beam_dropout_prob, shape=raw_distances.shape)
+                    noisy_distances = jnp.where(is_dropout, jessi.max_beam_range, noisy_distances)  # (n_stack, lidar_num_rays)
+                    new_hit = jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0) * (1.0 - is_dropout)  # (n_stack, lidar_num_rays)
+                    x = noisy_distances * data['inputs'][:,:,4]  # (n_stack, lidar_num_rays)
+                    y = noisy_distances * data['inputs'][:,:,5]  # (n_stack, lidar_num_rays)
+                    data['inputs'] = data['inputs'].at[:,:,0].set(noisy_distances / jessi.max_beam_range)
+                    data['inputs'] = data['inputs'].at[:,:,1].set(new_hit)
+                    data['inputs'] = data['inputs'].at[:,:,2].set(x)
+                    data['inputs'] = data['inputs'].at[:,:,3].set(y)
+                    ## Random rotation
+                    alpha = random.uniform(rotation_key, minval=-jnp.pi, maxval=jnp.pi)
+                    ca, sa = jnp.cos(alpha), jnp.sin(alpha)
+                    rot_mat = jnp.array([[ca, -sa], [sa, ca]])
+                    s_new = data['inputs'][..., 4] * ca + data['inputs'][..., 5] * sa
+                    c_new = data['inputs'][..., 5] * ca - data['inputs'][..., 4] * sa
+                    xy_rotated = data['inputs'][..., 2:4]  @ rot_mat.T
+                    data['inputs'] = data['inputs'].at[..., 2:4].set(xy_rotated)
+                    data['inputs'] = data['inputs'].at[..., 4].set(s_new) 
+                    data['inputs'] = data['inputs'].at[..., 5].set(c_new) 
+                    data['targets']['gt_poses'] = data['targets']['gt_poses'] @ rot_mat.T
+                    data['targets']['gt_vels'] = data['targets']['gt_vels'] @ rot_mat.T
+                    return data
+                @jit 
+                def _epoch_loop(
+                    epoch_for_val:tuple,
+                ) -> tuple:
+                    early_stopping_info, train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses = epoch_for_val
+                    i = early_stopping_info['epoch']
+                    ## TRAINING
+                    shuffle_key = random.PRNGKey(random_seed + i)
+                    indexes = jnp.arange(n_train_data)
+                    shuffled_indexes = random.permutation(shuffle_key, indexes)
+                    train_epoch_data = tree_map(lambda x: x[shuffled_indexes], train_dataset)
+                    n_train_batches = n_train_data // perception_batch_size
+                    @jit
+                    def _batch_train_loop(
+                        j:int,
+                        batch_for_val:tuple
+                    ) -> tuple:
+                        train_epoch_data, params, optimizer_state, losses, grads_norms = batch_for_val
+                        # Retrieve batch experiences
+                        indexes = (jnp.arange(perception_batch_size) + j * perception_batch_size).astype(jnp.int32)
+                        batch = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, train_epoch_data)
+                        ## Tranform batch into training_batch data (it is done during training loop to save memory)
+                        # training_batch = {
+                        #     "inputs": jnp.zeros((perception_batch_size, n_stack * lidar_num_rays, 7)),
+                        #     "targets": {
+                        #         "gt_mask": jnp.zeros((perception_batch_size, n_humans,)),
+                        #         "gt_poses": jnp.zeros((perception_batch_size, n_humans, 2)),
+                        #         "gt_vels": jnp.zeros((perception_batch_size, n_humans, 2)),
+                        #     }
+                        # }
+                        training_batch = {}
+                        training_batch["inputs"] = vmap(jessi.compute_perception_input, in_axes=(0))(batch["observations"])[0]
+                        training_batch["targets"] = batch["targets"]
+                        ## DATA AUGMENTATION
+                        training_batch = batch_augment_data(
+                            training_batch,
+                            random.split(random.PRNGKey(i * n_train_batches + j), perception_batch_size),
+                        )
+                        # Update parameters
+                        params, optimizer_state, loss, grads_norm = jessi.update_perception(
+                            params, 
+                            optimizer, 
+                            optimizer_state,
+                            training_batch,
+                            key=random.PRNGKey(i * n_train_batches + j),
+                        )
+                        # debug.print("Epoch {x}, Batch {y}, TRAIN Loss: {l}", x=i, y=j, l=loss)
+                        # Save loss
+                        losses = losses.at[i,j].set(loss)
+                        grads_norms = grads_norms.at[j].set(grads_norm)
+                        return train_epoch_data, params, optimizer_state, losses, grads_norms
+                    _, params, optimizer_state, train_losses, grads_norms = lax.fori_loop(
+                        0,
+                        n_train_batches,
+                        _batch_train_loop,
+                        (train_epoch_data, params, optimizer_state, train_losses, jnp.zeros((n_train_batches,)))
                     )
-                    # Update parameters
-                    params, optimizer_state, loss, grads_norm = jessi.update_perception(
+                    ## VALIDATION
+                    shuffle_key = random.PRNGKey(random_seed + i)
+                    indexes = jnp.arange(n_val_data)
+                    shuffled_indexes = random.permutation(shuffle_key, indexes)
+                    val_epoch_data = tree_map(lambda x: x[shuffled_indexes], val_dataset)
+                    val_epoch_data = tree_map(lambda x: x.reshape((n_val_data // perception_batch_size, perception_batch_size) + x.shape[1:]), val_epoch_data)
+                    val_losses = val_losses.at[i].set(
+                        val_test_loss(
+                            val_epoch_data,
+                            params,
+                            jnp.arange(n_val_data // perception_batch_size),
+                        )
+                    )
+                    current_val_loss = jnp.mean(val_losses[i])
+                    val_loss_improved = (early_stopping_info['best_val_loss'] - current_val_loss) / jnp.abs(early_stopping_info['best_val_loss']) > delta_improvement
+                    val_loss_improved = val_loss_improved | (i == 0)
+                    debug.print("Epoch {x}, TRAIN Loss: {t}, VAL Loss: {v} (Improved: {imp}), GRAD Norm: {g}", x=i, t=jnp.mean(train_losses[i]), v=current_val_loss, imp=val_loss_improved, g=jnp.mean(grads_norms))
+                    # Update early stopping info
+                    @jit
+                    def _update_early_stopping_info_improved(early_stopping_info):
+                        early_stopping_info['best_val_loss'] = current_val_loss
+                        early_stopping_info['best_params'] = params
+                        early_stopping_info['last_improvement'] = i
+                        return early_stopping_info
+                    early_stopping_info = lax.cond(val_loss_improved, _update_early_stopping_info_improved, lambda esi: esi, early_stopping_info)
+                    early_stopping_info['epoch'] = i + 1
+                    early_stopping_info['stop'] = ((i - early_stopping_info['last_improvement']) >= patience) | (early_stopping_info['epoch'] >= n_max_epochs)
+                    return early_stopping_info, train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses
+                # Epoch loop
+                early_stopping_info, _, _, _, optimizer_state, train_losses, val_losses = lax.while_loop(
+                    lambda x: ~x[0]['stop'],
+                    _epoch_loop,
+                    (
+                        {'stop': False, 'epoch': 0, 'last_improvement': 0, 'best_params': params, 'best_val_loss': jnp.inf}, 
+                        train_dataset, 
+                        val_dataset, 
                         params, 
-                        optimizer, 
-                        optimizer_state,
-                        training_batch,
-                        key=random.PRNGKey(i * n_train_batches + j),
+                        optimizer_state, 
+                        jnp.zeros((n_max_epochs, int(n_train_data // perception_batch_size))), 
+                        jnp.zeros((n_max_epochs, int(n_val_data // perception_batch_size)))
                     )
-                    # debug.print("Epoch {x}, Batch {y}, TRAIN Loss: {l}", x=i, y=j, l=loss)
-                    # Save loss
-                    losses = losses.at[i,j].set(loss)
-                    grads_norms = grads_norms.at[j].set(grads_norm)
-                    return train_epoch_data, params, optimizer_state, losses, grads_norms
-                _, params, optimizer_state, train_losses, grads_norms = lax.fori_loop(
-                    0,
-                    n_train_batches,
-                    _batch_train_loop,
-                    (train_epoch_data, params, optimizer_state, train_losses, jnp.zeros((n_train_batches,)))
                 )
-                ## VALIDATION
-                shuffle_key = random.PRNGKey(random_seed + i)
-                indexes = jnp.arange(n_val_data)
+                n_epochs = early_stopping_info['epoch']
+                params = early_stopping_info['best_params']
+                print(f"\nTraining completed in {n_epochs} epochs. - Best val loss: {early_stopping_info['best_val_loss']}\n")
+                # Save trained parameters
+                with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'wb') as f:
+                    pickle.dump(params, f)
+                ## TEST
+                n_train_batches = n_train_data // perception_batch_size
+                test_losses = jnp.zeros((1, int(n_test_data // perception_batch_size)))
+                shuffle_key = random.PRNGKey(random_seed)
+                indexes = jnp.arange(n_test_data)
                 shuffled_indexes = random.permutation(shuffle_key, indexes)
-                val_epoch_data = tree_map(lambda x: x[shuffled_indexes], val_dataset)
-                val_epoch_data = tree_map(lambda x: x.reshape((n_val_data // perception_batch_size, perception_batch_size) + x.shape[1:]), val_epoch_data)
-                val_losses = val_losses.at[i].set(
-                    val_test_loss(
-                        val_epoch_data,
-                        params,
-                        jnp.arange(n_val_data // perception_batch_size),
-                    )
+                test_epoch_data = tree_map(lambda x: x[shuffled_indexes], test_dataset)
+                test_epoch_data = tree_map(lambda x: x.reshape((n_test_data // perception_batch_size, perception_batch_size) + x.shape[1:]), test_epoch_data)
+                test_losses = val_test_loss(
+                    test_epoch_data,
+                    params,
+                    jnp.arange(n_test_data // perception_batch_size),
                 )
-                current_val_loss = jnp.mean(val_losses[i])
-                val_loss_improved = (early_stopping_info['best_val_loss'] - current_val_loss) / jnp.abs(early_stopping_info['best_val_loss']) > delta_improvement
-                val_loss_improved = val_loss_improved | (i == 0)
-                debug.print("Epoch {x}, TRAIN Loss: {t}, VAL Loss: {v} (Improved: {imp}), GRAD Norm: {g}", x=i, t=jnp.mean(train_losses[i]), v=current_val_loss, imp=val_loss_improved, g=jnp.mean(grads_norms))
-                # Update early stopping info
-                @jit
-                def _update_early_stopping_info_improved(early_stopping_info):
-                    early_stopping_info['best_val_loss'] = current_val_loss
-                    early_stopping_info['best_params'] = params
-                    early_stopping_info['last_improvement'] = i
-                    return early_stopping_info
-                early_stopping_info = lax.cond(val_loss_improved, _update_early_stopping_info_improved, lambda esi: esi, early_stopping_info)
-                early_stopping_info['epoch'] = i + 1
-                early_stopping_info['stop'] = ((i - early_stopping_info['last_improvement']) >= patience) | (early_stopping_info['epoch'] >= n_max_epochs)
-                return early_stopping_info, train_dataset, val_dataset, params, optimizer_state, train_losses, val_losses
-            # Epoch loop
-            early_stopping_info, _, _, _, optimizer_state, train_losses, val_losses = lax.while_loop(
-                lambda x: ~x[0]['stop'],
-                _epoch_loop,
-                (
-                    {'stop': False, 'epoch': 0, 'last_improvement': 0, 'best_params': params, 'best_val_loss': jnp.inf}, 
-                    train_dataset, 
-                    val_dataset, 
-                    params, 
-                    optimizer_state, 
-                    jnp.zeros((n_max_epochs, int(n_train_data // perception_batch_size))), 
-                    jnp.zeros((n_max_epochs, int(n_val_data // perception_batch_size)))
-                )
-            )
-            n_epochs = early_stopping_info['epoch']
-            params = early_stopping_info['best_params']
-            print(f"\nTraining completed in {n_epochs} epochs. - Best val loss: {early_stopping_info['best_val_loss']}\n")
-            # Save trained parameters
-            with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'wb') as f:
-                pickle.dump(params, f)
-            ## TEST
-            n_train_batches = n_train_data // perception_batch_size
-            test_losses = jnp.zeros((1, int(n_test_data // perception_batch_size)))
-            shuffle_key = random.PRNGKey(random_seed)
-            indexes = jnp.arange(n_test_data)
-            shuffled_indexes = random.permutation(shuffle_key, indexes)
-            test_epoch_data = tree_map(lambda x: x[shuffled_indexes], test_dataset)
-            test_epoch_data = tree_map(lambda x: x.reshape((n_test_data // perception_batch_size, perception_batch_size) + x.shape[1:]), test_epoch_data)
-            test_losses = val_test_loss(
-                test_epoch_data,
-                params,
-                jnp.arange(n_test_data // perception_batch_size),
-            )
-            # Plot training and validation loss
-            avg_train_losses = jnp.mean(train_losses[:n_epochs], axis=1)
-            avg_val_losses = jnp.mean(val_losses[:n_epochs], axis=1)
-            avg_test_loss = jnp.mean(test_losses)
-            fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-            fig.subplots_adjust(right=0.9)
-            fig.suptitle("Perception - Test Loss: {:.4f}".format(avg_test_loss))
-            ax.plot(jnp.arange(n_epochs), avg_train_losses, label="Train", color='orange')
-            ax.set_xlabel("Epoch")
-            ax.set_ylabel("Loss")
-            ax.plot(jnp.arange(n_epochs), avg_val_losses, label="Val", color='blue')
-            ax.set_xlabel("Epoch")
-            ax.set_ylabel("Loss")
-            fig.legend()
-            fig.savefig(os.path.join(os.path.dirname(__file__), perception_nn_name.replace('.pkl', '.eps')), format='eps')
-            del train_dataset
-            del val_dataset
-            del test_dataset
-        else:
-            # Load trained parameters
-            with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
-                encoder_params = pickle.load(f)
-    ### PRE-TRAIN POLICY NETWORK (IMITATION LEARNING)
-    if not os.path.exists(os.path.join(os.path.dirname(__file__), f"jessi_il_out_ablation_{ablation_mode}.pkl")):
+                # Plot training and validation loss
+                avg_train_losses = jnp.mean(train_losses[:n_epochs], axis=1)
+                avg_val_losses = jnp.mean(val_losses[:n_epochs], axis=1)
+                avg_test_loss = jnp.mean(test_losses)
+                fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+                fig.subplots_adjust(right=0.9)
+                fig.suptitle("Perception - Test Loss: {:.4f}".format(avg_test_loss))
+                ax.plot(jnp.arange(n_epochs), avg_train_losses, label="Train", color='orange')
+                ax.set_xlabel("Epoch")
+                ax.set_ylabel("Loss")
+                ax.plot(jnp.arange(n_epochs), avg_val_losses, label="Val", color='blue')
+                ax.set_xlabel("Epoch")
+                ax.set_ylabel("Loss")
+                fig.legend()
+                fig.savefig(os.path.join(os.path.dirname(__file__), perception_nn_name.replace('.pkl', '.eps')), format='eps')
+                del train_dataset
+                del val_dataset
+                del test_dataset
+            else:
+                # Load trained parameters
+                with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
+                    encoder_params = pickle.load(f)
+        ### PRE-TRAIN POLICY NETWORK (IMITATION LEARNING)
         # Load trained perception parameters
         with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
             encoder_params = pickle.load(f)
