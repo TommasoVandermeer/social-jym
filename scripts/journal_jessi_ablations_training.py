@@ -92,6 +92,7 @@ for a, ablation_mode in enumerate(ABLATIONS):
                 n_detectable_humans=n_detectable_humans, 
                 max_humans_velocity=max_humans_velocity,
                 embedding_dim=embeddings_dim,
+                ablation_mode=ablation_mode,
             )
             # Initialize network
             params, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
