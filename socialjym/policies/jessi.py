@@ -1260,8 +1260,14 @@ class JESSI(BasePolicy):
             random_key=subkey
         )
         if self.ablation_mode == 6:
-            action = self.action_distribution.to_env_action(actor_distr, sampled_action)
-        action = lax.cond(sample, lambda _: sampled_action, lambda _: self.action_distribution.mean(actor_distr), None)
+            action = lax.cond(
+                sample, 
+                lambda _: self.action_distribution.to_env_action(actor_distr, sampled_action), 
+                lambda _: self.action_distribution.mean(actor_distr), 
+                None
+            )
+        else:
+            action = lax.cond(sample, lambda _: sampled_action, lambda _: self.action_distribution.mean(actor_distr), None)
         if self.ablation_mode == 4:
             action = self.action_distribution.bound_action_safety(action, actor_distr["vertices"])
         return action, key, perception_input, robot_state_input, actor_input, sampled_action, perception_output, actor_distr, state_value, spat_attn, temp_attn, human_attn
