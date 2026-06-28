@@ -37,14 +37,20 @@ class LogisticNormal(BaseDistribution):
 
     @partial(jit, static_argnames=("self"))
     def sample(self, distribution:dict, key:random.PRNGKey):
+        """
+        Returns LATENT z. 
+        """
         locs = distribution["locs"]
         scales = jnp.exp(distribution["log_scales"])
+        return locs + scales * random.normal(key, locs.shape)
+
+    @partial(jit, static_argnames=("self"))
+    def to_env_action(self, distribution:dict, latent_action:jnp.ndarray) -> jnp.ndarray:
+        """
+        Maps latent z to action (v,w)
+        """
         vertices = distribution["vertices"]
-        # Reparameterization trick for latent Gaussian
-        z = locs + scales * random.normal(key, locs.shape)
-        # Softmax projection to the simplex
-        weights = jax.nn.softmax(z)
-        # Map to the feasible region
+        weights = jax.nn.softmax(latent_action)
         return jnp.dot(weights, vertices)
 
     @partial(jit, static_argnames=("self"))
@@ -77,29 +83,13 @@ class LogisticNormal(BaseDistribution):
         return jnp.diag(cov_action)
 
     @partial(jit, static_argnames=("self"))
-    def neglogp(self, distribution:dict, action:jnp.ndarray):
+    def neglogp(self, distribution:dict, latent_action:jnp.ndarray):
+        """
+        Computes log-probability from latent z. 
+        """
         locs = distribution["locs"]
         scales = jnp.exp(distribution["log_scales"])
-        vertices = distribution["vertices"]
-        # Construct the system M * w = y
-        M = jnp.vstack((vertices.T, jnp.ones((len(vertices),))))
-        y = jnp.append(action, 1.0)
-        # Pseudo-inverse to support arbitrary number of vertices (V > D + 1)
-        # Finds the minimum-norm weight vector solving the underdetermined system
-        M_pinv = jnp.linalg.pinv(M)
-        w_raw = jnp.dot(M_pinv, y)
-        # Clip and normalize to ensure strict simplex bounds and avoid log(0)
-        w_safe = jnp.clip(w_raw, self.epsilon, 1.0)
-        w_safe = w_safe / jnp.sum(w_safe)
-        # Inverse of softmax (up to a constant shift, setting c=0)
-        z = jnp.log(w_safe)
-        # Log probability of the latent Gaussian
-        log_prob_z = jnp.sum(norm.logpdf(z, loc=locs, scale=scales))
-        # Log determinant of the Jacobian for the softmax transformation
-        log_det_jacobian = jnp.sum(z) 
-        # log pi(a) = log p(z) - log|det(J)|
-        log_prob_action = log_prob_z - log_det_jacobian
-        return -log_prob_action
+        return -jnp.sum(norm.logpdf(latent_action, loc=locs, scale=scales))
 
     @partial(jit, static_argnames=("self"))
     def batch_neglogp(self, distribution:dict, actions:jnp.ndarray):
