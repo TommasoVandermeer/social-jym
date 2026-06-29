@@ -42,7 +42,9 @@ class TB4Controller(Node):
                 [17.6, 22.3],       # 0
                 [14.956, 22.618],   # 1
                 [1.503, 22.633],    # 2
+                [-4.893, 23.1],     # 2.5
                 [-5.893, 22.991],   # 3
+                [-6.493, 21.991],   # 3.5
                 [-6.873, 19.245],   # 4
                 [-6.873, 8.458],    # 5
                 [-6.584, 0.597],    # 6
@@ -75,6 +77,8 @@ class TB4Controller(Node):
                 [-jnp.sin(-initial_pose[3]), jnp.cos(-initial_pose[3])],
             ])
             waypoints = (waypoints - initial_pose[:2][None,:]) @ inv_rotation_matrix
+            # plt.scatter(waypoints[:,0], waypoints[:,1], marker="*", color="red", zorder=2)
+            # plt.show()
 
         self.frequency = frequency
         self.planner = planner
@@ -146,7 +150,8 @@ class TB4Controller(Node):
                 lidar_num_rays=self.lidar_num_rays,
                 lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
                 lidar_max_dist=self.lidar_max_dist,
-                n_stack_for_action_space_bounding=1
+                n_stack_for_action_space_bounding=1,
+                ablation_mode = 6,
             )
         elif planner == 'DWA':
             self.policy = DWA(
@@ -442,7 +447,7 @@ class TB4Controller(Node):
             return
 
         # Goal reset logic
-        if dist < self.radius + 0.3:
+        if dist < self.radius + 0.5:
             if self.robot_goal_forward:
                 if self.robot_goal_index < len(self.robot_goal_list) - 1:
                     self.robot_goal_index += 1

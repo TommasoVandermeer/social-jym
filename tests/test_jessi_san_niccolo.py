@@ -1,6 +1,6 @@
 from jax import random, vmap
 import jax.numpy as jnp
-import numpy as np
+import matplotlib.pyplot as plt
 import pickle
 import os
 
@@ -79,7 +79,9 @@ robot_goals = jnp.array([
     [17.6, 22.3],       # 0
     [14.956, 22.618],   # 1
     [1.503, 22.633],    # 2
+    [-4.893, 23.3],     # 2.5
     [-5.893, 22.991],   # 3
+    [-6.893, 21.991],   # 3.5
     [-6.873, 19.245],   # 4
     [-6.873, 8.458],    # 5
     [-6.584, 0.597],    # 6
@@ -138,13 +140,32 @@ policy = JESSI(
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
 )
-with open(os.path.join(os.path.dirname(__file__), 'realistic_jessi_multitask_rl_out_2.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'realistic_jessi_multitask_rl_out.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # Simulate some episodes
 for i in range(n_episodes):
     policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
     state, reset_key, obs, info, outcome = env.reset_custom_episode(reset_key, custom_episode)
+    # Plot initial state and waypoints
+    figure, ax = plt.subplots(1,1)
+    for o in info['static_obstacles'][-1]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+    ax.scatter(robot_goals[:,0], robot_goals[:,1], marker="*", color="red", zorder=2)
+    for h in range(len(state[:-1])):
+        color = 'blue'
+        alpha = 0.6
+        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * info['humans_parameters'][h,0], state[h,1] + jnp.sin(state[h,4]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
+        ax.add_patch(head)
+        circle = plt.Circle((state[h,0], state[h,1]), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+        ax.add_patch(circle)
+    robot_position = state[-1,:2]
+    head = plt.Circle((robot_position[0] + env.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + env.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+    ax.add_patch(head)
+    circle = plt.Circle((robot_position[0], robot_position[1]), env.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+    ax.add_patch(circle)
+    ax.set_aspect('equal', adjustable='datalim')
+    plt.show()
+    # Start episode
     step = 0
     max_steps = int(env.reward_function.time_limit/env.robot_dt)+1
     all_states = jnp.array([state])
