@@ -33,7 +33,22 @@ PLANNERS = [
 ]
 
 class TB4Controller(Node):
-    def __init__(self, frequency, lidar_num_rays, planner, rc_goal_list, patrol_mode, interp_mode, network_name, save_file_name, save_lists, align, diagnostics, san_niccolo):
+    def __init__(
+            self, 
+            frequency, 
+            lidar_num_rays, 
+            planner, 
+            rc_goal_list, 
+            patrol_mode, 
+            interp_mode, 
+            network_name, 
+            save_file_name, 
+            save_lists, 
+            align, 
+            diagnostics, 
+            san_niccolo,
+            engineering_filters,
+        ):
         super().__init__('TB4_controller')
 
         # San Niccolò Waypoints
@@ -83,6 +98,7 @@ class TB4Controller(Node):
         self.frequency = frequency
         self.planner = planner
         self.diagnostics = diagnostics
+        self.engineering_filters = engineering_filters
         if self.diagnostics:
             self.get_logger().info("📈 Initialize live diagnostics plot...")
             plt.ion() # NON blocking mode for live update
@@ -106,6 +122,8 @@ class TB4Controller(Node):
         self.init_time = time.time()
         self.previous_control_time = time.time()
 
+        self.v_max = 0.45 # m/s
+        self.w_max = 1.9 # rad/s
         self.n_stack = 5 
         self.dt = 1.0 / self.frequency  # Control frequency
         self.radius = 0.3
@@ -143,20 +161,20 @@ class TB4Controller(Node):
 
         if planner == 'JESSI':
             self.policy = JESSI(
-                v_max=0.45,
-                wheels_distance=2*0.45/1.9,
+                v_max=self.v_max,
+                wheels_distance=2*self.v_max/self.w_max,
                 n_stack=self.n_stack,
                 robot_radius=self.radius,
                 lidar_num_rays=self.lidar_num_rays,
                 lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
                 lidar_max_dist=self.lidar_max_dist,
                 n_stack_for_action_space_bounding=1,
-                ablation_mode = 6,
+                # ablation_mode = 6,
             )
         elif planner == 'DWA':
             self.policy = DWA(
-                v_max=0.45,
-                wheels_distance=2*0.45/1.9,
+                v_max=self.v_max,
+                wheels_distance=2*self.v_max/self.w_max,
                 dt=self.dt,
                 n_stack=self.n_stack,
                 robot_radius=self.radius,
@@ -166,8 +184,8 @@ class TB4Controller(Node):
             )
         elif planner == 'MPPI':
             self.policy = MPPI(
-                v_max=0.45,
-                wheels_distance=2*0.45/1.9,
+                v_max=self.v_max,
+                wheels_distance=2*self.v_max/self.w_max,
                 dt=self.dt,
                 robot_radius=self.radius,
                 n_stack=self.n_stack,
@@ -178,8 +196,8 @@ class TB4Controller(Node):
             self.u_mean = self.policy.init_u_mean()
         elif planner == 'VANILLA-E2E':
             self.policy = VanillaE2E(
-                v_max=0.45,
-                wheels_distance=2*0.45/1.9,
+                v_max=self.v_max,
+                wheels_distance=2*self.v_max/self.w_max,
                 robot_radius=self.radius,
                 n_stack=self.n_stack,
                 lidar_num_rays=self.lidar_num_rays,
@@ -189,8 +207,8 @@ class TB4Controller(Node):
             )
         elif planner == 'BOUNDED-VANILLA-E2E':
             self.policy = VanillaE2E(
-                v_max=0.45,
-                wheels_distance=2*0.45/1.9,
+                v_max=self.v_max,
+                wheels_distance=2*self.v_max/self.w_max,
                 robot_radius=self.radius,
                 n_stack=self.n_stack,
                 lidar_num_rays=self.lidar_num_rays,
@@ -550,6 +568,46 @@ class TB4Controller(Node):
                         'scan_timestamp': scan_time_sec,
                         'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
                     })
+                ### ==========================================================
+                ### SIM-TO-REAL ENGINEERING FILTERS
+                ### ==========================================================
+                if self.engineering_filters:
+                    if self.planner in ['JESSI', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E']:
+                        ## 1. Geometric auxiliary controller (P-Controller)
+                        dx = float(self.robot_goal[0]) - rx
+                        dy = float(self.robot_goal[1]) - ry
+                        angle_to_goal = np.arctan2(dy, dx)
+                        heading_error = angle_to_goal - r_theta
+                        heading_error = (heading_error + np.pi) % (2 * np.pi) - np.pi
+                        w_geo = float(np.clip(self.w_max * heading_error, -self.w_max, self.w_max)) 
+                        v_max_geo = self.v_max - (abs(w_geo)*self.v_max/self.w_max)
+                        v_geo = float(np.clip(self.v_max * dist, 0.0, v_max_geo))
+                        ## 2. Action Blending
+                        # Analysis of the free frontal space (centrale cone of the scan)
+                        num_rays = len(lidar_scan)
+                        center_idx = num_rays // 2
+                        front_window = lidar_scan[max(0, center_idx - 10):min(num_rays, center_idx + 10)]
+                        min_front_dist = np.min(front_window)
+                        # Alpha coefficient: 0.0 (RL) with close-by obstacles, 1.0 (Geometric) with free space
+                        d_min = 1.5 # Start of RL intervention
+                        d_max = 3.0 # Geometric guide only
+                        alpha = float(np.clip((min_front_dist - d_min) / (d_max - d_min), 0.0, 1.0))
+                        v_cmd = alpha * v_geo + (1.0 - alpha) * v_cmd
+                        w_cmd = alpha * w_geo + (1.0 - alpha) * w_cmd
+                        ## 3. Recovery Mode
+                        # Forced in-place rotation if 60 degrees (1.04 rad) off-axis and the path is clear.
+                        if abs(heading_error) > 1.04 and min_front_dist > 1.0:
+                            v_cmd = 0.0
+                            w_cmd = float(np.sign(heading_error)) * 0.5
+                    ## 4. Angular velocity deadband
+                    w_deadband = 0.05
+                    if abs(w_cmd) < w_deadband:
+                        w_cmd = 0.0
+                    ## 5. Inertial filter (Low-pass)
+                    beta = 0.3 # Weight of the previous step for peak damping
+                    v_cmd = beta * float(self.previous_action[0]) + (1.0 - beta) * v_cmd
+                    w_cmd = beta * float(self.previous_action[1]) + (1.0 - beta) * w_cmd
+                ### ==========================================================
                 cmd_msg = Twist()
                 cmd_msg.linear.x = v_cmd
                 cmd_msg.angular.z = w_cmd
@@ -621,6 +679,7 @@ def main(args=None):
     parser.add_argument('-f', '--frequency', type=float, default=4.0, help='Control frequency in Hz')
     parser.add_argument('-l', '--lidar_rays', type=int, default=300, help='Number of rays used to infer the policy action')
     parser.add_argument('-sn', '--san_niccolo', action='store_true', help='Activare mode San Niccolò experiment with hardcoded waypoints')
+    parser.add_argument('-e', '--engineering_filters', action='store_true', help='Activate Engineering Filters for enhanced sim-to-real performance')
 
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
 
@@ -646,6 +705,7 @@ def main(args=None):
         align=parsed_args.align,
         diagnostics=parsed_args.diagnostics,
         san_niccolo=parsed_args.san_niccolo,
+        engineering_filters=parsed_args.engineering_filters
     )
     mode_text = "🔄 PATROL MODE" if parsed_args.patrol else "🛑 SINGLE TARGET MODE"
     node.get_logger().info(f"Goals set to: {rc_goals_list} in the robot frame | {mode_text}")

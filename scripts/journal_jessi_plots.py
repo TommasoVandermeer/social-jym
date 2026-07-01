@@ -18,7 +18,7 @@ from socialjym.policies.jessi import JESSI
 from socialjym.envs.base_env import SCENARIOS
 
 ### PARAMETERS
-L = 0.3 # Distance between the wheels of the robot
+L = 0.7 # Distance between the wheels of the robot
 v_max = 1. # Maximum linear velocity of the robot
 dt = 0.25
 radius = 0.3
@@ -116,9 +116,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_2.ep
             ],
             closed=True,
             fill=True,
-            edgecolor='green',
+            edgecolor='black',
             facecolor='lightgreen',
-            linewidth=2,
+            linewidth=3,
             zorder=2,
         ),
     )
@@ -130,11 +130,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_2.ep
     ax.set_xlim(-w_max - 0.3, w_max + 0.3)
     ax.set_ylabel("$v$ (m/s)", labelpad=-15)
     ax.set_xlabel("$\omega$ (rad/s)", labelpad=-5)
-    ax.plot([-10, 10], [0, 0], color='black', linewidth=3, zorder=5)
-    ax.text(0, 0.1, "$v \geq 0$", zorder=5, verticalalignment='bottom', horizontalalignment='center')
-    ax.plot([-(w_max)*2, w_max], [-v_max, 2], color='black', linewidth=3, zorder=5)
+    # ax.plot([-10, 10], [0, 0], color='black', linewidth=3, zorder=5)
+    # ax.text(0, 0.1, "$v \geq 0$", zorder=5, verticalalignment='bottom', horizontalalignment='center')
+    # ax.plot([-(w_max)*2, w_max], [-v_max, 2], color='black', linewidth=3, zorder=5)
     ax.text(-2.5 , L, r"$\omega \geq \frac{2(v-\bar{\phi} \rho)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
-    ax.plot([(w_max)*2, -w_max], [-v_max, 2], color='black', linewidth=3, zorder=5)
+    # ax.plot([(w_max)*2, -w_max], [-v_max, 2], color='black', linewidth=3, zorder=5)
     ax.text(2.5 , L, r"$\omega \leq \frac{2(\bar{\phi} \rho-v)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='right')
     ax.grid()
     figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_2.eps'), format='eps')
