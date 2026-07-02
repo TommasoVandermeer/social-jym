@@ -79,7 +79,7 @@ policies = {
 def jessi_tests(policy: JESSI, jessi_params: dict):
     metrics_dims = (3,len(tests_n_obstacles),len(tests_n_humans))
     all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
-    all_metrics["perception_loss"] = jnp.zeros(metrics_dims)
+    all_perception_losses = jnp.zeros(metrics_dims)
     for i, n_obstacle in enumerate(tests_n_obstacles):
         for j, n_human in enumerate(tests_n_humans):
             seen_env_params = {
@@ -154,14 +154,15 @@ def jessi_tests(policy: JESSI, jessi_params: dict):
                 ccso_env,
                 jessi_params,
             )
-            all_metrics["perception_loss"] = all_metrics["perception_loss"].at[0,i,j].set(perception_metrics_seen_scenarios["perception_loss"])
-            all_metrics["perception_loss"] = all_metrics["perception_loss"].at[1,i,j].set(perception_metrics_ct["perception_loss"])
-            all_metrics["perception_loss"] = all_metrics["perception_loss"].at[2,i,j].set(perception_metrics_ccso["perception_loss"])
+            all_perception_losses = all_perception_losses.at[0,i,j].set(perception_metrics_seen_scenarios["perception_loss"])
+            all_perception_losses = all_perception_losses.at[1,i,j].set(perception_metrics_ct["perception_loss"])
+            all_perception_losses = all_perception_losses.at[2,i,j].set(perception_metrics_ccso["perception_loss"])
+    all_metrics["perception_loss"] = all_perception_losses
     return all_metrics
 
 if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_efficiency_tests.pkl")):
 
-    ### JESSI-MULTITASK ABLATIONS ###
+    ### JESSI-MULTITASK EFFICIENCY TESTS ###
     for embeddings_size in network_embeddings_dims:
         if not os.path.exists(os.path.join(os.path.dirname(__file__),f"jessi_multitask_efficiency_{embeddings_size}_tests.pkl")):
             # Load JESSI-MULTITASK policy parameters
