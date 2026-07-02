@@ -98,10 +98,11 @@ class SinusoidalPositionalEncoding(hk.Module):
     def __init__(self, d_model, max_len=5000, name=None):
         super().__init__(name=name)
         position = jnp.arange(max_len, dtype=jnp.float32)[:, jnp.newaxis]
-        div_term = jnp.exp(jnp.arange(0, d_model, 2) * -(jnp.log(10000.0) / d_model))
+        div_term = jnp.exp(jnp.arange(0, d_model, 2, dtype=jnp.float32) * -(jnp.log(10000.0) / d_model))
         pe = jnp.zeros((max_len, d_model))
         pe = pe.at[:, 0::2].set(jnp.sin(position * div_term))
-        pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
+        cos_indices_len = d_model // 2
+        pe = pe.at[:, 1::2].set(jnp.cos(position * div_term[:cos_indices_len]))
         self.pe_table = pe 
 
     def __call__(self, x):
