@@ -513,7 +513,7 @@ for embeddings_dim in network_embeddings_dims:
                     },
                     random.split(random.PRNGKey(i * n_train_batches + j), policy_batch_size),
                 )
-                hcgs, scan_embeddings, _, _, _ = jessi.perception.apply(
+                hcgs, scan_embeddings, _, _ = jessi.perception.apply(
                     encoder_params, 
                     None, 
                     noisy_inputs["inputs"],
