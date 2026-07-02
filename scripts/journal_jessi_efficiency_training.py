@@ -93,20 +93,20 @@ assert int(n_steps * data_split[2]) % perception_batch_size == 0, "Test set size
 
 for embeddings_dim in network_embeddings_dims:
     print(f"\n\n{'='*20} TRAINING WITH EMBEDDINGS DIMENSION: {embeddings_dim} {'='*20}\n\n")
+    # JESSI policy
+    jessi = JESSI(
+        v_max=robot_vmax, 
+        dt=robot_dt, 
+        lidar_num_rays=lidar_num_rays, 
+        lidar_max_dist=lidar_max_dist,
+        lidar_angular_range=lidar_angular_range,
+        n_stack=n_stack, 
+        n_detectable_humans=n_detectable_humans, 
+        max_humans_velocity=max_humans_velocity,
+        embedding_dim=embeddings_dim,
+    )
     ### PRE-TRAIN PERCEPTION NETWORK
     if not os.path.exists(os.path.join(os.path.dirname(__file__),  f"{perception_nn_name}_{embeddings_dim}.pkl")):
-        # JESSI policy
-        jessi = JESSI(
-            v_max=robot_vmax, 
-            dt=robot_dt, 
-            lidar_num_rays=lidar_num_rays, 
-            lidar_max_dist=lidar_max_dist,
-            lidar_angular_range=lidar_angular_range,
-            n_stack=n_stack, 
-            n_detectable_humans=n_detectable_humans, 
-            max_humans_velocity=max_humans_velocity,
-            embedding_dim=embeddings_dim,
-        )
         # Load dataset
         with open(os.path.join(os.path.dirname(__file__), 'final_hcg_training_dataset.pkl'), 'rb') as f:
             dataset = pickle.load(f)
