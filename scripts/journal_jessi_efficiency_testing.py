@@ -148,15 +148,9 @@ def jessi_tests(policy: JESSI, jessi_params: dict):
                 ct_env,
                 jessi_params,
             )
-            perception_metrics_ccso = policy.evaluate_perception(
-                n_steps_perception,
-                random_seed,
-                ccso_env,
-                jessi_params,
-            )
             all_perception_losses = all_perception_losses.at[0,i,j].set(perception_metrics_seen_scenarios["perception_loss"])
             all_perception_losses = all_perception_losses.at[1,i,j].set(perception_metrics_ct["perception_loss"])
-            all_perception_losses = all_perception_losses.at[2,i,j].set(perception_metrics_ccso["perception_loss"])
+            all_perception_losses = all_perception_losses.at[2,i,j].set(jnp.full(metrics_dims[1:], jnp.nan)) # CCSO scenario is not evaluated for perception metrics
     all_metrics["perception_loss"] = all_perception_losses
     return all_metrics
 
