@@ -18,12 +18,11 @@ from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as LaserRew
 from socialjym.utils.aux_functions import initialize_metrics_dict
 from socialjym.policies.jessi import JESSI
 
-from .journal_jessi_efficiency_training import network_embeddings_dims
-
 # Hyperparameters
 random_seed = 2_000_000 # Make sure test episodes are not the same as the training ones
 n_trials = 100
 n_steps_perception = 5_000
+network_embeddings_dims = [8, 16, 32, 64, 96, 128, 160]
 # Tests
 tests_n_humans = [1, 3, 5, 10]
 tests_n_obstacles = [1, 3, 5]
