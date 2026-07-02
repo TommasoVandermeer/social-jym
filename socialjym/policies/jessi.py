@@ -662,6 +662,7 @@ class JESSI(BasePolicy):
         assert n_detectable_humans >= 2, "Number of detectable humans must be at least 2"
         assert n_stack_for_action_space_bounding <= n_stack, "n_stack_for_action_space_bounding must be less than or equal to n_stack"
         assert ablation_mode is None or ablation_mode in ABLATIONS, f"ablation_mode must be either None or one of {ABLATIONS}"
+        assert embedding_dim % 4 == 0, "Embedding dimension must be a multiple of 4"
         # Configurable attributes
         self.robot_radius = robot_radius
         self.v_max = v_max

@@ -56,7 +56,7 @@ policy = JESSI(
     lidar_max_dist=env.lidar_max_dist,
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
-    # ablation_mode=6,
+    # embedding_dim=8,
 )
 # with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_perception_network.pkl'), 'rb') as f:
 #     encoder_params = pickle.load(f)

@@ -17,7 +17,7 @@ from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
 
 ### NETWORK EMBEDDINGS Dimensions
-network_embeddings_dims = [7, 32, 64, 96, 128, 160]
+network_embeddings_dims = [8, 16, 32, 64, 96, 128, 160]
 
 
 perception_nn_name = 'pre_perception_network'
