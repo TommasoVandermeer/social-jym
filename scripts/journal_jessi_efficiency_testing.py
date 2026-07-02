@@ -3,7 +3,7 @@ from jax.tree_util import tree_map
 import os
 import pickle
 from tabulate import tabulate
-import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from matplotlib import rc, rcParams
 font = {
     'weight' : 'regular',
@@ -18,10 +18,12 @@ from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as LaserRew
 from socialjym.utils.aux_functions import initialize_metrics_dict
 from socialjym.policies.jessi import JESSI
 
+from .journal_jessi_efficiency_training import network_embeddings_dims
+
 # Hyperparameters
-random_seed = 1_000_000 # Make sure test episodes are not the same as the training ones
+random_seed = 2_000_000 # Make sure test episodes are not the same as the training ones
 n_trials = 100
-network_embeddings_dims = [32, 64, 96, 128, 160]
+n_steps_perception = 5_000
 # Tests
 tests_n_humans = [1, 3, 5, 10]
 tests_n_obstacles = [1, 3, 5]
@@ -51,6 +53,7 @@ metrics = {
     "AVE": {"label": "Velocity Error ($m/s$)"},
     "mahalanobis_pos": {"label": "Mahalanobis Dist. Pos."},
     "mahalanobis_vel": {"label": "Mahalanobis Dist. Vel."},
+    "perception_loss": {"label": "Perception Loss", "episodic": True},
 }
 scenarios = {
     "parallel_traffic": {"label": "PaT"},
@@ -64,17 +67,20 @@ scenarios = {
     "door_crossing": {"label": "DoC"},
     "crowd_chasing": {"label": "CrC"},
 }
+colors = list(mcolors.TABLEAU_COLORS.values())
 policies = {
-    "jessi_efficiency_32": {"label": "JESSI-MULTITASK-32", "short": "JESSI-32", "only_ccso": False, "color": "tab:blue"},
-    "jessi_efficiency_64": {"label": "JESSI-MULTITASK-64", "short": "JESSI-64", "only_ccso": False, "color": "tab:orange"},
-    "jessi_efficiency_96": {"label": "JESSI-MULTITASK-96", "short": "JESSI-96", "only_ccso": False, "color": "tab:green"},
-    "jessi_efficiency_128": {"label": "JESSI-MULTITASK-128", "short": "JESSI-128", "only_ccso": False, "color": "tab:red"},
-    "jessi_efficiency_160": {"label": "JESSI-MULTITASK-160", "short": "JESSI-160", "only_ccso": False, "color": "tab:purple"},
+    f"jessi_efficiency_{embeddings_size}": {
+        "label": f"JESSI-MULTITASK-{embeddings_size}", 
+        "short": f"JESSI-{embeddings_size}", 
+        "only_ccso": False, 
+        "color": colors[idx]
+    } for idx, embeddings_size in enumerate(network_embeddings_dims)
 }
 
-def jessi_tests(policy, jessi_params):
+def jessi_tests(policy: JESSI, jessi_params: dict):
     metrics_dims = (3,len(tests_n_obstacles),len(tests_n_humans))
     all_metrics = initialize_metrics_dict(n_trials, metrics_dims)
+    all_metrics["perception_loss"] = jnp.zeros(metrics_dims)
     for i, n_obstacle in enumerate(tests_n_obstacles):
         for j, n_human in enumerate(tests_n_humans):
             seen_env_params = {
@@ -107,6 +113,7 @@ def jessi_tests(policy, jessi_params):
             seen_env = LaserNav(**seen_env_params)
             ct_env = LaserNav(**ct_env_params) # Unseen scenario
             ccso_env = LaserNav(**ccso_env_params) # Unseen scenario
+            ## NAVIGATION METRICS
             # Test the trained JESSI-MULTITASK policy
             metrics_seen_scenarios = policy.evaluate(
                 n_trials,
@@ -129,6 +136,28 @@ def jessi_tests(policy, jessi_params):
             all_metrics = tree_map(lambda x, y: x.at[0,i,j].set(y), all_metrics, metrics_seen_scenarios)
             all_metrics = tree_map(lambda x, y: x.at[1,i,j].set(y), all_metrics, metrics_ct)
             all_metrics = tree_map(lambda x, y: x.at[2,i,j].set(y), all_metrics, metrics_ccso)
+            ## PERCEPTION METRICS
+            perception_metrics_seen_scenarios = policy.evaluate_perception(
+                n_steps_perception,
+                random_seed,
+                seen_env,
+                jessi_params,
+            )
+            perception_metrics_ct = policy.evaluate_perception(
+                n_steps_perception,
+                random_seed,
+                ct_env,
+                jessi_params,
+            )
+            perception_metrics_ccso = policy.evaluate_perception(
+                n_steps_perception,
+                random_seed,
+                ccso_env,
+                jessi_params,
+            )
+            all_metrics["perception_loss"] = all_metrics["perception_loss"].at[0,i,j].set(perception_metrics_seen_scenarios["perception_loss"])
+            all_metrics["perception_loss"] = all_metrics["perception_loss"].at[1,i,j].set(perception_metrics_ct["perception_loss"])
+            all_metrics["perception_loss"] = all_metrics["perception_loss"].at[2,i,j].set(perception_metrics_ccso["perception_loss"])
     return all_metrics
 
 if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_efficiency_tests.pkl")):
@@ -165,8 +194,8 @@ else:
         all_results = pickle.load(f)
 
 ### PRINT RESULTS SUMMARIES ###
-metrics_to_plot = ["successes","collisions_with_human","collisions_with_obstacle","timeouts","times_to_goal","average_jerk","average_angular_jerk","space_compliance"]
-higher_is_better = ["successes", "space_compliance"]
+metrics_to_plot = ["returns","perception_loss","successes","collisions_with_human","collisions_with_obstacle","timeouts","times_to_goal","average_jerk","average_angular_jerk","space_compliance"]
+higher_is_better = ["returns","perception_loss", "successes", "space_compliance"]
 train_scenarios_summary = {p: {} for p in policies.keys()}
 test_scenarios_summary = {p: {} for p in policies.keys()}
 train_and_test_scenarios_summary = {p: {} for p in policies.keys()}
@@ -178,6 +207,8 @@ for metric in metrics_to_plot:
         if policies[p]["only_ccso"]: continue
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
             y_data = jnp.nanmean(all_results[p][metric][0, :, :]) / n_trials
+        elif metric == 'perception_loss':
+            y_data = jnp.nanmean(all_results[p][metric][0, :, :])
         else:
             y_data = jnp.nanmean(all_results[p][metric][0, :, :, :])
         train_scenarios_summary[p][metric] = float(y_data)
@@ -186,6 +217,8 @@ for metric in metrics_to_plot:
         if policies[p]["only_ccso"]: continue
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
             y_data = jnp.nanmean(all_results[p][metric][1, :, :]) / n_trials
+        elif metric == 'perception_loss':
+            y_data = jnp.nanmean(all_results[p][metric][1, :, :])
         else:
             y_data = jnp.nanmean(all_results[p][metric][1, :, :, :])
         test_scenarios_summary[p][metric] = float(y_data)
@@ -194,6 +227,8 @@ for metric in metrics_to_plot:
         idx = 0 if policies[p]["only_ccso"] else 2
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
             y_data = jnp.nanmean(all_results[p][metric][idx, :, :]) / n_trials
+        elif metric == 'perception_loss':
+            y_data = jnp.nanmean(all_results[p][metric][idx, :, :])
         else:
             y_data = jnp.nanmean(all_results[p][metric][idx, :, :, :])
         ccso_scenarios_summary[p][metric] = float(y_data)
@@ -211,6 +246,8 @@ def print_pretty_table(summary_dict, title, latex_mode=False):
     if latex_mode:
         headers = [
             "Policy", 
+            r"\makecell{Ret \\ (\%)}", 
+            r"\makecell{PL \\ (\%)}", 
             r"\makecell{SR \\ (\%)}", 
             r"\makecell{CR-H \\ (\%)}", 
             r"\makecell{CR-O \\ (\%)}", 
@@ -221,7 +258,7 @@ def print_pretty_table(summary_dict, title, latex_mode=False):
             r"\makecell{SC \\ (\%)}"
         ]
     else:
-        headers = ["Policy", "SR (%)", "CR-H (%)", "CR-O (%)", "TR (%)", "TtG (s)", "LJ (m/s^3)", "AJ (rad/s^3)", "SC (%)"]
+        headers = ["Policy","Ret", "PL", "SR (%)", "CR-H (%)", "CR-O (%)", "TR (%)", "TtG (s)", "LJ (m/s^3)", "AJ (rad/s^3)", "SC (%)"]
     top_3_values = {}
     for metric in metrics_to_plot:
         valid_vals = [m[metric] for p, m in summary_dict.items() if m and not jnp.isnan(m.get(metric, float('nan')))]

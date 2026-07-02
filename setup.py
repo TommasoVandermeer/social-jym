@@ -36,6 +36,9 @@ setup(
         'pandas==2.2.3',
     ],
     extras_require={
+        'cuda13': [
+            'jax[cuda13]>=0.8.0',
+        ],
         'cuda12': [
             'jax[cuda12]==0.4.30; python_version == "3.10"',
             'jax[cuda12]==0.4.34; python_version == "3.13"',

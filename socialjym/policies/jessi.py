@@ -1573,6 +1573,7 @@ class JESSI(BasePolicy):
             "total_gt_objects": total_gt,
             "distance_thresholds": distance_thresholds,
             "score_thresholds": score_thresholds,
+            "perception_loss": self._perception_loss(predicted_distrs, targets),
         }
         return metrics
 

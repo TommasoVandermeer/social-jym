@@ -3,7 +3,6 @@ from jax.tree_util import tree_map
 import os
 import pickle
 from tabulate import tabulate
-import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib import rc, rcParams
 font = {
