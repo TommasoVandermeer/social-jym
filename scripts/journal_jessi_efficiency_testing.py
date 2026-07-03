@@ -201,7 +201,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_efficiency_t
             print(f"JESSI-{embeddings_size} tests already exist. Checking if perception losses are available...")
             with open(os.path.join(os.path.dirname(__file__),f"jessi_multitask_efficiency_{embeddings_size}_tests.pkl"), 'rb') as f:
                 all_metrics = pickle.load(f)
-            if ["perception_loss", "pos_reg_loss", "vel_reg_loss", "cls_loss"] not in all_metrics.keys():
+                keys = [*all_metrics.keys()]
+            if "perception_loss" not in keys or "pos_reg_loss" not in keys or "vel_reg_loss" not in keys or "cls_loss" not in keys:
                 print(f"Perception losses not found for JESSI-{embeddings_size}. Running perception tests...")
                 # Load JESSI-MULTITASK policy parameters
                 with open(os.path.join(os.path.dirname(__file__), f"jessi_multitask_rl_out_{embeddings_size}.pkl"), 'rb') as f:
