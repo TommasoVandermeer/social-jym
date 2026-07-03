@@ -262,7 +262,7 @@ def train_one_epoch(
                 )
                 # Compute perception loss
                 perc_dist = dist_to_f32(perc_dist)
-                batch_perc_loss = policy._perception_loss(perc_dist, gt_dict)
+                batch_perc_loss, _ = policy._perception_loss(perc_dist, gt_dict)
                 perception_loss = jnp.mean(batch_perc_loss)
             else:
                 perception_loss = 0.0

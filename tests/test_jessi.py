@@ -23,11 +23,11 @@ env_params = {
     'lidar_num_rays': 100,
     'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
-    'lidar_dt': 0.13,
-    'odometry_dt': 0.05,
-    'control_delay_mean': 0.1, 
-    'control_delay_sigma': 0.01,
-    'wheels_max_linear_acceleration': 1.8, #0.87,
+    # 'lidar_dt': 0.13,
+    # 'odometry_dt': 0.05,
+    # 'control_delay_mean': 0.1, 
+    # 'control_delay_sigma': 0.01,
+    # 'wheels_max_linear_acceleration': 1.8, #0.87,
     'wheels_distance': robot_wheel_distance,
     'n_humans': 5,
     'n_obstacles': 5,
@@ -41,7 +41,7 @@ env_params = {
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
     'lidar_noise': True,
-    'leg_dynamics': True,
+    # 'leg_dynamics': True,
 }
 
 # Initialize the environment
@@ -56,7 +56,7 @@ policy = JESSI(
     lidar_max_dist=env.lidar_max_dist,
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
-    # embedding_dim=8,
+    embedding_dim=32,
 )
 # with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_perception_network.pkl'), 'rb') as f:
 #     encoder_params = pickle.load(f)
@@ -64,7 +64,7 @@ policy = JESSI(
 #     actor_params = pickle.load(f)
 # network_params = policy.merge_nns_params(encoder_params, actor_params)
 
-with open(os.path.join(os.path.dirname(__file__), 'realistic_jessi_multitask_rl_out.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out_32.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # _, _, network_params = policy.init_nns(random.PRNGKey(random_seed))

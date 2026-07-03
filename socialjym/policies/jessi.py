@@ -850,7 +850,8 @@ class JESSI(BasePolicy):
         target_cls = jnp.max(valid_matches, axis=2) # (B, K) -> 0 o 1
         bce = - (target_cls * jnp.log(human_distrs['weights'] + 1e-6) + (1 - target_cls) * jnp.log(1 - human_distrs['weights'] + 1e-6))
         cls_loss = jnp.mean(bce) 
-        return lambda_pos_reg * pos_reg_loss + lambda_vel_reg * vel_reg_loss + lambda_cls * cls_loss
+        return lambda_pos_reg * pos_reg_loss + lambda_vel_reg * vel_reg_loss + lambda_cls * cls_loss, \
+               {"pos_reg_loss": pos_reg_loss, "vel_reg_loss": vel_reg_loss, "cls_loss": cls_loss}
 
     @partial(jit, static_argnames=("self"))
     def _safety_loss(
@@ -1312,7 +1313,7 @@ class JESSI(BasePolicy):
             lambda_pos_reg,
             lambda_vel_reg,
             lambda_cls,
-        )
+        )[0]
 
     @partial(jit, static_argnames=("self","actor_critic_optimizer"))
     def update_il(
@@ -1443,16 +1444,18 @@ class JESSI(BasePolicy):
         - targets: dict containing ground truth masks, positions and velocities
 
         returns:
-        - metrics: dict containing for each threshold pair the:
-            - true positives
-            - false positives
-            - false negatives
-            - precision
-            - recall
-            - average displacement error (ADE) for positions (RMSE over true positives)
-            - average velocity error (AVE) for velocities (RMSE over true positives)
-            - Mahlanobis distance for positions (average over true positives)
-            - Mahlanobis distance for velocities (average over true positives)
+        - metrics: 
+            - Dict containing for each threshold pair the:
+                - true positives
+                - false positives
+                - false negatives
+                - precision
+                - recall
+                - average displacement error (ADE) for positions (RMSE over true positives)
+                - average velocity error (AVE) for velocities (RMSE over true positives)
+                - Mahlanobis distance for positions (average over true positives)
+                - Mahlanobis distance for velocities (average over true positives)
+            - Perception loss
         """
         ## EXTRACT DATA 
         # Predictions
@@ -1560,6 +1563,8 @@ class JESSI(BasePolicy):
         ave = compute_mean_metric(e_vel_error, is_tp)
         mean_md_pos = compute_mean_metric(e_md_pos, is_tp)
         mean_md_vel = compute_mean_metric(e_md_vel, is_tp)
+        # Perception loss 
+        perception_loss, individual_losses = self._perception_loss(predicted_distrs, targets)
         # Format output
         metrics = {
             "true_positives": tp_count,
@@ -1575,7 +1580,11 @@ class JESSI(BasePolicy):
             "total_gt_objects": total_gt,
             "distance_thresholds": distance_thresholds,
             "score_thresholds": score_thresholds,
-            "perception_loss": self._perception_loss(predicted_distrs, targets),
+            # Overal perception loss
+            "perception_loss": perception_loss,
+            "pos_reg_loss": individual_losses["pos_reg_loss"], 
+            "vel_reg_loss": individual_losses["vel_reg_loss"], 
+            "cls_loss": individual_losses["cls_loss"],
         }
         return metrics
 
