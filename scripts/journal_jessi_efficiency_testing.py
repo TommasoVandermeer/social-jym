@@ -363,12 +363,15 @@ print_pretty_table(ccso_scenarios_summary, "Second experimental setup results", 
 ## Plot Perception Loss and returns vs number of humans for each policy emebedding size
 # Two columns: left column for perception loss, right column for returns
 # Two rows: first row for train scenarios, second row for test scenarios
-metrics_to_plot = ["perception_loss","returns","perception_loss","returns"]
-figure, ax = plt.subplots(2, 2, figsize=(20, 20))
+metrics_to_plot = [
+    "perception_loss","pos_reg_loss","vel_reg_loss","cls_loss","returns", # First row: train scenarios
+    "perception_loss","pos_reg_loss","vel_reg_loss","cls_loss","returns" # Second row: test scenarios
+]
+figure, ax = plt.subplots(2, 5, figsize=(20, 8))
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
-    i = m // 2
-    j = m % 2
+    i = m // 5
+    j = m % 5
     ax[i,j].set(
         xlabel='N° humans',
         ylabel=metrics[metric]['label'],
@@ -382,7 +385,7 @@ for m, metric in enumerate(metrics_to_plot):
         if metric in ['successes', 'collisions', 'timeouts','collisions_with_obstacle','collisions_with_human']:
             y_data = jnp.nanmean(all_results[p][metric][i, :, :], axis=0) / n_trials
             ax[i, j].set_ylim(-0.05, 1.05)
-        elif metric == 'perception_loss':
+        elif metric in ['perception_loss', 'pos_reg_loss', 'vel_reg_loss', 'cls_loss']:
             y_data = jnp.nanmean(all_results[p][metric][i, :, :], axis=0)
         else:
             y_data = jnp.nanmean(all_results[p][metric][i, :, :, :], axis=(0,2))
