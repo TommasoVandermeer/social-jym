@@ -18,6 +18,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
+from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
 from jhsfm.hsfm import vectorized_compute_edge_closest_point
 
@@ -904,6 +905,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         reward_function = Reward1(
             robot_radius=0.3,
             collision_with_humans_penalty=-.5,
+        )
+    elif training_hyperparams['reward_function'] == 'lasernav_reward4': 
+        reward_function = Reward4(
+            robot_radius=0.3,
         )
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")

@@ -361,7 +361,7 @@ class BaseEnv(ABC):
         self.wheels_distance = wheels_distance
         self.control_delay_mean = control_delay_mean
         self.control_delay_sigma = control_delay_sigma
-        self.actions_history_length = jnp.max(jnp.array([jnp.ceil((self.control_delay_mean + 3 * self.control_delay_sigma)/self.robot_dt), 1], dtype=jnp.int32))
+        self.actions_history_length = jnp.max(jnp.array([jnp.ceil((self.control_delay_mean + 3 * self.control_delay_sigma)/self.robot_dt), 2], dtype=jnp.int32))
         self.action_0_dynamics = tau_action_0 > 0.
         self.action_1_dynamics = tau_action_1 > 0.
         self.limited_acceleration = wheels_max_linear_acceleration < jnp.inf
