@@ -163,12 +163,13 @@ class AngularLocalCrossAttention(hk.Module):
         return self.norm2(q + ffn_out), attn_mtrx
 
 class SpatioTemporalEncoder(hk.Module):
-    def __init__(self, embed_dim, n_sectors, lidar_angles_robot_frame, name=None, beam_dropout_rate=0.0, ablation_mode=None): 
+    def __init__(self, embed_dim, n_sectors, lidar_angles_robot_frame, name=None, beam_dropout_rate=0.0, ablation_mode=None, legit=False): 
         super().__init__(name=name)
         self.embed_dim = embed_dim
         self.n_sectors = n_sectors
         self.lidar_angles_robot_frame = lidar_angles_robot_frame # UNUSED
         self.ablation_mode = ablation_mode
+        self.legit = legit
         # 1. Spatial Feature Extraction
         if self.ablation_mode == 5:
             self.spatial_encoder = SpatialCNNEncoder(embed_dim, n_sectors=n_sectors)
@@ -199,11 +200,16 @@ class SpatioTemporalEncoder(hk.Module):
         h_time_mid = self.temporal_norm1(h_time_in + t_out)
         t_ffn_out = self.temporal_ffn(h_time_mid)
         h_time_out = self.temporal_norm2(h_time_mid + t_ffn_out)
-        h_final = h_time_out.reshape(B, L_new, T, self.embed_dim).transpose(0, 2, 1, 3)
+        h_temporal = h_time_out.reshape(B, L_new, T, self.embed_dim).transpose(0, 2, 1, 3)
+        # Extract last scan embeddings (for downstream tasks)
+        if self.legit:
+            last_scan_embeddings = h_spatial[:, 0, :, :] # [B, N_sectors, embed_dim]
+        else:
+            last_scan_embeddings = h_temporal[:, 0, :, :] # [B, N_sectors, embed_dim]
         # Additional info: attention data
         spatial_attention = jnp.mean(s_attn_matrix, axis=(1,2)) # (T, L)
         temporal_attention = jnp.mean(t_attn_mtrx, axis=(0,1)) # (T, T)
-        return h_final, spatial_attention, temporal_attention
+        return h_temporal, last_scan_embeddings, spatial_attention, temporal_attention
 
 class HCGQueryDecoder(hk.Module):
     def __init__(self, n_detectable_humans, embed_dim, name=None):
@@ -251,6 +257,7 @@ class Perception(hk.Module):
             lidar_angles_robot_frame: jnp.ndarray,
             beam_dropout_rate: float = 0.0,
             ablation_mode: Optional[int] = None,
+            legit: bool = False,
         ):
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -260,6 +267,7 @@ class Perception(hk.Module):
         self.lidar_angles_robot_frame = lidar_angles_robot_frame
         self.n_sectors = n_sectors
         self.ablation_mode = ablation_mode
+        self.legit = legit
         # Modules
         self.input_proj = hk.Linear(embed_dim, name="input_projection")
         self.perception = SpatioTemporalEncoder(
@@ -269,6 +277,7 @@ class Perception(hk.Module):
             lidar_angles_robot_frame=lidar_angles_robot_frame, 
             beam_dropout_rate=beam_dropout_rate,
             ablation_mode=ablation_mode,
+            legit=self.legit,
         )
         self.decoder = HCGQueryDecoder(n_detectable_humans, embed_dim, name="decoder")
         # Head: 11 params (weight, mu_x, mu_y, log_sig_x, log_sig_y, corr, mu_vx, mu_vy, log_sig_vx, log_sig_vy, corr_v)
@@ -320,8 +329,7 @@ class Perception(hk.Module):
         # 1. Feature Projection
         x_emb = self.input_proj(tokens) # [B, T, L, embed_dim]
         # 2. Spatio-Temporal Encoding
-        encoded_features, spatial_attention, temporal_attention = self.perception(x_emb, beam_sectors, key=key) # [B, T, L, embed_dim]
-        last_scan_embeddings = encoded_features[:, 0, :, :] # [B, N_sectors, embed_dim]
+        encoded_features, last_scan_embeddings, spatial_attention, temporal_attention = self.perception(x_emb, beam_sectors, key=key) # [B, T, L, embed_dim]
         # 3. Decoding via Queries
         latents = self.decoder(encoded_features) # [B, n_detectable_humans, embed_dim]        
         # 4. Heads & Parameter Transformation
@@ -541,6 +549,7 @@ class E2E(hk.Module):
         initial_concentration: float = 0.,
         beam_dropout_rate: float = 0.0,
         ablation_mode: Optional[int] = None,
+        legit: bool = False,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -569,6 +578,7 @@ class E2E(hk.Module):
             lidar_angles_robot_frame=lidar_angles_robot_frame,
             beam_dropout_rate=beam_dropout_rate,
             ablation_mode=ablation_mode,
+            legit=legit,
         )
         # Initialize Actor-Critic module
         self.actor_critic = ActorCritic(
@@ -646,6 +656,7 @@ class JESSI(BasePolicy):
         n_stack_for_action_space_bounding:int=1,
         beam_dropout_rate:float=0.0,
         ablation_mode: Optional[int] = None, # Options: 1 (no bounding), 2 (no humans uncertainty), 3 (no scene attention)
+        legit:bool=False, 
     ) -> None:
         """
         JESSI (JAX-based E2E Safe Social Interpretable autonomous navigation).
@@ -686,6 +697,7 @@ class JESSI(BasePolicy):
         self.angular_sectors_width_deg = angular_sectors_width_deg
         self.beam_dropout_rate = beam_dropout_rate
         self.ablation_mode = ablation_mode
+        self.legit = legit
         # Default attributes
         self.name = "JESSI"
         self.kinematics = ROBOT_KINEMATICS.index("unicycle")
@@ -710,7 +722,8 @@ class JESSI(BasePolicy):
                 n_sectors=n_sectors,
                 lidar_angles_robot_frame=self.lidar_angles_robot_frame,
                 beam_dropout_rate=self.beam_dropout_rate,
-                ablation_mode=ablation_mode
+                ablation_mode=ablation_mode,
+                legit=self.legit,
             )
             return net(x, stop_gradient=stop_gradient, key=key)
         self.perception = perception_network
@@ -746,6 +759,7 @@ class JESSI(BasePolicy):
                 n_sectors=self.n_sectors,
                 beam_dropout_rate=self.beam_dropout_rate,
                 ablation_mode=self.ablation_mode,
+                legit=self.legit,
             ) 
             return e2e(x, y, stop_perception_gradient=stop_perception_gradient, only_perception=only_perception, **kwargs)
         self.e2e = e2e_network

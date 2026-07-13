@@ -850,6 +850,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'scenarios.eps')):
                 'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
                 'ccso_n_static_humans': 5 if scenario == 'circular_crossing_with_static_obstacles' else 0,
                 'kinematics': 'unicycle',
+                'ccso_static_humans_radius_mean': .3,
+                'ccso_static_humans_radius_std': 0.,
             }
             env = LaserNav(**env_params)
             seed_val = scenario_seeds.get(scenario, 0)
