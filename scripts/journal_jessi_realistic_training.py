@@ -20,7 +20,6 @@ from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward a
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
-from jhsfm.hsfm import vectorized_compute_edge_closest_point
 
 ### Sim-to-real parameters
 lidar_dt = 0.13
@@ -37,7 +36,9 @@ multitask_network_name = 'realistic_jessi_multitask_rl_out_32.pkl'
 ### Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
-robot_vmax = 1.0
+robot_vmax = 0.45
+robot_wmax = 1.9
+robot_wheel_distance = 2 * robot_vmax / robot_wmax
 kinematics = "unicycle"
 lidar_angular_range = 2*jnp.pi
 lidar_max_dist = 10.
@@ -94,6 +95,7 @@ training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_si
 # JESSI policy
 jessi = JESSI(
     v_max=robot_vmax, 
+    wheels_distance=robot_wheel_distance,
     dt=robot_dt, 
     lidar_num_rays=lidar_num_rays, 
     lidar_max_dist=lidar_max_dist,
@@ -126,6 +128,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         'n_obstacles': n_obstacles,
         'robot_dt': robot_dt,
         'robot_radius': robot_radius, 
+        'wheels_distance': robot_wheel_distance,
         'humans_dt': 0.01,
         'robot_visible': True,
         'scenario': scenario,
@@ -927,6 +930,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'n_humans': 4,
         'n_obstacles': 5,
         'robot_dt': 0.25,
+        'wheels_distance': robot_wheel_distance,
         'humans_dt': 0.01,
         'robot_visible': False,
         'scenario': training_hyperparams['scenario'],
@@ -935,6 +939,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'reward_function': reward_function,
         'kinematics': 'unicycle',
         'lidar_noise': True,
+        'lidar_angular_range':lidar_angular_range,
+        'lidar_max_dist':lidar_max_dist,
+        'lidar_num_rays':lidar_num_rays,
         # Sim-to-real parameters
         'lidar_dt': lidar_dt,
         'odometry_dt': odometry_dt,
@@ -952,12 +959,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     policy = JESSI(
         robot_radius=env_params['robot_radius'],
         v_max=robot_vmax, 
+        wheels_distance=robot_wheel_distance,
         dt=env_params['robot_dt'], 
         lidar_num_rays=lidar_num_rays, 
         lidar_max_dist=lidar_max_dist,
         lidar_angular_range=lidar_angular_range,
         n_stack=n_stack,
-        beam_dropout_rate=0.2
+        beam_dropout_rate=0.2,
+        embedding_dim=embeddings_dim,
     )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
