@@ -125,9 +125,11 @@ class Reward4(BaseReward):
         
         self.robot_radius = robot_radius
         self.humans_policy = HUMAN_POLICIES.index('hsfm')
+        self.kinematics = ROBOT_KINEMATICS.index('unicycle')
         
         # Terminations
         self.interval_human_collision_termination = IntervalRobotHumanCollision()
+        self.instant_human_collision_termination = InstantRobotHumanCollision()
         self.instant_obstacle_collision_termination = InstantRobotObstacleCollision()
         self.goal_reached_termination = RobotReachedGoal()
         self.timeout = Timeout(time_limit)

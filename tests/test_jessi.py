@@ -6,7 +6,8 @@ import pickle
 import matplotlib.pyplot as plt
 
 from socialjym.envs.lasernav import LaserNav
-from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
+# from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
+from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4 as Reward
 from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 

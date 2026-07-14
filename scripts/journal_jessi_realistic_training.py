@@ -31,11 +31,9 @@ wheels_max_linear_acceleration = 1.8
 leg_dynamics = True  # Whether to include leg dynamics in the simulation (introduces more realistic trajectories but also more noise in the data)
 ### Script parameters
 save_videos = False  # Whether to save videos of the debug inspections
-perception_nn_name = 'realistic_pre_perception_network.pkl'
-policy_nn_name = 'realistic_pre_controller_network.pkl'
-multitask_network_name = 'realistic_jessi_multitask_rl_out.pkl'
-modular_network_name = 'realistic_jessi_modular_rl_out.pkl'
-policy_network_name = 'realistic_jessi_policy_rl_out.pkl'
+perception_nn_name = 'realistic_pre_perception_network_32.pkl'
+policy_nn_name = 'realistic_pre_controller_network_32.pkl'
+multitask_network_name = 'realistic_jessi_multitask_rl_out_32.pkl'
 ### Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -87,7 +85,7 @@ training_hyperparams = {
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': hybrid_scenario_subset,
-    'reward_function': 'lasernav_reward1',
+    'reward_function': 'lasernav_reward4',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
     'safety_loss': False,  # Whether to include safety loss in the RL training
     'target_kl': None,  # Target KL divergence for early stopping in each update
@@ -149,7 +147,18 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'realistic_percept
         'wheels_max_linear_acceleration': wheels_max_linear_acceleration,
         'leg_dynamics': leg_dynamics,
     }
-    laser_env = LaserNav(**laser_env_params, n_stack=n_stack, reward_function=Reward1(robot_radius=robot_radius, collision_with_humans_penalty=-.5))
+    if training_hyperparams['reward_function'] == 'lasernav_reward1': 
+        reward_function = Reward1(
+            robot_radius=0.3,
+            collision_with_humans_penalty=-.5,
+        )
+    elif training_hyperparams['reward_function'] == 'lasernav_reward4': 
+        reward_function = Reward4(
+            robot_radius=0.3,
+        )
+    else:
+        raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
+    laser_env = LaserNav(**laser_env_params, n_stack=n_stack, reward_function=reward_function)
     # DIR-SAFE policy
     dir_safe = DIRSAFE(env.reward_function, v_max=robot_vmax, dt=env_params['robot_dt'])
     with open(os.path.join(os.path.dirname(__file__), 'best_dir_safe.pkl'), 'rb') as f:
