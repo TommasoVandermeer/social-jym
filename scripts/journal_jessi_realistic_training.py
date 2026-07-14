@@ -41,7 +41,7 @@ robot_vmax = 1.0
 kinematics = "unicycle"
 lidar_angular_range = 2*jnp.pi
 lidar_max_dist = 10.
-lidar_num_rays = 100
+lidar_num_rays = 200
 scenario = "hybrid_scenario"
 hybrid_scenario_subset = jnp.array([0,1,2,3,4,6])  # Exclude circular_crossing_with_static_obstacles and corner_traffic
 n_humans = 5
@@ -52,7 +52,7 @@ random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
 n_steps = 500_000 # Number of labeled examples to train Perception network
 n_parallel_envs = 1_000  # Number of parallel environments to simulate to generate the dataset
-embeddings_dim = 96  # Dimension of the embeddings used in JESSI policy
+embeddings_dim = 32  # Dimension of the embeddings used in JESSI policy
 n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
 perception_learning_rate = 0.0005
@@ -119,7 +119,7 @@ assert int(n_steps * data_split[1]) % perception_batch_size == 0, "Validation se
 assert int(n_steps * data_split[2]) % perception_batch_size == 0, "Test set size must be divisible by batch_size"
 
 ### GENERATE PRE-TRAINING DATASET
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'realistic_perception_dataset.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_perception_dataset_{lidar_num_rays}.pkl')):
     env_params = {
         'robot_radius': 0.3,
         'n_humans': n_humans,
@@ -219,7 +219,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'realistic_percept
         # Initialize setting data
         data = {
             "episode_starts": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs), dtype=bool),
-            "lasernav_observations": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_stack,lidar_num_rays+6)),
+            "lasernav_observations": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_stack,lidar_num_rays+9)),
             "humans_positions": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans,2)),
             "humans_velocities": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans,2)),
             "humans_orientations": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans)),
@@ -255,18 +255,18 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'realistic_percept
         data = tree_map(lambda x: x.reshape((-1,) + x.shape[2:]), data)  # Merge parallel envs
         return data
     ## GENERATE RAW DATASET
-    if not os.path.exists(os.path.join(os.path.dirname(__file__), 'realistic_dir_safe_experiences_dataset.pkl')):
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_dir_safe_experiences_dataset_{lidar_num_rays}.pkl')):
         # Generate raw data
         raw_data = simulate_n_steps(n_steps)
         # Save raw data dataset
-        with open(os.path.join(os.path.dirname(__file__), 'realistic_dir_safe_experiences_dataset.pkl'), 'wb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'realistic_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
             pickle.dump(raw_data, f)
     else:
         # Load raw data dataset
-        with open(os.path.join(os.path.dirname(__file__), 'realistic_dir_safe_experiences_dataset.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'realistic_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             raw_data = pickle.load(f)
     ## GENERATE ROBOT-CENTERED DATASET
-    if not os.path.exists(os.path.join(os.path.dirname(__file__), 'realistic_robot_centric_dir_safe_experiences_dataset.pkl')):
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl')):
         robot_centric_data = {
             "episode_starts": raw_data["episode_starts"],
             "lasernav_observations": raw_data["lasernav_observations"],
@@ -351,11 +351,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'realistic_percept
         fig.canvas.mpl_connect('button_press_event', toggle_pause)
         plt.show()
         # Save robot-centered robot_centric_data
-        with open(os.path.join(os.path.dirname(__file__), 'realistic_robot_centric_dir_safe_experiences_dataset.pkl'), 'wb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'realistic_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
             pickle.dump(robot_centric_data, f)
     else:
         # Load robot-centered dataset
-        with open(os.path.join(os.path.dirname(__file__), 'realistic_robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'realistic_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             robot_centric_data = pickle.load(f)
     ### GENERATE PERCEPTION NETWORK TRAINING DATASET
     # Initialize final dataset
@@ -422,14 +422,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'realistic_percept
     fig.canvas.mpl_connect('button_press_event', toggle_pause)
     plt.show()
     # Save dataset
-    with open(os.path.join(os.path.dirname(__file__), 'realistic_perception_dataset.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), f'realistic_perception_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
         pickle.dump(dataset, f)
     # Delete robot_centric_data and raw_data to save memory
     del robot_centric_data
     del raw_data
 else:
     # Load dataset
-    with open(os.path.join(os.path.dirname(__file__), 'realistic_perception_dataset.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), f'realistic_perception_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
         dataset = pickle.load(f)
 
 ### PRE-TRAIN PERCEPTION NETWORK
@@ -723,13 +723,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
         encoder_params = pickle.load(f)
     # CREATE ACTOR INPUTS DATASET
-    if not os.path.exists(os.path.join(os.path.dirname(__file__), 'controller_training_dataset.pkl')):
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), f'controller_training_dataset_{lidar_num_rays}.pkl')):
         # LOAD DATASETs
-        with open(os.path.join(os.path.dirname(__file__), 'realistic_dir_safe_experiences_dataset.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'realistic_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             raw_data = pickle.load(f)
-        with open(os.path.join(os.path.dirname(__file__), 'realistic_robot_centric_dir_safe_experiences_dataset.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'realistic_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             robot_centric_data = pickle.load(f)
-        with open(os.path.join(os.path.dirname(__file__), 'realistic_perception_dataset.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'realistic_perception_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             dataset = pickle.load(f)
         # Compute actor-critic inputs for the entire dataset
         controller_dataset = {
@@ -739,7 +739,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
             "returns": raw_data["returns"],
         }
         # Save actor inputs
-        with open(os.path.join(os.path.dirname(__file__), 'controller_training_dataset.pkl'), 'wb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'controller_training_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
             pickle.dump(controller_dataset, f)
         # FREE UNUSED MEMORY
         del dataset
@@ -747,7 +747,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
         del raw_data
     else:
         # Load actor inputs
-        with open(os.path.join(os.path.dirname(__file__), 'controller_training_dataset.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'controller_training_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             controller_dataset = pickle.load(f)
     # INITIALIZE ACTOR NETWORK
     # Initialize actor network
