@@ -246,7 +246,7 @@ class Reward4(BaseReward):
             # Conditions for TTC penalty: moving towards, within horizon, predicted distance < safe threshold
             valid_ttc = (t_min > 0) & (t_min < self.ttc_horizon) & (min_dist_predicted < collision_radius * 1.5)
             
-            penalties = jnp.where(valid_ttc, -jnp.exp(-safe_t_min / self.ttc_threshold), 0.0)
+            penalties = jnp.where(valid_ttc, jnp.exp(-safe_t_min / self.ttc_threshold), 0.0)
             predictive_ttc_penalty = lax.cond(
                 failure, lambda: 0., lambda: self.ttc_weight * jnp.sum(penalties) * dt
             )
@@ -260,7 +260,7 @@ class Reward4(BaseReward):
             violations = (dists < self.social_comfort_dist) & (dists > d_min)
             penalties = jnp.where(
                 violations, 
-                -jnp.exp(-(dists - d_min) / (self.social_comfort_dist - d_min)), 
+                jnp.exp(-(dists - d_min) / (self.social_comfort_dist - d_min)), 
                 0.0
             )
             social_intrusion_penalty = lax.cond(
