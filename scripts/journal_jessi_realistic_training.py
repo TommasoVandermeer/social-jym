@@ -155,10 +155,12 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         reward_function = Reward1(
             robot_radius=0.3,
             collision_with_humans_penalty=-.5,
+            vmax=robot_vmax,
         )
     elif training_hyperparams['reward_function'] == 'lasernav_reward4': 
         reward_function = Reward4(
             robot_radius=0.3,
+            vmax=robot_vmax,
         )
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
@@ -918,10 +920,12 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         reward_function = Reward1(
             robot_radius=0.3,
             collision_with_humans_penalty=-.5,
+            vmax=robot_vmax,
         )
     elif training_hyperparams['reward_function'] == 'lasernav_reward4': 
         reward_function = Reward4(
             robot_radius=0.3,
+            vmax=robot_vmax,
         )
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
