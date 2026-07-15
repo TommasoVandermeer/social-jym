@@ -32,12 +32,12 @@ class Reward4(BaseReward):
         linear_jerk_penalty_reward: bool=True,
         
         # Reward Weights & Parameters (Ideal Set)
-        goal_weight: float = 10.0,
-        collision_weight: float = -20.0,
-        timeout_weight: float = -0.01,
-        progress_weight: float = 0.2,
-        ttc_weight: float = -0.5,
-        social_intrusion_weight: float = -0.2,
+        goal_weight: float = 1.0,
+        collision_weight: float = -2.0,
+        timeout_weight: float = -0.005,
+        progress_weight: float = 0.05,
+        ttc_weight: float = -0.1,
+        social_intrusion_weight: float = -0.1,
         angular_jerk_weight: float = -0.05,
         linear_jerk_weight: float = -0.02,
         
@@ -211,7 +211,7 @@ class Reward4(BaseReward):
         if self.progress_to_goal_reward:
             # Directional progress based on velocity vector
             vec_to_goal = robot_goal - robot_pos
-            dist_to_goal = jnp.linalg.norm(vec_to_goal)
+            dist_to_goal = jnp.sqrt(jnp.sum(vec_to_goal**2) + 1e-8)
             
             progress_reward = lax.cond(
                 ~(reached_goal) & (dist_to_goal > 1e-5),
@@ -226,7 +226,7 @@ class Reward4(BaseReward):
         )
         collision_obs_penalty = lax.cond(
             self.collision_with_obstacles_penalty_reward & collision_with_obstacle, 
-            lambda: self.collision_weight, lambda: 0.
+            lambda: self.collision_weight * 0.2, lambda: 0.
         )
 
         predictive_ttc_penalty = 0.
@@ -237,22 +237,23 @@ class Reward4(BaseReward):
             # TTC calculation: t_min = -(rel_pos dot rel_vel) / (rel_vel dot rel_vel)
             rel_vel_sq = jnp.sum(rel_vel**2, axis=1) + 1e-8
             t_min = -jnp.sum(rel_pos * rel_vel, axis=1) / rel_vel_sq
+            safe_t_min = jnp.clip(t_min, 0.0, self.ttc_horizon + 1.0)
             
             # Predict minimum distance at t_min
-            min_dist_predicted = jnp.linalg.norm(rel_pos + jnp.expand_dims(t_min, 1) * rel_vel, axis=1)
+            min_dist_predicted = jnp.linalg.norm(rel_pos + jnp.expand_dims(safe_t_min, 1) * rel_vel, axis=1)
             collision_radius = self.robot_radius + humans_radiuses
             
             # Conditions for TTC penalty: moving towards, within horizon, predicted distance < safe threshold
             valid_ttc = (t_min > 0) & (t_min < self.ttc_horizon) & (min_dist_predicted < collision_radius * 1.5)
             
-            penalties = jnp.where(valid_ttc, -jnp.exp(-t_min / self.ttc_threshold), 0.0)
+            penalties = jnp.where(valid_ttc, -jnp.exp(-safe_t_min / self.ttc_threshold), 0.0)
             predictive_ttc_penalty = lax.cond(
                 failure, lambda: 0., lambda: self.ttc_weight * jnp.sum(penalties) * dt
             )
 
         social_intrusion_penalty = 0.
         if self.social_intrusion_penalty_reward:
-            dists = jnp.linalg.norm(next_robot_pos - next_humans_pos, axis=1)
+            dists = jnp.sqrt(jnp.sum((next_robot_pos - next_humans_pos)**2, axis=1) + 1e-8)
             d_min = self.robot_radius + humans_radiuses
             
             # Exponential penalty when entering comfort zone
@@ -272,22 +273,17 @@ class Reward4(BaseReward):
         
         angular_jerk_penalty = 0.
         if self.angular_jerk_penalty_reward:
-            # discrete angular jerk approximation
-            acc_w_t = (action[1] - prev_action[1]) / dt
-            acc_w_t_1 = (prev_action[1] - prev_prev_action[1]) / dt
-            jerk_w = (acc_w_t - acc_w_t_1) / dt
-            # Clip to prevent exploding gradients
-            jerk_w_clipped = jnp.clip(jerk_w, -50.0, 50.0)
-            angular_jerk_penalty = self.angular_jerk_weight * (jerk_w_clipped**2) * dt
+            # RL-friendly smoothness (L1 norm of discrete 2nd derivative)
+            delta_w = action[1] - prev_action[1]
+            prev_delta_w = prev_action[1] - prev_prev_action[1]
+            angular_jerk_penalty = self.angular_jerk_weight * jnp.abs(delta_w - prev_delta_w)
 
         linear_jerk_penalty = 0.
         if self.linear_jerk_penalty_reward:
-             # discrete linear jerk approximation
-            acc_v_t = (action[0] - prev_action[0]) / dt
-            acc_v_t_1 = (prev_action[0] - prev_prev_action[0]) / dt
-            jerk_v = (acc_v_t - acc_v_t_1) / dt
-            jerk_v_clipped = jnp.clip(jerk_v, -50.0, 50.0)
-            linear_jerk_penalty = self.linear_jerk_weight * (jerk_v_clipped**2) * dt
+            # RL-friendly smoothness (L1 norm of discrete 2nd derivative)
+            delta_v = action[0] - prev_action[0]
+            prev_delta_v = prev_action[0] - prev_prev_action[0]
+            linear_jerk_penalty = self.linear_jerk_weight * jnp.abs(delta_v - prev_delta_v)
 
         # --- AGGREGATION ---
         reward = (goal_reward + timeout_penalty + progress_reward + 

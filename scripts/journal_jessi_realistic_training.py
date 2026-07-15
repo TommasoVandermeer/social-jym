@@ -67,7 +67,7 @@ delta_improvement = 0.001  # Minimum validation improvement to reset early stopp
 data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
 ### MULTI-TASK RL Hyperparameters
 rl_n_parallel_envs = 300 
-rl_training_updates = 500
+rl_training_updates = 1_000
 training_hyperparams = {
     'random_seed': 0,
     'n_humans': n_humans, 
@@ -76,9 +76,9 @@ training_hyperparams = {
     'rl_parallel_envs': rl_n_parallel_envs,
     'rl_learning_rate': 1e-4, # 3e-4
     'rl_learning_rate_final': 1e-5, # 2e-4
-    'rl_total_batch_size': 30_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
-    'rl_mini_batch_size': 1_000, # 2_000 Mini-batch size for each model update
-    'rl_micro_batch_size': 500, # 1_000 # Micro-batch size for gradient accumulation 
+    'rl_total_batch_size': 15_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
+    'rl_mini_batch_size': 250, # 2_000 Mini-batch size for each model update
+    'rl_micro_batch_size': 125, # 1_000 # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 6, # 6
     'rl_beta_entropy': 5e-4, # 1e-4
