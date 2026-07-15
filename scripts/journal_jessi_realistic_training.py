@@ -104,6 +104,7 @@ jessi = JESSI(
     n_detectable_humans=n_detectable_humans, 
     max_humans_velocity=max_humans_velocity,
     embedding_dim=embeddings_dim,
+    ablation_mode=6,
 )
 # Plotting settings
 ax_visibility = 2
@@ -967,6 +968,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         n_stack=n_stack,
         beam_dropout_rate=0.2,
         embedding_dim=embeddings_dim,
+        ablation_mode=6,
     )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
