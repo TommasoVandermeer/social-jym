@@ -129,7 +129,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         'n_obstacles': n_obstacles,
         'robot_dt': robot_dt,
         'robot_radius': robot_radius, 
-        'wheels_distance': robot_wheel_distance,
         'humans_dt': 0.01,
         'robot_visible': True,
         'scenario': scenario,
@@ -143,6 +142,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         }
     env = SocialNav(**env_params, humans_policy=humans_policy, reward_function=SocialNavDummyReward(kinematics=kinematics))
     laser_env_params = env_params.copy() | {
+        'wheels_distance': robot_wheel_distance,
         # Sim-to-real parameters
         'lidar_dt': lidar_dt,
         'odometry_dt': odometry_dt,

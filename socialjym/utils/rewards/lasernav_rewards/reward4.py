@@ -297,7 +297,26 @@ class Reward4(BaseReward):
         # _ = lax.cond(jnp.isnan(reward) | jnp.isinf(reward) | (reward > 1e5), lambda: debug.print("Reward is {x}",x=reward), lambda: None)
         debug.callback(
             lambda x: print(f"WARNING: Found invalid reward value: {x[1]}") if x[0] else None, 
-            (jnp.isnan(reward) | jnp.isinf(reward) | (reward > 1e5), reward)
+            (jnp.isnan(reward) | jnp.isinf(reward) | (reward > 1e5), {
+                "goal_reward": goal_reward,
+                "timeout_penalty": timeout_penalty,
+                "progress_reward": progress_reward,
+                "collision_human_penalty": collision_human_penalty,
+                "collision_obs_penalty": collision_obs_penalty,
+                "predictive_ttc_penalty": predictive_ttc_penalty,
+                "social_intrusion_penalty": social_intrusion_penalty,
+                "angular_jerk_penalty": angular_jerk_penalty,
+                "linear_jerk_penalty": linear_jerk_penalty,
+                "reward": reward,
+                "robot_pos": robot_pos,
+                "next_robot_pos": next_robot_pos,
+                "robot_vel_vec": robot_vel_vec,
+                "humans_pos": humans_pos,
+                "next_humans_pos": next_humans_pos,
+                "humans_velocities": humans_velocities,
+                "collision_with_human": collision_with_human,
+                "collision_with_obstacle": collision_with_obstacle,
+            })
         )
 
         if self.multi_gamma:
