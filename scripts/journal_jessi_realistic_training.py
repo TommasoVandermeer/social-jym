@@ -140,7 +140,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         'lidar_noise': False, # Noise is introduced during training as data augmentation
         'thick_default_obstacle': False,
         }
-    env = SocialNav(**env_params, humans_policy=humans_policy, reward_function=SocialNavDummyReward(kinematics=kinematics))
+    env = SocialNav(**env_params, humans_policy=humans_policy, reward_function=SocialNavDummyReward(kinematics=kinematics, v_max=robot_vmax))
     laser_env_params = env_params.copy() | {
         'wheels_distance': robot_wheel_distance,
         # Sim-to-real parameters
