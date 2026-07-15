@@ -1015,10 +1015,10 @@ def print_pretty_table(summary_dict, title, latex_mode=False):
     else:
         print(tabulate(table_data, headers=headers, tablefmt="fancy_grid", stralign="center", numalign="center"))
 print_pretty_table(complete_summary, "Overall Results", latex_mode=False)
-print_pretty_table(train_and_test_scenarios_summary, "First experimental setup results", latex_mode=True)
+print_pretty_table(train_and_test_scenarios_summary, "First experimental setup results", latex_mode=False)
 print_pretty_table(train_scenarios_summary, "Train Scenarios Results", latex_mode=False)
 print_pretty_table(test_scenarios_summary, "Test Scenarios Results", latex_mode=False)
-print_pretty_table(ccso_scenarios_summary, "Second experimental setup results", latex_mode=True)
+print_pretty_table(ccso_scenarios_summary, "Second experimental setup results", latex_mode=False)
 
 ### PLOT RESULTS ###
 # Plot metrics against number of humans on TRAIN scenarios

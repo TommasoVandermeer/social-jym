@@ -26,9 +26,9 @@ ABLATIONS = [
     1, # No action space bounding
     2, # No uncertainty on human detection for actor critic module
     3, # MLP in place of scene self-attention
-    4, # Gaussian parameterization of the action space (in place of Dirichlet)
-    5, # CNN + temporal attention perception (loss of lidar agnosticity)
-    6, # Logistic normal parameterization of the action space (in place of Dirichlet)
+    # 4, # Gaussian parameterization of the action space (in place of Dirichlet)
+    # 5, # CNN + temporal attention perception (loss of lidar agnosticity)
+    # 6, # Logistic normal parameterization of the action space (in place of Dirichlet)
 ]
 
 class MultiHeadAttention(hk.MultiHeadAttention):
@@ -650,7 +650,7 @@ class JESSI(BasePolicy):
         n_detectable_humans:int=10,
         max_humans_velocity:float=1.5,
         max_beam_range:float=10.0, # This is only used to normalize the LiDAR readings before feeding them to the encoder
-        embedding_dim:int=96,
+        embedding_dim:int=32,
         n_sectors:int=60,
         angular_sectors_width_deg:float=18.0, # This is the width of the attention sectors in degrees. It determines how many rays are attended to by each sector.
         n_stack_for_action_space_bounding:int=1,

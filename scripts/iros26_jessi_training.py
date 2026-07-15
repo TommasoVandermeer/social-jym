@@ -45,7 +45,7 @@ random_seed = 0
 n_stack = 5  # Number of stacked LiDAR scans as input
 n_steps = 500_000  # Number of labeled examples to train Perception network
 n_parallel_envs = 1000  # Number of parallel environments to simulate to generate the dataset
-embeddings_dim = 96  # Dimension of the embeddings used in JESSI policy
+embeddings_dim = 32  # Dimension of the embeddings used in JESSI policy
 n_detectable_humans = 10  # Number of HCGs that can be detected by the policy
 max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the maximum displacement in the prediction horizon
 perception_learning_rate = 0.0005
@@ -945,7 +945,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         lidar_max_dist=lidar_max_dist,
         lidar_angular_range=lidar_angular_range,
         n_stack=n_stack,
-        beam_dropout_rate=0.2
+        beam_dropout_rate=0.2,
+        embedding_dim=embeddings_dim,
     )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
@@ -1254,7 +1255,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), modular_network_na
         lidar_max_dist=lidar_max_dist,
         lidar_angular_range=lidar_angular_range,
         n_stack=n_stack,
-        beam_dropout_rate=0.2
+        beam_dropout_rate=0.2,
+        embedding_dim=embeddings_dim,
     )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
@@ -1564,7 +1566,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_network_nam
         lidar_max_dist=lidar_max_dist,
         lidar_angular_range=lidar_angular_range,
         n_stack=n_stack,
-        beam_dropout_rate=0.2
+        beam_dropout_rate=0.2,
+        embedding_dim=embeddings_dim,
     )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
