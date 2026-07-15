@@ -1,4 +1,4 @@
-from jax import jit, lax, vmap
+from jax import jit, lax, vmap, debug
 import jax.numpy as jnp
 from functools import partial
 from typing import Union
@@ -292,6 +292,9 @@ class Reward4(BaseReward):
                  collision_human_penalty + collision_obs_penalty + 
                  predictive_ttc_penalty + social_intrusion_penalty + 
                  angular_jerk_penalty + linear_jerk_penalty)
+        
+        ## DEBUG
+        _ = lax.cond(jnp.isnan(reward) | jnp.isinf(reward) | (reward > 1e5), lambda: debug.print("Reward is {x}",x=reward), lambda: None)
 
         if self.multi_gamma:
             reward_terms = {g: 0.0 for g in self.unique_gammas}
