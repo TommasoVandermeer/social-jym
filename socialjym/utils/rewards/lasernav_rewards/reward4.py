@@ -294,7 +294,11 @@ class Reward4(BaseReward):
                  angular_jerk_penalty + linear_jerk_penalty)
         
         ## DEBUG
-        _ = lax.cond(jnp.isnan(reward) | jnp.isinf(reward) | (reward > 1e5), lambda: debug.print("Reward is {x}",x=reward), lambda: None)
+        # _ = lax.cond(jnp.isnan(reward) | jnp.isinf(reward) | (reward > 1e5), lambda: debug.print("Reward is {x}",x=reward), lambda: None)
+        debug.callback(
+            lambda x: print(f"WARNING: Found invalid reward value: {x[1]}") if x[0] else None, 
+            (jnp.isnan(reward) | jnp.isinf(reward) | (reward > 1e5), reward)
+        )
 
         if self.multi_gamma:
             reward_terms = {g: 0.0 for g in self.unique_gammas}
