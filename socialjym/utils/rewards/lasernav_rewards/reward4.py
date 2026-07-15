@@ -258,9 +258,11 @@ class Reward4(BaseReward):
             
             # Exponential penalty when entering comfort zone
             violations = (dists < self.social_comfort_dist) & (dists > d_min)
+            safe_social_denom = jnp.maximum(self.social_comfort_dist - d_min, 1e-3)
+            safe_dists_diff = jnp.maximum(dists - d_min, 0.0)
             penalties = jnp.where(
                 violations, 
-                jnp.exp(-(dists - d_min) / (self.social_comfort_dist - d_min)), 
+                jnp.exp(-safe_dists_diff / safe_social_denom), 
                 0.0
             )
             social_intrusion_penalty = lax.cond(
