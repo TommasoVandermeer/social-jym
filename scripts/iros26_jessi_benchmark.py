@@ -124,8 +124,8 @@ def jessi_tests(jessi_params):
             ct_env_params['scenario'] = 'testing_scenario'
             ccso_env_params = seen_env_params.copy()
             ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
-            ccso_env_params['ccso_n_static_humans'] = n_obstacle
-            ccso_env_params['n_humans'] = n_human + n_obstacle
+            ccso_env_params['ccso_n_static_humans'] = n_obstacle * 2
+            ccso_env_params['n_humans'] = n_human + n_obstacle * 2
             # Initialize the environments
             seen_env = LaserNav(**seen_env_params)
             ct_env = LaserNav(**ct_env_params) # Unseen scenario
@@ -228,8 +228,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
                 ct_env_params['scenario'] = 'testing_scenario'
                 ccso_env_params = seen_env_params.copy()
                 ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
-                ccso_env_params['ccso_n_static_humans'] = n_obstacle
-                ccso_env_params['n_humans'] = n_human + n_obstacle
+                ccso_env_params['ccso_n_static_humans'] = n_obstacle * 2
+                ccso_env_params['n_humans'] = n_human + n_obstacle * 2
                 # Initialize the environments
                 seen_env = LaserNav(**seen_env_params)
                 ct_env = LaserNav(**ct_env_params) # Unseen scenario
@@ -299,8 +299,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
                 ct_env_params['scenario'] = 'testing_scenario'
                 ccso_env_params = seen_env_params.copy()
                 ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
-                ccso_env_params['ccso_n_static_humans'] = n_obstacle
-                ccso_env_params['n_humans'] = n_human + n_obstacle
+                ccso_env_params['ccso_n_static_humans'] = n_obstacle * 2
+                ccso_env_params['n_humans'] = n_human + n_obstacle * 2
                 # Initialize the environments
                 seen_env = LaserNav(**seen_env_params)
                 ct_env = LaserNav(**ct_env_params) # Unseen scenario
@@ -376,8 +376,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
                 ct_env_params['scenario'] = 'testing_scenario'
                 ccso_env_params = seen_env_params.copy()
                 ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
-                ccso_env_params['ccso_n_static_humans'] = n_obstacle
-                ccso_env_params['n_humans'] = n_human + n_obstacle
+                ccso_env_params['ccso_n_static_humans'] = n_obstacle * 2
+                ccso_env_params['n_humans'] = n_human + n_obstacle * 2
                 # Initialize the environments
                 seen_env = LaserNav(**seen_env_params)
                 ct_env = LaserNav(**ct_env_params) # Unseen scenario
@@ -477,8 +477,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
                 ct_env_params['scenario'] = 'testing_scenario'
                 ccso_env_params = seen_env_params.copy()
                 ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
-                ccso_env_params['ccso_n_static_humans'] = n_obstacle
-                ccso_env_params['n_humans'] = n_human + n_obstacle
+                ccso_env_params['ccso_n_static_humans'] = n_obstacle * 2
+                ccso_env_params['n_humans'] = n_human + n_obstacle * 2
                 # Initialize the environments
                 seen_env = LaserNav(**seen_env_params)
                 ct_env = LaserNav(**ct_env_params) # Unseen scenario
@@ -690,8 +690,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
                 ct_env_params['scenario'] = 'testing_scenario'
                 ccso_env_params = seen_env_params.copy()
                 ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
-                ccso_env_params['ccso_n_static_humans'] = n_obstacle
-                ccso_env_params['n_humans'] = n_human + n_obstacle
+                ccso_env_params['ccso_n_static_humans'] = n_obstacle * 2
+                ccso_env_params['n_humans'] = n_human + n_obstacle * 2
                 # Initialize the environments
                 seen_env = LaserNav(**seen_env_params)
                 ct_env = LaserNav(**ct_env_params) # Unseen scenario
@@ -755,8 +755,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
                 ct_env_params['scenario'] = 'testing_scenario'
                 ccso_env_params = seen_env_params.copy()
                 ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
-                ccso_env_params['ccso_n_static_humans'] = n_obstacle
-                ccso_env_params['n_humans'] = n_human + n_obstacle
+                ccso_env_params['ccso_n_static_humans'] = n_obstacle * 2
+                ccso_env_params['n_humans'] = n_human + n_obstacle * 2
                 # Initialize the environments
                 seen_env = LaserNav(**seen_env_params)
                 ct_env = LaserNav(**ct_env_params) # Unseen scenario
@@ -824,8 +824,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
                 ct_env_params['scenario'] = 'testing_scenario'
                 ccso_env_params = seen_env_params.copy()
                 ccso_env_params['scenario'] = 'circular_crossing_with_static_obstacles'
-                ccso_env_params['ccso_n_static_humans'] = n_obstacle
-                ccso_env_params['n_humans'] = n_human + n_obstacle
+                ccso_env_params['ccso_n_static_humans'] = n_obstacle * 2
+                ccso_env_params['n_humans'] = n_human + n_obstacle * 2
                 # Initialize the environments
                 seen_env = LaserNav(**seen_env_params)
                 ct_env = LaserNav(**ct_env_params) # Unseen scenario
