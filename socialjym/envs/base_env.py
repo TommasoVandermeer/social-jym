@@ -444,7 +444,7 @@ class BaseEnv(ABC):
                 [[[0., -0.75],[0., -2.5]]],
                 [[[-5., 2.5],[5., 2.5]]],
                 [[[-5., -2.5],[5., -2.5]]],
-                [[[-5., -2.5],[-5., 2.5]]],
+                [[[2.5, 0.5],[2.5, -0.5]]],
             ],
             [ # Crowd chasing
                 [[[-self.traffic_length/2-3, self.traffic_height/2 + 0.7],[self.traffic_length/2+3, self.traffic_height/2 + 0.7]]],
@@ -507,9 +507,9 @@ class BaseEnv(ABC):
             [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Delayed circular crossing
             [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Circular crossing with static obstacles
             [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Crowd navigation
-            [[self.traffic_length/2-self.traffic_height/4, self.traffic_length/2-self.traffic_height/4],[self.traffic_length/2, 1.]], # Corner traffic
+            [[self.traffic_length/2+self.traffic_height/4, self.traffic_length/2+self.traffic_height/4],[self.traffic_length/2, 1.]], # Corner traffic
             [[0., 0.],[5., 0.]], # Door crossing
-            [[0, -0.75],[self.traffic_length/2-1, 0.]], # Crowd chasing
+            [[self.traffic_length/2-1, 0.],[jnp.nan, jnp.nan]], # Crowd chasing
             [[-2., 2.],[jnp.nan, jnp.nan]], # L-turn
             [[0., 3.],[jnp.nan, jnp.nan]], # Narrow passage
             [[0.,7.],[jnp.nan, jnp.nan]], # Slalom
