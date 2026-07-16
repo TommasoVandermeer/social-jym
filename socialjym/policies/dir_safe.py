@@ -723,7 +723,7 @@ class DIRSAFE(SARL):
         aligned_lidar = jessi.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[0]
         point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
         ## Identify visible humans with JESSI perception
-        hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        hcgs, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
         humans_mask = hcgs['weights'] > 0.5
         rc_humans_pos = hcgs['pos_distrs']['means']
         rc_humans_vel = hcgs['vel_distrs']['means']
