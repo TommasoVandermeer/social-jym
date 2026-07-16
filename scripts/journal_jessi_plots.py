@@ -105,14 +105,16 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space.eps'
 
 ### FIG2: action_space_2.eps
 if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_2.eps')):
+    temp_wmax = 1.
+    temp_vmax  = 5.71
     figure, ax = plt.subplots(1,1, figsize=(10, 3))
-    figure.subplots_adjust(left=0.07, right=0.98, top=0.95, bottom=0.27)
+    figure.subplots_adjust(left=0.1, right=0.98, top=0.95, bottom=0.18)
     ax.add_patch(
         plt.Polygon(
             [   
-                [w_max,0],
-                [-w_max,0],
-                [0.,v_max],
+                [0,temp_wmax],
+                [0,-temp_wmax],
+                [temp_vmax,0],
             ],
             closed=True,
             fill=True,
@@ -122,20 +124,16 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_2.ep
             zorder=2,
         ),
     )
-    ax.set_xticks([w_max, 0., -w_max])
-    ax.set_xticklabels([r"$\frac{2 \bar{\phi} \rho}{L}$", "0", r"$-\frac{2 \bar{\phi} \rho}{L}$"])
-    ax.set_yticks([0.,v_max])
-    ax.set_yticklabels(["0", r"$\bar{\phi} \rho$"])
-    ax.set_ylim(-0.1, v_max + 0.1)
-    ax.set_xlim(-w_max - 0.3, w_max + 0.3)
-    ax.set_ylabel("$v$ (m/s)", labelpad=-15)
-    ax.set_xlabel("$\omega$ (rad/s)", labelpad=-5)
-    # ax.plot([-10, 10], [0, 0], color='black', linewidth=3, zorder=5)
-    # ax.text(0, 0.1, "$v \geq 0$", zorder=5, verticalalignment='bottom', horizontalalignment='center')
-    # ax.plot([-(w_max)*2, w_max], [-v_max, 2], color='black', linewidth=3, zorder=5)
-    ax.text(-2.5 , L, r"$\omega \geq \frac{2(v-\bar{\phi} \rho)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
-    # ax.plot([(w_max)*2, -w_max], [-v_max, 2], color='black', linewidth=3, zorder=5)
-    ax.text(2.5 , L, r"$\omega \leq \frac{2(\bar{\phi} \rho-v)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='right')
+    ax.set_yticks([temp_wmax, 0., -temp_wmax])
+    ax.set_yticklabels([r"$\frac{2 \bar{\eta} \rho}{L}$", "0", r"$-\frac{2 \bar{\eta} \rho}{L}$"])
+    ax.set_xticks([0.,temp_vmax])
+    ax.set_xticklabels(["0", r"$\bar{\eta} \rho$"])
+    ax.set_xlim(-0.1, temp_vmax + 0.1)
+    ax.set_ylim(-temp_wmax - 0.1, temp_wmax + 0.1)
+    ax.set_xlabel("$v$ (m/s)", labelpad=-15)
+    ax.set_ylabel("$\omega$ (rad/s)", labelpad=-20)
+    ax.text(temp_vmax/2, -temp_wmax/2-0.2, r"$\omega \geq \frac{2(v-\bar{\eta} \rho)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
+    ax.text(temp_vmax/2, +temp_wmax/2+0.2, r"$\omega \leq \frac{2(\bar{\eta} \rho-v)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
     ax.grid()
     figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_2.eps'), format='eps')
 plt.close()
