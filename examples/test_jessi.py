@@ -30,15 +30,17 @@ env_params = {
     # 'control_delay_sigma': 0.01,
     # 'wheels_max_linear_acceleration': 1.8, #0.87,
     'wheels_distance': robot_wheel_distance,
-    'n_humans': 5,
+    'n_humans': 15,
     'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'hybrid_scenario', 
+    'scenario': 'circular_crossing_with_static_obstacles', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
-    'ccso_n_static_humans': 0,
+    'ccso_n_static_humans': 10,
+    'ccso_static_humans_radius_mean': 0.3,
+    'ccso_static_humans_radius_std': 0.025,
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
     'lidar_noise': True,
@@ -59,14 +61,14 @@ policy = JESSI(
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
     embedding_dim=32,
 )
-with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_perception_network_32.pkl'), 'rb') as f:
-    encoder_params = pickle.load(f)
-with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_controller_network_32.pkl'), 'rb') as f:
-    actor_params = pickle.load(f)
-network_params = policy.merge_nns_params(encoder_params, actor_params)
+# with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_perception_network_32.pkl'), 'rb') as f:
+#     encoder_params = pickle.load(f)
+# with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_controller_network_32.pkl'), 'rb') as f:
+#     actor_params = pickle.load(f)
+# network_params = policy.merge_nns_params(encoder_params, actor_params)
 
-# with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out_32.pkl'), 'rb') as f:
-#     network_params, _, _ = pickle.load(f)
+with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out_32.pkl'), 'rb') as f:
+    network_params, _, _ = pickle.load(f)
 
 # _, _, network_params = policy.init_nns(random.PRNGKey(random_seed))
 
