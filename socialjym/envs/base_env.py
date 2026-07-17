@@ -737,7 +737,7 @@ class BaseEnv(ABC):
     @partial(jit, static_argnames=("self"))
     def _init_obstacles(self, key:random.PRNGKey, scenario:int) -> jnp.ndarray:
         if self.n_obstacles == 0:
-            return jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan)
+            return jnp.full((1, 1, 2, 2), jnp.nan)
         else:
             perm_key, noise_key = random.split(key)
             # Pick obstacles
