@@ -22,12 +22,12 @@ class MPPI(DWA):
             self, 
             # MPPI hyperparameters
             num_samples=500, 
-            horizon=16, 
+            horizon=20, 
             temperature=0.15, 
-            noise_sigma=jnp.array([0.3, 0.9]), # Sigma for [v, w]
+            noise_sigma=jnp.array([0.5, 1.5]), # Sigma for [v, w]
             # MPPI critics weights
-            velocity_cost_weight = 0.5,
-            goal_distance_cost_weight = 1.0,
+            velocity_cost_weight = 1.0,
+            goal_distance_cost_weight = 0.8,
             obstacle_cost_weight = 3.0,
             control_cost_weight = 0.1,
             # Base hyperparameters 
