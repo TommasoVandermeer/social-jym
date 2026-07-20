@@ -24,7 +24,7 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'hybrid_scenario', 
+    'scenario': 'parallel_traffic', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 0,
     'reward_function': Reward(robot_radius=0.3),
@@ -48,11 +48,11 @@ policy = MPPI(
 )
 
 # Execute tests
-metrics = policy.evaluate(
-    n_episodes,
-    random_seed,
-    env,
-)
+# metrics = policy.evaluate(
+#     n_episodes,
+#     random_seed,
+#     env,
+# )
 
 # Simulate some episodes
 for i in range(n_episodes):
