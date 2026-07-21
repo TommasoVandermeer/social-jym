@@ -436,7 +436,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
             ),
             grid_size = dummy_env.get_grid_size(),
             use_planner = False,
-            kinematics='unicycle'
+            kinematics='unicycle',
+            safety_margin=0.03,
         )
         jessi = JESSI(
             lidar_num_rays=100,
