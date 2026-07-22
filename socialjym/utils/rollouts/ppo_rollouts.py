@@ -72,7 +72,7 @@ def ppo_rl_rollout(
                                 None, 
                                 inputs, 
                         ) 
-                        states, obses, infos, rewards, outcomes, reset_keys = env.batch_step(states, init_infos, actions, reset_keys, test=False, reset_if_done=True)
+                        states, obses, infos, (rewards, _), outcomes, reset_keys = env.batch_step(states, init_infos, actions, reset_keys, test=False, reset_if_done=True)
                         ## Save data to later add to the buffer
                         batch_inputs = batch_inputs.at[:,step].set(inputs)
                         batch_values = batch_values.at[:,step].set(jnp.squeeze(values))

@@ -2,6 +2,9 @@
 An environment based on JAX to train mobile robots within crowded environments. Includes several human motion models, several RL algorithms for social navigation and implements fast training and computing thanks to JAX.
 
 ## Installation
+
+### Option 1: Virtual environment (tested on Ubuntu 22.04 with Python 3.10 and Debian 13 with Python 3.13)
+
 Create a virtual environment.
 ```
 virtualenv socialjym
@@ -18,73 +21,56 @@ Install the submodules and the main package.
 ```
 pip install -e social-jym social-jym/JHSFM social-jym/JSFM social-jym/JORCA
 ```
+Instead, if you want to run JAX on your GPU (with CUDA12) run:
+```
+pip install -e social-jym[cuda12] social-jym/JHSFM social-jym/JSFM social-jym/JORCA
+```
+
+### Option 2: Docker (Ubuntu 22.04, Python 3.10)
+
+Clone the repository and its submodules.
+```
+git clone --recurse-submodules https://github.com/TommasoVandermeer/social-jym.git
+```
+Navigate to the repository root. Build and run the container using the provided script (it will build the image automatically on first run if not already present):
+```
+cd social-jym
+```
+
+**CPU-only:**
+```
+./docker/run.sh
+```
+
+**With NVIDIA GPU** (requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host):
+```
+./docker/run.sh --gpu
+```
+
+To force a rebuild of the image (e.g. after updating dependencies):
+```
+./docker/run.sh --build
+./docker/run.sh --gpu --build
+```
+
+**On machines with NFS home directories** (e.g. network-mounted `/home`), Docker may lack permission to bind-mount the repository. Use `--no-mount` in that case:
+```
+./docker/run.sh --no-mount
+./docker/run.sh --gpu --no-mount
+```
+With `--no-mount` the container uses the code baked into the image at build time. To sync modified files from the host into a running container without rebuilding, use `docker cp` from a separate terminal:
+
+```
+docker cp socialjym/ social-jym:/opt/social-jym/socialjym
+```
+
+The container is always named `social-jym`, so this works as long as it is running.
+
+The container supports GUI forwarding (matplotlib windows, notebooks, etc.) via the host X11 server and, when not using `--no-mount`, mounts the repository root at `/opt/social-jym` so code changes are reflected immediately without rebuilding the image.
 
 ## Project structure
 The source code of the project can be found in the folder socialjym which includes all the python modules. 
-<!-- It is structured as follows: -->
-<!-- ```bash
-├── socialjym
-│   ├── __init__.py
-│   ├── envs
-│   │   ├── __init__.py
-│   │   ├── base_env.py
-│   │   ├── lasernav.py
-│   │   ├── socialnav.py
-│   ├── policies
-│   │   ├── __init__.py
-│   │   ├── base_policy.py
-│   │   ├── cadrl.py
-│   │   ├── dir_safe.py
-│   │   ├── sarl_ppo.py
-│   │   ├── sarl_star.py
-│   │   ├── sarl.py
-│   ├── utils
-│   │   ├── __init__.py
-│   │   ├── aux_functions.py
-│   │   ├── cell_decompositions
-│   │   │   ├── __init__.py
-│   │   │   ├── grid.py
-│   │   │   ├── quadtree.py
-│   │   │   ├── utils.py
-│   │   ├── distributions
-│   │   │   ├── __init__.py
-│   │   │   ├── base_distribution.py
-│   │   │   ├── gaussian_mixture_model.py
-│   │   │   ├── gaussian.py
-│   │   ├── global_planners
-│   │   │   ├── __init__.py
-│   │   │   ├── base_global_planner.py
-│   │   │   ├── a_star.py
-│   │   │   ├── dijkstra.py
-│   │   ├── replay_buffers
-│   │   │   ├── __init__.py
-│   │   │   ├── base_act_cri_buffer.py
-│   │   │   ├── base_vnet_replay_buffer.py
-│   │   │   ├── ppo_replay_buffer.py
-│   │   ├── rewards
-│   │   │   ├── __init__.py
-│   │   │   ├── base_reward.py
-│   │   │   ├── socialnav_rewards
-│   │   │   │   ├── __init__.py
-│   │   │   │   ├── dummy_reward.py
-│   │   │   │   ├── reward1.py
-│   │   │   │   ├── reward2.py
-│   │   │   ├── lasernav_rewards
-│   │   │   │   ├── __init__.py
-│   │   │   │   ├── dummy_reward.py
-│   │   ├── rollouts
-│   │   │   ├── __init__.py
-│   │   │   ├── act_cri_rollouts.py
-│   │   │   ├── ppo_rollouts.py
-│   │   │   ├── vnet_rollouts.py
-│   │   ├── terminations
-│   │   │   ├── __init__.py
-│   │   │   ├── base_termination.py
-│   │   │   ├── robot_human_collision.py
-│   │   │   ├── robot_obstacle_collision.py
-│   │   │   ├── robot_reached_goal.py
-│   │   │   ├── timeout.py
-``` -->
+
 ### Envs ([envs readme](socialjym/envs/README.md))
 Includes all the available Reinforcement Learning environments developed in an open AI gymnasium style (step, reset, _get_obs, ecc..) but with functional programming (required for JAX). BaseEnv serves as a base class defining the methods and attributes each environment should have. In BaseEnv also the available scenarios, human motion models and robot kinematic models are listed. [SocialNav](socialjym/envs/README.md) and [LaserEnv](socialjym/envs/README.md) are complete environments that can be used to train and test RL policies for navigation (click on the links to see more). 
 

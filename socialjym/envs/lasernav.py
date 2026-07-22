@@ -3,7 +3,7 @@ from jax import random, jit, lax, debug, vmap
 from functools import partial
 from types import FunctionType
 
-from .base_env import BaseEnv, SCENARIOS, ROBOT_KINEMATICS, ENVIRONMENTS
+from .base_env import BaseEnv, SCENARIOS, ENVIRONMENTS, is_multiple
 
 class LaserNav(BaseEnv):
     """
@@ -39,15 +39,27 @@ class LaserNav(BaseEnv):
             lidar_noise_fixed_std=0.01,  # 1cm base noise
             lidar_noise_proportional_std=0.01, # 1% of the distance noise
             lidar_salt_and_pepper_prob=0.03, # 3% of the rays are affected by salt and pepper noise
+            lidar_dt=None, # If None, LiDAR is updated at every environment step. Otherwise, it is updated according to the specified frequency (in Hz).
+            odometry_dt=None, # If None, Odometry is updated at every environment step. Otherwise, it is updated according to the specified frequency (in Hz).
+            velocity_dynamics="coupled_slew_rate",
+            tau_linear_velocity=0.0, # To model linear velocity dynamics as a first order system
+            tau_angular_velocity=0.0, # To model angular velocity dynamics as a second order system
+            wheels_max_linear_acceleration=jnp.inf,
+            wheels_distance=0.,
+            control_delay_mean=0.0, # Mean of the control delay distribution (assumed to be Gaussian)
+            control_delay_sigma=0.0, # Standard deviation of the control delay distribution (assumed to be Gaussian)
             kinematics='unicycle',
             max_cc_delay = 5.,
             ccso_n_static_humans:int = 3,
             ccso_static_humans_radius_mean:float = 1.,
             ccso_static_humans_radius_std:float = 0.2,
             thick_default_obstacle:bool = True,
+            obstacles_noise:float = 0.,
+            noisy_walls:bool = False,
             grid_map_computation:bool = False,
             grid_cell_size:float = 0.9, # Such parameter is suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT)
-            grid_min_size:float = 18. # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
+            grid_min_size:float = 18., # Such parameter is the minimum suitable for the obstacles and scenarios defined (CC,Pat,Pet,RC,DCC,CCSO,CN,CT) in order to always include all static obstacles, the robot and its goal.
+            leg_dynamics:bool = False,
         ) -> None:
         ## BaseEnv initialization
         super().__init__(
@@ -71,6 +83,13 @@ class LaserNav(BaseEnv):
             lidar_noise_fixed_std=lidar_noise_fixed_std,
             lidar_noise_proportional_std=lidar_noise_proportional_std,
             lidar_salt_and_pepper_prob=lidar_salt_and_pepper_prob,
+            velocity_dynamics=velocity_dynamics,
+            tau_action_0=tau_linear_velocity,
+            tau_action_1=tau_angular_velocity,
+            wheels_max_linear_acceleration=wheels_max_linear_acceleration,
+            wheels_distance=wheels_distance,
+            control_delay_mean=control_delay_mean,
+            control_delay_sigma=control_delay_sigma,
             kinematics=kinematics,
             max_cc_delay=max_cc_delay,
             ccso_n_static_humans=ccso_n_static_humans,
@@ -80,14 +99,36 @@ class LaserNav(BaseEnv):
             grid_cell_size=grid_cell_size,
             grid_min_size=grid_min_size,
             thick_default_obstacle=thick_default_obstacle,
-            )
+            obstacles_noise=obstacles_noise,
+            noisy_walls=noisy_walls,
+            leg_dynamics=leg_dynamics,
+        )
         ## Args validation
         assert reward_function.kinematics == self.kinematics, "The reward function's kinematics must be the same as the environment's kinematics."
         assert n_stack >=1, "The number of stacked observations must be at least 1."
+        if lidar_dt is None:
+            self.lidar_dt = self.robot_dt
+            self.lidar_misalignment = False
+        else:
+            self.lidar_dt = lidar_dt
+            self.lidar_misalignment = True
+        assert is_multiple(self.lidar_dt, humans_dt), "The LiDAR update frequency must be a multiple of simulation frequency."
+        assert self.lidar_dt <= self.robot_dt, "The LiDAR update frequency must be higher than or equal to the robot control frequency."
+        if odometry_dt is None:
+            self.odometry_dt = self.lidar_dt
+            self.odometry_misalignment = False
+        else:
+            self.odometry_dt = odometry_dt
+            self.odometry_misalignment = True
+        assert is_multiple(self.odometry_dt, humans_dt), "The Odometry update frequency must be a multiple of simulation frequency."
+        assert self.odometry_dt <= self.lidar_dt, "The Odometry update frequency must be higher than or equal to the LiDAR update frequency."
         ## Env initialization
         self.n_stack = n_stack
         self.reward_function = reward_function
         self.environment = ENVIRONMENTS.index('lasernav')
+        self.lidar_substeps = int(self.lidar_dt / self.humans_dt) # Number of simulation steps between two LiDAR updates
+        self.odometry_substeps = int(self.odometry_dt / self.humans_dt) # Number of simulation steps between two Odometry updates
+        self.control_substeps = int(self.robot_dt / self.humans_dt) # Number of simulation steps between two robot action updates
 
     # --- Private methods --- #
 
@@ -139,70 +180,124 @@ class LaserNav(BaseEnv):
             is_y_flipped,
             noise_key,
         )
+        noise_key1, noise_key2, noise_key3 = random.split(noise_key, 3)
+        # Time from last LiDAR scan initialization
+        info["substeps_from_last_scan"] = 0
+        if self.lidar_misalignment:
+            info["substeps_from_last_scan"] += random.randint(noise_key2, (), 0, self.lidar_substeps)
+        # Time from last Odometry update initialization
+        info["substeps_from_last_odom_ref_scan"] = info["substeps_from_last_scan"]
+        if self.odometry_misalignment:
+            info["substeps_from_last_odom_ref_scan"] += random.randint(noise_key3, (), 0, self.odometry_substeps)
         # Previous observation initialization
-        # info["previous_obs"] = jnp.stack([self._get_current_obs(initial_state, humans_parameters[:,0], static_obstacles[-1], jnp.zeros((2,)), random.PRNGKey(0)),]*self.n_stack, axis=0)
-        info["previous_obs"] = vmap(self._get_current_obs, in_axes=(None,None,None,None,0))(
+        info["previous_obs"], humans_visibility_mask, obstacles_visibility_mask = vmap(self._get_current_obs, in_axes=(None,None,None,None,None,None,None,None,None,0))(
+            initial_state,
+            info["humans_leg_state"],
             initial_state,
             humans_parameters[:,0],
+            info["humans_leg_parameters"][:,-1],
             static_obstacles[-1],
-            jnp.zeros((2,)),
-            random.split(noise_key, self.n_stack),
+            info["time"] - info["substeps_from_last_scan"]*self.humans_dt,
+            info["time"] - info["substeps_from_last_odom_ref_scan"]*self.humans_dt,
+            info["time"],
+            random.split(noise_key1, self.n_stack),
         )
+        info["humans_visibility_mask"] = humans_visibility_mask[0]
+        info["obstacles_visibility_mask"] = obstacles_visibility_mask[0]
         return info
 
     @partial(jit, static_argnames=("self"))
-    def _get_current_obs(self, state:jnp.ndarray, humans_radii:jnp.ndarray, static_obstacles:jnp.ndarray, action:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_current_obs(
+        self,
+        lidar_state:jnp.ndarray, 
+        legs_lidar_state:jnp.ndarray, 
+        odom_state:jnp.ndarray, 
+        humans_radii:jnp.ndarray, 
+        legs_radii:jnp.ndarray, 
+        static_obstacles:jnp.ndarray, 
+        lidar_timestamp:float,
+        odom_timestamp:float,
+        control_timestamp:float,
+        noise_key:random.PRNGKey,
+    ) -> jnp.ndarray:
         """
-        Given the current state, the additional information about the environment, and the robot's action,
+        Given the current state, the additional information about the environment,
         this function computes the current observation of the state.
 
         args:
-        - state: current state of the environment.
+        - lidar_state: current state at the LiDAR update step.
+        - legs_lidar_state: current state of humans' legs at the LiDAR update step.
+        - odom_state: current state at the Odometry update step.
         - humans_radii: radii of the humans.
+        - legs_radii: radii of the humans' legs.
         - static_obstacles: static obstacles in the environment.
-        - action: action to be taken by the robot (vx,vy) or (v,w).
+        - lidar_timestamp: timestamp of the current LiDAR state.
+        - odom_timestamp: timestamp of the current Odometry state.
+        - control_timestamp: timestamp of the current control step (environment step).
+        - noise_key: random.PRNGKey for noise generation.
 
         output:
-        - current_obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements]
+        - current_obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements]
         """
-        measurements = self.get_lidar_measurements(
-            state[-1, :2], # Lidar position (robot position)
-            state[-1,4], # Lidar yaw angle (robot orientation)
-            state[:-1, :2], # Human positions
+        measurements, humans_visibility_mask, obstacles_visibility_mask = self.get_lidar_measurements(
+            lidar_state[-1, :2], # Lidar position (robot position)
+            lidar_state[-1,4], # Lidar yaw angle (robot orientation)
+            lidar_state[:-1, :2], # Human positions
+            legs_lidar_state[:,[0,1,3,4]], # Humans legs positions (lx, ly, rx, ry)
             humans_radii,
+            legs_radii,
             static_obstacles, 
             noise_key=noise_key
         )
+        robot_velocity = odom_state[-1,2:4] # Robot action (either (vx,vy) or (v,w))
+        robot_position = odom_state[-1,:2]
+        robot_orientation = odom_state[-1,4]
         # Compute the current observation
         current_obs = jnp.array([
-            *state[-1,:2], # Robot position
-            state[-1,4], # Robot orientation
+            *robot_position, # Robot position
+            robot_orientation, # Robot orientation
             self.robot_radius, # Robot radius
-            *action, # Robot action (either (vx,vy) or (v,w))
+            *robot_velocity, # Robot action (either (vx,vy) or (v,w))
+            lidar_timestamp,
+            odom_timestamp,
+            control_timestamp,
             *measurements[:,0], # LiDAR measurements
         ])
-        return current_obs
+        return current_obs, humans_visibility_mask, obstacles_visibility_mask
 
     @partial(jit, static_argnames=("self"))
-    def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_obs(self, state:jnp.ndarray, info:dict, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
-        Given the current state, the additional information about the environment, and the robot's action,
+        Given the current state, the additional information about the environment,
         this function computes the observation of the current state (which is a stack of the last n_stack observations).
 
         args:
-        - state: current state of the environment.
-        - previous_obs: last observation of the environment.
+        - state: current state of the environment. (UNUSED HERE, STATE IS GATHERED FROM INTERMEDIATE_STATES IN INFO BASED ON SENSORS FREQUENCIES)
         - info: dictionary containing additional information about the environment.
-        - action: action to be taken by the robot (vx,vy) or (v,w).
+        - noise_key: random.PRNGKey for noise generation.
 
         output:
-        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
         """
-        current_obs = self._get_current_obs(state, info["humans_parameters"][:,0], info["static_obstacles"][-1], action, noise_key)
+        lidar_state = info['intermediate_states'][-(1+info["substeps_from_last_scan"])]
+        legs_lidar_state = info['intermediate_leg_states'][-(1+info["substeps_from_last_scan"])]
+        odom_state = info['intermediate_states'][-(1+info["substeps_from_last_odom_ref_scan"])]
+        current_obs, humans_visibility_mask, obstacles_visibility_mask = self._get_current_obs(
+            lidar_state, 
+            legs_lidar_state, 
+            odom_state, 
+            info["humans_parameters"][:,0], 
+            info["humans_leg_parameters"][:,-1], 
+            info["static_obstacles"][-1], 
+            info["time"] - info["substeps_from_last_scan"]*self.humans_dt,
+            info["time"] - info["substeps_from_last_odom_ref_scan"]*self.humans_dt,
+            info["time"],
+            noise_key
+        )
         # Stack the current observation with the previous ones
         obs = jnp.vstack((current_obs,info["previous_obs"][:-1]))
-        return obs
+        return obs, humans_visibility_mask, obstacles_visibility_mask
         
     # --- Public methods --- #
 
@@ -237,6 +332,8 @@ class LaserNav(BaseEnv):
         - outcome: dictionary indicating whether the episode is in a terminal state or not.
         - (reset_key, env_key): tuple of random.PRNGKey used to reset the environment (only if reset_if_done is True) and to advance the environment key.
         """
+        ### Advance Environment noise key
+        new_env_key, delay_key,_ = random.split(env_key, 3) 
         ### Robot goal update (next waypoint, if present)
         if self.scenario != -1: # Custom scenario, no automatic goal update
             info["robot_goal"], info["robot_goal_index"] = lax.cond(
@@ -248,32 +345,11 @@ class LaserNav(BaseEnv):
                 (info["robot_goal"], info["robot_goal_index"])
             )
         ### Compute reward and outcome
-        obs = self._get_obs(state, info, action, env_key)
-        new_env_key, _ = random.split(env_key) # Advance the env_key (we do it here to save the replicate the previous obs in previous_obs)
-        reward, outcome = self.reward_function(state, action, info, self.robot_dt)
+        reward, outcome, reward_terms = self.reward_function(state, action, info, self.robot_dt)
+        ### Compute robot delay
+        info["robot_delay"] = jnp.clip(random.normal(delay_key) * self.control_delay_sigma + self.control_delay_mean, 0., self.actions_history_length * self.robot_dt) # Delay must be positive and lower than maximum history length * robot_dt
         ### Update state and info
-        if self.robot_visible:
-            if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-                fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(action), 0., jnp.atan2(*jnp.flip(action)), 0.])]) # HSFM fictitious state
-            elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-                fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], action[0], 0., state[-1,4], action[1]])]) # HSFM fictitious state
-            new_state, new_info = lax.fori_loop(
-                0,
-                int(self.robot_dt/self.humans_dt),
-                lambda _ , x: self._update_state_info(*x, action),
-                (fictitious_state, info))
-            # Overwrite the robot fictitious state with the real one
-            new_state = new_state.at[-1,2:].set(jnp.array([
-                0., 
-                0., 
-                new_state[-1,4] * int(self.kinematics == ROBOT_KINEMATICS.index('unicycle')), # If robot is holonomic 0 is passed as robot theta
-                0.]))
-        else:
-            new_state, new_info = lax.fori_loop(
-                0,
-                int(self.robot_dt/self.humans_dt),
-                lambda _ , x: self._update_state_info(*x, action),
-                (state, info))
+        new_state, new_info, (state_history, humans_leg_state_history) = self._step(state, info, action) 
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):
@@ -305,8 +381,15 @@ class LaserNav(BaseEnv):
         ### Update time, step, return, previous observation
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
-        new_info["return"] += pow(self.reward_function.gamma, info["step"] * self.robot_dt * self.reward_function.v_max) * reward
-        new_info["previous_obs"] = obs
+        new_info["action_history"] = jnp.concatenate((action[None,:], new_info["action_history"][:-1]), axis=0)
+        new_info["intermediate_states"] = state_history
+        new_info["intermediate_leg_states"] = humans_leg_state_history
+        new_info["substeps_from_last_scan"] = (new_info["substeps_from_last_scan"] + self.control_substeps) % self.lidar_substeps
+        new_info["substeps_from_last_odom_ref_scan"] = ((new_info["substeps_from_last_odom_ref_scan"] + self.control_substeps - new_info["substeps_from_last_scan"]) % self.odometry_substeps) + new_info["substeps_from_last_scan"]
+        gammas = jnp.array(tuple(reward_terms.keys()))
+        rewards = jnp.array(tuple(reward_terms.values()))
+        exponent = info["step"] * self.robot_dt * self.reward_function.v_max
+        new_info["return"] += jnp.sum(jnp.power(gammas, exponent) * rewards)
         ### If done and reset_if_done, automatically reset the environment (available only if using standard scenarios)
         if self.scenario != -1: # Custom scenario, no automatic reset
             new_state, reset_key, new_info = lax.cond(
@@ -316,7 +399,9 @@ class LaserNav(BaseEnv):
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        return new_state, self._get_obs(new_state, new_info, action, new_env_key), new_info, reward, outcome, (reset_key, new_env_key)
+        new_obs, new_info["humans_visibility_mask"], new_info["obstacles_visibility_mask"] = self._get_obs(new_state, new_info, new_env_key)
+        new_info["previous_obs"] = new_obs
+        return new_state, new_obs, new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
 
     @partial(jit, static_argnames=("self"))
     def batch_step(
@@ -355,3 +440,68 @@ class LaserNav(BaseEnv):
     @partial(jit, static_argnames=("self"))
     def batch_reset(self, keys):
         return vmap(LaserNav.reset, in_axes=(None,0))(self, keys)
+
+    @partial(jit, static_argnames=("self"))
+    def reset_custom_episode(self, key:random.PRNGKey, custom_episode:dict) -> tuple:
+        """
+        Resets the environment to a user-specified episode (custom scenario, scenario index -1).
+
+        args:
+        - key: PRNG key (also used to seed sensor/leg noise).
+        - custom_episode: dictionary with keys:
+            full_state (n_humans+1, 6): initial full state. WARNING: humans' velocities
+                must be given in the GLOBAL frame; they are converted to the body frame
+                here since LaserNav humans are driven by HSFM.
+            humans_goal (n_humans, 2): humans' goal positions.
+            robot_goal (2,): robot's goal position.
+            static_obstacles (n_humans+1, n_obstacles, 1, 2, 2): static obstacles.
+            scenario (int): scenario index (use -1 for custom scenario).
+            humans_radius (n_humans,): humans' radii.
+            humans_speed (n_humans,): humans' desired speeds.
+
+        output:
+        - initial_state, key, obs (previous_obs stack), info, outcome
+          (same format as LaserNav.reset).
+        """
+        full_state = jnp.array(custom_episode["full_state"])
+        # LaserNav humans are always HSFM: convert global-frame velocities to the body frame
+        full_state = lax.fori_loop(
+            0,
+            self.n_humans,
+            lambda i, x: x.at[i].set(jnp.array(
+                [x[i,0],
+                 x[i,1],
+                 *jnp.matmul(jnp.array([[jnp.cos(x[i,4]), -jnp.sin(x[i,4])], [jnp.sin(x[i,4]), jnp.cos(x[i,4])]]), x[i,2:4]),
+                 x[i,4],
+                 x[i,5]])),
+            full_state)
+        humans_goal = jnp.array(custom_episode["humans_goal"])
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        humans_parameters = humans_parameters.at[:,0].set(jnp.array(custom_episode["humans_radius"]))
+        humans_parameters = humans_parameters.at[:,2].set(jnp.array(custom_episode["humans_speed"]))
+        robot_goal = jnp.array(custom_episode["robot_goal"])
+        robot_goal_list = jnp.array([robot_goal, jnp.full((2,), jnp.nan)]) # Dummy waypoint list (unused for custom scenario)
+        if self.n_obstacles == 0:
+            static_obstacles = jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan)
+        else:
+            static_obstacles = jnp.array(custom_episode["static_obstacles"])
+        key, noise_key = random.split(key)
+        info = self._init_info(
+            full_state,
+            humans_goal,
+            robot_goal,
+            robot_goal_list,
+            humans_parameters,
+            static_obstacles,
+            custom_episode["scenario"],
+            jnp.zeros((self.n_humans,)),
+            False,
+            False,
+            noise_key,
+        )
+        return \
+            full_state, \
+            key, \
+            info["previous_obs"], \
+            info, \
+            {"success": False, "collision_with_human": False, "collision_with_obstacle": False, "timeout": False, "nothing": True}

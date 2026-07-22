@@ -1,11 +1,10 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, debug, nn
+from jax import jit, vmap, nn
 from functools import partial
 import haiku as hk
 from types import FunctionType
 
 from .cadrl import CADRL
-from .jessi import JESSI
 
 MLP_1_PARAMS = {
     "output_sizes": [150, 100],
@@ -129,7 +128,6 @@ class SARL(CADRL):
             self, 
             reward_function:FunctionType, 
             v_max=1., 
-            gamma=0.9, 
             dt=0.25, 
             wheels_distance=0.7, 
             kinematics='holonomic',
@@ -145,7 +143,6 @@ class SARL(CADRL):
             reward_function=reward_function, 
             v_max=v_max, 
             wheels_distance=wheels_distance,
-            gamma=gamma, 
             dt=dt,
             kinematics=kinematics,
             unicycle_box_action_space=unicycle_box_action_space,
@@ -166,7 +163,7 @@ class SARL(CADRL):
         n_humans = len(next_obs) - 1
         # Compute instantaneous reward
         current_obs = current_obs.at[-1,2:4].set(action)
-        reward, _ = self.reward_function(current_obs, info, self.dt)
+        reward, _, _ = self.reward_function(current_obs, info, self.dt)
         # Apply robot action
         next_obs = next_obs.at[-1,2:4].set(action)
         next_obs = next_obs.at[-1].set(self._propagate_robot_obs(next_obs[-1]))
@@ -175,7 +172,7 @@ class SARL(CADRL):
         # Compute the output of the value network (value of the state)
         vnet_output = self.model.apply(vnet_params, None, vnet_inputs, mask=humans_mask)
         # Compute the final value of the action
-        value = reward + pow(self.gamma,self.dt * self.v_max) * vnet_output
+        value = reward + pow(self.reward_function.gamma,self.dt * self.v_max) * vnet_output
         return value, vnet_inputs
     
     @partial(jit, static_argnames=("self"))

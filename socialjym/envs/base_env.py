@@ -11,6 +11,7 @@ from jsfm.utils import get_standard_humans_parameters as sfm_get_standard_humans
 from jorca.utils import get_standard_humans_parameters as orca_get_standard_humans_parameters
 
 SCENARIOS = [
+    # Social scenarios
     "circular_crossing", 
     "parallel_traffic", 
     "perpendicular_traffic", 
@@ -18,9 +19,17 @@ SCENARIOS = [
     "delayed_circular_crossing",
     "circular_crossing_with_static_obstacles",
     "crowd_navigation",
-    "corner_traffic",
-    "door_crossing",
-    "crowd_chasing",
+    # Realistic scenarios (testing)
+    "corner_traffic", # Double waypoint
+    "door_crossing", # Double waypoint
+    "crowd_chasing", # Double waypoint
+    # Navigation scenarios
+    "turn_l",
+    "narrow_passage",
+    "slalom",
+    "random_obstacle",
+    "narrow_corridor",
+    "random_room",
     "hybrid_scenario" # Make sure to update this list (if new scenarios are added) but always leave the last element as "hybrid_scenario"
 ] 
 HUMAN_POLICIES = [
@@ -31,6 +40,10 @@ HUMAN_POLICIES = [
 ROBOT_KINEMATICS = [
     "holonomic",
     "unicycle"
+]
+ROBOT_VELOCITY_DYNAMICS = [
+    "first_order_system",
+    "coupled_slew_rate"
 ]
 ENVIRONMENTS = [
     "socialnav",
@@ -122,6 +135,116 @@ def thicken_obstacles(obstacles, thickness):
     thick_obstacles = jnp.stack([seg1, seg2, seg3, seg4], axis=-3)
     return thick_obstacles
 
+@partial(jit, static_argnames=("N", "max_attempts"))
+def generate_wall_noise(
+    key: random.PRNGKey,
+    obstacles: jnp.ndarray,    # Shape: (O, 1, 2, 2)
+    robot_position: jnp.ndarray, # Shape: (2,)
+    robot_goal: jnp.ndarray,     # Shape: (2,)
+    N: int,                    # Numero di micro-segmenti da generare
+    noise_length: float = 0.4,  # Lunghezza del micro-segmento (es. 5 cm)
+    noise_offset: float = 0.05,  # Spostamento ortogonale dal muro (es. 2 cm)
+    safe_distance: float = 1.0,  # Distanza minima da robot e goal
+    max_attempts: int = 5       # Limite loop per evitare loop infiniti nel JIT
+) -> jnp.ndarray:
+    walls = obstacles.reshape(-1, 2, 2)
+    num_walls = walls.shape[0]
+    def generate_single_noise(k_init):
+        def cond_fn(state):
+            step, _, valid, _ = state
+            return (step < max_attempts) & (~valid)
+        def body_fn(state):
+            step, k_curr, _, _ = state
+            k1, k2, k3, k4, k_next = random.split(k_curr, 5)
+            w_idx = random.randint(k1, shape=(), minval=0, maxval=num_walls)
+            wall = walls[w_idx] # (2, 2)
+            p1, p2 = wall[0], wall[1]
+            t = random.uniform(k2, shape=())
+            c = p1 + t * (p2 - p1)
+            dist_robot = jnp.linalg.norm(c - robot_position)
+            dist_goal = jnp.linalg.norm(c - robot_goal)
+            valid = (dist_robot >= safe_distance) & (dist_goal >= safe_distance)
+            wall_vec = p2 - p1
+            wall_angle = jnp.arctan2(wall_vec[1], wall_vec[0])
+            angle_noise = random.uniform(k3, shape=(), minval=-jnp.pi/4, maxval=jnp.pi/4)
+            final_angle = wall_angle + angle_noise
+            dir_vec = jnp.array([jnp.cos(final_angle), jnp.sin(final_angle)])
+            normal_vec = jnp.array([-jnp.sin(wall_angle), jnp.cos(wall_angle)])
+            c_offset = c + normal_vec * random.uniform(k4, shape=(), minval=-noise_offset, maxval=noise_offset)
+            seg = jnp.stack([
+                c_offset - (noise_length / 2) * dir_vec,
+                c_offset + (noise_length / 2) * dir_vec
+            ])
+            return step + 1, k_next, valid, seg
+        init_state = (0, k_init, False, jnp.zeros((2, 2)))
+        _, _, is_valid, final_seg = lax.while_loop(cond_fn, body_fn, init_state)
+        return jnp.where(is_valid, final_seg, jnp.full((2, 2), jnp.nan))
+    keys = random.split(key, N)
+    noise_segments = vmap(generate_single_noise)(keys)
+    return noise_segments[:, None, :, :]
+
+@partial(jit, static_argnames=("n_humans"))
+def get_humans_standard_leg_parameters(n_humans):
+    single_human_leg_params = jnp.array([
+        0.5, # step length
+        0.75, # legs base percent (percent of human radius at which legs are attached to the body horizontally)
+        0.6, # step duration
+        0.12, # leg radius (ALWAYS KEEP LAST)
+    ])
+    return jnp.repeat(single_human_leg_params[None], n_humans, axis=0)
+
+@partial(jit, static_argnames=("humans_policy"))
+def init_single_human_leg_state(random_key, human_state, human_radius, legs_parameters, humans_policy):
+    if humans_policy == HUMAN_POLICIES.index('hsfm'):
+        orientation = human_state[4]
+    else:
+        orientation = jnp.arctan2(human_state[3], human_state[2])
+    px, py = human_state[0], human_state[1]
+    key1, key2 = random.split(random_key)
+    stance_leg = random.bernoulli(key1, 0.5)
+    stance_leg_phase = random.uniform(key2, minval=0., maxval=.5)
+    swing_leg_phase = stance_leg_phase + 0.5
+    def _left_is_stance():
+        left_x  = px + legs_parameters[1]*human_radius*jnp.cos(orientation+jnp.pi/2) - (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.cos(orientation)
+        left_y  = py + legs_parameters[1]*human_radius*jnp.sin(orientation+jnp.pi/2) - (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.sin(orientation)
+        right_x = px + legs_parameters[1]*human_radius*jnp.cos(orientation-jnp.pi/2) + (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.cos(orientation)
+        right_y = py + legs_parameters[1]*human_radius*jnp.sin(orientation-jnp.pi/2) + (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.sin(orientation)
+        return jnp.array([left_x, left_y, stance_leg_phase, right_x, right_y, swing_leg_phase])
+    def _right_is_stance():
+        left_x  = px + legs_parameters[1]*human_radius*jnp.cos(orientation+jnp.pi/2) + (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.cos(orientation)
+        left_y  = py + legs_parameters[1]*human_radius*jnp.sin(orientation+jnp.pi/2) + (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.sin(orientation)
+        right_x = px + legs_parameters[1]*human_radius*jnp.cos(orientation-jnp.pi/2) - (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.cos(orientation)
+        right_y = py + legs_parameters[1]*human_radius*jnp.sin(orientation-jnp.pi/2) - (legs_parameters[0]/2) * 2 * stance_leg_phase * jnp.sin(orientation)
+        return jnp.array([left_x, left_y, swing_leg_phase, right_x, right_y, stance_leg_phase])
+    return lax.cond(stance_leg == 1, _left_is_stance, _right_is_stance)
+
+@partial(jit, static_argnames=("dt","humans_policy"))
+def update_single_human_leg(human_state, human_leg_state, human_radius, dt, legs_parameters, humans_policy):
+    if humans_policy == HUMAN_POLICIES.index('hsfm'):
+        orientation = human_state[4]
+    else:
+        orientation = jnp.arctan2(human_state[3], human_state[2])
+    position = human_state[0:2]
+    com_left  = position + legs_parameters[1]*human_radius*jnp.array([jnp.cos(orientation+jnp.pi/2), jnp.sin(orientation+jnp.pi/2)])
+    com_right = position + legs_parameters[1]*human_radius*jnp.array([jnp.cos(orientation-jnp.pi/2), jnp.sin(orientation-jnp.pi/2)])
+
+    def stance(lx, ly): return lx, ly
+    def swing(com, lx, ly, phase):
+        alpha = (phase - 0.5) * 2
+        tx = com[0] + (legs_parameters[0]/2)*jnp.cos(orientation)
+        ty = com[1] + (legs_parameters[0]/2)*jnp.sin(orientation)
+        return (1-alpha)*lx + alpha*tx, (1-alpha)*ly + alpha*ty
+
+    lx, ly = lax.cond(
+        human_leg_state[2] < 0.5,
+        lambda: stance(human_leg_state[0], human_leg_state[1]),
+        lambda: swing(com_left, human_leg_state[0], human_leg_state[1], human_leg_state[2]))
+    rx, ry = lax.cond(
+        human_leg_state[5] < 0.5,
+        lambda: stance(human_leg_state[3], human_leg_state[4]),
+        lambda: swing(com_right, human_leg_state[3], human_leg_state[4], human_leg_state[5]))
+    return jnp.array([lx, ly, (human_leg_state[2]+dt/legs_parameters[2])%1.0, rx, ry, (human_leg_state[5]+dt/legs_parameters[2])%1.0])
+
 class BaseEnv(ABC):
     """
     Base class for social navigation environments.
@@ -148,6 +271,13 @@ class BaseEnv(ABC):
         lidar_noise:bool,
         lidar_noise_fixed_std:float,
         lidar_noise_proportional_std:float,
+        velocity_dynamics:str,
+        tau_action_0:float, # Used for First Order System velocity dynamics
+        tau_action_1:float, # Used for First Order System velocity dynamics
+        wheels_max_linear_acceleration:float, # Used for Coupled Slew Rate velocity dynamics
+        wheels_distance:float, # Used for Coupled Slew Rate velocity dynamics
+        control_delay_mean:float,
+        control_delay_sigma:float,
         lidar_salt_and_pepper_prob:float,
         kinematics:str,
         max_cc_delay:float,
@@ -157,7 +287,10 @@ class BaseEnv(ABC):
         grid_map_computation:bool,
         grid_cell_size:float,
         grid_min_size:float,
-        thick_default_obstacle:bool
+        thick_default_obstacle:bool,
+        obstacles_noise:float,
+        noisy_walls:bool,
+        leg_dynamics:bool,
     ) -> None:
         ## Args validation
         assert (scenario in SCENARIOS) or (scenario is None) or (scenario in ['training_scenario','testing_scenario']), f"Invalid scenario. Choose one of {SCENARIOS}, None for custom scenario, or training_scenario for a mixture of scenarios for training, or testing_scenario for a mixture of scenarios for testing."
@@ -177,6 +310,14 @@ class BaseEnv(ABC):
         assert is_multiple(robot_dt, humans_dt), "The robot's time step must be a multiple of the humans' time step."
         if scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or (scenario == SCENARIOS.index('hybrid_scenario') and SCENARIOS.index('circular_crossing_with_static_obstacles') in hybrid_scenario_subset):
             assert n_humans > ccso_n_static_humans, "The number of static humans must be less than the total number of humans."
+        assert tau_action_0 >= 0., "Time constant of first order system for action 0 should be greater or equal to zero."
+        assert tau_action_1 >= 0., "Time constant of first order system for action 1 should be greater or equal to zero."
+        assert control_delay_mean >= 0., "Mean control delay should be greater or equal to zero."
+        assert control_delay_sigma >= 0., "Control delay sigma should be greater or equal to zero."
+        assert velocity_dynamics in ROBOT_VELOCITY_DYNAMICS, f"Robot velocity dynamics must be one of {ROBOT_VELOCITY_DYNAMICS}"
+        if velocity_dynamics == "coupled_slew_rate":
+            assert kinematics == "unicycle"
+        assert obstacles_noise <= 0.2, "Obstacles noise should be kept low (<=0.2) as otherwise episodes construction might be too random"
         ## Env initialization
         self.robot_dt = robot_dt
         self.robot_radius = robot_radius
@@ -213,18 +354,33 @@ class BaseEnv(ABC):
         self.lidar_noise_fixed_std = lidar_noise_fixed_std
         self.lidar_noise_proportional_std = lidar_noise_proportional_std
         self.lidar_salt_and_pepper_prob = lidar_salt_and_pepper_prob
+        self.robot_velocity_dynamics = ROBOT_VELOCITY_DYNAMICS.index(velocity_dynamics)
+        self.tau_action_0 = tau_action_0
+        self.tau_action_1 = tau_action_1
+        self.wheels_max_linear_acceleration = wheels_max_linear_acceleration
+        self.wheels_distance = wheels_distance
+        self.control_delay_mean = control_delay_mean
+        self.control_delay_sigma = control_delay_sigma
+        self.actions_history_length = jnp.max(jnp.array([jnp.ceil((self.control_delay_mean + 3 * self.control_delay_sigma)/self.robot_dt), 2], dtype=jnp.int32))
+        self.action_0_dynamics = tau_action_0 > 0.
+        self.action_1_dynamics = tau_action_1 > 0.
+        self.limited_acceleration = wheels_max_linear_acceleration < jnp.inf
         self.kinematics = ROBOT_KINEMATICS.index(kinematics)
         self.max_cc_delay = max_cc_delay
         self.ccso_n_static_humans = ccso_n_static_humans
         self.ccso_static_humans_radius_mean = ccso_static_humans_radius_mean
         self.ccso_static_humans_radius_std = ccso_static_humans_radius_std
         self.thick_default_obstacle = thick_default_obstacle
+        self.n_segments = 4 if self.thick_default_obstacle else 1
         # Global planning parameters
         if grid_map_computation:
             print("\nWARNING: Grid map computation is enabled. This will slow down the simulation, especially if many static obstacles are present.\n")
         self.grid_map_computation = grid_map_computation
         self.grid_cell_size = grid_cell_size
         self.grid_min_size = grid_min_size
+        self.leg_dynamics = leg_dynamics
+        self.obstacles_noise = obstacles_noise
+        self.noisy_walls = noisy_walls
         ## Static obstacles initialization
         self.static_obstacles_per_scenario = jnp.array([
             [ # Circular crossing
@@ -288,7 +444,7 @@ class BaseEnv(ABC):
                 [[[0., -0.75],[0., -2.5]]],
                 [[[-5., 2.5],[5., 2.5]]],
                 [[[-5., -2.5],[5., -2.5]]],
-                [[[-5., -2.5],[-5., 2.5]]],
+                [[[2.5, 0.5],[2.5, -0.5]]],
             ],
             [ # Crowd chasing
                 [[[-self.traffic_length/2-3, self.traffic_height/2 + 0.7],[self.traffic_length/2+3, self.traffic_height/2 + 0.7]]],
@@ -297,9 +453,49 @@ class BaseEnv(ABC):
                 [[[-self.traffic_length/2-3, self.traffic_height/2 + 0.7],[-self.traffic_length/2-3, -(self.traffic_height/2 + 0.7)]]],
                 [[[self.traffic_length/2+3, self.traffic_height/2 + 0.7],[self.traffic_length/2+3, -(self.traffic_height/2 + 0.7)]]],
             ],
+            [ # L-turn
+                [[[-1.,-5.],[1.,-5.]]],
+                [[[1.,-5.],[1.,3.]]],
+                [[[1.,3.],[-3., 3.]]],
+                [[[-3., 1.],[-1., 1.]]],
+                [[[-1., 1.],[-1., -5.]]],
+            ],
+            [ # Narrow passage
+                [[[-3., -4.],[3., -4.]]],
+                [[[3., -4.],[3., 2.]]],
+                [[[3., 2.],[0.65, 2.]]],
+                [[[-0.65, 2.],[-3., 2.]]],
+                [[[-3., 2.],[-3., -4.]]],
+            ],
+            [ # Slalom
+                [[[-1.5, 8.],[-1.5, -5.]]],
+                [[[-1.5, -5.],[1.5, -5.]]],
+                [[[1.5, -5.],[1.5, 8.]]],
+                [[[-1.5, -2.],[0., -2.]]],
+                [[[1.5, 2.],[0., 2.]]],
+            ],
+            [ # Random obstacle
+                [[[-6.,-6.],[-6.,6.]]],
+                [[[-6.,6.],[6.,6.]]],
+                [[[6.,6.],[6.,-6.]]],
+                [[[6.,-6.],[-6.,-6.]]],
+                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+            ],
+            [ # Narrow corridor
+                [[[-0.9,6.],[-0.9,-6.]]],
+                [[[0.9,6.],[0.9,1.2]]],
+                [[[0.9,1.2],[1.2,0.]]],
+                [[[1.2,0.],[0.9,-1.2]]],
+                [[[0.9,-1.2],[0.9,-6.]]],
+            ],
+            [ # Random room
+                [[[0.5,0.5],[0.5,-0.5]]],
+                [[[0.5,-0.5],[-0.5,-0.5]]],
+                [[[-0.5,-0.5],[-0.5,0.5]]],
+                [[[-0.5,0.5],[0.5,0.5]]],
+                [[[-0.1,0.],[0.1,0.]]],
+            ],
         ])
-        if thick_default_obstacle:
-            self.static_obstacles_per_scenario = thicken_obstacles(self.static_obstacles_per_scenario, thickness=0.1)
         if n_obstacles > 5:
             assert self.scenario == -1, "Standard scenarios with more than 5 obstacles are not supported yet. Only with custom scenarios."
         ## Robot goals initialization
@@ -311,9 +507,15 @@ class BaseEnv(ABC):
             [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Delayed circular crossing
             [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Circular crossing with static obstacles
             [[0., self.circle_radius],[jnp.nan, jnp.nan]], # Crowd navigation
-            [[self.traffic_length/2-self.traffic_height/4, self.traffic_length/2-self.traffic_height/4],[self.traffic_length/2, 1.]], # Corner traffic
+            [[self.traffic_length/2+self.traffic_height/4, self.traffic_length/2+self.traffic_height/4],[self.traffic_length/2, 1.]], # Corner traffic
             [[0., 0.],[5., 0.]], # Door crossing
-            [[0, -0.75],[self.traffic_length/2-1, 0.]], # Crowd chasing
+            [[self.traffic_length/2-1, 0.],[jnp.nan, jnp.nan]], # Crowd chasing
+            [[-2., 2.],[jnp.nan, jnp.nan]], # L-turn
+            [[0., 3.],[jnp.nan, jnp.nan]], # Narrow passage
+            [[0.,7.],[jnp.nan, jnp.nan]], # Slalom
+            [[0.,5.],[jnp.nan, jnp.nan]], # Random obstacle
+            [[0.7, 0.],[jnp.nan, jnp.nan]], # Narrow corridor
+            [[0., 1.],[jnp.nan, jnp.nan]], # Random room
         ])
         ## Possible delays for delayed circular crossing scenario
         self.possible_delays = jnp.arange(0., self.max_cc_delay + self.robot_dt, self.robot_dt)
@@ -357,9 +559,29 @@ class BaseEnv(ABC):
                 self._generate_corner_traffic_episode,
                 self._generate_door_crossing_episode,
                 self._generate_crowd_chasing_episode,
+                self._generate_l_turn_episode,
+                self._generate_narrow_passage_episode,
+                self._generate_slalom_episode,
+                self._generate_random_obstacle_episode,
+                self._generate_narrow_corridor_episode,
+                self._generate_random_room_episode,
             ], 
             scen_key
         )
+        if self.noisy_walls:
+            key, subkey = random.split(key, 2)
+            noisy_walls = generate_wall_noise(
+                subkey,
+                static_obstacles, 
+                full_state[-1,:2], 
+                robot_goal, 
+                5,                    
+            )
+            static_obstacles = jnp.concatenate([static_obstacles, noisy_walls], axis=0)
+        if self.thick_default_obstacle:
+            static_obstacles = thicken_obstacles(static_obstacles, thickness=0.1)
+        static_obstacles = jnp.repeat(jnp.array([static_obstacles]), self.n_humans+1, axis=0)
+        # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
         full_state, humans_goal, robot_goal, robot_goal_list, static_obstacles, is_x_flipped, is_y_flipped = self._random_flip(
             full_state, 
             humans_goal, 
@@ -480,13 +702,22 @@ class BaseEnv(ABC):
         output:
         - info: dictionary containing the initialized values.
         """
-        return {
-            "humans_goal": humans_goal, 
-            "robot_goal": robot_goal, 
+        leg_param_key, leg_init_key = random.split(noise_key)
+        leg_parameters = get_humans_standard_leg_parameters(self.n_humans)
+        leg_state = vmap(init_single_human_leg_state, in_axes=(0, 0, 0, 0, None))(
+                random.split(leg_init_key, self.n_humans),
+                full_state[0:self.n_humans], 
+                humans_parameters[:, 0], 
+                leg_parameters,
+                self.humans_policy,
+            )
+        info = {
+            "humans_goal": humans_goal,
+            "robot_goal": robot_goal,
             "robot_goal_index": 0, # If robot has a waypoint list, this is the index of the next waypoint to reach
             "robot_goal_list": robot_goal_list, # If robot has a waypoint list, this is the list of waypoints
-            "humans_parameters": humans_parameters, 
-            "static_obstacles": static_obstacles, 
+            "humans_parameters": humans_parameters,
+            "static_obstacles": static_obstacles,
             "time": 0.,
             "current_scenario": current_scenario,
             "humans_delay": humans_delay,
@@ -494,19 +725,30 @@ class BaseEnv(ABC):
             "return": 0.,
             "is_x_flipped": is_x_flipped,
             "is_y_flipped": is_y_flipped,
+            "action_history": jnp.zeros((self.actions_history_length, 2)), # History of taken actions, used for modelling delays
+            "robot_delay": 0., # Current delay of the robot, used for delayed action execution
+            "intermediate_states": jnp.repeat(full_state[None], int(self.robot_dt/self.humans_dt), axis=0), # Used to store the intermediate states between two robot steps
+            "humans_leg_parameters": leg_parameters,
+            "humans_leg_state": leg_state,
+            "intermediate_leg_states": jnp.repeat(leg_state[None], int(self.robot_dt/self.humans_dt), axis=0), # Used to store the intermediate leg states between two robot steps
         }
+        return info
 
     @partial(jit, static_argnames=("self"))
     def _init_obstacles(self, key:random.PRNGKey, scenario:int) -> jnp.ndarray:
         if self.n_obstacles == 0:
-            return jnp.full((self.n_humans+1, 1, 1, 2, 2), jnp.nan)
+            return jnp.full((1, 1, 2, 2), jnp.nan)
         else:
+            perm_key, noise_key = random.split(key)
+            # Pick obstacles
             obstacles = self.static_obstacles_per_scenario[scenario]
-            perm = random.permutation(key, obstacles.shape[0])
+            perm = random.permutation(perm_key, obstacles.shape[0])
             shuffled_obstacles = obstacles[perm]
             picked_obstacles = shuffled_obstacles[:self.n_obstacles]
-            # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-            return jnp.repeat(jnp.array([picked_obstacles]), self.n_humans+1, axis=0)
+            # Add small random noise to vertices
+            noise = random.uniform(noise_key, (self.n_obstacles,1,2,2)) * self.obstacles_noise
+            noised_obstacles = picked_obstacles + noise
+            return noised_obstacles
 
     @partial(jit, static_argnames=("self"))
     def _init_robot_goal(self, scenario:int) -> jnp.ndarray:
@@ -520,7 +762,7 @@ class BaseEnv(ABC):
         - robot_goal: array containing the robot's goal.
         """
         return self.robot_goals_per_scenario[scenario][0]
-    
+
     @partial(jit, static_argnames=("self"))
     def _generate_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
         full_state = jnp.zeros((self.n_humans+1, 6))
@@ -1179,6 +1421,180 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
+    def _generate_l_turn_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, obs_key, rob_key, rob_goal_key = random.split(key, 4)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        humans_goal = points
+        full_state = full_state.at[:-1,:2].set(points)
+        # Robot
+        robot_position = jnp.array([0., -3.5]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([0.4, 0.9])
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., jnp.pi/2, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('turn_l'))
+        robot_goal = robot_goal + random.uniform(rob_goal_key, (2,),minval=-1.) * jnp.array([0.5, 0.5])
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('turn_l'))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_narrow_passage_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, obs_key, rob_key, delay_key = random.split(key, 4)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        points = points.at[-1].set(jnp.array([0., 1.65]) + random.uniform(hum_key, (2,),minval=-1.) * jnp.array([0., 0.4]))
+        humans_goal = points
+        humans_goal = humans_goal.at[-1].set(jnp.array([0., 5.]))
+        full_state = full_state.at[:-1,:2].set(points)
+        humans_delay = random.choice(delay_key, self.possible_delays, shape=(self.n_humans,))
+        # Robot
+        robot_position = jnp.array([0., -3.]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([2., 0.5])
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., jnp.pi/2, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('narrow_passage'))
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('narrow_passage'))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, humans_delay
+    
+    @partial(jit, static_argnames=("self"))
+    def _generate_slalom_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, obs_key, rob_key, rob_orient_key, rob_goal_key = random.split(key, 5)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        humans_goal = points
+        full_state = full_state.at[:-1,:2].set(points)
+        # Robot
+        robot_position = jnp.array([0., -4.]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([0.4, 0.4])
+        robot_orientation = jnp.pi/2  + random.uniform(rob_orient_key, (), minval=-1.) * jnp.pi/4
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., robot_orientation, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('slalom'))
+        robot_goal = robot_goal + random.uniform(rob_goal_key, (2,),minval=-1.) * jnp.array([0.5, 0.5])
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('slalom'))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+    
+    @partial(jit, static_argnames=("self"))
+    def _generate_random_obstacle_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, hum_goal_key, obs_key, random_obs_key, rob_key, rob_orient_key, rob_goal_key = random.split(key, 7)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        points = points.at[-1].set(random.uniform(hum_key, (2,),minval=-1.) * jnp.array([4.,2.]))
+        humans_goal = points
+        humans_goal = humans_goal.at[-1].set(random.uniform(hum_goal_key, (2,),minval=-1.) * jnp.array([4.,2.]))
+        full_state = full_state.at[:-1,:2].set(points)
+        # Robot
+        robot_position = jnp.array([0., -5.]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([4, 0.1])
+        robot_orientation = jnp.pi/2  + random.uniform(rob_orient_key, (), minval=-1.) * jnp.pi/4
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., robot_orientation, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('random_obstacle'))
+        robot_goal = robot_goal + random.uniform(rob_goal_key, (2,),minval=-1.) * jnp.array([4, 0.1])
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('random_obstacle'))
+        if self.n_obstacles > 0:
+            key1, key2, key3 = random.split(random_obs_key, 3)
+            center = random.uniform(key1, (2,), minval=-1) * jnp.array([4, 2])
+            orientation = random.uniform(key2, (), minval=-1.) * jnp.pi
+            length = random.uniform(key3, (), minval=1.5, maxval=1.5)
+            displacement = jnp.array([jnp.cos(orientation), jnp.sin(orientation)]) * length / 2
+            vertex1 = center + displacement
+            vertex2 = center - displacement
+            # Spawn random obstacle in place of last one
+            static_obstacles = static_obstacles.at[-1].set(jnp.array(
+                [[vertex1,vertex2]]
+            ))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+    
+    @partial(jit, static_argnames=("self"))
+    def _generate_narrow_corridor_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, hum_goal_key, obs_key, rob_key, rob_side_key, rob_orient_key, rob_goal_key = random.split(key, 7)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        points = points.at[-1].set(jnp.array([0.,4.]) + random.uniform(hum_key, (2,),minval=-1.) * jnp.array([0.05, 0.5]))
+        humans_goal = points
+        humans_goal = humans_goal.at[-1].set(jnp.array([0.,-4.]) + random.uniform(hum_key, (2,),minval=-1.) * jnp.array([0.05, 0.5]))
+        full_state = full_state.at[:-1,:2].set(points)
+        # Robot
+        side = random.bernoulli(rob_side_key) * 2 - 1
+        robot_position = jnp.array([0., side * 5]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([0.05, 0.5])
+        robot_orientation = jnp.pi/2  + random.uniform(rob_orient_key, (), minval=-1.) * jnp.pi/4
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., robot_orientation, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('narrow_corridor'))
+        robot_goal = robot_goal + random.uniform(rob_goal_key, (2,),minval=-1.) * jnp.array([0.05, 0.05])
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('narrow_corridor'))
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+
+    @partial(jit, static_argnames=("self"))
+    def _generate_random_room_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+        full_state = jnp.zeros((self.n_humans+1, 6))
+        humans_parameters = self.get_standard_humans_parameters(self.n_humans)
+        # Humans (Randomly generate the humans' positions far away)
+        @vmap
+        def _gen_human(key):
+            new_angle = random.uniform(key, shape=(1,), minval=0, maxval=2*jnp.pi)
+            disturbance = random.uniform(key, shape=(1,), minval=-0.1, maxval=0.5)
+            new_point = jnp.squeeze((1_000 + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
+            return new_point
+        hum_key, obs_key, rob_key, rob_orient_key, room_key = random.split(key, 5)
+        points = _gen_human(random.split(hum_key, self.n_humans))
+        humans_goal = points
+        full_state = full_state.at[:-1,:2].set(points)
+        # Room
+        room_side = random.uniform(room_key) * 4 + 5
+        # Robot
+        robot_position = jnp.array([0., -room_side/2 + 1.5]) + random.uniform(rob_key, (2,),minval=-1.) * jnp.array([0.1, 0.1])
+        robot_orientation = jnp.pi/2  + random.uniform(rob_orient_key, (), minval=-1.) * jnp.pi/2
+        full_state = full_state.at[-1].set(jnp.array([*robot_position, 0., 0., robot_orientation, 0.]))
+        # Robot goal
+        robot_goal = self._init_robot_goal(SCENARIOS.index('random_room')) * room_side / 2 + jnp.array([0.,-1.])
+        # Obstacles
+        static_obstacles = self._init_obstacles(obs_key, SCENARIOS.index('random_room')) * room_side
+        return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
+
+    @partial(jit, static_argnames=("self"))
     def _human_ray_intersect(self, direction:jnp.ndarray, human_position:jnp.ndarray, lidar_position:jnp.ndarray, human_radius:float) -> float:
         s = lidar_position - human_position
         b = jnp.dot(s, direction)
@@ -1289,7 +1705,7 @@ class BaseEnv(ABC):
             return (info, state)
         
         @jit
-        def _update_delayed_circular_crossing(val:tuple):
+        def _update_delayed_episodes(val:tuple):
             @jit
             def _update_human_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, delay:float, time:float) -> jnp.ndarray:
                 goal = lax.cond(
@@ -1305,10 +1721,34 @@ class BaseEnv(ABC):
         @jit
         def _update_traffic_scenarios(val:tuple):
             @jit
+            def _update_human_state_and_goal_leg_dynamics(position:jnp.ndarray, goal:jnp.ndarray, radius:float, legs_state:jnp.ndarray, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray, is_x_flipped:bool) -> tuple:
+                flip_x = lax.cond(is_x_flipped,lambda _: -1.,lambda _: 1.,None)
+                new_position, new_goal = lax.cond(
+                    jnp.linalg.norm(position - goal) <= 3, 
+                    lambda _: (
+                        jnp.array([
+                        # flip_x * jnp.max(jnp.append(positions[:,0]+(jnp.max(jnp.append(radiuses,self.robot_radius))*2)+(jnp.max(safety_spaces)*2)+0.05, self.traffic_length/2+1)), 
+                        flip_x * jnp.max(jnp.append(positions[:,0] + (jnp.max(jnp.append(radiuses, self.robot_radius))*2)+(jnp.max(safety_spaces)*2), self.traffic_length/2)), # Compliant with Social-Navigation-PyEnvs
+                        jnp.clip(position[1], -self.traffic_height/2, self.traffic_height/2)]
+                        ),
+                        jnp.array([goal[0], position[1]]),
+                    ),
+                    lambda x: x,
+                    (position, goal))
+                transition = new_position - position
+                new_legs_state = jnp.array([
+                    legs_state[0] + transition[0], 
+                    legs_state[1] + transition[1], 
+                    legs_state[2], 
+                    legs_state[3] + transition[0], 
+                    legs_state[4] + transition[1], 
+                    legs_state[5],
+                ])
+                return new_position, new_goal, new_legs_state
+            @jit
             def _update_human_state_and_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray, is_x_flipped:bool) -> tuple:
                 flip_x = lax.cond(is_x_flipped,lambda _: -1.,lambda _: 1.,None)
                 position, goal = lax.cond(
-                    # jnp.linalg.norm(position - goal) <= radius + 2,
                     jnp.linalg.norm(position - goal) <= 3, # Compliant with Social-Navigation-PyEnvs
                     lambda _: (
                         jnp.array([
@@ -1322,15 +1762,27 @@ class BaseEnv(ABC):
                     (position, goal))
                 return position, goal
             info, state = val
-            new_positions, new_goals = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None, None))(
-                state[:-1,0:2], 
-                info["humans_goal"], 
-                info["humans_parameters"][:,0], 
-                state[:,0:2], 
-                info["humans_parameters"][:,0], 
-                info["humans_parameters"][:,-1],
-                info['is_x_flipped']
-            )
+            if self.leg_dynamics:
+                new_positions, new_goals, info["humans_leg_state"] = vmap(_update_human_state_and_goal_leg_dynamics, in_axes=(0,0,0,0,None,None,None, None))(
+                    state[:-1,0:2], 
+                    info["humans_goal"], 
+                    info["humans_parameters"][:,0], 
+                    info["humans_leg_state"],
+                    state[:,0:2], 
+                    info["humans_parameters"][:,0], 
+                    info["humans_parameters"][:,-1],
+                    info['is_x_flipped'],
+                )
+            else:
+                new_positions, new_goals = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None, None))(
+                    state[:-1,0:2], 
+                    info["humans_goal"], 
+                    info["humans_parameters"][:,0], 
+                    state[:,0:2], 
+                    info["humans_parameters"][:,0], 
+                    info["humans_parameters"][:,-1],
+                    info['is_x_flipped'],
+                )
             state = state.at[:-1,0:2].set(new_positions)
             info["humans_goal"] = info["humans_goal"].at[:].set(new_goals)
             return info, state
@@ -1491,12 +1943,18 @@ class BaseEnv(ABC):
                     _update_traffic_scenarios, 
                     _update_traffic_scenarios, 
                     lambda x: x,
-                    _update_delayed_circular_crossing,
+                    _update_delayed_episodes,
                     _update_circular_crossing_with_static_obstacles,
                     _update_crowd_navigation,
                     _update_corner_traffic,
                     _update_door_crossing,
                     _update_crowd_chasing,
+                    lambda x: x,
+                    _update_delayed_episodes,
+                    lambda x: x,
+                    lambda x: x,
+                    lambda x: x,
+                    lambda x: x,
                 ], 
                 (info, state),
             )
@@ -1510,7 +1968,7 @@ class BaseEnv(ABC):
         self, 
         state:jnp.ndarray, 
         info:dict,
-        action:jnp.ndarray
+        action:jnp.ndarray,
     ) -> tuple:
         """
         This function updates the state and the info of the environment given the current state, the info and the action taken by the robot.
@@ -1532,8 +1990,12 @@ class BaseEnv(ABC):
         ## Humans update
         if self.humans_policy == HUMAN_POLICIES.index("hsfm"):
             if self.robot_visible:
+                if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(state[-1,2:4]), 0., jnp.atan2(*jnp.flip(state[-1,2:4])), 0.])]) # HSFM fictitious state
+                elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], state[-1,2], 0., state[-1,4], state[-1,3]])]) # HSFM fictitious state
                 new_state = jnp.vstack(
-                    [self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
+                    [self.humans_step(fictitious_state, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
                     state[-1]])
             else:
                 new_state = jnp.vstack(
@@ -1541,38 +2003,103 @@ class BaseEnv(ABC):
                     state[-1]])
         elif self.humans_policy == HUMAN_POLICIES.index("sfm") or self.humans_policy == HUMAN_POLICIES.index("orca"):
             if self.robot_visible:
+                if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], *state[-1,2:4], 0., 0.])]) # SFM or ORCA fictitious state
+                elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.cos(state[-1,4]) * state[-1,2], jnp.sin(state[-1,4]) * state[-1,2], state[-1,4], 0.])]) # SFM or ORCA fictitious state
                 new_state = jnp.vstack(
-                    [self.humans_step(state[:,0:4], goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
+                    [self.humans_step(fictitious_state[:,0:4], goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
                     state[-1,0:4]])
             else:
                 new_state = jnp.vstack(
                     [self.humans_step(state[0:self.n_humans,0:4], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles[0:self.n_humans], self.humans_dt), 
                     state[-1,0:4]])
             new_state = jnp.pad(new_state, ((0,0),(0,2)))
+            new_state = new_state.at[-1,4:].set(state[-1,4:])
         ## Robot update
+        # Compute delayed action
+        robot_velocity = lax.cond(
+            info["robot_delay"] == 0,
+            lambda: action,
+            lambda: info["action_history"][(info["robot_delay"] // self.robot_dt).astype(jnp.int32)],
+        )
+        # Apply velocity dynamics
+        if self.robot_velocity_dynamics == ROBOT_VELOCITY_DYNAMICS.index("first_order_system"):
+            if self.action_0_dynamics:
+                alpha = jnp.exp(-self.humans_dt/self.tau_action_0)
+                robot_velocity = robot_velocity.at[0].set(alpha * state[-1,2] + (1 - alpha) * robot_velocity[0])
+            if self.action_1_dynamics:
+                alpha = jnp.exp(-self.humans_dt/self.tau_action_1)
+                robot_velocity = robot_velocity.at[1].set(alpha * state[-1,3] + (1 - alpha) * robot_velocity[1])
+        elif self.robot_velocity_dynamics == ROBOT_VELOCITY_DYNAMICS.index("coupled_slew_rate"):
+            if self.limited_acceleration:
+                a_req = (robot_velocity[0] - state[-1,2]) / self.humans_dt
+                alpha_req = (robot_velocity[1] - state[-1,3]) / self.humans_dt
+                effort = abs(a_req) + (self.wheels_distance / 2.0) * abs(alpha_req)
+                scale = lax.cond(
+                    (effort > self.wheels_max_linear_acceleration) & (effort > 1e-6),
+                    lambda: self.wheels_max_linear_acceleration / effort, 
+                    lambda: 1.0,
+                )
+                robot_velocity = robot_velocity.at[0].set(state[-1,2] + (a_req * scale) * self.humans_dt)
+                robot_velocity = robot_velocity.at[1].set(state[-1,3] + (alpha_req * scale) * self.humans_dt)
+        # Apply position dynamics
         if self.kinematics == ROBOT_KINEMATICS.index("holonomic"):
-            new_state = new_state.at[-1,0:2].set(jnp.array([
-                state[-1,0]+action[0]*self.humans_dt, 
-                state[-1,1]+action[1]*self.humans_dt]))
+            new_state = new_state.at[-1,0:4].set(jnp.array([
+                state[-1,0]+state[-1,2]*self.humans_dt, 
+                state[-1,1]+state[-1,3]*self.humans_dt,
+                *robot_velocity,
+            ]))
         elif self.kinematics == ROBOT_KINEMATICS.index("unicycle"):
             new_state = lax.cond(
-                jnp.abs(action[1]) > EPSILON,
+                jnp.abs(state[-1,3]) > EPSILON,
                 lambda x: x.at[-1].set(jnp.array([
-                    state[-1,0]+(action[0]/action[1])*(jnp.sin(state[-1,4]+action[1]*self.humans_dt)-jnp.sin(state[-1,4])),
-                    state[-1,1]+(action[0]/action[1])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+action[1]*self.humans_dt)),
-                    *state[-1,2:4],
-                    wrap_angle(state[-1,4]+action[1]*self.humans_dt),
-                    state[-1,5]])),
+                    state[-1,0]+(state[-1,2]/state[-1,3])*(jnp.sin(state[-1,4]+state[-1,3]*self.humans_dt)-jnp.sin(state[-1,4])),
+                    state[-1,1]+(state[-1,2]/state[-1,3])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+state[-1,3]*self.humans_dt)),
+                    *robot_velocity,
+                    wrap_angle(state[-1,4]+state[-1,3]*self.humans_dt),
+                    state[-1,5]
+                ])),
                 lambda x: x.at[-1].set(jnp.array([
-                    state[-1,0]+action[0]*self.humans_dt*jnp.cos(state[-1,4]),
-                    state[-1,1]+action[0]*self.humans_dt*jnp.sin(state[-1,4]),
-                    *state[-1,2:]])),
+                    state[-1,0]+state[-1,2]*self.humans_dt*jnp.cos(state[-1,4]),
+                    state[-1,1]+state[-1,2]*self.humans_dt*jnp.sin(state[-1,4]),
+                    *robot_velocity,
+                    *state[-1,4:]
+                ])),
                 new_state)
-            if self.robot_visible and (self.humans_policy == HUMAN_POLICIES.index("sfm") or self.humans_policy == HUMAN_POLICIES.index("orca")):
-                new_state = new_state.at[-1,2:4].set(jnp.array([action[0] * jnp.cos(new_state[-1,4]), action[0] * jnp.sin(new_state[-1,4])]))
+        ## Legs dynamics
+        if self.leg_dynamics:
+            info["humans_leg_state"] = vmap(update_single_human_leg, in_axes=(0, 0, 0, None, 0, None))(
+                new_state[0:self.n_humans], 
+                info["humans_leg_state"], 
+                info["humans_parameters"][:, 0],
+                self.humans_dt,
+                info["humans_leg_parameters"],
+                self.humans_policy,
+            )
         ## Post update stuff
         new_info, new_state = self._scenario_based_state_post_update(new_state, info)
+        new_info["robot_delay"] = jnp.max(jnp.array([0., info["robot_delay"] - self.humans_dt]))
         return (new_state, new_info)
+
+    @partial(jit, static_argnames=("self"))
+    def _step(
+        self,
+        state:jnp.ndarray,
+        info:dict,
+        action:jnp.ndarray,
+    ):
+        def scan_step(carry, _):
+            curr_state, curr_info = carry
+            new_state, new_info = self._update_state_info(curr_state, curr_info, action)
+            return (new_state, new_info), (new_state, new_info["humans_leg_state"])
+        (new_state, new_info), (state_history, humans_leg_state_history) = lax.scan(
+            f=scan_step,
+            init=(state, info),
+            xs=None,
+            length=int(self.robot_dt/self.humans_dt)
+        )
+        return new_state, new_info, (state_history, humans_leg_state_history)
 
     @partial(jit, static_argnames=("self"))
     def _update_state_info_imitation_learning(
@@ -1646,31 +2173,60 @@ class BaseEnv(ABC):
         lidar_position:jnp.ndarray, 
         lidar_yaw:float,  
         human_positions:jnp.ndarray, 
-        human_radiuses:jnp.ndarray,
+        human_legs_positions:jnp.ndarray,
+        human_radii:jnp.ndarray,
+        human_legs_radii:jnp.ndarray,
         static_obstacles:jnp.ndarray,
         noise_key=random.PRNGKey(0)
     ) -> jnp.ndarray:
         """
         Given the current state of the environment, the robot orientation and the additional information about the environment,
         this function computes the lidar measurements of the robot. The lidar measurements are given as a set of distances and angles (in the global frame) for each ray.
+        If LEG_DYNAMICS = False: the LiDAR rays will collide with the humans, which are modeled as circles with radius given by human_radii and positions given by human_positions.
+        If LEG_DYNAMICS = True: the LiDAR rays will collide with the legs of the humans, which are modeled as circles with radius given by human_legs_radii and positions given by human_legs_positions.
+        NOTICE: in the current implementation, to compute LiDAR measurements with legs, we feed humans'legs positions and radii in the downstream functions as if they were humans.
 
         args:
         - lidar_position (2,): jnp.ndarray containing the x and y coordinates of the lidar.
         - lidar_yaw (1,): float containing the orientation of the lidar.
         - human_positions (self.n_humans,2): jnp.ndarray containing the x and y coordinates of the humans.
-        - human_radiuses (self.n_humans,): jnp.ndarray containing the radius of the humans.
+        - human_legs_positions (self.n_humans,4): jnp.ndarray containing the x and y coordinates of the humans legs (only used if leg_dynamics is True).
+        - human_radii (self.n_humans,): jnp.ndarray containing the radius of the humans.
+        - human_legs_radii (self.n_humans,): jnp.ndarray containing the radius of the humans' legs (only used if leg_dynamics is True).
         - static_obstacles (self.n_obstacles, m, 2, 2): jnp.ndarray containing the static obstacles as line segments (m is the number of segments per obstacle).
 
         output:
         - lidar_output (self.lidar_num_rays,2): jnp.ndarray containing the lidar measurements of the robot and the angle (IN THE GLOBAL FRAME) for each ray.
           WARNING: the angles are in the global frame, not in the robot frame.
+        - human_visibility_mask (self.n_humans,): boolean jnp.ndarray indicating which humans are visible by the LiDAR (i.e. at least one ray collides with them).
+        - obstacles_visibility_mask (self.n_obstacles, m): boolean jnp.ndarray indicating which static obstacle segments are visible by the LiDAR (i.e. at least one ray collides with them).
         """
         angles = jnp.linspace(lidar_yaw - self.lidar_angular_range/2, lidar_yaw + self.lidar_angular_range/2, self.lidar_num_rays)
-        measurements, _, _ = self.batch_ray_cast(angles, lidar_position, human_positions, human_radiuses, static_obstacles)
+        if self.leg_dynamics:
+            # To compute the LiDAR measurements with leg dynamics, we treat the legs as separate entities that can occlude the rays. Therefore, we need to reshape the human legs positions and radii to be fed into the ray casting function as if they were humans.
+            human_positions = jnp.reshape(human_legs_positions, (self.n_humans*2, 2))
+            human_radii = jnp.repeat(human_legs_radii, 2)
+        measurements, human_collision_idxs, obstacle_collision_idxs = self.batch_ray_cast(angles, lidar_position, human_positions, human_radii, static_obstacles)
+        if self.leg_dynamics:
+            # With leg dynamics, we consider a human visible if at least one of the legs is collided by a ray.
+            humans_visibility_mask = vmap(lambda idx: (jnp.any(human_collision_idxs == 2 * idx) | jnp.any(human_collision_idxs == 2 * idx + 1)))(jnp.arange(self.n_humans))  # Shape: (n_humans,)
+        else:
+            humans_visibility_mask = vmap(lambda idx: jnp.any(human_collision_idxs == idx))(jnp.arange(self.n_humans))  # Shape: (n_humans,)
+        @jit
+        def segment_visibility(obstacle_idx, segment_idx, obstacle_collision_idxs):
+            return jnp.any(jnp.all(obstacle_collision_idxs == jnp.array([obstacle_idx, segment_idx]), axis=1))
+        @jit
+        def obstacle_segments_visibility(obstacle_idx, segment_idxs, obstacle_collision_idxs):
+            return vmap(segment_visibility, in_axes=(None, 0, None))(obstacle_idx, segment_idxs, obstacle_collision_idxs)
+        obstacles_visibility_mask = vmap(obstacle_segments_visibility, in_axes=(0, None, None))(
+            jnp.arange(self.n_obstacles), 
+            jnp.arange(self.n_segments), 
+            obstacle_collision_idxs
+        ) # Shape: (n_obstacles, n_segments)
         if self.lidar_noise:
             measurements = self.add_lidar_noise(measurements,noise_key)
         lidar_output = jnp.stack((measurements, angles), axis=-1)
-        return lidar_output
+        return lidar_output, humans_visibility_mask, obstacles_visibility_mask
     
     @partial(jit, static_argnames=("self"))
     def add_lidar_noise(self, measurements:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
@@ -1717,7 +2273,7 @@ class BaseEnv(ABC):
         humans_right_angles = jnp.arctan2(humans_right_edge_points[:,1], humans_right_edge_points[:,0]) # Shape: (n_humans,)
         humans_edge_angles = jnp.concatenate((humans_left_angles, humans_right_angles))  # Shape: (2*n_humans,)
         ## Obstacles
-        obstacle_segments = rc_static_obstacles.reshape((self.n_obstacles*self.static_obstacles_per_scenario.shape[2], 2, 2))  # Shape: (n_obstacles*n_segments, 2, 2)
+        obstacle_segments = rc_static_obstacles.reshape((self.n_obstacles*self.n_segments, 2, 2))  # Shape: (n_obstacles*n_segments, 2, 2)
         obstacle_first_edge_points = obstacle_segments[:,0,:]  # Shape: (n_obstacles*n_segments, 2)
         obstacle_second_edge_points = obstacle_segments[:,1,:]  # Shape: (n_obstacles*n_segments, 2)
         first_to_second_versors = obstacle_second_edge_points - obstacle_first_edge_points / jnp.linalg.norm(obstacle_second_edge_points - obstacle_first_edge_points, axis=1, keepdims=True)  # Shape: (n_obstacles*n_segments, 2)
@@ -1732,10 +2288,10 @@ class BaseEnv(ABC):
         # Wrap around for midpoint computation
         sorted_all_edge_angles = jnp.append(sorted_all_edge_angles, sorted_all_edge_angles[0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1,)
         ### Compute midpoint angles between consecutive object endpoints
-        sorted_all_verors = jnp.array([jnp.cos(sorted_all_edge_angles), jnp.sin(sorted_all_edge_angles)]).T  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1, 2)
-        midpoint_verors = (sorted_all_verors[:-1] + sorted_all_verors[1:])  # Shape: (2*n_humans + 2*n_obstacles*n_segments, 2)
-        midpoint_verors = midpoint_verors / jnp.linalg.norm(midpoint_verors, axis=1, keepdims=True)  # Normalize
-        midpoint_angles = jnp.arctan2(midpoint_verors[:,1], midpoint_verors[:,0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
+        sorted_all_versors = jnp.array([jnp.cos(sorted_all_edge_angles), jnp.sin(sorted_all_edge_angles)]).T  # Shape: (2*n_humans + 2*n_obstacles*n_segments + 1, 2)
+        midpoint_versors = (sorted_all_versors[:-1] + sorted_all_versors[1:])  # Shape: (2*n_humans + 2*n_obstacles*n_segments, 2)
+        midpoint_versors = midpoint_versors / jnp.linalg.norm(midpoint_versors, axis=1, keepdims=True)  # Normalize
+        midpoint_angles = jnp.arctan2(midpoint_versors[:,1], midpoint_versors[:,0])  # Shape: (2*n_humans + 2*n_obstacles*n_segments,)
         all_angles = jnp.concatenate((all_edge_angles, midpoint_angles)) # Shape: (4*n_humans + 4*n_obstacles*n_segments,)
         ### Ray-cast all computed angles and assess visibility of all objects (human_collision_idxs shape: (n_rays,), obstacle_collision_idxs shape: (n_rays, 2))
         _, human_collision_idxs, obstacle_collision_idxs = self.batch_ray_cast(
@@ -1754,7 +2310,7 @@ class BaseEnv(ABC):
             return vmap(segment_visibility, in_axes=(None, 0, None))(obstacle_idx, segment_idxs, obstacle_collision_idxs)
         obstacles_visibility_mask = vmap(obstacle_segments_visibility, in_axes=(0, None, None))(
             jnp.arange(self.n_obstacles), 
-            jnp.arange(self.static_obstacles_per_scenario.shape[2]), 
+            jnp.arange(self.n_segments), 
             obstacle_collision_idxs
         ) # Shape: (n_obstacles, n_segments)
         return humans_visibility_mask, obstacles_visibility_mask
@@ -1870,9 +2426,7 @@ class BaseEnv(ABC):
         returns:
         - center: Array of shape (2,) containing the (x, y) coordinates of the grid map center
         """
-        # center = jnp.nanmean(jnp.vstack((jnp.reshape(info['static_obstacles'][-1], (self.n_obstacles * 2,-1)), state[-1,:2], info['robot_goal'])), axis=0)
-        reshape_dim = (10,-1) if not self.thick_default_obstacle else (40,-1)
-        center = jnp.nanmean(jnp.vstack((jnp.reshape(self.static_obstacles_per_scenario[info['current_scenario']], reshape_dim), state[-1,:2], info['robot_goal'])), axis=0)
+        center = jnp.nanmean(jnp.vstack((jnp.reshape(self.static_obstacles_per_scenario[info['current_scenario']], (10,-1)), state[-1,:2], info['robot_goal'])), axis=0)
         return center
 
     @partial(jit, static_argnames=("self"))

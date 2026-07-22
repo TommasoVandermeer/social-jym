@@ -1,19 +1,14 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, debug, nn, value_and_grad
+from jax import random, jit, vmap, lax, nn, value_and_grad
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
 from functools import partial
 import haiku as hk
 import optax
-import os
-from matplotlib import rc, rcParams
-from matplotlib.animation import FuncAnimation, FFMpegWriter
-import matplotlib.pyplot as plt
 
-from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, HUMAN_POLICIES
+from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.policies.base_policy import BasePolicy
-from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 
@@ -24,6 +19,7 @@ class MLPActorCritic(hk.Module):
             self,
             v_max: float,
             wheels_distance: float,
+            critic_heads: int = 1,
             mlp_params: dict = {
                 "activation": nn.relu,
                 "activate_final": False,
@@ -33,6 +29,7 @@ class MLPActorCritic(hk.Module):
             action_space_bounding:bool = False,
     ) -> None:
         super().__init__()
+        self.critic_heads = critic_heads
         self.wheels_distance = wheels_distance
         self.vmax = v_max
         self.wmax = 2 * v_max / wheels_distance
@@ -58,11 +55,22 @@ class MLPActorCritic(hk.Module):
             output_sizes=[100, 50, self.n_outputs], 
             name="actor_head"
         )
-        self.critic_head = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[100, 50, 1],
-            name="critic_head"
-        )
+        if self.critic_heads == 1:
+            self.critic_head = hk.nets.MLP(
+                **mlp_params,
+                output_sizes=[100, 50, 1],
+                name="critic_head"
+            )
+
+        else:
+            self.critic_subnets = [
+                hk.nets.MLP(
+                    **mlp_params,
+                    output_sizes=[100, 50, 1],
+                    name=f"critic_head_{i}"
+                )
+                for i in range(critic_heads)
+            ]
         self.dirichlet = Dirichlet()
 
     def __call__(
@@ -109,21 +117,30 @@ class MLPActorCritic(hk.Module):
         ## Sample action
         sampled_actions = vmap(self.dirichlet.sample)(distributions, keys)
         ### CRITIC
-        state_values = self.critic_head(inputs) # (Batch, 1)
-        state_values = jnp.squeeze(state_values, axis=-1) # (Batch,)
+        if self.critic_heads == 1:
+            state_values = self.critic_head(inputs) # (Batch, critic_heads)
+            state_values = jnp.squeeze(state_values, axis=-1) # (Batch,1) to (Batch,)
+            log_sigmas = None
+        else:
+            head_outputs = [head(inputs) for head in self.critic_subnets]
+            state_values = jnp.concatenate(head_outputs, axis=-1)
+            log_sigmas = hk.get_parameter(
+                "log_sigmas", 
+                shape=[self.critic_heads], 
+                init=jnp.zeros
+            )
         if not has_batch:
             sampled_actions = sampled_actions[0]
             state_values = state_values[0]
             distributions = tree_map(lambda t: t[0], distributions)
         # Actor head
-        return sampled_actions, distributions, state_values
+        return sampled_actions, distributions, state_values, log_sigmas
 
 class VanillaE2E(BasePolicy):
     def __init__(
         self, 
         robot_radius:float=0.3,
         v_max:float=1., 
-        gamma:float=0.9, 
         dt:float=0.25, 
         wheels_distance:float=0.7, 
         n_stack:int=5,
@@ -134,6 +151,7 @@ class VanillaE2E(BasePolicy):
         network_type:str = "MLP",
         action_space_bounding:bool = False,
         n_stack_for_action_space_bounding:int = 1, # Number of recent observations to consider for action space bounding. If > 1, the LiDAR stacks are concatenated in the bounding process.
+        critic_heads:int = 1,
     ) -> None:
         """
         VANILLA-E2E (Simple E2E RL-based social navigation from LiDAR inputs).
@@ -141,7 +159,6 @@ class VanillaE2E(BasePolicy):
         # Input validation
         assert robot_radius > 0, "Robot radius must be positive"
         assert v_max > 0, "Maximum robot velocity must be positive"
-        assert gamma >= 0 and gamma <= 1, "Discount factor must be in [0, 1]"
         assert dt > 0, "Time step must be positive"
         assert wheels_distance > 0, "Wheels distance must be positive"
         assert n_stack >= 2, "Number of stacked observations must be at least 2, to observe motion"
@@ -150,11 +167,11 @@ class VanillaE2E(BasePolicy):
         assert lidar_num_rays >= 10, "LiDAR number of rays must be at least 10"
         assert network_type in NETWORK_TYPES, f"Network type must be one of {NETWORK_TYPES}"
         # Configurable attributes
-        super().__init__(discount=gamma)
         self.robot_radius = robot_radius
         self.v_max = v_max
         self.dt = dt
         self.wheels_distance = wheels_distance
+        self.critic_heads = critic_heads
         self.n_stack = n_stack
         self.lidar_angular_range = lidar_angular_range
         self.lidar_max_dist = lidar_max_dist
@@ -181,9 +198,10 @@ class VanillaE2E(BasePolicy):
              @hk.transform
              def actor_critic_network(x, y, **kwargs) -> jnp.ndarray:
                  actor_critic = MLPActorCritic(
-                     self.v_max, 
-                     self.wheels_distance, 
-                     action_space_bounding=self.action_space_bounding,
+                    self.v_max, 
+                    self.wheels_distance, 
+                    critic_heads,
+                    action_space_bounding=self.action_space_bounding,
                  ) 
                  return actor_critic(x, y, **kwargs)
              self.actor_critic = actor_critic_network
@@ -198,7 +216,7 @@ class VanillaE2E(BasePolicy):
     def _align_lidar_stack(self, obs_stack, ref_position, ref_orientation):
         """
         args:
-        - obs_stack (lidar_num_rays + 6):  [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs_stack (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
 
         outputs:
         - pointcloud_and_action (lidar_num_rays, 2): LiDAR points in robot reference frame
@@ -209,7 +227,7 @@ class VanillaE2E(BasePolicy):
         robot_orientation = obs_stack[2]  # Shape: ()
         #robot_radius = obs_stack[3]  # Shape: ()
         #robot_action = obs_stack[4:6]  # Shape: (2,)
-        lidar_measurements = obs_stack[6:]  # Shape: (lidar_num_rays)
+        lidar_measurements = obs_stack[9:]  # Shape: (lidar_num_rays)
         ## Align scan to reference frame
         # Compute LiDAR angles in world frame
         lidar_angles = self.lidar_angles_robot_frame + robot_orientation  # Shape: (lidar_num_rays)
@@ -363,7 +381,7 @@ class VanillaE2E(BasePolicy):
         Compute the inputs for the actor network from the raw observation.
 
         args:
-        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
         - rc_robot_goal (2,): Goal position in the robot frame
 
@@ -410,7 +428,7 @@ class VanillaE2E(BasePolicy):
         )
         # Compute action
         key, subkey = random.split(key)
-        sampled_action, actor_distr, state_value = self.actor_critic.apply(
+        sampled_action, actor_distr, state_value, _ = self.actor_critic.apply(
             network_params, 
             None, 
             aligned_lidar_readings,
@@ -468,7 +486,7 @@ class VanillaE2E(BasePolicy):
                     returnn:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                    _, predicted_distr, predicted_state_value = self.actor_critic.apply(
+                    _, predicted_distr, predicted_state_value, _ = self.actor_critic.apply(
                         current_actor_params, 
                         None, 
                         input['inputs0'], 

@@ -291,10 +291,6 @@ def plot_state(
         scenario:int, 
         humans_radiuses:np.ndarray, 
         robot_radius:float, 
-        circle_radius=7, 
-        traffic_height=3, 
-        traffic_length=14, 
-        crowding_square_side=14,
         plot_time=True,
         kinematics:str='holonomic',
         xlims:list=None,
@@ -316,21 +312,21 @@ def plot_state(
     output:
     - None
     """
-    n_humans = len(humans_radiuses)
-    colors = list(mcolors.TABLEAU_COLORS.values())
     num = int(time) if (time).is_integer() else (time)
     # Humans
     for h in range(len(full_state)-1): 
-        if humans_policy == 'hsfm': 
-            head = plt.Circle((full_state[h,0] + np.cos(full_state[h,4]) * humans_radiuses[h], full_state[h,1] + np.sin(full_state[h,4]) * humans_radiuses[h]), 0.1, color=colors[h%len(colors)], zorder=1)
-            ax.add_patch(head)
-        circle = plt.Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor=colors[h%len(colors)], facecolor="white", fill=True, zorder=1)
+        if humans_policy == 'hsfm':
+            head = plt.Circle((full_state[h,0] + np.cos(full_state[h,4]) * humans_radiuses[h], full_state[h,1] + np.sin(full_state[h,4]) * humans_radiuses[h]), 0.1, color='black', zorder=1)
+            if not (scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') and np.all(full_state[h,2:4]==0)): 
+                ax.add_patch(head)
+        if scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') and np.all(full_state[h,2:4]==0):
+            facecolor = 'black'
+        else:
+            facecolor = 'blue'
+        circle = plt.Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor='black', facecolor=facecolor, fill=True, zorder=1)
         ax.add_patch(circle)
         if plot_time: 
-            ax.text(full_state[h,0],full_state[h,1], f"{num}", color=colors[h%len(colors)], va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
-        elif (not plot_time) and (n_humans < 11): 
-            ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
-        # else: ax.text(full_state[h,0],full_state[h,1], f"{h}", color=colors[h%len(colors)], va="center", ha="center", size=10, zorder=1, weight='bold')
+            ax.text(full_state[h,0],full_state[h,1], f"{num}", color='black', va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
     # Robot
     if kinematics == 'unicycle':
         head = plt.Circle((full_state[-1,0] + np.cos(full_state[-1,4]) * robot_radius, full_state[-1,1] + np.sin(full_state[-1,4]) * robot_radius), 0.1, color='black', zorder=1)
@@ -340,22 +336,12 @@ def plot_state(
     # Time/Label
     if plot_time: 
         ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color="black", va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=3, weight='bold')
-    else: 
-        ax.text(full_state[-1,0],full_state[-1,1], f"R", color="black", va="center", ha="center", size=10, zorder=3, weight='bold')
     # Set axis limits and labels
-    if scenario == SCENARIOS.index('circular_crossing') or scenario == SCENARIOS.index('delayed_circular_crossing') or scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or scenario == SCENARIOS.index('crowd_navigation'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-circle_radius-1,circle_radius+1],ylim=[-circle_radius-1,circle_radius+1])
-    elif scenario == SCENARIOS.index('parallel_traffic'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_height-3,traffic_height+3])
-    elif scenario == SCENARIOS.index('perpendicular_traffic'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-traffic_length/2-4,traffic_length/2+1],ylim=[-traffic_length/2,traffic_length/2])
-    elif scenario == SCENARIOS.index('robot_crowding'): 
-        ax.set(xlabel='X',ylabel='Y',xlim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5],ylim=[-crowding_square_side/2-1.5,crowding_square_side/2+1.5])
-    elif scenario == SCENARIOS.index('corner_traffic'):
-        ax.set(xlabel='X',ylabel='Y',xlim=[-2,traffic_length/2+traffic_height/2+2],ylim=[-2,traffic_length/2+traffic_height/2+2])
-    elif scenario is None:
+    if scenario is None:
         ax.set_aspect('equal', adjustable='box')
         ax.set(xlabel='X',ylabel='Y',xlim=xlims,ylim=ylims)
+    else:
+        ax.set(xlabel='X',ylabel='Y',xlim=[-10,10],ylim=[-10,10])
 
 def plot_trajectory(ax:Axes, agents_positions:jnp.ndarray, humans_goal:jnp.ndarray, robot_goal:jnp.ndarray):
     colors = list(mcolors.TABLEAU_COLORS.values())
@@ -371,7 +357,7 @@ def plot_lidar_measurements(ax:Axes, lidar_measurements:jnp.ndarray, robot_state
             [robot_state[0], robot_state[0] + lidar_measurements[i,0] * jnp.cos(lidar_measurements[i,1])], 
             [robot_state[1], robot_state[1] + lidar_measurements[i,0] * jnp.sin(lidar_measurements[i,1])], 
             color="black", 
-            linewidth=0.5, 
+            linewidth=0.2, 
             zorder=0)
 
 def test_k_trials(
@@ -706,311 +692,6 @@ def interpolate_humans_boundaries(humans_pose, humans_radiuses, points_per_human
         y = pose[1] + radius * jnp.sin(angle)
         point_list.append(jnp.stack((x, y), axis=-1))
     return jnp.concatenate(point_list, axis=0)
-
-def test_k_trials_dwa(
-    k: int,
-    random_seed: int, 
-    env: BaseEnv, 
-    time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
-    robot_vmax:float=1.0,
-    robot_wheels_distance:float=0.7,
-    personal_space:float=0.5,
-    custom_episodes:dict=None,
-    print_avg_metrics:bool=True
-) -> tuple:
-    """
-    This function tests a policy in a given environment for k trials and outputs a series of metrics.
-
-    args:
-    - k: int. The number of trials to execute.
-    - random_seed: int. The random seed to use for the execution.
-    - env: BaseEnv. The environment to test the policy in.
-    - time_limit: float. The maximum time limit for each trial. WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage.
-    - personal_space: float. A parameter used to compute space compliance.
-
-    output:
-    - metrics: dict. A dictionary containing the metrics of the tests.
-    """
-    try:
-        import dwa
-    except ImportError:
-        raise ImportError("DWA package is not installed. Please install it to use this function.\nYou can install it with 'pip3 install dynamic-window-approach'.\n Checkout https://github.com/goktug97/DynamicWindowApproach")
-    
-    assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "DWA can only be used with unicycle robots."
-
-    # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
-    if custom_episodes is not None:
-        assert len(custom_episodes) == k, "The number of custom episodes must be equal to the number of trials."
-        custom_trials = True
-        custom_states = jnp.array([custom_episodes[i]["full_state"] for i in range(k)])
-        custom_robot_goals = jnp.array([custom_episodes[i]["robot_goal"] for i in range(k)])
-        custom_humans_goals = jnp.array([custom_episodes[i]["humans_goal"] for i in range(k)])
-        custom_static_obstacles = jnp.array([custom_episodes[i]["static_obstacles"] for i in range(k)])
-        custom_scenario = jnp.array([custom_episodes[i]["scenario"] for i in range(k)])
-        custom_humans_radius = jnp.array([custom_episodes[i]["humans_radius"] for i in range(k)])
-        custom_humans_speed = jnp.array([custom_episodes[i]["humans_speed"] for i in range(k)])
-    else:
-        custom_trials = False
-        # Dummy variables
-        custom_states = jnp.empty((k, env.n_humans+1, 6))
-        custom_robot_goals = jnp.empty((k, 2))
-        custom_humans_goals = jnp.empty((k, env.n_humans, 2))
-        custom_static_obstacles = jnp.empty((k, env.n_humans+1, env.n_obstacles, 1, 2, 2))
-        custom_scenario = jnp.empty((k,), dtype=int)
-        custom_humans_radius = jnp.empty((k, env.n_humans))
-        custom_humans_speed = jnp.empty((k, env.n_humans))
-    
-    def _fori_body(i:int, for_val:tuple):   
-        def _while_body(while_val:tuple):
-            # Retrieve data from the tuple
-            state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud = while_val
-            # Construct point cloud
-            humans_point_cloud = interpolate_humans_boundaries(obs[:-1,:2], info['humans_parameters'][:,0])
-            point_cloud = jnp.concatenate((obstacles_point_cloud, humans_point_cloud), axis=0)
-            # Make a step in the environment
-            action = jnp.array(dwa.planning(tuple(map(float, np.append(obs[-1,:2],obs[-1,5]))), tuple(map(float, obs[-1,2:4])), tuple(map(float, info['robot_goal'])), np.array(point_cloud, dtype=np.float32), dwa_config))
-            state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
-            # Save data
-            all_actions = all_actions.at[steps].set(action)
-            all_states = all_states.at[steps].set(state)
-            # Update step counter
-            steps += 1
-            return state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud
-
-        ## Retrieve data from the tuple
-        seed, metrics, dwa_config = for_val
-        reset_key = random.PRNGKey(seed) 
-        ## Reset the environment
-        state, reset_key, obs, info, outcome = lax.cond(
-            custom_trials, 
-            lambda x: env.reset_custom_episode(
-                x,
-                {"full_state": custom_states[i], 
-                 "robot_goal": custom_robot_goals[i], 
-                 "humans_goal": custom_humans_goals[i], 
-                 "static_obstacles": custom_static_obstacles[i], 
-                 "scenario": custom_scenario[i], 
-                 "humans_radius": custom_humans_radius[i], 
-                 "humans_speed": custom_humans_speed[i]}),
-            lambda x: env.reset(x), 
-            reset_key)
-        # Construc obstacles point cloud
-        obstacles_point_cloud = interpolate_obstacle_segments(info["static_obstacles"][-1])
-        initial_robot_position = state[-1,:2]
-        ## Episode loop
-        all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
-        all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
-        while_val = (state, obs, info, outcome, 0, all_actions, all_states, obstacles_point_cloud)
-        while outcome["nothing"]:
-            state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud = _while_body(while_val)
-            while_val = (state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud)
-        _, _, end_info, outcome, episode_steps, all_actions, all_states, _ = while_val
-        ## Update metrics
-        metrics = compute_episode_metrics(
-            environment=env.environment,
-            metrics=metrics,
-            episode_idx=i, 
-            initial_robot_position=initial_robot_position, 
-            all_states=all_states, 
-            all_actions=all_actions, 
-            outcome=outcome, 
-            episode_steps=episode_steps, 
-            end_info=end_info, 
-            max_steps=int(time_limit/env.robot_dt)+1, 
-            personal_space=personal_space,
-            robot_dt=env.robot_dt,
-            robot_radius=env.robot_radius,
-            ccso_n_static_humans=env.ccso_n_static_humans,
-            robot_specs={'kinematics': env.kinematics, 'v_max': robot_vmax, 'wheels_distance': robot_wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
-        )
-        seed += 1
-        return seed, metrics
-    # Initialize metrics
-    metrics = initialize_metrics_dict(k)
-    # Define DWA configuration
-    dwa_config = dwa.Config(
-        max_speed=robot_vmax,
-        min_speed=0.0,
-        max_yawrate=2*robot_vmax/robot_wheels_distance,
-        dt = env.robot_dt,
-        max_accel=4,
-        max_dyawrate=4,
-        predict_time = .5,
-        velocity_resolution = 0.1, # Discretization of the velocity space
-        yawrate_resolution = np.radians(1.0), # Discretization of the yawrate space
-        heading = 0.04,
-        clearance = 0.2,
-        velocity = 0.2,
-        base=[-env.robot_radius, -env.robot_radius, env.robot_radius, env.robot_radius],  # [x_min, y_min, x_max, y_max] in meters
-    )
-    # Execute k tests
-    if env.scenario == SCENARIOS.index("circular_crossing_with_static_obstacles"):
-        print(f"\nExecuting {k} tests with {env.n_humans - env.ccso_n_static_humans} dynamic humans and {env.ccso_n_static_humans} static humans...")
-    else:
-        print(f"\nExecuting {k} tests with {env.n_humans} humans...")
-    for i in tqdm(range(k), desc="Testing DWA policy"):
-        random_seed, metrics = _fori_body(i, (random_seed, metrics, dwa_config))
-    # Print results
-    if print_avg_metrics:
-        print_average_metrics(k, metrics)
-    return metrics
-
-def test_k_custom_trials_dwa(
-    k: int,
-    random_seed: int, 
-    env: BaseEnv, 
-    time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
-    custom_episodes:dict,
-    robot_vmax:float=1.0,
-    robot_wheels_distance:float=0.7,
-    personal_space:float=0.5,
-    print_avg_metrics:bool=True
-) -> tuple:
-    """
-    This function tests a policy in a given environment for k trials and outputs a series of metrics.
-
-    args:
-    - k: int. The number of trials to execute.
-    - random_seed: int. The random seed to use for the execution.
-    - env: BaseEnv. The environment to test the policy in.
-    - time_limit: float. The maximum time limit for each trial. WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage.
-    - personal_space: float. A parameter used to compute space compliance.
-
-    output:
-    - metrics: dict. A dictionary containing the metrics of the tests.
-    """
-    try:
-        import dwa
-    except ImportError:
-        raise ImportError("DWA package is not installed. Please install it to use this function.\nYou can install it with 'pip3 install dynamic-window-approach'.\n Checkout https://github.com/goktug97/DynamicWindowApproach")
-    
-    ### Assert data correctness
-    assert env.scenario == -1, "The environment must be an environment with custom episodes."
-    assert list(custom_episodes.keys()) == ["full_state", "humans_goal", "robot_goals", "static_obstacles", "humans_radius", "humans_speed"], "Invalid keys in custom_episodes. Expected keys: ['full_state', 'humans_goal', 'robot_goals', 'static_obstacles', 'humans_radius', 'humans_speed']"
-    for key, value in custom_episodes.items():
-        assert key in ["full_state", "humans_goal", "robot_goals", "static_obstacles", "humans_radius", "humans_speed"], f"Invalid key {key} in custom_episodes."
-        assert value.shape[0] == k, f"Invalid shape for {key} in custom_episodes. Expected shape ({k}, ...), got {value.shape}."
-    assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "DWA can only be used with unicycle robots."
-
-    def _fori_body(i:int, for_val:tuple):   
-        # Construct point cloud functions
-
-        def _while_body(while_val:tuple):
-            # Retrieve data from the tuple
-            episode_idx, state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud = while_val
-            # Update robot goal
-            info["robot_goal"], info["robot_goal_index"] = lax.cond(
-                (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= env.robot_radius*2) & # Waypoint reached threshold is set to be higher
-                (info['robot_goal_index'] < len(custom_episodes["robot_goals"][episode_idx])-1) & # Check if current goal is not the last one
-                (~(jnp.any(jnp.isnan(custom_episodes["robot_goals"][episode_idx,info['robot_goal_index']+1])))), # Check if next goal is not NaN
-                lambda _: (custom_episodes["robot_goals"][episode_idx,info['robot_goal_index']+1], info['robot_goal_index']+1),
-                lambda x: x,
-                (info["robot_goal"], info["robot_goal_index"])
-            )
-            # Update humans goal
-            info["humans_goal"] = lax.fori_loop(
-                0, 
-                env.n_humans, 
-                lambda h, x: lax.cond(
-                    jnp.linalg.norm(state[h,:2] - info["humans_goal"][h]) <= info["humans_parameters"][h,0],
-                    lambda y: lax.cond(
-                        jnp.all(info["humans_goal"][h] == custom_episodes["humans_goal"][episode_idx,h]),
-                        lambda z: z.at[h].set(custom_episodes["full_state"][episode_idx,h,:2]),
-                        lambda z: z.at[h].set(custom_episodes["humans_goal"][episode_idx,h]),
-                        y,
-                    ),
-                    lambda y: y,
-                    x
-                ),
-                info["humans_goal"],
-            )
-            # Construct point cloud
-            humans_point_cloud = interpolate_humans_boundaries(obs[:-1,:2], info['humans_parameters'][:,0])
-            point_cloud = jnp.concatenate((obstacles_point_cloud, humans_point_cloud), axis=0)
-            # Make a step in the environment
-            action = jnp.array(dwa.planning(tuple(map(float, np.append(obs[-1,:2],obs[-1,5]))), tuple(map(float, obs[-1,2:4])), tuple(map(float, info['robot_goal'])), np.array(point_cloud, dtype=np.float32), dwa_config))
-            state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)
-            # Save data
-            all_actions = all_actions.at[steps].set(action)
-            all_states = all_states.at[steps].set(state)
-            # Update step counter
-            steps += 1
-            return episode_idx, state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud
-
-        ## Retrieve data from the tuple
-        seed, metrics, dwa_config = for_val
-        ## Reset the environment
-        state, _, obs, info, outcome = env.reset_custom_episode(
-            random.PRNGKey(0), # Not used, but required by the function
-            {
-                "full_state": custom_episodes["full_state"][i],
-                "robot_goal": custom_episodes["robot_goals"][i,0],
-                "humans_goal": custom_episodes["humans_goal"][i],
-                "static_obstacles": custom_episodes["static_obstacles"][i],
-                "scenario": -1,
-                "humans_radius": custom_episodes["humans_radius"][i],
-                "humans_speed": custom_episodes["humans_speed"][i],
-            }
-        )
-        initial_robot_position = state[-1,:2]
-        # Construct obstacles point cloud
-        obstacles_point_cloud = interpolate_obstacle_segments(info["static_obstacles"][-1])
-        initial_robot_position = state[-1,:2]
-        ## Episode loop
-        all_actions = jnp.empty((int(time_limit/env.robot_dt)+1, 2))
-        all_states = jnp.empty((int(time_limit/env.robot_dt)+1, env.n_humans+1, 6))
-        while_val = (i, state, obs, info, outcome, 0, all_actions, all_states, obstacles_point_cloud)
-        while outcome["nothing"]:
-            i, state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud = _while_body(while_val)
-            while_val = (i, state, obs, info, outcome, steps, all_actions, all_states, obstacles_point_cloud)
-        _, _, _, end_info, outcome, episode_steps, all_actions, all_states, _ = while_val
-        ## Update metrics
-        metrics["waypoint_reached"] = metrics["waypoint_reached"].at[i].set(end_info["robot_goal_index"])
-        metrics = compute_episode_metrics(
-            environment=env.environment,
-            metrics=metrics,
-            episode_idx=i, 
-            initial_robot_position=initial_robot_position, 
-            all_states=all_states, 
-            all_actions=all_actions, 
-            outcome=outcome, 
-            episode_steps=episode_steps, 
-            end_info=end_info, 
-            max_steps=int(time_limit/env.robot_dt)+1, 
-            personal_space=personal_space,
-            robot_dt=env.robot_dt,
-            robot_radius=env.robot_radius,
-            ccso_n_static_humans=env.ccso_n_static_humans,
-            robot_specs={'kinematics': env.kinematics, 'v_max': robot_vmax, 'wheels_distance': robot_wheels_distance, 'dt': env.robot_dt, 'radius': env.robot_radius},
-        )
-        seed += 1
-        return seed, metrics
-    # Initialize metrics
-    metrics = initialize_metrics_dict(k)
-    # Define DWA configuration
-    dwa_config = dwa.Config(
-        max_speed=robot_vmax,
-        min_speed=0.0,
-        max_yawrate=2*robot_vmax/robot_wheels_distance,
-        dt = env.robot_dt,
-        max_accel=4,
-        max_dyawrate=4,
-        predict_time = .5,
-        velocity_resolution = 0.1, # Discretization of the velocity space
-        yawrate_resolution = np.radians(1.0), # Discretization of the yawrate space
-        heading = 0.04,
-        clearance = 0.2,
-        velocity = 0.2,
-        base=[-env.robot_radius, -env.robot_radius, env.robot_radius, env.robot_radius],  # [x_min, y_min, x_max, y_max] in meters
-    )
-    # Execute k tests
-    print(f"\nExecuting {k} tests with {env.n_humans} humans...")
-    for i in tqdm(range(k), desc="Testing DWA policy"):
-        random_seed, metrics = _fori_body(i, (random_seed, metrics, dwa_config))
-    # Print results
-    if print_avg_metrics:
-        print_average_metrics(k, metrics)
-    return metrics
 
 def test_k_trials_sfm(
     k: int,

@@ -96,4 +96,4 @@ class DummyReward(BaseReward):
             "failure": collision,
             "timeout": timeout & (~(collision)) & (~(reached_goal))
         }
-        return 0., outcome
+        return 0., outcome, {self.gamma: 0.}

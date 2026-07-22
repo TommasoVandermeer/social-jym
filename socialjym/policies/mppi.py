@@ -21,13 +21,13 @@ class MPPI(DWA):
     def __init__(
             self, 
             # MPPI hyperparameters
-            num_samples=1_000, 
+            num_samples=500, 
             horizon=20, 
-            temperature=0.1, 
-            noise_sigma=jnp.array([0.4, 1.2]), # Sigma for [v, w]
+            temperature=0.15, 
+            noise_sigma=jnp.array([0.5, 1.5]), # Sigma for [v, w]
             # MPPI critics weights
-            velocity_cost_weight = 0.5,
-            goal_distance_cost_weight = 1.0,
+            velocity_cost_weight = 1.0,
+            goal_distance_cost_weight = 0.8,
             obstacle_cost_weight = 3.0,
             control_cost_weight = 0.1,
             # Base hyperparameters 
@@ -51,7 +51,6 @@ class MPPI(DWA):
         super().__init__(
             robot_radius=robot_radius,
             v_max=v_max, 
-            gamma=gamma, 
             dt=dt, 
             wheels_distance=wheels_distance, 
             n_stack=n_stack,
@@ -63,6 +62,7 @@ class MPPI(DWA):
             use_box_action_space=False, # MPPI uses continuous action space clamped in the triangle
         )
         # Save MPPI hyperparameters
+        self.gamma = gamma
         self.num_samples = num_samples # K
         self.horizon = horizon         # T
         self.temperature = temperature         # Temperature
@@ -580,7 +580,7 @@ class MPPI(DWA):
             humans_velocities,
             humans_radii,
             static_obstacles,
-            lidar_scans=observations[:,0,6:],
+            lidar_scans=observations[:,0,9:],
             point_clouds=point_clouds,
             x_lims=x_lims,
             y_lims=y_lims,

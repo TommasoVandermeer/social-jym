@@ -33,10 +33,10 @@ def collect_rollout_step(
 ):
     def _scan_step(carry, _):
         (states, obses, infos, outcomes, returns, times, success_per_scenario, episodes_per_scenario, p_keys, r_keys, e_keys, outcomes_acc) = carry
-        actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, values, masks = policy.batch_act(
+        actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, values, _, _, _ = policy.batch_act(
             p_keys, obses, infos, network_params, sample=True
         )
-        new_states, new_obses, new_infos, rewards, new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
+        new_states, new_obses, new_infos, (rewards, _), new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
             states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True, scenarios_prob=scenarios_prob
         )
         rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(
@@ -48,30 +48,23 @@ def collect_rollout_step(
             states[:,-1,4], 
             infos["robot_goal"],
         )
-        humans_visibility, _ = env.batch_object_visibility(
-            rc_humans_positions, infos["humans_parameters"][:,:,0], rc_obstacles
-        )
-        humans_in_range = env.batch_humans_inside_lidar_range(
-            rc_humans_positions, infos["humans_parameters"][:,:,0]
-        )
         step_data = {
             # "obs": obses,
             # "robot_goal": infos["robot_goal"],
             "inputs0": inputs0,
             "inputs1": inputs1,
-            "masks": masks.astype(jnp.bool),
             "gt_poses": rc_humans_positions,
             "gt_vels": rc_humans_velocities,
-            "gt_mask": humans_visibility & humans_in_range,
+            "gt_mask": infos["humans_visibility_mask"],
             "values": values,
             "actions": sampled_actions,
             "rewards": rewards,
             "dones": ~(outcomes["nothing"]),
-            "neglogpdfs": policy.dirichlet.batch_neglogp(actor_distrs, sampled_actions),
-            "stds": policy.dirichlet.batch_std(actor_distrs)
+            "neglogpdfs": policy.action_distribution.batch_neglogp(actor_distrs, sampled_actions),
+            "stds": policy.action_distribution.batch_std(actor_distrs)
         }
         new_times = times + (new_outcomes["success"]) * (infos['time'] + policy.dt)
-        new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(policy.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards)
+        new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(env.reward_function.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards)
         new_success_per_scenario = {k: success_per_scenario[k] + (new_outcomes["success"]) * (infos["current_scenario"] == k) for k in success_per_scenario}
         new_episodes_per_scenario = {k: episodes_per_scenario[k] + (~new_outcomes["nothing"]) * (infos["current_scenario"] == k) for k in episodes_per_scenario}
         new_outcomes_acc = {k: outcomes_acc[k] + new_outcomes[k] for k in new_outcomes}
@@ -119,7 +112,7 @@ def process_buffer_and_gae(
     perception_inputs, robot_state_inputs = vmap(policy.compute_e2e_input, in_axes=(0,0))(
         last_obs, last_info['robot_goal']
     )
-    _, _, _, _, _, last_values, _ = policy.e2e.apply(
+    _, _, _, _, _, last_values, _, _, _ = policy.e2e.apply(
         network_params, None, perception_inputs, robot_state_inputs
     )
     rewards = history["rewards"]
@@ -144,7 +137,6 @@ def process_buffer_and_gae(
         # "robot_goals": flatten(history["robot_goal"]),
         "inputs0": flatten(history["inputs0"]),
         "inputs1": flatten(history["inputs1"]),
-        "masks": flatten(history["masks"]),
         "gt_poses": flatten(history["gt_poses"]),
         "gt_vels": flatten(history["gt_vels"]),
         "gt_mask": flatten(history["gt_mask"]),
@@ -192,19 +184,19 @@ def train_one_epoch(
         micro_batches["advantages"] = micro_batches["advantages"].at[:].set(jnp.clip(norm_advantages, -5, 5))
 
         def micro_batch_loss_fn(p, u_mb, micro_batch_key):
-            inputs0, inputs1, masks = u_mb["inputs0"], u_mb["inputs1"], u_mb["masks"]
+            inputs0, inputs1 = u_mb["inputs0"], u_mb["inputs1"]
             # Lowe input precision to save memory
             if multitask_training or modular_training:
                 inputs0_f16 = inputs0.astype(jnp.bfloat16)
                 inputs1_f16 = inputs1.astype(jnp.bfloat16)
                 # Forward pass (For Actor/Critic)
-                (safety_perc_dist, _, _, actor_dist, _, pred_val, _) = policy.e2e.apply(
-                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training), external_mask=masks
+                (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _) = policy.e2e.apply(
+                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training)
                 )
             else:
                 # Forward pass (For Actor/Critic)
-                (safety_perc_dist, _, _, actor_dist, _, pred_val, _) = policy.e2e.apply(
-                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training), external_mask=masks
+                (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _) = policy.e2e.apply(
+                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training)
                 )
             # Cast back to higher precision for loss computation
             if multitask_training or modular_training:
@@ -214,7 +206,7 @@ def train_one_epoch(
                 actor_dist = dist_to_f32(actor_dist)  
                 safety_perc_dist = dist_to_f32(safety_perc_dist)
             # Actor
-            new_neglogp = policy.dirichlet.batch_neglogp(actor_dist, u_mb["actions"])
+            new_neglogp = policy.action_distribution.batch_neglogp(actor_dist, u_mb["actions"])
             log_ratio = u_mb["neglogpdfs"] - new_neglogp
             # log_ratio = jnp.clip(log_ratio, -10, 10) # MORE STABLE
             ratio = jnp.exp(log_ratio)
@@ -238,7 +230,7 @@ def train_one_epoch(
             var_y = jnp.var(y_true)
             explained_var = 1 - jnp.var(y_true - y_pred) / (var_y + 1e-8)
             # Entropy
-            entropy = jnp.mean(policy.dirichlet.batch_entropy(actor_dist))
+            entropy = jnp.mean(policy.action_distribution.batch_entropy(actor_dist))
             entropy_loss = -beta_entropy * entropy
             policy_loss = actor_loss + entropy_loss
             # Perception
@@ -265,12 +257,12 @@ def train_one_epoch(
                 # Cast corrupted input to float16 to save memory during forward pass
                 inputs0_corrupt_f16 = inputs0_corrupt.astype(jnp.bfloat16)
                 # Forward pass through perception head
-                (perc_dist, _, _, _, _, _, _) = policy.e2e.apply(
+                (perc_dist, _, _, _, _, _, _, _, _) = policy.e2e.apply(
                     p, None, inputs0_corrupt_f16, inputs1, stop_perception_gradient=False, only_perception=True, perception_key=mask_drop_key
                 )
                 # Compute perception loss
                 perc_dist = dist_to_f32(perc_dist)
-                batch_perc_loss = policy._perception_loss(perc_dist, gt_dict)
+                batch_perc_loss, _ = policy._perception_loss(perc_dist, gt_dict)
                 perception_loss = jnp.mean(batch_perc_loss)
             else:
                 perception_loss = 0.0
@@ -457,7 +449,7 @@ def jessi_multitask_rl_rollout(
             best_params = device_get(params)
         # B. PROCESS BUFFER (Parallel)
         buffer_gpu = process_buffer_and_gae(
-            params, current_obs, current_infos, current_dones, history_raw, policy, policy.gamma, policy.dt, policy.v_max, lambda_gae
+            params, current_obs, current_infos, current_dones, history_raw, policy, env.reward_function.gamma, policy.dt, policy.v_max, lambda_gae
         )
         # C. PREPARE TRAINING DATA
         def get_batched_shape_struct(x):

@@ -132,8 +132,10 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv_gpu
 env/
 venv/
+venv_gpu/
 ENV/
 env.bak/
 venv.bak/

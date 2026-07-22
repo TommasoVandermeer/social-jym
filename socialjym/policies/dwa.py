@@ -24,7 +24,6 @@ class DWA(BasePolicy):
         velocity_cost_coeff = 0.2,
         robot_radius:float=0.3,
         v_max:float=1., 
-        gamma:float=0.9, 
         dt:float=0.25, 
         wheels_distance:float=0.7, 
         n_stack:int=5,
@@ -42,7 +41,6 @@ class DWA(BasePolicy):
         # Input validation
         assert robot_radius > 0, "Robot radius must be positive"
         assert v_max > 0, "Maximum robot velocity must be positive"
-        assert gamma >= 0 and gamma <= 1, "Discount factor must be in [0, 1]"
         assert dt > 0, "Time step must be positive"
         assert wheels_distance > 0, "Wheels distance must be positive"
         assert n_stack >= 2, "Number of stacked observations must be at least 2, to observe motion"
@@ -55,7 +53,6 @@ class DWA(BasePolicy):
         assert predict_time_horizon % dt == 0, "Predict time horizon must be a multiple of dt"
         assert actions_discretization >= 3, "Actions discretization must be at least 2"
         # Initialize policy parameters
-        super().__init__(discount=gamma)
         self.predict_time_horizon = predict_time_horizon
         self.heading_cost_coeff = heading_cost_coeff
         self.clearance_cost_coeff = clearance_cost_coeff
@@ -144,7 +141,7 @@ class DWA(BasePolicy):
     def _align_lidar_stack(self, obs_stack, ref_position, ref_orientation):
         """
         args:
-        - obs_stack (lidar_num_rays + 6):  [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs_stack (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
 
         outputs:
         - pointcloud_and_action (lidar_num_rays, 2): LiDAR points in robot reference frame
@@ -155,7 +152,7 @@ class DWA(BasePolicy):
         robot_orientation = obs_stack[2]  # Shape: ()
         #robot_radius = obs_stack[3]  # Shape: ()
         #robot_action = obs_stack[4:6]  # Shape: (2,)
-        lidar_measurements = obs_stack[6:]  # Shape: (lidar_num_rays)
+        lidar_measurements = obs_stack[9:]  # Shape: (lidar_num_rays)
         ## Align scan to reference frame
         # Compute LiDAR angles in world frame
         lidar_angles = self.lidar_angles_robot_frame + robot_orientation  # Shape: (lidar_num_rays)
@@ -231,7 +228,7 @@ class DWA(BasePolicy):
         Prepare the input for the encoder network.
 
         args:
-        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
 
         output:
@@ -273,7 +270,7 @@ class DWA(BasePolicy):
         Compute the action to take given the current observation and info (which contains the robot goal).
 
         Args:
-            obs: (n_stack, lidar_num_rays + 6) The current observation, which includes the robot state and lidar scans.
+            obs: (n_stack, lidar_num_rays + 10) The current observation, which includes the robot state and lidar scans.
             info: (dict) Additional information, including the robot goal.
 
         Returns:
@@ -487,7 +484,7 @@ class DWA(BasePolicy):
             c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
             rot = jnp.array([[c, -s], [s, c]])
             # AX 0,0: Simulation with LiDAR ranges
-            lidar_scan = observations[frame,0,6:]
+            lidar_scan = observations[frame,0,9:]
             for ray in range(len(lidar_scan)):
                 axs[0].plot(
                     [robot_poses[frame,0], robot_poses[frame,0] + lidar_scan[ray] * jnp.cos(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],

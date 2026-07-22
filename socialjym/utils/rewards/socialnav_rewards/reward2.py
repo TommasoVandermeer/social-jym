@@ -1,6 +1,7 @@
 from jax import jit, lax, vmap, debug
 import jax.numpy as jnp
 from functools import partial
+from typing import Union
 
 from socialjym.utils.aux_functions import binary_to_decimal
 from socialjym.utils.rewards.base_reward import BaseReward
@@ -16,7 +17,7 @@ def batch_wrap_angle(angles:jnp.ndarray) -> jnp.ndarray:
 class Reward2(BaseReward):
     def __init__(
         self, 
-        gamma:float=0.9, # Discount factor
+        gamma:Union[float, list, tuple, jnp.ndarray] = 0.9, # Discount factor
         v_max:float=1., # Maximum speed of the robot
         target_reached_reward: bool=True,
         collision_penalty_reward: bool=True,
@@ -59,6 +60,36 @@ class Reward2(BaseReward):
             target_reached_reward], dtype=int)
         self.decimal_reward = binary_to_decimal(self.binary_reward)
         self.type = f"socialnav_reward2_{self.decimal_reward}"
+        if isinstance(gamma, (list, tuple, jnp.ndarray)):
+            print(
+                "REWARD - Multi-discount mode active. Gammas will be assigned in this order:",
+                "\n- Rotational penalty" if self.high_rotation_penalty_reward else "",
+                "\n- Time penalty" if self.time_penalty_reward else "",
+                "\n- Progress to goal" if self.progress_to_goal_reward else "",
+                "\n- Discomfort" if self.discomfort_distance_penalty_reward else "",
+                "\n- Collision" if self.collision_penalty_reward else "",
+                "\n- Target reached" if self.target_reached_reward else "",
+            )
+            self.multi_gamma = True
+            gamma_list = [float(g) for g in gamma]
+            assert len(gamma_list) == jnp.sum(self.binary_reward), "Number of gammas must be the same as active reward terms."
+            idx = 0
+            self.g_rot = gamma_list[idx] if self.high_rotation_penalty_reward else None
+            idx += 1 if self.high_rotation_penalty_reward else 0
+            self.g_time = gamma_list[idx] if self.time_penalty_reward else None
+            idx += 1 if self.time_penalty_reward else 0
+            self.g_prog = gamma_list[idx] if self.progress_to_goal_reward else None
+            idx += 1 if self.progress_to_goal_reward else 0
+            self.g_disc = gamma_list[idx] if self.discomfort_distance_penalty_reward else None
+            idx += 1 if self.discomfort_distance_penalty_reward else 0
+            self.g_coll = gamma_list[idx] if self.collision_penalty_reward else None
+            idx += 1 if self.collision_penalty_reward else 0
+            self.g_goal = gamma_list[idx] if self.target_reached_reward else None
+            idx += 1 if self.target_reached_reward else 0
+            self.unique_gammas = tuple(set(gamma_list))
+        else:
+            self.multi_gamma = False
+            self.unique_gammas = (float(gamma),)
         # Initialize reward parameters
         self.v_max = v_max
         self.goal_reward = goal_reward
@@ -83,7 +114,7 @@ class Reward2(BaseReward):
         obs:jnp.ndarray, 
         info:dict, 
         dt:float
-    ) -> tuple[float, dict]:
+    ) -> tuple[float, dict, dict]:
         """
         Given a state and a dictionary containing additional information about the environment,
         this function computes the reward of the current state and wether the episode is finished or not.
@@ -99,6 +130,7 @@ class Reward2(BaseReward):
         output:
         - reward: reward obtained in the current state.
         - outcome: dictionary indicating if the episode is finished or not and why.
+        - reward_terms: dictionary of all the reward terms with different discounts
         """
         robot_pos = obs[-1,0:2]
         humans_pos = obs[0:len(obs)-1,0:2]
@@ -142,57 +174,79 @@ class Reward2(BaseReward):
         # Timeout
         timeout, _ =  self.timeout(time) 
         ### COMPUTE REWARD ###
-        reward = 0.
         # Reward for reaching the goal
         if self.target_reached_reward:
-            reward = lax.cond(
+            goal_reward = lax.cond(
                 ~(collision) & (reached_goal), 
-                lambda r: r + self.goal_reward, 
-                lambda r: r, 
-                reward
+                lambda: self.goal_reward, 
+                lambda: 0., 
             )
+        else:
+            goal_reward = 0.
         # Penalty for collision
         if self.collision_penalty_reward:
-            reward = lax.cond(
+            collision_reward = lax.cond(
                 collision, 
-                lambda r: r + self.collision_penalty, 
-                lambda r: r, 
-                reward
+                lambda: self.collision_penalty, 
+                lambda: 0., 
             ) 
+        else:
+            collision_reward = 0.
         # Penalty for getting too close to humans
         if self.discomfort_distance_penalty_reward:
             discomfort = (~(collision)) & (min_distance < self.discomfort_distance)
-            reward = lax.cond(
+            discomfort_reward = lax.cond(
                 discomfort, 
-                lambda r: r - 0.5 * dt * (self.discomfort_distance - min_distance), 
-                lambda r: r, 
-                reward
+                lambda: - 0.5 * dt * (self.discomfort_distance - min_distance), 
+                lambda: 0., 
             )
+        else:
+            discomfort_reward = 0.
         # Progress to goal reward
         if self.progress_to_goal_reward:
             progress_to_goal = jnp.linalg.norm(robot_pos - robot_goal) - jnp.linalg.norm(next_robot_pos - robot_goal)
-            reward = lax.cond(
+            progress_reward = lax.cond(
                 ~(reached_goal), 
-                lambda r: r + self.progress_to_goal_weight * progress_to_goal, 
-                lambda r: r, 
-                reward
+                lambda: self.progress_to_goal_weight * progress_to_goal, 
+                lambda: 0., 
             )
+        else:
+            progress_reward = 0.
         # Time penalty
         if self.time_penalty_reward:
-            reward = lax.cond(
+            time_reward = lax.cond(
                 ~(reached_goal), 
-                lambda r: r - self.time_penalty, 
-                lambda r: r, 
-                reward
+                lambda: - self.time_penalty, 
+                lambda: 0., 
             )
+        else:
+            time_reward = 0.
         # High rotation penalty
         if self.high_rotation_penalty_reward:
-            reward = lax.cond(
+            rotation_reward = lax.cond(
                 jnp.abs(action[1]) > self.angular_speed_bound, 
-                lambda r: r - self.angular_speed_penalty_weight * jnp.abs(action[1]), 
-                lambda r: r, 
-                reward
+                lambda: - self.angular_speed_penalty_weight * jnp.abs(action[1]), 
+                lambda: 0., 
             )
+        else:
+            rotation_reward = 0.
+        reward = goal_reward + collision_reward + discomfort_reward + progress_reward + time_reward + rotation_reward
+        if self.multi_gamma:
+            reward_terms = {g: 0.0 for g in self.unique_gammas}
+            if self.target_reached_reward:
+                reward_terms[self.g_goal] += goal_reward
+            if self.collision_penalty_reward:
+                reward_terms[self.g_coll] += collision_reward
+            if self.discomfort_distance_penalty_reward:
+                reward_terms[self.g_disc] += discomfort_reward
+            if self.progress_to_goal_reward:
+                reward_terms[self.g_prog] += progress_reward
+            if self.time_penalty_reward:
+                reward_terms[self.g_time] += time_reward
+            if self.high_rotation_penalty_reward:
+                reward_terms[self.g_rot] += rotation_reward
+        else:
+            reward_terms = {self.gamma: reward}
         ### COMPUTE OUTCOME ###
         outcome = {
             "nothing": ~((collision) | (reached_goal) | (timeout)),
@@ -205,4 +259,4 @@ class Reward2(BaseReward):
         # debug.print("collision: {x}", x=collision)
         # debug.print("reached_goal: {x}", x=reached_goal)
         # debug.print("timeout: {x}", x=timeout)
-        return reward, outcome
+        return reward, outcome, reward_terms

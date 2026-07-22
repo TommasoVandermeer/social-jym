@@ -493,7 +493,7 @@ class DRAMPPI(MPPI):
         aligned_lidar = self.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[1]
         point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
         ## Identify visible humans with JESSI perception
-        hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        hcgs, _, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
         humans_mask = hcgs['weights'] > 0.5
         ## Roto-translate hcgs to be in the global frame
         hcgs['pos_distrs'] = vmap(self.biv_gaussian.roto_translate, in_axes=(0, None))(

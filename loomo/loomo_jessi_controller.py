@@ -143,6 +143,10 @@ class JessiController(Node):
         current_time = self.get_clock().now().nanoseconds / 1e9
         print(f"Delta t: {current_time-self.last_control_time}") 
         self.last_control_time = current_time
+        t_scan = self.latest_scan.header.stamp
+        scan_time_sec = t_scan.sec + t_scan.nanosec * 1e-9
+        t_odom = self.latest_odom.header.stamp
+        odom_time_sec = t_odom.sec + t_odom.nanosec * 1e-9
 
         try:
             trans = self.tf_buffer.lookup_transform(
@@ -170,7 +174,7 @@ class JessiController(Node):
         curr_r_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
         print(f"Robot pose:         {curr_rx:.3f}, {curr_ry:.3f}, {curr_r_theta:.3f}")
 
-        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], safe_ranges))
+        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], [scan_time_sec], [odom_time_sec], [current_time], safe_ranges))
         self.obs_stack.appendleft(current_step_obs)
         while len(self.obs_stack) < self.n_stack:
             self.obs_stack.appendleft(current_step_obs) 
@@ -241,7 +245,7 @@ class JessiController(Node):
         else:
             # JESSI INFERENCE
             try:
-                action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _ = self.jessi.act(
+                action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, _, _, _ = self.jessi.act(
                     key=self.rng_key,
                     obs=obs_matrix,
                     info=info_dict,
@@ -287,7 +291,7 @@ class JessiController(Node):
                 #     rc_robot_goal,
                 # )
                 # # Compute action
-                # perception_output, _, _, actor_distr, _, _, _ = self.jessi.e2e.apply(
+                # perception_output, _, _, actor_distr, _, _, _, _, _, _ = self.jessi.e2e.apply(
                 #     self.network_params, 
                 #     None, 
                 #     perception_input,

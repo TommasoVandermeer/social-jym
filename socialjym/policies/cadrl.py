@@ -37,7 +37,6 @@ class CADRL(BasePolicy):
             self, 
             reward_function:FunctionType, 
             v_max:float = 1., 
-            gamma:float = 0.9, 
             dt:float = 0.25, 
             wheels_distance:float = 0.7, 
             kinematics:str = 'holonomic', 
@@ -49,7 +48,6 @@ class CADRL(BasePolicy):
             # velocity_noise_sigma_percentage:float = 0., # Standard deviation of the noise as a percentage of the (vx,vy) coordinates of humans' velocity in the robot frame
         ) -> None:
         # Inputs validation
-        assert gamma == reward_function.gamma, "gamma must be equal to the reward function gamma"
         assert v_max == reward_function.v_max, "v_max must be equal to the reward function v_max"
         assert v_max > 0, "v_max must be positive"
         assert dt > 0, "dt must be positive"
@@ -57,7 +55,6 @@ class CADRL(BasePolicy):
         assert kinematics in ROBOT_KINEMATICS, f"kinematics must be one of {ROBOT_KINEMATICS}"
         assert reward_function.kinematics == ROBOT_KINEMATICS.index(kinematics), "Reward function kinematics must match the robot policy kinematics"
         # Configurable attributes
-        super().__init__(gamma)
         self.reward_function = reward_function
         self.v_max = v_max
         self.wheels_distance = wheels_distance # Distance between the wheels of the robot (used for unicycle kinematics). Value taken from real TurtleBot4 robot.
@@ -138,7 +135,7 @@ class CADRL(BasePolicy):
         n_humans = len(next_obs) - 1
         # Compute instantaneous reward
         current_obs = current_obs.at[-1,2:4].set(action)
-        reward, _ = self.reward_function(current_obs, info, self.dt)
+        reward, _, _ = self.reward_function(current_obs, info, self.dt)
         # Apply robot action
         next_obs = next_obs.at[-1,2:4].set(action)
         next_obs = next_obs.at[-1].set(self._propagate_robot_obs(next_obs[-1]))
@@ -151,7 +148,7 @@ class CADRL(BasePolicy):
         # Take the minimum among all outputs (representing the worst case scenario)
         min_vnet_output = jnp.min(vnet_outputs)
         # Compute the final value of the action
-        value = reward + pow(self.gamma, self.dt * self.v_max) * min_vnet_output
+        value = reward + pow(self.reward_function.gamma, self.dt * self.v_max) * min_vnet_output
         return value, vnet_inputs
         
     @partial(jit, static_argnames=("self"))
@@ -722,7 +719,7 @@ class CADRL(BasePolicy):
         humans_radius:float,
     ) -> jnp.ndarray:
         ## Identify visible humans with JESSI perception
-        hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        hcgs, _, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
         humans_mask = hcgs['weights'] > 0.5
         rc_humans_pos = hcgs['pos_distrs']['means']
         rc_humans_vel = hcgs['vel_distrs']['means']
