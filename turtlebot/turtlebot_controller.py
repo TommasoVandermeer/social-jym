@@ -51,6 +51,9 @@ class TB4Controller(Node):
         ):
         super().__init__('TB4_controller')
 
+        # Alignement method
+        self.alignement = "ransac" # "hough" or "ransac"
+
         # San Niccolò Waypoints
         if san_niccolo:
             waypoints = jnp.array([
@@ -272,7 +275,7 @@ class TB4Controller(Node):
 
         self.get_logger().info(f"{planner} Controller initialized at {self.frequency:.1f}Hz!")
 
-    def compute_alignment_angle(self, scan_x, scan_y, theta_res=0.2, rho_res=0.05):
+    def compute_alignment_angle_hough(self, scan_x, scan_y, theta_res=0.2, rho_res=0.05):
         """
         Applies the Hough Transform to a 2D pointcloud to find the lateral walls' angle 
         relative to the robot's X-axis. Returns the yaw error in radians.
@@ -295,6 +298,48 @@ class TB4Controller(Node):
         best_theta_rad = thetas_rad[peak_idx[1]]
         alignment_error = best_theta_rad - np.sign(best_theta_rad) * (np.pi / 2.0)
         return alignment_error
+
+    def compute_alignment_angle_ransac(self, scan_x: np.ndarray, scan_y: np.ndarray, distance_threshold: float = 0.05, max_iterations: int = 300) -> float:
+        """
+        Estimates the heading error relative to corridor walls from a 2D LiDAR scan using RANSAC and SVD.
+        """
+        points = np.column_stack((scan_x, scan_y))
+        points = points[np.isfinite(points).all(axis=1)]
+        num_points = len(points)
+        if num_points < 2:
+            return 0.0
+
+        best_inliers_mask = None
+        max_inliers_count = -1
+
+        for _ in range(max_iterations):
+            idx = np.random.choice(num_points, size=2, replace=False)
+            p1, p2 = points[idx[0]], points[idx[1]]
+            vec = p2 - p1
+            norm = np.linalg.norm(vec)
+            if norm < 1e-4:
+                continue
+
+            normal = np.array([-vec[1], vec[0]]) / norm
+            distances = np.abs(np.dot(points - p1, normal))
+            inliers_mask = distances < distance_threshold
+            inliers_count = np.sum(inliers_mask)
+
+            if inliers_count > max_inliers_count:
+                max_inliers_count = inliers_count
+                best_inliers_mask = inliers_mask
+
+        if best_inliers_mask is None or max_inliers_count < 2:
+            return 0.0
+
+        inlier_points = points[best_inliers_mask]
+        centered_points = inlier_points - np.mean(inlier_points, axis=0)
+        _, _, vh = np.linalg.svd(centered_points)
+        dx, dy = vh[0]
+
+        wall_angle = np.arctan2(dy, dx)
+        yaw_error = (wall_angle + np.pi / 2.0) % np.pi - np.pi / 2.0
+        return yaw_error
 
     def clean_and_shift_scan(self, ranges:np.ndarray):
         cleaned = np.nan_to_num(ranges, nan=30., posinf=30., neginf=30.)
@@ -348,12 +393,14 @@ class TB4Controller(Node):
             angles = jnp.linspace( - self.policy.lidar_angular_range/2,  + self.policy.lidar_angular_range/2, len(shifted_cleaned))
             scan_x = shifted_cleaned * jnp.cos(angles)
             scan_y = shifted_cleaned * jnp.sin(angles)
-            alignment_error = self.compute_alignment_angle(scan_x, scan_y)
-            c, s = jnp.cos(alignment_error), jnp.sin(alignment_error)
+            if self.alignement == "hough": alignement_error = self.compute_alignment_angle_hough(scan_x, scan_y)
+            elif self.alignement == "ransac": alignement_error = self.compute_alignment_angle_ransac(scan_x, scan_y)
+            else: raise NotImplementedError(f"Method {self.alignement} has not been implemented for initial alignement")
+            c, s = jnp.cos(alignement_error), jnp.sin(alignement_error)
             R = jnp.array([[c, -s],[s,  c]])
             self.robot_goal_list = (R @ self.robot_goal_list.T).T
             self.robot_goal = self.robot_goal_list[self.robot_goal_index]
-            self.get_logger().info(f"Alignment complete!\nAlignment error: {alignment_error:.2f} rad\nFirst goal is now at: {self.robot_goal}")
+            self.get_logger().info(f"Alignment complete!\nAlignment error: {alignement_error:.2f} rad\nFirst goal is now at: {self.robot_goal}")
             self.first_scan_received = True
         ### Collect data
         if self.save_lists:
