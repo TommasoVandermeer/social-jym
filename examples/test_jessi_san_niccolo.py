@@ -140,7 +140,7 @@ policy = JESSI(
     n_stack=env.n_stack,
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
 )
-with open(os.path.join(os.path.dirname(__file__), 'realistic_jessi_multitask_rl_out.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out_32.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
 
 # Simulate some episodes

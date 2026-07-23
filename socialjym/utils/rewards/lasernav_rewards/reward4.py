@@ -318,6 +318,7 @@ class Reward4(BaseReward):
                 "humans_velocities": humans_velocities,
                 "collision_with_human": collision_with_human,
                 "collision_with_obstacle": collision_with_obstacle,
+                "action": action,
             })
         )
 

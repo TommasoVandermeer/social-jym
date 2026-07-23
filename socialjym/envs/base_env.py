@@ -22,7 +22,7 @@ SCENARIOS = [
     # Realistic scenarios (testing)
     "corner_traffic", # Double waypoint
     "door_crossing", # Double waypoint
-    "crowd_chasing", # Double waypoint
+    "crowd_chasing",
     # Navigation scenarios
     "turn_l",
     "narrow_passage",
@@ -1599,22 +1599,16 @@ class BaseEnv(ABC):
         s = lidar_position - human_position
         b = jnp.dot(s, direction)
         c = jnp.dot(s, s) - human_radius**2
-        h = b * b - c
-        distance = lax.cond(
-            h < 0,
-            lambda x: x,
-            lambda x: lax.cond(
-                - b - jnp.sqrt(h) < 0,
-                lambda y: y,
-                lambda _: - b - jnp.sqrt(h),
-                x),
-            self.lidar_max_dist)
-        return distance        
+        h = b * b - c  
+        sqrt_h = jnp.sqrt(jnp.maximum(h, 0.0))
+        t = -b - sqrt_h
+        valid_intersection = (h >= 0.0) & (t > 0.0)
+        return jnp.where(valid_intersection, t, self.lidar_max_dist)    
     
     @partial(jit, static_argnames=("self"))
     def _batch_human_ray_intersect(self, direction:jnp.ndarray, human_positions:jnp.ndarray, lidar_position:jnp.ndarray, human_radiuses:float) -> jnp.ndarray:
         humans_distances = vmap(BaseEnv._human_ray_intersect, in_axes=(None,None,0,None,0))(self, direction, human_positions, lidar_position, human_radiuses)
-        shortest_distance_index = jnp.argmin(humans_distances)
+        shortest_distance_index = jnp.nanargmin(humans_distances)
         return humans_distances[shortest_distance_index], shortest_distance_index
 
     @partial(jit, static_argnames=("self"))
@@ -1647,13 +1641,13 @@ class BaseEnv(ABC):
     @partial(jit, static_argnames=("self"))
     def _obstacle_ray_intersect(self, direction:jnp.ndarray, obstacle:jnp.ndarray, lidar_position:jnp.ndarray) -> float:
         distances = vmap(BaseEnv._segment_ray_intersect, in_axes=(None,0,0,None,None))(self, obstacle[:,0,:], obstacle[:,1,:], lidar_position, direction)
-        shortest_distance_index = jnp.argmin(distances)
+        shortest_distance_index = jnp.nanargmin(distances)
         return distances[shortest_distance_index], shortest_distance_index
 
     @partial(jit, static_argnames=("self"))
     def _batch_obstacle_ray_intersect(self, direction:jnp.ndarray, obstacles:jnp.ndarray, lidar_position:jnp.ndarray) -> float:
         distances, collision_idxs = vmap(BaseEnv._obstacle_ray_intersect, in_axes=(None,None,0,None))(self, direction, obstacles, lidar_position)
-        shortest_distance_index = jnp.argmin(distances)
+        shortest_distance_index = jnp.nanargmin(distances)
         return distances[shortest_distance_index], jnp.array([shortest_distance_index, collision_idxs[shortest_distance_index]])
 
     @partial(jit, static_argnames=("self"))
