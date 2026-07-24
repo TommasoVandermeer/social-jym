@@ -24,27 +24,29 @@ env_params = {
     'lidar_num_rays': 200,
     'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
-    # 'lidar_dt': 0.13,
-    # 'odometry_dt': 0.05,
-    # 'control_delay_mean': 0.1, 
-    # 'control_delay_sigma': 0.01,
-    # 'wheels_max_linear_acceleration': 1.8, #0.87,
+    'lidar_dt': 0.13,
+    'odometry_dt': 0.05,
+    'control_delay_mean': 0.1, 
+    'control_delay_sigma': 0.01,
+    'wheels_max_linear_acceleration': 1.8, #0.87,
     'wheels_distance': robot_wheel_distance,
     'n_humans': 15,
-    'n_obstacles': 1,
+    'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'circular_crossing', 
+    'scenario': 't_corridor', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 10,
     'ccso_static_humans_radius_mean': 0.3,
     'ccso_static_humans_radius_std': 0.025,
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
-    # 'lidar_noise': True,
-    # 'leg_dynamics': True,
+    'lidar_noise': True,
+    'leg_dynamics': True,
+    'noisy_walls': True,
+    'obstacles_noise': 0.15,
 }
 
 # Initialize the environment
@@ -73,12 +75,12 @@ with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out_32.pkl
 # _, _, network_params = policy.init_nns(random.PRNGKey(random_seed))
 
 # Test the trained JESSI policy
-metrics = policy.evaluate(
-    n_episodes,
-    random_seed,
-    env,
-    network_params,
-)
+# metrics = policy.evaluate(
+#     n_episodes,
+#     random_seed,
+#     env,
+#     network_params,
+# )
 
 # Simulate some episodes
 for i in range(n_episodes):
@@ -200,24 +202,24 @@ for i in range(n_episodes):
     #     # lidar_measurements=lidar_measurements,
     #     kinematics=kinematics,
     # )
-    # ## Plot velocity dynamics of the simulator with respect to reference commands
-    # robot_velocities = all_intermediate_states[:,:,-1,2:4].reshape(-1, 2)
-    # robot_velocities_times = jnp.arange(0, robot_velocities.shape[0]*env.humans_dt, env.humans_dt)
-    # reference_velocities = all_actions
-    # reference_velocities_times = jnp.arange(0, reference_velocities.shape[0]*env.robot_dt, env.robot_dt)
-    # figure, ax = plt.subplots(2, 1, figsize=(15, 10))
-    # figure.subplots_adjust(left=0.1, right=0.9, bottom=0.15)
-    # ax[0].step(reference_velocities_times, reference_velocities[:,0], label='Action', where='post', color='green', alpha=0.7)
-    # ax[0].plot(robot_velocities_times, robot_velocities[:,0], label='Velocity', color='red', linewidth=2)
-    # ax[0].set_xlabel('Time [s]')
-    # ax[0].set_ylabel('Linear Vel [m/s]')
-    # ax[0].legend(fontsize=16)
-    # ax[1].step(reference_velocities_times, reference_velocities[:,1], label='Action', where='post', color='green', alpha=0.7)
-    # ax[1].plot(robot_velocities_times, robot_velocities[:,1], label='Velocity', color='red', linewidth=2)
-    # ax[1].set_xlabel('Time [s]')
-    # ax[1].set_ylabel('Angular Vel [m/s]')
-    # ax[1].legend(fontsize=16)
-    # plt.show()
+    ## Plot velocity dynamics of the simulator with respect to reference commands
+    robot_velocities = all_intermediate_states[:,:,-1,2:4].reshape(-1, 2)
+    robot_velocities_times = jnp.arange(0, robot_velocities.shape[0]*env.humans_dt, env.humans_dt)
+    reference_velocities = all_actions
+    reference_velocities_times = jnp.arange(0, reference_velocities.shape[0]*env.robot_dt, env.robot_dt)
+    figure, ax = plt.subplots(2, 1, figsize=(15, 10))
+    figure.subplots_adjust(left=0.1, right=0.9, bottom=0.15)
+    ax[0].step(reference_velocities_times, reference_velocities[:,0], label='Action', where='post', color='green', alpha=0.7)
+    ax[0].plot(robot_velocities_times, robot_velocities[:,0], label='Velocity', color='red', linewidth=2)
+    ax[0].set_xlabel('Time [s]')
+    ax[0].set_ylabel('Linear Vel [m/s]')
+    ax[0].legend(fontsize=16)
+    ax[1].step(reference_velocities_times, reference_velocities[:,1], label='Action', where='post', color='green', alpha=0.7)
+    ax[1].plot(robot_velocities_times, robot_velocities[:,1], label='Velocity', color='red', linewidth=2)
+    ax[1].set_xlabel('Time [s]')
+    ax[1].set_ylabel('Angular Vel [m/s]')
+    ax[1].legend(fontsize=16)
+    plt.show()
     ## Animate trajectory with JESSI's perception and action distribution
     policy.animate_lasernav_trajectory(
         env,

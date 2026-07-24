@@ -60,13 +60,13 @@ perception_learning_rate = 0.0005
 perception_batch_size = 100
 policy_learning_rate = 0.005
 policy_batch_size = 200
-policy_n_epochs = 30 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
+policy_n_epochs = 10 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
 n_max_epochs = 1000
 patience = 100  # Early stopping patience
 delta_improvement = 0.001  # Minimum validation improvement to reset early stopping patience
 data_split = [0.85, 0.1, 0.05]  # Train/Val/Test split ratios
 ### MULTI-TASK RL Hyperparameters
-rl_n_parallel_envs = 300 
+rl_n_parallel_envs = 200 
 rl_training_updates = 1_000
 training_hyperparams = {
     'random_seed': 0,
@@ -76,12 +76,12 @@ training_hyperparams = {
     'rl_parallel_envs': rl_n_parallel_envs,
     'rl_learning_rate': 1e-4, # 3e-4
     'rl_learning_rate_final': 1e-5, # 2e-4
-    'rl_total_batch_size': 30_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
-    'rl_mini_batch_size': 2_000, # 2_000 Mini-batch size for each model update
-    'rl_micro_batch_size': 1_000, # 1_000 # Micro-batch size for gradient accumulation 
+    'rl_total_batch_size': 10_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
+    'rl_mini_batch_size': 500, # 2_000 Mini-batch size for each model update
+    'rl_micro_batch_size': 250, # 1_000 # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 6, # 6
-    'rl_beta_entropy': 5e-4, # 1e-4
+    'rl_beta_entropy': 5e-2, # 1e-4
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
@@ -939,7 +939,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'humans_dt': 0.01,
         'robot_visible': False,
         'scenario': training_hyperparams['scenario'],
-        'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5,6,10,11,12,13,14,15]),
+        'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5,6,10,11,12,13,14,15,16]),
         'circle_radius': 7,
         'reward_function': reward_function,
         'kinematics': 'unicycle',

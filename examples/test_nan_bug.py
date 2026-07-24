@@ -29,6 +29,7 @@ print("Robot goals nan: ", jnp.any(jnp.isnan(controller_dataset['rc_robot_goals'
 print("Actions nan: ", jnp.any(jnp.isnan(controller_dataset['actor_actions'])))
 print("Returns nan: ", jnp.any(jnp.isnan(controller_dataset['returns'])))
 print("Max return: ", jnp.max(controller_dataset['returns']))
+print("Mean return: ", jnp.mean(controller_dataset['returns']))
 print("Min return: ", jnp.min(controller_dataset['returns']))
 print("Max robot action: ", jnp.max(controller_dataset['actor_actions'], axis=(0,)))
 print("Min robot action: ", jnp.min(controller_dataset['actor_actions'], axis=(0,)))

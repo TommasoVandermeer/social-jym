@@ -51,8 +51,6 @@ class Reward4(BaseReward):
     ) -> None:
         super().__init__(gamma)
         
-        print("WARNING: this reward is still not stable for training. Use at your own risk.")
-
         # Assign flags
         self.target_reached_reward = target_reached_reward
         self.collision_with_humans_penalty_reward = collision_with_humans_penalty_reward
