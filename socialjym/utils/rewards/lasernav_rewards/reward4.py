@@ -18,7 +18,9 @@ class Reward4(BaseReward):
         robot_radius: float,
         gamma:Union[float, list, tuple, jnp.ndarray] = 0.9,
         v_max: float=1.0,
+        wheels_distance: float=0.7,
         time_limit: float=50.,
+        max_reward: float=5.0,
         
         # Reward Flags
         target_reached_reward: bool=True,
@@ -109,7 +111,10 @@ class Reward4(BaseReward):
         self.type = f"lasernav_reward4_{self.decimal_reward}"
         
         # Initialize parameters
+        self.max_reward = max_reward
         self.v_max = v_max
+        self.wheels_distance = wheels_distance
+        self.w_max = 2 * v_max / wheels_distance
         self.time_limit = time_limit
         self.goal_weight = goal_weight
         self.collision_weight = collision_weight
@@ -155,7 +160,7 @@ class Reward4(BaseReward):
         
         # Calculate next states
         next_robot_pos = lax.cond(
-            action[1] != 0,
+            jnp.abs(action[1]) > 1e-3,
             lambda x: x.at[:].set(jnp.array([
                 x[0] + (action[0]/action[1]) * (jnp.sin(robot_yaw + action[1] * dt) - jnp.sin(robot_yaw)),
                 x[1] + (action[0]/action[1]) * (jnp.cos(robot_yaw) - jnp.cos(robot_yaw + action[1] * dt))
@@ -280,20 +285,37 @@ class Reward4(BaseReward):
             # RL-friendly smoothness (L1 norm of discrete 2nd derivative)
             delta_w = action[1] - prev_action[1]
             prev_delta_w = prev_action[1] - prev_prev_action[1]
-            angular_jerk_penalty = self.angular_jerk_weight * jnp.abs(delta_w - prev_delta_w)
+            max_w_jerk = 2.0 * self.w_max  # range max delta_w
+            jerk_mag = jnp.abs(delta_w - prev_delta_w) / max_w_jerk
+            angular_jerk_penalty = self.angular_jerk_weight * jerk_mag * dt
 
         linear_jerk_penalty = 0.
         if self.linear_jerk_penalty_reward:
             # RL-friendly smoothness (L1 norm of discrete 2nd derivative)
             delta_v = action[0] - prev_action[0]
             prev_delta_v = prev_action[0] - prev_prev_action[0]
-            linear_jerk_penalty = self.linear_jerk_weight * jnp.abs(delta_v - prev_delta_v)
+            jerk_mag = jnp.abs(delta_v - prev_delta_v) / self.v_max
+            linear_jerk_penalty = self.linear_jerk_weight * jerk_mag * dt
 
         # --- AGGREGATION ---
         reward = (goal_reward + timeout_penalty + progress_reward + 
                  collision_human_penalty + collision_obs_penalty + 
                  predictive_ttc_penalty + social_intrusion_penalty + 
                  angular_jerk_penalty + linear_jerk_penalty)
+
+        # SAFETY REWARD SCALING
+        scale = reward / self.max_reward
+        is_to_scale = reward > self.max_reward
+        reward = lax.cond(is_to_scale, lambda: reward/scale, lambda:reward)
+        goal_reward = lax.cond(is_to_scale, lambda: goal_reward/scale, lambda:goal_reward)
+        timeout_penalty = lax.cond(is_to_scale, lambda: timeout_penalty/scale, lambda:timeout_penalty)
+        progress_reward = lax.cond(is_to_scale, lambda: progress_reward/scale, lambda:progress_reward)
+        collision_human_penalty = lax.cond(is_to_scale, lambda: collision_human_penalty/scale, lambda:collision_human_penalty)
+        collision_obs_penalty = lax.cond(is_to_scale, lambda: collision_obs_penalty/scale, lambda:collision_obs_penalty)
+        predictive_ttc_penalty = lax.cond(is_to_scale, lambda: predictive_ttc_penalty/scale, lambda:predictive_ttc_penalty)
+        social_intrusion_penalty = lax.cond(is_to_scale, lambda: social_intrusion_penalty/scale, lambda:social_intrusion_penalty)
+        angular_jerk_penalty = lax.cond(is_to_scale, lambda: angular_jerk_penalty/scale, lambda:angular_jerk_penalty)
+        linear_jerk_penalty = lax.cond(is_to_scale, lambda: linear_jerk_penalty/scale, lambda:linear_jerk_penalty)
         
         ## DEBUG
         # _ = lax.cond(jnp.isnan(reward) | jnp.isinf(reward) | (reward > 1e5), lambda: debug.print("Reward is {x}",x=reward), lambda: None)

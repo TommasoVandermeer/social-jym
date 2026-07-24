@@ -73,12 +73,12 @@ with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out_32.pkl
 # _, _, network_params = policy.init_nns(random.PRNGKey(random_seed))
 
 # Test the trained JESSI policy
-# metrics = policy.evaluate(
-#     n_episodes,
-#     random_seed,
-#     env,
-#     network_params,
-# )
+metrics = policy.evaluate(
+    n_episodes,
+    random_seed,
+    env,
+    network_params,
+)
 
 # Simulate some episodes
 for i in range(n_episodes):

@@ -26,9 +26,9 @@ ABLATIONS = [
     1, # No action space bounding
     2, # No uncertainty on human detection for actor critic module
     3, # MLP in place of scene self-attention
-    # 4, # Gaussian parameterization of the action space (in place of Dirichlet)
-    # 5, # CNN + temporal attention perception (loss of lidar agnosticity)
-    # 6, # Logistic normal parameterization of the action space (in place of Dirichlet)
+    4, # Gaussian parameterization of the action space (in place of Dirichlet)
+    5, # CNN + temporal attention perception (loss of lidar agnosticity)
+    6, # Logistic normal parameterization of the action space (in place of Dirichlet)
 ]
 
 class MultiHeadAttention(hk.MultiHeadAttention):
