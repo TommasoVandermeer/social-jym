@@ -290,6 +290,7 @@ class JessiController(Node):
                 translated_position = info_dict["robot_goal"] - robot_position
                 rc_robot_goal = R @ translated_position
                 robot_state_input = self.jessi.compute_robot_state_input(
+                    obs_matrix[:,:11],
                     bounding_parameters,
                     rc_robot_goal,
                 )

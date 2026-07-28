@@ -845,6 +845,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
             )
             bounding_parameters = vmap(jessi.bound_action_space)(last_lidar_point_clouds)
             actor_input = vmap(jessi.compute_actor_input)(
+                batch["observations"][:,:,:11],
                 hcgs,
                 bounding_parameters,
                 batch["rc_robot_goals"],

@@ -1112,6 +1112,7 @@ class JESSI(BasePolicy):
     @partial(jit, static_argnames=("self"))
     def compute_robot_state_input(
         self,
+        robot_obs_stack,
         action_space_params,
         robot_goal, # In cartesian coordinates (gx, gy) IN THE ROBOT FRAME
     ):
@@ -1132,12 +1133,13 @@ class JESSI(BasePolicy):
     @partial(jit, static_argnames=("self"))
     def compute_actor_input(
         self,
+        robot_obs_stack,
         hcgs,
         action_space_params,
         robot_goal, # In cartesian coordinates (gx, gy) IN THE ROBOT FRAME
     ):
         # Compute ROBOT state inputs
-        robot_state_input = self.compute_robot_state_input(action_space_params, robot_goal)
+        robot_state_input = self.compute_robot_state_input(robot_obs_stack, action_space_params, robot_goal)
         # HCGs from dict to jnp.array
         hcgs = jnp.concatenate((
             hcgs["pos_distrs"]["means"],
@@ -1164,7 +1166,7 @@ class JESSI(BasePolicy):
         Prepare the input for the encoder network.
 
         args:
-        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_vx, r_wz,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 11): Each stack [rx,ry,r_theta,r_radius,r_vx, r_wz,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
 
         output:
@@ -1246,6 +1248,7 @@ class JESSI(BasePolicy):
         translated_position = robot_goal - robot_position
         rc_robot_goal = R @ translated_position
         robot_state_input = self.compute_robot_state_input(
+            obs[:,:11],
             bounding_parameters,
             rc_robot_goal,
         )
