@@ -91,7 +91,7 @@ training_hyperparams = {
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': hybrid_scenario_subset,
-    'reward_function': 'lasernav_reward4',
+    'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
     'safety_loss': False,  # Whether to include safety loss in the RL training
     'target_kl': None,  # Target KL divergence for early stopping in each update

@@ -197,61 +197,6 @@ class ActorCritic(hk.Module):
             distributions = tree_map(lambda t: t[0], distributions)
         return sampled_actions, distributions, concentration, state_values, human_attention
 
-class E2E(E2E):
-    def __init__(
-        self,
-        name: str,
-        perception_name: str,
-        controller_name: str,
-        lidar_angles_robot_frame: jnp.ndarray,
-        n_detectable_humans: int,
-        max_humans_velocity: float,
-        max_lidar_distance: float,
-        v_max: float,
-        wheels_distance: float,
-        embed_dim: int,
-        n_sectors: int,
-        mlp_params: dict = {
-            "activation": nn.relu,
-            "activate_final": False,
-            "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-            "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-        },
-        initial_concentration: float = 0.,
-        beam_dropout_rate: float = 0.0,
-        ablation_mode: Optional[int] = None,
-        legit: bool = False,
-    ) -> None:
-        super().__init__(
-            name=name,
-            perception_name=perception_name,
-            controller_name=controller_name,
-            lidar_angles_robot_frame=lidar_angles_robot_frame,
-            n_detectable_humans=n_detectable_humans,
-            max_humans_velocity=max_humans_velocity,
-            max_lidar_distance=max_lidar_distance,
-            v_max=v_max,
-            wheels_distance=wheels_distance,
-            embed_dim=embed_dim,
-            n_sectors=n_sectors,
-            mlp_params=mlp_params,
-            initial_concentration=initial_concentration,
-            beam_dropout_rate=beam_dropout_rate,
-            ablation_mode=ablation_mode,
-            legit=legit,
-        )
-        # Initialize Actor-Critic module
-        self.actor_critic = ActorCritic(
-            controller_name,
-            n_detectable_humans=n_detectable_humans,
-            v_max=v_max,
-            wheels_distance=wheels_distance,
-            mlp_params=mlp_params,
-            initial_concentration=initial_concentration,
-            n_sectors=n_sectors,
-            ablation_mode=ablation_mode,
-        )
-
 class JESSI_SA(JESSI):
     """
     A state augmented version of JESSI designed to operate on systems with delayed actuation.
@@ -320,6 +265,7 @@ class JESSI_SA(JESSI):
         @hk.transform
         def e2e_network(x, y, stop_perception_gradient=False, only_perception=False, **kwargs) -> jnp.ndarray:
             e2e = E2E(
+                ActorCritic,
                 self.e2e_name,
                 self.perception_name,
                 self.actor_critic_name,

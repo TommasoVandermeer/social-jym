@@ -529,6 +529,7 @@ class ActorCritic(hk.Module):
 class E2E(hk.Module):
     def __init__(
         self,
+        actor_critic_module:hk.Module,
         name: str,
         perception_name: str,
         controller_name: str,
@@ -581,7 +582,7 @@ class E2E(hk.Module):
             legit=legit,
         )
         # Initialize Actor-Critic module
-        self.actor_critic = ActorCritic(
+        self.actor_critic = actor_critic_module(
             controller_name,
             n_detectable_humans=n_detectable_humans,
             v_max=v_max,
@@ -746,6 +747,7 @@ class JESSI(BasePolicy):
         @hk.transform
         def e2e_network(x, y, stop_perception_gradient=False, only_perception=False, **kwargs) -> jnp.ndarray:
             e2e = E2E(
+                ActorCritic,
                 self.e2e_name,
                 self.perception_name,
                 self.actor_critic_name,
