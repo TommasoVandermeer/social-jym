@@ -176,15 +176,15 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         @jit
         def _simulate_steps_with_lidar(i:int, for_val:tuple):
             ## Retrieve data from the tuple
-            data, state, info, reset_key, lasernav_obs, lasernav_info = for_val
+            data, state, info, action, reset_key, lasernav_obs, lasernav_info = for_val
             ## Compute robot action
-            obs = vmap(env._get_obs, in_axes=(0, 0))(state, info)
-            action, _, _, _, _ = dir_safe.batch_act(dummy_policy_keys, obs, info, actor_params, sample=False)
+            obs = vmap(env._get_obs, in_axes=(0, 0, 0))(state, info, action)
+            final_action, _, _, _, _ = dir_safe.batch_act(dummy_policy_keys, obs, info, actor_params, sample=False)
             ## Simulate one step SOCIALNAV
             _, _, final_info, _, _, final_reset_key = env.batch_step(
                 state,
                 info,
-                action, 
+                final_action, 
                 reset_key,
                 test=False,
                 reset_if_done=True,
@@ -193,7 +193,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
             final_state, final_lasernav_obs, final_lasernav_info, (final_lasernav_reward, _), _, _ = laser_env.batch_step(
                 state,
                 lasernav_info,
-                action, 
+                final_action, 
                 reset_key,
                 dummy_env_keys, 
                 test=False,
@@ -209,7 +209,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
                 "humans_orientations": state[:,:-1,4],
                 "robot_positions": obs[:,-1,:2],
                 "robot_orientations": obs[:,-1,5],
-                "robot_actions": action,
+                "robot_actions": final_action,
                 "robot_goals": info["robot_goal"],
                 "static_obstacles": info["static_obstacles"][:,-1],
                 "rewards": final_lasernav_reward,
@@ -217,7 +217,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
                 "obstacles_visibility": lasernav_info["obstacles_visibility_mask"],
             }
             data = tree_map(lambda x, y: x.at[i].set(y), data, step_out_data)
-            return data, final_state, final_info, final_reset_key, final_lasernav_obs, final_lasernav_info
+            return data, final_state, final_info, final_action, final_reset_key, final_lasernav_obs, final_lasernav_info
         # Initialize first episode
         reset_keys = random.split(random.PRNGKey(random_seed), n_parallel_envs)
         state, reset_key, _, info, outcome = env.batch_reset(reset_keys)
@@ -240,11 +240,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
             "obstacles_visibility": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs, n_obstacles, 1)),
         }
         # Step loop
-        data, _, _, _, _, _ = lax.fori_loop(
+        data, _, _, _, _, _, _ = lax.fori_loop(
             0,
             n_steps // n_parallel_envs,
             _simulate_steps_with_lidar,
-            (data, state, info, reset_key, lasernav_obs, lasernav_info)
+            (data, state, info, jnp.zeros((n_parallel_envs,2)), reset_key, lasernav_obs, lasernav_info)
         )
         data["episode_starts"] = data["episode_starts"].at[0,:].set(True)  # First step is always episode start
         # Compute returns
@@ -335,7 +335,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
                     alpha = 1 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
                     ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
             # Plot lidar scans
-            for distance, angle in zip(robot_centric_data["lasernav_observations"][frame,0,6:], jessi.lidar_angles_robot_frame):
+            for distance, angle in zip(robot_centric_data["lasernav_observations"][frame,0,11:], jessi.lidar_angles_robot_frame):
                 ax.plot(
                     [0, distance * jnp.cos(angle)],
                     [0, distance * jnp.sin(angle)],

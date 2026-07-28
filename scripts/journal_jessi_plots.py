@@ -968,7 +968,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.eps')):
             alpha=0.6,
             zorder=30,
         )
-    lidar_scan = obs[0,9:]
+    lidar_scan = obs[0,11:]
     for ray in range(len(lidar_scan)):
         rgba_color = 'black'
         ax[0].plot(

@@ -172,9 +172,11 @@ class JessiController(Node):
         curr_rx = self.latest_odom.pose.pose.position.x
         curr_ry = self.latest_odom.pose.pose.position.y
         curr_r_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        vx = self.latest_odom.twist.twist.linear.x
+        wz = self.latest_odom.twist.twist.angular.z
         print(f"Robot pose:         {curr_rx:.3f}, {curr_ry:.3f}, {curr_r_theta:.3f}")
 
-        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], [scan_time_sec], [odom_time_sec], [current_time], safe_ranges))
+        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, vx, wz, self.previous_action[0], self.previous_action[1]], [scan_time_sec], [odom_time_sec], [current_time], safe_ranges))
         self.obs_stack.appendleft(current_step_obs)
         while len(self.obs_stack) < self.n_stack:
             self.obs_stack.appendleft(current_step_obs) 

@@ -190,10 +190,11 @@ class LaserNav(BaseEnv):
         if self.odometry_misalignment:
             info["substeps_from_last_odom_ref_scan"] += random.randint(noise_key3, (), 0, self.odometry_substeps)
         # Previous observation initialization
-        info["previous_obs"], humans_visibility_mask, obstacles_visibility_mask = vmap(self._get_current_obs, in_axes=(None,None,None,None,None,None,None,None,None,0))(
+        info["previous_obs"], humans_visibility_mask, obstacles_visibility_mask = vmap(self._get_current_obs, in_axes=(None,None,None,None,None,None,None,None,None,None,0))(
             initial_state,
             info["humans_leg_state"],
             initial_state,
+            jnp.zeros((2,)),
             humans_parameters[:,0],
             info["humans_leg_parameters"][:,-1],
             static_obstacles[-1],
@@ -212,6 +213,7 @@ class LaserNav(BaseEnv):
         lidar_state:jnp.ndarray, 
         legs_lidar_state:jnp.ndarray, 
         odom_state:jnp.ndarray, 
+        robot_action:jnp.ndarray,
         humans_radii:jnp.ndarray, 
         legs_radii:jnp.ndarray, 
         static_obstacles:jnp.ndarray, 
@@ -228,6 +230,7 @@ class LaserNav(BaseEnv):
         - lidar_state: current state at the LiDAR update step.
         - legs_lidar_state: current state of humans' legs at the LiDAR update step.
         - odom_state: current state at the Odometry update step.
+        - robot_action: last reference velocity commanded to the robot
         - humans_radii: radii of the humans.
         - legs_radii: radii of the humans' legs.
         - static_obstacles: static obstacles in the environment.
@@ -257,7 +260,8 @@ class LaserNav(BaseEnv):
             *robot_position, # Robot position
             robot_orientation, # Robot orientation
             self.robot_radius, # Robot radius
-            *robot_velocity, # Robot action (either (vx,vy) or (v,w))
+            *robot_velocity, # Robot velocity (either (vx,vy) or (v,w))
+            *robot_action, # Last robot reference velocity (either (vx,vy) or (v,w))
             lidar_timestamp,
             odom_timestamp,
             control_timestamp,
@@ -266,7 +270,7 @@ class LaserNav(BaseEnv):
         return current_obs, humans_visibility_mask, obstacles_visibility_mask
 
     @partial(jit, static_argnames=("self"))
-    def _get_obs(self, state:jnp.ndarray, info:dict, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment,
         this function computes the observation of the current state (which is a stack of the last n_stack observations).
@@ -274,6 +278,7 @@ class LaserNav(BaseEnv):
         args:
         - state: current state of the environment. (UNUSED HERE, STATE IS GATHERED FROM INTERMEDIATE_STATES IN INFO BASED ON SENSORS FREQUENCIES)
         - info: dictionary containing additional information about the environment.
+        - action: last robot action (t-1).
         - noise_key: random.PRNGKey for noise generation.
 
         output:
@@ -287,6 +292,7 @@ class LaserNav(BaseEnv):
             lidar_state, 
             legs_lidar_state, 
             odom_state, 
+            action,
             info["humans_parameters"][:,0], 
             info["humans_leg_parameters"][:,-1], 
             info["static_obstacles"][-1], 
@@ -399,7 +405,7 @@ class LaserNav(BaseEnv):
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        new_obs, new_info["humans_visibility_mask"], new_info["obstacles_visibility_mask"] = self._get_obs(new_state, new_info, new_env_key)
+        new_obs, new_info["humans_visibility_mask"], new_info["obstacles_visibility_mask"] = self._get_obs(new_state, new_info, action, new_env_key)
         new_info["previous_obs"] = new_obs
         return new_state, new_obs, new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
 

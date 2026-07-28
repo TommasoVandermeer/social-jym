@@ -330,7 +330,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
                     alpha = 1 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
                     ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
             # Plot lidar scans
-            for distance, angle in zip(robot_centric_data["lasernav_observations"][frame,0,6:], jessi.lidar_angles_robot_frame):
+            for distance, angle in zip(robot_centric_data["lasernav_observations"][frame,0,11:], jessi.lidar_angles_robot_frame):
                 ax.plot(
                     [0, distance * jnp.cos(angle)],
                     [0, distance * jnp.sin(angle)],

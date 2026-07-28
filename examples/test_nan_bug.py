@@ -61,7 +61,7 @@ for scenario in SCENARIOS[:-1]:
         for i in range(n_episodes):
             policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) 
             state, reset_key, obs, info, outcome = env.reset(reset_key)
-            if jnp.any(jnp.isnan(obs[:,9:])):
+            if jnp.any(jnp.isnan(obs[:,11:])):
                 obs_nan_count += 1
             for j in range(n_steps):
                 state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,jnp.array([1.,0.]),test=True,env_key=env_key)

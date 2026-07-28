@@ -425,7 +425,9 @@ class TB4Controller(Node):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         theta = self.get_yaw_from_quaternion(msg.pose.pose.orientation)
-        self.odom_buffer.append((corrected_t, x, y, theta))
+        vx = msg.twist.twist.linear.x
+        wz = msg.twist.twist.angular.z
+        self.odom_buffer.append((corrected_t, x, y, theta, vx, wz))
         self.latest_odom = msg 
         if self.save_lists:
             self.odom_list.append(msg)
@@ -450,8 +452,8 @@ class TB4Controller(Node):
             return buffer_list[-1][1:]
 
         for i in range(len(buffer_list) - 1):
-            t0, x0, y0, theta0 = buffer_list[i]
-            t1, x1, y1, theta1 = buffer_list[i+1]
+            t0, x0, y0, theta0, vx0, wz0 = buffer_list[i]
+            t1, x1, y1, theta1, vx1, wz1 = buffer_list[i+1]
             if t0 <= t_target <= t1:
                 ratio = (t_target - t0) / (t1 - t0)
                 x_interp = x0 + ratio * (x1 - x0)
@@ -459,7 +461,9 @@ class TB4Controller(Node):
                 diff_theta = math.atan2(math.sin(theta1 - theta0), math.cos(theta1 - theta0))
                 theta_interp = theta0 + ratio * diff_theta
                 theta_interp = math.atan2(math.sin(theta_interp), math.cos(theta_interp))
-                return x_interp, y_interp, theta_interp   
+                vx_interp = vx0 + ratio * (vx1 - vx0)
+                wz_interp = wz0 + ratio * (wz1 - wz0)
+                return x_interp, y_interp, theta_interp, vx_interp, wz_interp 
         return None
 
     def control_loop(self):
@@ -478,11 +482,13 @@ class TB4Controller(Node):
             if pose_interp is None:
                 self.get_logger().warn("Impossible to interpolate pose at scan timestamp, skipping this control step...")
                 return
-            rx, ry, r_theta = pose_interp
+            rx, ry, r_theta, vx , wz = pose_interp
         else:
             rx = self.latest_scan_odom.pose.pose.position.x
             ry = self.latest_scan_odom.pose.pose.position.y
             r_theta = self.get_yaw_from_quaternion(self.latest_scan_odom.pose.pose.orientation)
+            vx = self.latest_scan_odom.twist.twist.linear.x
+            wz = self.latest_scan_odom.twist.twist.angular.z
         print(f"Current pose - x: {rx:.2f}, y: {ry:.2f}, theta: {r_theta:.2f}, delta t: {time.time() - self.previous_control_time:.2f} s")
         self.previous_control_time = time.time()
         # Ranges cleaning and shifting (TB4 ranges start on the right)
@@ -494,11 +500,11 @@ class TB4Controller(Node):
         lidar_scan = np.clip(lidar_scan, 0, self.lidar_max_dist)
 
         # Observation
-        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], [scan_time_sec], [odom_time_sec], [self.get_clock().now().nanoseconds * 1e-9], lidar_scan))
+        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, vx, wz, self.previous_action[0], self.previous_action[1]], [scan_time_sec], [odom_time_sec], [self.get_clock().now().nanoseconds * 1e-9], lidar_scan))
         self.obs_stack.appendleft(current_step_obs)
         while len(self.obs_stack) < self.n_stack:
             self.obs_stack.appendleft(current_step_obs) 
-        obs_matrix = jnp.array(self.obs_stack) # Shape: (n_stack, 326)
+        obs_matrix = jnp.array(self.obs_stack) # Shape: (n_stack, n_rays + 11)
         info_dict = {
             "robot_goal": jnp.array(self.robot_goal)
         }
