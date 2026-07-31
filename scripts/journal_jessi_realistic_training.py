@@ -960,7 +960,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'humans_dt': 0.01,
         'robot_visible': False,
         'scenario': training_hyperparams['scenario'],
-        'hybrid_scenario_subset': jnp.array([0,1,2,3,4,5,6,10,11,12,13,14,15,16]),
+        'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,9,10,11,12,13,14,15,16]),
         'circle_radius': 7,
         'reward_function': reward_function,
         'kinematics': 'unicycle',
