@@ -240,7 +240,7 @@ class LaserNav(BaseEnv):
         - noise_key: random.PRNGKey for noise generation.
 
         output:
-        - current_obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements]
+        - current_obs: [rx,ry,r_theta,r_radius,r_v,r_w,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements]
         """
         measurements, humans_visibility_mask, obstacles_visibility_mask = self.get_lidar_measurements(
             lidar_state[-1, :2], # Lidar position (robot position)
@@ -282,7 +282,7 @@ class LaserNav(BaseEnv):
         - noise_key: random.PRNGKey for noise generation.
 
         output:
-        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_v,r_w,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
         """
         lidar_state = info['intermediate_states'][-(1+info["substeps_from_last_scan"])]

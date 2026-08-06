@@ -3,11 +3,9 @@ from jax import nn, random, vmap, jit, lax
 from jax.tree_util import tree_map
 from functools import partial
 import haiku as hk
-from typing import Optional
+from typing import Sequence
 
 from socialjym.policies.jessi import JESSI, E2E, MultiHeadAttention
-from socialjym.utils.distributions.dirichlet import Dirichlet
-from socialjym.utils.distributions.gaussian import Gaussian
 from socialjym.utils.distributions.logistic_normal import LogisticNormal
 from jhsfm.hsfm import step as humans_step
 from jhsfm.utils import get_standard_humans_parameters as get_standard_humans_parameters
@@ -28,7 +26,7 @@ class Actor(hk.Module):
                 "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             },
             initial_concentration: float = 0.,
-            ablation_mode: Optional[int] = None,
+            ablation_mode: str = None,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -37,17 +35,14 @@ class Actor(hk.Module):
         self.wmax = 2 * v_max / wheels_distance
         self.wmin = -2 * v_max / wheels_distance
         self.initial_concentration = initial_concentration
-        self.ablation_mode = ablation_mode
         # Dimensions
         self.n_sectors = n_sectors
-        if self.ablation_mode == 4: self.n_outputs = 2 # Gaussian (2 means, 1 per action)
-        elif self.ablation_mode == 6: self.n_outputs = 3 # Logistic-Normal (3 means, 1 per vertex)
-        else: self.n_outputs = 3 # Dirichlet (3 alphas, 1 per vertex)
+        self.n_outputs = 3 # Logistic-normal (3 alphas, 1 per vertex)
         self.mlp_params = mlp_params
         # Scan embedding reducer
         self.scan_reducer = hk.Linear(1, name="scan_reducer")
         # 2. Self Attention Mechanism
-        add_size = 22 if self.ablation_mode != 2 else 16 # Ablation: No human uncertainty params, so input size is smaller
+        add_size = 22
         self.attention = MultiHeadAttention(
             num_heads=2,
             key_size=(n_sectors + add_size)//2,
@@ -57,22 +52,13 @@ class Actor(hk.Module):
         self.layer_norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
         self.att_ffn = hk.nets.MLP([n_sectors + add_size], activation=nn.gelu, activate_final=True)
         self.layer_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-        # 2.5 Simple MLP (in place of scene-attention for ablation)
-        if self.ablation_mode == 3: # Ablation: No scene attention, simple MLP instead
-            self.simple_mlp = hk.nets.MLP(
-                **mlp_params,
-                output_sizes=[200, 100, n_sectors + 20], 
-                name="simple_mlp"
-            )
         # 3. Final Output MLP
         self.actor_head = hk.nets.MLP(
             **mlp_params,
             output_sizes=[100, 50, self.n_outputs], 
             name="actor_head"
         )
-        if ablation_mode == 4: self.action_distribution = Gaussian()
-        elif ablation_mode == 6: self.action_distribution = LogisticNormal()
-        else: self.action_distribution = Dirichlet()
+        self.action_distribution = LogisticNormal()
 
     def __call__(
             self, 
@@ -106,35 +92,26 @@ class Actor(hk.Module):
         action_space_params = global_robot_state[:, :3]
         action_history = x[:, 0, 22:]
         x = x[:, :, :22]
-        if self.ablation_mode == 2:
-            x = x[:,:,[0,1,5,6,10,11,12,13,14,15,16,17,18,19,20,21]] # Keep only mean positions, mean velocities and weights            
         ### CONTEXT EXTRACTION
         scalar_scan = self.scan_reducer(y)  # (Batch, n_sectors, 1)
         y = jnp.squeeze(scalar_scan, axis=-1) # (Batch, n_sectors)
         # SCENE-ATTENTION MECHANISM
-        if self.ablation_mode == 3: # Ablation: No scene attention, simple MLP instead
-            humans_state = x[..., :11] # (Batch, N, 11)
-            robot_state = x[:, 0, 11:22] # (Batch, 11)
-            mlp_input = jnp.concatenate([humans_state.reshape(batch_size, -1), robot_state, y], axis=-1) # (Batch, (N+1)*11 + n_sectors)
-            pooled_hcg_context = self.simple_mlp(mlp_input) # (Batch, 22 + n_sectors)
-            human_attention = jnp.full((batch_size, self.n_detectable_humans), jnp.nan) # No attention in this ablation
-        else:
-            y_tiled = jnp.broadcast_to(y[:, None, :], (batch_size, self.n_detectable_humans, y.shape[-1]))
-            embeddings = jnp.concatenate([x, y_tiled], axis=-1) # [Batch, N_Humans, 22 + n_sectors]
-            att_out, att_mtrx = self.attention(embeddings, embeddings, embeddings) # (Batch, N, 22 + n_sectors)
-            # debug.print("Attention matrix shape: {s}", s=att_mtrx.shape) # (Batch, N, N)
-            att_embeddings = self.layer_norm1(embeddings + att_out) # (Batch, N, 22 + n_sectors)
-            ffn_out = self.att_ffn(att_embeddings)
-            att_embeddings = self.layer_norm2(att_embeddings + ffn_out)
-            summed_embeddings = jnp.sum(att_embeddings * hcg_scores, axis=1) # (Batch, 22 + n_sectors)
-            sum_of_weights = jnp.sum(hcg_scores, axis=1) # (Batch, 1)
-            base_mean = summed_embeddings / (sum_of_weights + 1e-5)  # (Batch, 22 + n_sectors)
-            presence_gate = jnp.tanh(sum_of_weights) # (Batch, 1) Encodes if humans are present in the scene
-            pooled_hcg_context = base_mean * presence_gate # (Batch, 22 + n_sectors)
-            # Attention (wighted by HCG scores) computation for visualization
-            mean_att_mtrx = jnp.mean(att_mtrx, axis=1)
-            norm_hcg_scores = hcg_scores / (sum_of_weights[:, None, :] + 1e-5)
-            human_attention = jnp.sum(mean_att_mtrx * norm_hcg_scores, axis=1) # (Batch, N)
+        y_tiled = jnp.broadcast_to(y[:, None, :], (batch_size, self.n_detectable_humans, y.shape[-1]))
+        embeddings = jnp.concatenate([x, y_tiled], axis=-1) # [Batch, N_Humans, 22 + n_sectors]
+        att_out, att_mtrx = self.attention(embeddings, embeddings, embeddings) # (Batch, N, 22 + n_sectors)
+        # debug.print("Attention matrix shape: {s}", s=att_mtrx.shape) # (Batch, N, N)
+        att_embeddings = self.layer_norm1(embeddings + att_out) # (Batch, N, 22 + n_sectors)
+        ffn_out = self.att_ffn(att_embeddings)
+        att_embeddings = self.layer_norm2(att_embeddings + ffn_out)
+        summed_embeddings = jnp.sum(att_embeddings * hcg_scores, axis=1) # (Batch, 22 + n_sectors)
+        sum_of_weights = jnp.sum(hcg_scores, axis=1) # (Batch, 1)
+        base_mean = summed_embeddings / (sum_of_weights + 1e-5)  # (Batch, 22 + n_sectors)
+        presence_gate = jnp.tanh(sum_of_weights) # (Batch, 1) Encodes if humans are present in the scene
+        pooled_hcg_context = base_mean * presence_gate # (Batch, 22 + n_sectors)
+        # Attention (wighted by HCG scores) computation for visualization
+        mean_att_mtrx = jnp.mean(att_mtrx, axis=1)
+        norm_hcg_scores = hcg_scores / (sum_of_weights[:, None, :] + 1e-5)
+        human_attention = jnp.sum(mean_att_mtrx * norm_hcg_scores, axis=1) # (Batch, N)
         context = jnp.concatenate([
             pooled_hcg_context, 
             global_robot_state, 
@@ -149,52 +126,80 @@ class Actor(hk.Module):
         v3 = jnp.stack([action_space_params[:, 0] * self.vmax, zeros], axis=-1)
         vertices = jnp.stack([v1, v2, v3], axis=1)  # Shape: (batch_size, 3, 2)
         distributions = {"vertices": vertices}
-        if self.ablation_mode == 4:
-            ## Compute Gaussian distribution parameters
-            scaled_vmax = action_space_params[:, 0] * self.vmax
-            scaled_wmax = action_space_params[:, 1] * self.wmax
-            scaled_wmin = action_space_params[:, 2] * self.wmin
-            actor_out = self.actor_head(context) # [mu_v, mu_w]
-            raw_mu_v = actor_out[..., 0]
-            raw_mu_w = actor_out[..., 1]
-            mu_v = nn.sigmoid(raw_mu_v) * scaled_vmax
-            w_scale = (scaled_wmax - scaled_wmin) / 2.0
-            w_shift = (scaled_wmax + scaled_wmin) / 2.0
-            mu_w = nn.tanh(raw_mu_w) * w_scale + w_shift
-            means = jnp.stack([mu_v, mu_w], axis=-1)  # Shape: (batch_size, 2)
-            raw_logsigmas_param = hk.get_parameter("raw_logsigmas", shape=[2], init=hk.initializers.Constant(jnp.arctanh(9/11)))
-            logsigmas_bounded = jnp.tanh(raw_logsigmas_param) * 11 - 9 # Bound logsigmas between [-20,2]
-            logsigmas = jnp.broadcast_to(logsigmas_bounded, means.shape)
-            distributions["means"] = means
-            distributions["logsigmas"] = logsigmas
-        elif self.ablation_mode == 6:
-            locs = self.actor_head(context)
-            raw_logscales_param = hk.get_parameter("raw_logscales", shape=[3], init=hk.initializers.Constant(jnp.arctanh(9/11)))
-            logscales_bounded = jnp.tanh(raw_logscales_param) * 11 - 9 # Bound logscales between [-20,2]
-            logscales = jnp.broadcast_to(logscales_bounded, locs.shape)
-            distributions["locs"] = locs
-            distributions["log_scales"] = logscales
-        else:
-            ## Compute Dirichlet distribution parameters
-            alphas = nn.softplus(self.actor_head(context)) + 1  # (Batch, 3)
-            distributions["alphas"] = alphas
+        locs = self.actor_head(context)
+        raw_logscales_param = hk.get_parameter("raw_logscales", shape=[3], init=hk.initializers.Constant(jnp.arctanh(9/11)))
+        logscales_bounded = jnp.tanh(raw_logscales_param) * 11 - 9 # Bound logscales between [-20,2]
+        logscales = jnp.broadcast_to(logscales_bounded, locs.shape)
+        distributions["locs"] = locs
+        distributions["log_scales"] = logscales
         ## Sample action
         sampled_actions = vmap(self.action_distribution.sample)(distributions, keys)
         if not has_batch:
             sampled_actions = sampled_actions[0]
             distributions = tree_map(lambda t: t[0], distributions)
-        return sampled_actions, distributions, human_attention
+        return sampled_actions, distributions, 0., 0.,  human_attention
 
 class Critic(hk.Module):
-    def _init__(
+    def __init__(
             self,
+            embed_dim: int = 64,
+            num_heads: int = 4,
+            mlp_hidden_dims: Sequence[int] = (256, 128, 64),
+            name: str = None,
     ):
-        pass
+        super().__init__(name=name)
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.mlp_hidden_dims = mlp_hidden_dims
 
     def __call__(
             self,
-    ):
-        pass
+            robot_data: jnp.ndarray, # (B, 12 + 2*n_actions_history,) --> e.g., n_actions_history=5 --> (B, 12 + 10,) = (B, 22,)
+            humans_data: jnp.ndarray, # (B, n_humans, 11 + horizon_length*6) --> e.g., n_humans=5, horizon_length=20 --> (B, 5, 11 + 120) = (B, 5, 131)
+            static_obstacles_data: jnp.ndarray, # (B, n_obstacles * n_edges, 2, 2) --> e.g., n_obstacles=5, n_edges=4 --> (B, 20, 2, 2)
+            **kwargs: dict,
+    ) -> jnp.ndarray:
+        # START: deal with batch dimension
+        has_batch = robot_data.ndim == 2
+        if not has_batch:
+            robot_data = jnp.expand_dims(robot_data, 0)
+            humans_data = jnp.expand_dims(humans_data, 0)
+            static_obstacles_data = jnp.expand_dims(static_obstacles_data, 0)
+
+        # MAIN BODY
+        # 1. Obstacles processing: Pure Deep Sets (MLP + Max-Pooling)
+        obs_flat = jnp.reshape(static_obstacles_data, (static_obstacles_data.shape[0], static_obstacles_data.shape[1], -1))  # (B, n_obstacles * n_edges, 4)
+        obs_emb = hk.nets.MLP(
+            [self.embed_dim, self.embed_dim], 
+            activation=nn.silu,
+            name="obstacles_mlp"
+        )(obs_flat)  # (B, n_obstacles * n_edges, embed_dim)
+        obstacles_feat = jnp.max(obs_emb, axis=1)  # (B, embed_dim)
+        # 2. Humans processing: Robot-Human Cross-Attention (Q=Robot, K/V=Humans)
+        robot_query = hk.Linear(self.embed_dim)(robot_data)[:, None, :]  # (B, 1, embed_dim)
+        humans_kv = hk.Linear(self.embed_dim)(humans_data)  # (B, n_humans, embed_dim)
+        humans_kv = nn.silu(humans_kv)  # (B, n_humans, embed_dim)
+        norm_q = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(robot_query)  # (B, 1, embed_dim)
+        norm_kv = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(humans_kv)  # (B, n_humans, embed_dim)
+        humans_attn = hk.MultiHeadAttention(
+            num_heads=self.num_heads,
+            key_size=self.embed_dim // self.num_heads,
+            model_size=self.embed_dim,
+            w_init=hk.initializers.VarianceScaling(),
+        )(norm_q, norm_kv, norm_kv)  # (B, 1, embed_dim)
+        humans_feat = jnp.squeeze(robot_query + humans_attn, axis=1)  # (B, embed_dim)
+        # 3. Multimodal Fusion & Value Estimation
+        fused_features = jnp.concatenate([robot_data, humans_feat, obstacles_feat], axis=-1)  # (B, D_robot + 2 * embed_dim)
+        value = hk.nets.MLP(
+            output_sizes=list(self.mlp_hidden_dims) + [1],
+            activation=nn.silu,
+            activate_final=False,
+        )(fused_features)  # (B, 1)
+
+        # END: deal with batch dimension
+        if not has_batch:
+            value = jnp.squeeze(value, axis=0)  # (1,)
+        return value
 
 class JESSI_S2R(JESSI):
     """
@@ -224,7 +229,6 @@ class JESSI_S2R(JESSI):
         angular_sectors_width_deg:float=18.0, # This is the width of the attention sectors in degrees. It determines how many rays are attended to by each sector.
         n_stack_for_action_space_bounding:int=1,
         beam_dropout_rate:float=0.0,
-        ablation_mode: Optional[int] = None, # Options: 1 (no bounding), 2 (no humans uncertainty), 3 (no scene attention)
     ) -> None:
         assert n_actions_history <= n_stack, "The length of the actions history must be greater than the length of the observation stack"
         self.n_actions_history = n_actions_history
@@ -249,30 +253,29 @@ class JESSI_S2R(JESSI):
             angular_sectors_width_deg=angular_sectors_width_deg, 
             n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
             beam_dropout_rate=beam_dropout_rate,
-            ablation_mode=ablation_mode,
+            ablation_mode=None,
             legit=True, 
         )
         # Initialize Actor network
-        self.actor_critic_name = "actor_network"
+        self.actor_name = "actor_network"
         @hk.transform
         def actor_network(x, y, **kwargs) -> jnp.ndarray:
-            actor_critic = Actor(
-                self.actor_critic_name, 
+            actor = Actor(
+                self.actor_name, 
                 self.n_detectable_humans, 
                 self.v_max, 
                 self.wheels_distance, 
                 n_sectors=self.n_sectors,
-                ablation_mode=self.ablation_mode,
             ) 
-            return actor_critic(x, y, **kwargs)
+            return actor(x, y, **kwargs)
         self.actor = actor_network
         # Initialize Critic network
-        self.actor_critic_name = "critic_network"
+        self.critic_name = "critic_network"
         @hk.transform
-        def critic_network(x, y, **kwargs) -> jnp.ndarray:
+        def critic_network(robot_data, humans_data, static_obstacles_data, **kwargs) -> jnp.ndarray:
             critic = Critic(
             ) 
-            return critic(x, y, **kwargs)
+            return critic(robot_data, humans_data, static_obstacles_data, **kwargs)
         self.critic = critic_network
         # Initialize E2E network
         self.e2e_name = "e2e"
@@ -282,7 +285,7 @@ class JESSI_S2R(JESSI):
                 Actor,
                 self.e2e_name,
                 self.perception_name,
-                self.actor_critic_name,
+                self.actor_name,
                 self.lidar_angles_robot_frame,
                 n_detectable_humans=self.n_detectable_humans,
                 max_humans_velocity=self.max_humans_velocity,
@@ -305,11 +308,11 @@ class JESSI_S2R(JESSI):
     ) -> tuple:
         # Perception input is shaped (self.n_stack, self.lidar_num_rays, 7)
         # Actor input is shaped (n_detectable_humans, 22 + 2*n_actions_history) and (self.n_sectors, self.embedding_dim))
-        # Critic input is ???
+        # Critic input is (12 + 2*n_actions_history,) and (n_humans, 11 + horizon_length*6) and (n_obstacles * n_edges, 2, 2)
         # E2E input is shaped (self.n_stack, self.lidar_num_rays, 7) and (self.n_detectable_humans, 11 + 2*n_actions_history)
         perception_params = self.perception.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7))) # Cardinality invariant for n_stack and lidar_num_rays
         actor_params = self.actor.init(key, jnp.zeros((self.n_detectable_humans, 22+2*self.n_actions_history)), jnp.zeros((self.n_sectors, self.embedding_dim)))
-        critic_params = self.critic.init(key, jnp.zeros(()))
+        critic_params = self.critic.init(key, jnp.zeros((12 + 2*self.n_actions_history,)), jnp.zeros((1, 11 + self.humans_prediction_horizon*6)), jnp.zeros((1, 2, 2))) # Cardinality invariant for n_obstacles and n_edges
         e2e_params = self.e2e.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7)), jnp.zeros((self.n_detectable_humans, 11+2*self.n_actions_history))) # Cardinality invariant for n_stack and lidar_num_rays
         return perception_params, actor_params, critic_params, e2e_params
 
@@ -425,3 +428,88 @@ class JESSI_S2R(JESSI):
             length=self.humans_prediction_horizon
         )
         return humans_trajectory, denoised_humans_trajectory
+
+    @partial(jit, static_argnames=("self"))
+    def critic_forward(
+        self,
+        random_key:random.PRNGKey,
+        critic_params:dict,
+        state:jnp.ndarray,
+        actions_history:jnp.ndarray,
+        env_params:dict,
+        robot_params:dict,
+        action_space_params:jnp.ndarray,
+    ):
+        """
+        Forward pass of the critic network.
+
+        Args:
+            random_key: PRNG key for random number generation. Used for predicting noised humans' trajectory.
+            critic_params: Parameters of the critic network.
+            state: Current state of the environment. (full state humans + robot)
+            robot_goal: Goal position of the robot.
+            actions_history: History of actions taken by the robot.
+            env_params: Parameters of the environment. A dictionary containing:
+                - "static_obstacles": Array of static obstacles in the environment.
+                - "humans_goal": Array of goal positions for each human in the environment.
+                - "humans_parameters": Array of the HMM parameters for each human in the environment.
+            robot_params: Parameters of the robot. A dictionary containing:
+                - "robot_goal": Goal position of the robot.
+                - "robot_radius": Radius of the robot.
+                - "v_max": Maximum linear velocity of the robot.
+                - "wheels_distance": Distance between the wheels of the robot.
+                - "wheels_max_linear_acceleration": Maximum linear acceleration of the robot's wheels.
+                - "robot_delay": Current actuation delay of the robot.
+            action_space_params: Parameters alpha, beta, gamma of the restricted safe action space.
+
+        Returns:
+            value: Estimated value of the current state.
+        """
+        ### Preliminaries: predict humans' trajectories and build inputs for the critic network
+        # Predict humans' trajectories
+        humans_trajectory, _ = self.predict_humans_trajectory(
+            random_key,
+            state[:-1],
+            env_params["humans_goal"],
+            env_params["humans_parameters"],
+            env_params["static_obstacles"][:-1]
+        ) 
+        ### Transformations (robot-centric parameterization)
+        robot_state = state[-1]
+        robot_position = robot_state[:2]
+        robot_orientation = robot_state[4]
+        rotation_matrix = jnp.array([
+            [jnp.cos(robot_orientation), -jnp.sin(robot_orientation)],
+            [jnp.sin(robot_orientation),  jnp.cos(robot_orientation)]
+        ])
+        robot_goal = (robot_params["robot_goal"] - robot_position) @ rotation_matrix # Transform goal to robot-centric coordinates
+        humans_state = state[:-1] # Shape: (n_humans, 6) where each row is (px, py, bvx, bvy, theta, omega)
+        humans_state = humans_state.at[:, :2].set((humans_state[:, :2] - robot_position) @ rotation_matrix) # Transform humans' positions to robot-centric coordinates
+        humans_state = humans_state.at[:, 2:4].set(vmap(get_linear_velocity)(humans_state[:, 4],humans_state[:, 2:4]) @ rotation_matrix) # Transform humans' velocities to robot-centric coordinates
+        humans_state = humans_state.at[:, 4].set(humans_state[:, 4] - robot_orientation) # Transform humans' orientations to robot-centric coordinates
+        humans_goal = (env_params["humans_goal"] - robot_position) @ rotation_matrix # Transform humans' goals to robot-centric coordinates
+        humans_trajectory = humans_trajectory.at[:, :, :2].set((humans_trajectory[:, :, :2] - robot_position) @ rotation_matrix) # Transform humans' trajectories to robot-centric coordinates
+        humans_trajectory = humans_trajectory.at[:, :, 2:4].set((vmap(vmap(get_linear_velocity))(humans_trajectory[:, :, 4],humans_trajectory[:, :, 2:4]) @ rotation_matrix)) # Transform humans' velocities to robot-centric coordinates
+        humans_trajectory = humans_trajectory.at[:, :, 4].set(humans_trajectory[:, :, 4] - robot_orientation) # Transform humans' orientations to robot-centric coordinates
+        static_obstacles = (env_params["static_obstacles"][-1] - robot_position) @ rotation_matrix # Transform static obstacles to robot-centric coordinates
+        ### Build Critic inputs: robot_data, humans_data, static_obstacles_data       
+        # Build robot_data input. (robot_velocity + robot_goal + robot_params + action_space_params + actions_history)
+        robot_data = jnp.concatenate((
+            robot_state[2:4], # robot_velocity (v, w)
+            robot_goal, # robot_goal
+            jnp.array([robot_params["robot_radius"], robot_params["v_max"], robot_params["wheels_distance"], robot_params["wheels_max_linear_acceleration"], robot_params["robot_delay"]]), # robot_params
+            action_space_params, # action_space_params
+            actions_history.flatten() # actions_history
+        ), axis=-1) # Shape: (2 + 2 + 5 + 3 + 2*n_actions_history,) --> e.g., n_actions_history=5 --> (2 + 2 + 5 + 3 + 10,) = (22,)
+        # Build humans_data input. (humans_state + humans_trajectory + humans_goal + humans_parameters)
+        humans_data = jnp.concatenate((
+            humans_state, # humans_state
+            jnp.reshape(humans_trajectory, (humans_state.shape[0], -1)), # humans_trajectory
+            humans_goal, # humans_goal
+            env_params["humans_parameters"][:,:3] # humans_parameters (radius, mass, v_max)
+        ), axis=-1) # Shape: (n_humans, 6 + horizon_length*6 + 2 + 3) --> e.g., n_humans=5, horizon_length=20 --> (5, 6 + 120 + 2 + 3) = (5, 131)
+        # Build static_obstacles_data input. (static_obstacles)
+        static_obstacles_data = jnp.reshape(static_obstacles, (-1, 2, 2)) # Shape: (n_obstacles * n_edges, 2, 2) --> e.g., n_obstacles=5, n_edges=4 --> (20, 2, 2)
+        ### Critic forward pass
+        value = self.critic.apply(critic_params, None, robot_data, humans_data, static_obstacles_data)
+        return value

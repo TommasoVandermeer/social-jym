@@ -1238,9 +1238,7 @@ class JESSI(BasePolicy):
         if self.ablation_mode == 1: # Ablation: No action space bounding
             bounding_parameters = jnp.ones((3,), dtype=jnp.float32)
         else:
-            bounding_parameters = self.bound_action_space(
-                point_cloud_for_bounding,  
-            )
+            bounding_parameters = self.bound_action_space(point_cloud_for_bounding)
         # Prepare input for network
         robot_position = obs[0,:2]
         robot_orientation = obs[0,2]

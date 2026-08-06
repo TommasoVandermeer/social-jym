@@ -1,8 +1,5 @@
-from jax import random, vmap, jit, lax
+from jax import random, vmap
 import jax.numpy as jnp
-from jax.tree_util import tree_map
-import os
-import pickle
 import matplotlib.pyplot as plt
 
 from socialjym.envs.lasernav import LaserNav
@@ -69,6 +66,10 @@ policy = JESSI_S2R(
     embedding_dim=32,
 )
 
+perception_params, actor_params, critic_params, e2e_params = policy.init_nns(
+    random.PRNGKey(random_seed),
+)
+
 # Simulate some episodes
 for i in range(n_episodes):
     policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
@@ -82,6 +83,35 @@ for i in range(n_episodes):
         info["static_obstacles"][:-1]
     )
     trajectory = trajectories[0] # They are all the same without noise
+
+    lidar_measurements = obs[0,11:]  # Shape: (lidar_num_rays)
+    lidar_angles = policy.lidar_angles_robot_frame + obs[0,2]  # Shape: (lidar_num_rays)
+    xs = lidar_measurements * jnp.cos(lidar_angles) + obs[0,0]
+    ys = lidar_measurements * jnp.sin(lidar_angles) + obs[0,1]
+    points = jnp.stack((xs, ys), axis=-1)  # Shape: (lidar_num_rays, 2)
+    action_space_parameters = policy.bound_action_space(points)
+    
+    value = policy.critic_forward(
+        policy_key,
+        critic_params,
+        state,
+        obs[:policy.n_actions_history,6:8],
+        {
+            "humans_goal": info["humans_goal"],
+            "humans_parameters": info["humans_parameters"],
+            "static_obstacles": info["static_obstacles"],
+        }, # env_params
+        {
+            "robot_goal": info["robot_goal"],
+            "robot_radius": policy.robot_radius,
+            "v_max": policy.v_max,
+            "wheels_distance": policy.wheels_distance,
+            "wheels_max_linear_acceleration": env.wheels_max_linear_acceleration,
+            "robot_delay": info["robot_delay"],
+        }, # robot_params
+        action_space_parameters
+    )
+    print("Critic value: ", value)
 
     # Print statistics on noised trajectories
     print("Max linear velocity norm: [NOISED] ", jnp.max(jnp.linalg.norm(noised_trajectories[:,:,:,2:4], axis=3)), "[PURE] ", jnp.max(jnp.linalg.norm(trajectories[:,:,:,2:4], axis=3)))
