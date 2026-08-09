@@ -1,9 +1,10 @@
 import jax.numpy as jnp
-from jax import nn, random, vmap, jit, lax
+from jax import nn, random, vmap, jit, lax, value_and_grad
 from jax.tree_util import tree_map
 from functools import partial
 import haiku as hk
 from typing import Sequence
+import optax
 
 from socialjym.policies.jessi import JESSI, E2E, MultiHeadAttention
 from socialjym.utils.distributions.logistic_normal import LogisticNormal
@@ -513,3 +514,143 @@ class JESSI_S2R(JESSI):
         ### Critic forward pass
         value = self.critic.apply(critic_params, None, robot_data, humans_data, static_obstacles_data)
         return value
+
+    @partial(jit, static_argnames=("self"))
+    def batch_critic_forward(
+        self,
+        random_keys:random.PRNGKey,
+        critic_params:dict,
+        states:jnp.ndarray,
+        actions_histories:jnp.ndarray,
+        env_params:dict,
+        robot_params:dict,
+        action_space_params:jnp.ndarray,
+    ) -> jnp.ndarray:
+        return vmap(JESSI_S2R.critic_forward, in_axes=(None, 0, None, 0, 0, 0, 0, 0))(
+            self, 
+            random_keys, 
+            critic_params, 
+            states, 
+            actions_histories, 
+            env_params, 
+            robot_params, 
+            action_space_params
+        )
+
+    @partial(jit, static_argnames=("self","actor_optimizer","critic_optimizer"))
+    def update_il(
+        self, 
+        actor_params:dict,
+        actor_optimizer:optax.GradientTransformation, 
+        actor_opt_state: jnp.ndarray, 
+        critic_key:random.PRNGKey,
+        critic_params:dict,
+        critic_optimizer:optax.GradientTransformation, 
+        critic_opt_state: jnp.ndarray, 
+        experiences:dict[str:jnp.ndarray], 
+        beta_entropy:float=0.01,
+    ) -> tuple:
+        def _compute_actor_loss_and_gradients(
+            current_actor_params:dict,  
+            experiences:dict,
+            # Experiences: {"inputs":dict, "actor_actions":jnp.ndarray}
+        ) -> tuple:
+            def _batch_loss_function(
+                current_actor_params:dict,
+                inputs:jnp.ndarray,
+                expert_actions:jnp.ndarray,
+                ) -> jnp.ndarray:
+                
+                @partial(vmap, in_axes=(None, 0, 0))
+                def _loss_function(
+                    current_actor_params:dict,
+                    input:jnp.ndarray,
+                    expert_action:jnp.ndarray,
+                    ) -> jnp.ndarray:
+                    # Compute the prediction (here we should input a key but for now we work only with mean actions)
+                    _, predicted_distr, _, _, _ = self.actor_critic.apply(
+                        current_actor_params, 
+                        None, 
+                        input['actor_input'], 
+                        input['scan_embedding']
+                    )                    
+                    # ## Compute actor loss (MSE between expert action and predicted mean action)
+                    # predicted_action = self.action_distribution.mean(predicted_distr)
+                    # actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
+                    # return actor_loss, actor_loss
+                    ## Compute actor loss (NLL of expert action uneder current predicted distribution + entropy regularization)
+                    nll = self.action_distribution.neglogp(predicted_distr, expert_action)
+                    entropy = - beta_entropy * self.action_distribution.entropy(predicted_distr)
+                    actor_loss = nll + entropy
+                    return actor_loss, entropy
+                
+                total_loss = _loss_function(
+                    current_actor_params,
+                    inputs,
+                    expert_actions,
+                )
+
+                return jnp.mean(total_loss)
+
+            inputs = {
+                "actor_input": experiences["actor_inputs"],
+                "scan_embedding": experiences["scan_embeddings"],
+            }
+            expert_actions = experiences["actor_actions"]
+            # Compute the loss and gradients
+            (actor_loss, entropy_loss), grads = value_and_grad(_batch_loss_function, has_aux=True)(
+                current_actor_params, 
+                inputs,
+                expert_actions,
+            )
+            return actor_loss, entropy_loss, grads
+        def _compute_critic_loss_and_gradients(
+            current_critic_params:dict,  
+            experiences:dict,
+        ) -> tuple:
+            def _batch_loss_function(
+                current_critic_params:dict,
+                experiences:dict
+                ) -> jnp.ndarray:
+            
+                predicted_values = self.batch_critic_forward(
+                    random.split(critic_key, experiences["states"].shape[0]),
+                    current_critic_params,
+                    experiences["states"],
+                    experiences["actions_histories"],
+                    experiences["env_params"],
+                    experiences["robot_params"],
+                    experiences["action_space_params"],
+                )
+                total_loss = jnp.square(predicted_values - experiences["returns"])
+
+                return jnp.mean(total_loss)
+            # Compute the loss and gradients
+            critic_loss, grads = value_and_grad(_batch_loss_function, has_aux=False)(
+                current_critic_params, 
+                experiences
+            )
+            return critic_loss, grads
+        ## ACTOR
+        # Compute loss and gradients for actor and critic
+        actor_loss, entropy_loss, actor_grads = _compute_actor_loss_and_gradients(actor_params, experiences)
+        # Compute parameter updates
+        actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
+        # Apply updates
+        updated_actor_params = optax.apply_updates(actor_params, actor_updates)
+        ## CRITIC
+        # Compute loss and gradients for actor and critic
+        critic_loss, critic_grads = _compute_critic_loss_and_gradients(critic_params, experiences)
+        # Compute parameter updates
+        critic_updates, critic_opt_state = critic_optimizer.update(critic_grads, critic_opt_state)
+        # Apply updates
+        updated_critic_params = optax.apply_updates(critic_params, critic_updates)
+        return (
+            updated_actor_params, 
+            actor_opt_state, 
+            actor_loss, 
+            entropy_loss,
+            updated_critic_params,
+            critic_opt_state,
+            critic_loss,
+        )
