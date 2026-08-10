@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import nn, random, vmap, jit, lax, value_and_grad
+from jax import nn, random, vmap, jit, lax, value_and_grad, debug
 from jax.tree_util import tree_map
 from functools import partial
 import haiku as hk
@@ -170,8 +170,8 @@ class Critic(hk.Module):
         # MAIN BODY
         # 1. Obstacles processing: Pure Deep Sets (MLP + Max-Pooling)
         obs_flat = jnp.reshape(static_obstacles_data, (static_obstacles_data.shape[0], static_obstacles_data.shape[1], -1))  # (B, n_obstacles * n_edges, 4)
-        valid_obs_mask = ~jnp.isnan(obs_flat[..., 0])  # Shape: (B, n_obstacles * n_edges)
-        safe_obs_flat = jnp.nan_to_num(obs_flat, nan=0.0)
+        valid_obs_mask = jnp.all(jnp.isfinite(obs_flat), axis=-1)  
+        safe_obs_flat = jnp.nan_to_num(obs_flat, nan=0.0, posinf=0.0, neginf=0.0)
         obs_emb = hk.nets.MLP(
             [self.embed_dim, self.embed_dim], 
             activation=nn.silu,
@@ -182,8 +182,8 @@ class Critic(hk.Module):
         obstacles_feat = jnp.max(masked_obs_emb, axis=1)  # (B, embed_dim)
         obstacles_feat = jnp.where(obstacles_feat == -1e9, 0.0, obstacles_feat)
         # 2. Humans processing: Robot-Human Cross-Attention (Q=Robot, K/V=Humans)
-        valid_humans_mask = ~jnp.isnan(humans_data[..., 0])  # Shape: (B, n_humans)
-        safe_humans_data = jnp.nan_to_num(humans_data, nan=0.0)
+        valid_humans_mask = jnp.all(jnp.isfinite(humans_data), axis=-1)  
+        safe_humans_data = jnp.nan_to_num(humans_data, nan=0.0, posinf=0.0, neginf=0.0)
         robot_query = hk.Linear(self.embed_dim)(robot_data)[:, None, :]  # (B, 1, embed_dim)
         humans_kv = hk.Linear(self.embed_dim)(safe_humans_data)  # (B, n_humans, embed_dim)
         humans_kv = nn.silu(humans_kv)  # (B, n_humans, embed_dim)
@@ -641,7 +641,13 @@ class JESSI_S2R(JESSI):
                     },
                     experiences["action_space_params"],
                 )
-                total_loss = jnp.square(jnp.squeeze(predicted_values) - experiences["returns"])
+                total_loss = jnp.square(predicted_values - experiences["returns"])
+                pred_has_nan = jnp.isnan(predicted_values).any()
+                lax.cond(
+                    pred_has_nan,
+                    lambda: debug.print("CRITICAL: NaNs trovati nelle PREDIZIONI del Critic!"),
+                    lambda: None
+                )
                 return jnp.mean(total_loss)
             # Compute the loss and gradients
             critic_loss, grads = value_and_grad(_batch_loss_function, has_aux=False)(
