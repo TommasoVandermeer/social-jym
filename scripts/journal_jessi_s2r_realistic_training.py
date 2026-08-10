@@ -203,10 +203,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_percep
                 reset_if_done=True,
             )
             ## Compute action space parameters
-            lidar_measurements = obs[:,0,11:]  # Shape: (batch_size, lidar_num_rays)
-            lidar_angles = jessi.lidar_angles_robot_frame + obs[:,0,2]  # Shape: (batch_size, lidar_num_rays)
-            xs = lidar_measurements * jnp.cos(lidar_angles) + obs[:,0,0]
-            ys = lidar_measurements * jnp.sin(lidar_angles) + obs[:,0,1]
+            lidar_measurements = lasernav_obs[:,0,11:]  # Shape: (batch_size, lidar_num_rays)
+            lidar_angles = jnp.repeat(jessi.lidar_angles_robot_frame[None,:], n_parallel_envs, axis=0) + lasernav_obs[:,0,2][:,None]  # Shape: (batch_size, lidar_num_rays)
+            xs = lidar_measurements * jnp.cos(lidar_angles) + lasernav_obs[:,0,0][:,None]
+            ys = lidar_measurements * jnp.sin(lidar_angles) + lasernav_obs[:,0,1][:,None]
             points = jnp.stack((xs, ys), axis=-1)  # Shape: (batch_size, lidar_num_rays, 2)
             action_space_parameters = vmap(jessi.bound_action_space)(points)
             ## Save output data
@@ -227,10 +227,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_percep
                 "obstacles_visibility": lasernav_info["obstacles_visibility_mask"],
                 # Critic training stuff
                 "states": state,
-                "actions_histories": lasernav_obs[:jessi.n_actions_history,6:8],
+                "actions_histories": lasernav_obs[:,:jessi.n_actions_history,6:8],
                 "humans_goal": info["humans_goal"],
                 "humans_parameters": info["humans_parameters"],
-                "static_obstacles": info["static_obstacles"],
                 "robot_goal": info["robot_goal"],
                 "robot_radius": jnp.full((n_parallel_envs,), jessi.robot_radius),
                 "v_max": jnp.full((n_parallel_envs,), jessi.v_max),
@@ -263,11 +262,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_percep
             "obstacles_visibility": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs, n_obstacles, 1)),
             ## Critic training stuff
             "states": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans+1,6)),
-            "actions_histories": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,policy.n_actions_history,2)),
+            "actions_histories": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,jessi.n_actions_history,2)),
             # Env params
             "humans_goal": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans,2)),
             "humans_parameters": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans,19)),
-            "static_obstacles": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_obstacles,1,2,2)),
             # Robot params
             "robot_goal": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,2)),
             "robot_radius": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs)),
@@ -787,7 +785,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
             "actions_history": raw_data["robot_actions_history"],
             "humans_goal": raw_data["humans_goal"],
             "humans_parameters": raw_data["humans_parameters"],
-            "static_obstacles": raw_data["static_obstacles"],
+            "static_obstacles": jnp.repeat(raw_data["static_obstacles"][:,None,:,:,:,:], n_humans+1, axis=1),
             "robot_goal": raw_data["robot_goal"],
             "robot_radius": jessi.robot_radius,
             "v_max": jessi.v_max,
