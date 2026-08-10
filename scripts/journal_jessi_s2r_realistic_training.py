@@ -61,7 +61,7 @@ perception_learning_rate = 0.0005
 perception_batch_size = 100
 policy_learning_rate = 0.005
 critic_learning_rate = 0.01
-beta_entropy_il = 0.01
+beta_entropy_il = 0.001
 policy_batch_size = 200
 policy_n_epochs = 10 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
 n_max_epochs = 1000
@@ -782,17 +782,17 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
             "actor_actions": raw_data["robot_actions"],
             # Critic
             "states": raw_data['states'],
-            "actions_history": raw_data["robot_actions_history"],
+            "actions_history": raw_data["actions_histories"],
             "humans_goal": raw_data["humans_goal"],
             "humans_parameters": raw_data["humans_parameters"],
             "static_obstacles": jnp.repeat(raw_data["static_obstacles"][:,None,:,:,:,:], n_humans+1, axis=1),
             "robot_goal": raw_data["robot_goal"],
-            "robot_radius": jessi.robot_radius,
-            "v_max": jessi.v_max,
-            "wheels_distance": jessi.wheels_distance,
-            "wheels_max_linear_acceleration": laser_env.wheels_max_linear_acceleration,
+            "robot_radius": raw_data["robot_radius"],
+            "v_max": raw_data["v_max"],
+            "wheels_distance": raw_data["wheels_distance"],
+            "wheels_max_linear_acceleration": raw_data["wheels_max_linear_acceleration"],
             "robot_delay": raw_data["robot_delay"],
-            "action_space_params": raw_data["action_space_parameters"],
+            "action_space_params": raw_data["action_space_params"],
             "returns": raw_data["returns"],
         }
         # Save actor inputs
@@ -873,7 +873,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
         i:int,
         epoch_for_val:tuple,
     ) -> tuple:
-        dataset, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = epoch_for_val
+        critic_key, dataset, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = epoch_for_val
         # Shuffle dataset at the beginning of the epoch
         shuffle_key = random.PRNGKey(random_seed + i)
         indexes = jnp.arange(n_data)
@@ -885,7 +885,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
             j:int,
             batch_for_val:tuple
         ) -> tuple:
-            epoch_data, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = batch_for_val
+            critic_key, epoch_data, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = batch_for_val
             # Retrieve batch experiences
             indexes = (jnp.arange(policy_batch_size) + j * policy_batch_size).astype(jnp.int32)
             batch = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, epoch_data)
@@ -931,35 +931,37 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
                 "returns": batch["returns"],
             }
             # Update parameters
-            actor_params, actor_optimizer_state, loss, actor_loss, critic_loss = jessi.update_il(
+            critic_key, subkey = random.split(critic_key)
+            actor_params, actor_optimizer_state, actor_loss, critic_params, critic_optimizer_state, critic_loss = jessi.update_il(
                 actor_params, 
-                optimizer, 
+                actor_optimizer, 
                 actor_optimizer_state,
+                subkey,
                 critic_params,
                 critic_optimizer,
                 critic_optimizer_state,
                 train_batch,
-                beta_entorpy=beta_entropy_il,
+                beta_entropy=beta_entropy_il,
             )
             # Save loss
-            losses = losses.at[i,j].set(loss)
+            losses = losses.at[i,j].set(actor_loss)
             actor_losses = actor_losses.at[i,j].set(actor_loss)
             critic_losses = critic_losses.at[i,j].set(critic_loss)
-            return epoch_data, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses
+            return critic_key, epoch_data, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses
         n_batches = n_data // policy_batch_size
-        _, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = lax.fori_loop(
+        critic_key, _, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = lax.fori_loop(
             0,
             n_batches,
             _batch_loop,
-            (epoch_data, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses)
+            (critic_key, epoch_data, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses)
         )
-        return dataset, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses
+        return critic_key, dataset, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses
     # Epoch loop
-    _, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = lax.fori_loop(
+    _, _, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = lax.fori_loop(
         0,
         policy_n_epochs,
         _epoch_loop,
-        (controller_dataset, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))), jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))), jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))))
+        (random.PRNGKey(random_seed), controller_dataset, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))), jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))), jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))))
     )
     # Save trained parameters
     with open(os.path.join(os.path.dirname(__file__), policy_nn_name), 'wb') as f:

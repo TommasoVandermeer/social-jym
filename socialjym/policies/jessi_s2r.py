@@ -254,7 +254,7 @@ class JESSI_S2R(JESSI):
             angular_sectors_width_deg=angular_sectors_width_deg, 
             n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
             beam_dropout_rate=beam_dropout_rate,
-            ablation_mode=None,
+            ablation_mode=6,
             legit=True, 
         )
         # Initialize Actor network
@@ -567,21 +567,21 @@ class JESSI_S2R(JESSI):
                     expert_action:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                    _, predicted_distr, _, _, _ = self.actor_critic.apply(
+                    _, predicted_distr, _, _, _ = self.actor.apply(
                         current_actor_params, 
                         None, 
                         input['actor_input'], 
                         input['scan_embedding']
                     )                    
-                    # ## Compute actor loss (MSE between expert action and predicted mean action)
-                    # predicted_action = self.action_distribution.mean(predicted_distr)
-                    # actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
-                    # return actor_loss, actor_loss
+                    ## Compute actor loss (MSE between expert action and predicted mean action)
+                    predicted_action = self.action_distribution.mean(predicted_distr)
+                    actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
                     ## Compute actor loss (NLL of expert action uneder current predicted distribution + entropy regularization)
-                    nll = self.action_distribution.neglogp(predicted_distr, expert_action)
-                    entropy = - beta_entropy * self.action_distribution.entropy(predicted_distr)
-                    actor_loss = nll + entropy
-                    return actor_loss, entropy
+                    # actor_loss = self.action_distribution.neglogp(predicted_distr, expert_action)
+                    # # Entropy and final loss computation
+                    # entropy = - beta_entropy * self.action_distribution.entropy(predicted_distr)
+                    # loss = actor_loss + entropy
+                    return actor_loss
                 
                 total_loss = _loss_function(
                     current_actor_params,
@@ -597,12 +597,12 @@ class JESSI_S2R(JESSI):
             }
             expert_actions = experiences["actor_actions"]
             # Compute the loss and gradients
-            (actor_loss, entropy_loss), grads = value_and_grad(_batch_loss_function, has_aux=True)(
+            actor_loss, grads = value_and_grad(_batch_loss_function, has_aux=False)(
                 current_actor_params, 
                 inputs,
                 expert_actions,
             )
-            return actor_loss, entropy_loss, grads
+            return actor_loss, grads
         def _compute_critic_loss_and_gradients(
             current_critic_params:dict,  
             experiences:dict,
@@ -616,7 +616,7 @@ class JESSI_S2R(JESSI):
                     random.split(critic_key, experiences["states"].shape[0]),
                     current_critic_params,
                     experiences["states"],
-                    experiences["actions_histories"],
+                    experiences["actions_history"],
                     {
                         "humans_goal": experiences["humans_goal"],
                         "humans_parameters": experiences["humans_parameters"],
@@ -632,8 +632,7 @@ class JESSI_S2R(JESSI):
                     },
                     experiences["action_space_params"],
                 )
-                total_loss = jnp.square(predicted_values - experiences["returns"])
-
+                total_loss = jnp.square(jnp.squeeze(predicted_values) - experiences["returns"])
                 return jnp.mean(total_loss)
             # Compute the loss and gradients
             critic_loss, grads = value_and_grad(_batch_loss_function, has_aux=False)(
@@ -643,7 +642,7 @@ class JESSI_S2R(JESSI):
             return critic_loss, grads
         ## ACTOR
         # Compute loss and gradients for actor and critic
-        actor_loss, entropy_loss, actor_grads = _compute_actor_loss_and_gradients(actor_params, experiences)
+        actor_loss, actor_grads = _compute_actor_loss_and_gradients(actor_params, experiences)
         # Compute parameter updates
         actor_updates, actor_opt_state = actor_optimizer.update(actor_grads, actor_opt_state)
         # Apply updates
@@ -659,7 +658,6 @@ class JESSI_S2R(JESSI):
             updated_actor_params, 
             actor_opt_state, 
             actor_loss, 
-            entropy_loss,
             updated_critic_params,
             critic_opt_state,
             critic_loss,

@@ -34,7 +34,8 @@ def collect_rollout_step(
 ):
     def _scan_step(carry, _):
         (states, obses, infos, outcomes, returns, times, success_per_scenario, episodes_per_scenario, p_keys, r_keys, e_keys, outcomes_acc) = carry
-        p_keys, c_keys = vmap(random.split)(p_keys)
+        keys = vmap(random.split)(p_keys)
+        p_keys, c_keys = keys[:,0], keys[:,1]
         # Actor
         actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, _, _, _, _ = policy.batch_act(
             p_keys, obses, infos, network_params, sample=True
@@ -143,7 +144,7 @@ def process_buffer_and_gae(
     """
     Calcola l'ultimo value, GAE, Returns e appiattisce il buffer.
     """
-    perception_inputs, robot_state_inputs = vmap(policy.compute_e2e_input, in_axes=(0,0))(
+    _, robot_state_inputs = vmap(policy.compute_e2e_input, in_axes=(0,0))(
         last_obs, last_info['robot_goal']
     )
     # _, _, _, _, _, last_values, _, _, _ = policy.e2e.apply(
@@ -170,9 +171,11 @@ def process_buffer_and_gae(
         }, # robot_params
         robot_state_inputs[:,0,:3] # action_space_parameters
     )
-    rewards = history["rewards"]
-    values = history["values"]
-    dones = history["dones"]
+    rewards = jnp.squeeze(history["rewards"])
+    values = jnp.squeeze(history["values"])
+    dones = jnp.squeeze(history["dones"])
+    last_values = jnp.squeeze(last_values)
+    last_dones = jnp.squeeze(last_dones)
     values_ext = jnp.concatenate([values, last_values[None, :]], axis=0)
     dones_ext = jnp.concatenate([dones, last_dones[None, :]], axis=0)
     def _gae_step(gae_carry, i):
@@ -185,8 +188,8 @@ def process_buffer_and_gae(
     _, advantages = lax.scan(_gae_step, jnp.zeros_like(values[0]), jnp.arange(n_steps)[::-1])
     advantages = advantages[::-1]
     critic_targets = advantages + values
-    def flatten(x):
-        return jnp.reshape(x, (-1, *x.shape[2:]))
+    def flatten(tree):
+        return tree_map(lambda x: jnp.reshape(x, (-1, *x.shape[2:])), tree)
     flattened_buffer = {
         # "observations": flatten(history["obs"]),
         # "robot_goals": flatten(history["robot_goal"]),
@@ -210,8 +213,8 @@ def process_buffer_and_gae(
 
 @partial(
     jit,
-    static_argnames=("policy", "optimizer", "clip_range", "beta_entropy", "compute_safety_loss", "training_type"),
-    donate_argnums=(1, 2, 3)
+    static_argnames=("policy", "optimizer", "critic_optimizer", "clip_range", "beta_entropy", "compute_safety_loss", "training_type"),
+    donate_argnums=(1, 2, 3, 4)
 )
 def train_one_epoch(
     key,
@@ -547,7 +550,8 @@ def jessi_s2r_rl_rollout(
             best_params = device_get(params)
             best_critic_params = device_get(critic_params)
         # B. PROCESS BUFFER (Parallel)
-        policy_keys, critic_keys = vmap(random.split)(policy_keys)
+        keys = vmap(random.split)(policy_keys)
+        policy_keys, critic_keys = keys[:,0], keys[:,1]
         buffer_gpu = process_buffer_and_gae(
             critic_params, critic_keys, current_states, current_obs, current_infos, current_dones, history_raw, policy, env, env.reward_function.gamma, policy.dt, policy.v_max, lambda_gae
         )
