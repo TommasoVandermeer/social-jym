@@ -60,10 +60,10 @@ max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the m
 perception_learning_rate = 0.0005
 perception_batch_size = 100
 policy_learning_rate = 0.005
-critic_learning_rate = 0.01
+critic_learning_rate = 0.005
 beta_entropy_il = 0.001
 policy_batch_size = 200
-policy_n_epochs = 10 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
+policy_n_epochs = 2 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
 n_max_epochs = 1000
 patience = 100  # Early stopping patience
 delta_improvement = 0.001  # Minimum validation improvement to reset early stopping patience
@@ -806,6 +806,20 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
         # Load actor inputs
         with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_actor_critic_training_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             controller_dataset = pickle.load(f)
+    print("Any critic target is Nan?: ", jnp.any(jnp.isnan(controller_dataset["returns"])))
+    print("Any actor target is Nan?: ", jnp.any(jnp.isnan(controller_dataset["actor_actions"])))
+    print("Any states is Nan?: ", jnp.any(jnp.isnan(controller_dataset["states"])))
+    print("Any actions_history is Nan?: ", jnp.any(jnp.isnan(controller_dataset["actions_history"])))
+    print("Any humans_goal is Nan?: ", jnp.any(jnp.isnan(controller_dataset["humans_goal"])))
+    print("Any humans_parameters is Nan?: ", jnp.any(jnp.isnan(controller_dataset["humans_parameters"])))
+    print("Any static_obstacles is Nan?: ", jnp.any(jnp.isnan(controller_dataset["static_obstacles"])))
+    print("Any robot_goal is Nan?: ", jnp.any(jnp.isnan(controller_dataset["robot_goal"])))
+    print("Any robot_radius is Nan?: ", jnp.any(jnp.isnan(controller_dataset["robot_radius"])))
+    print("Any v_max is Nan?: ", jnp.any(jnp.isnan(controller_dataset["v_max"])))
+    print("Any wheels_distance is Nan?: ", jnp.any(jnp.isnan(controller_dataset["wheels_distance"])))
+    print("Any wheels_max_linear_acceleration is Nan?: ", jnp.any(jnp.isnan(controller_dataset["wheels_max_linear_acceleration"])))
+    print("Any robot_delay is Nan?: ", jnp.any(jnp.isnan(controller_dataset["robot_delay"])))
+    print("Any action_space_params is Nan?: ", jnp.any(jnp.isnan(controller_dataset["action_space_params"])))
     # INITIALIZE ACTOR NETWORK
     # Initialize actor network
     _, actor_params, critic_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
@@ -820,7 +834,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
     # Initialize optimizer and its state
     actor_optimizer = optax.sgd(learning_rate=policy_learning_rate, momentum=0.9)
     actor_optimizer_state = actor_optimizer.init(actor_params)
-    critic_optimizer = optax.sgd(learning_rate=critic_learning_rate, momentum=0.9)
+    critic_optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.sgd(learning_rate=critic_learning_rate, momentum=0.9)
+    )
     critic_optimizer_state = critic_optimizer.init(critic_params)
     n_data = controller_dataset["observations"].shape[0]
     n_train_batches = n_data // policy_batch_size
@@ -968,6 +985,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
         pickle.dump(actor_params, f)
     with open(os.path.join(os.path.dirname(__file__), critic_nn_name), 'wb') as f:
         pickle.dump(critic_params, f)
+    print("Actor losses: ", actor_losses)
+    print("Critic losses: ", critic_losses)
     # FREE MEMORY
     del controller_dataset
     # Plot training loss

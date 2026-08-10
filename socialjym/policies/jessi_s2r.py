@@ -170,24 +170,33 @@ class Critic(hk.Module):
         # MAIN BODY
         # 1. Obstacles processing: Pure Deep Sets (MLP + Max-Pooling)
         obs_flat = jnp.reshape(static_obstacles_data, (static_obstacles_data.shape[0], static_obstacles_data.shape[1], -1))  # (B, n_obstacles * n_edges, 4)
+        valid_obs_mask = ~jnp.isnan(obs_flat[..., 0])  # Shape: (B, n_obstacles * n_edges)
+        safe_obs_flat = jnp.nan_to_num(obs_flat, nan=0.0)
         obs_emb = hk.nets.MLP(
             [self.embed_dim, self.embed_dim], 
             activation=nn.silu,
             name="obstacles_mlp"
-        )(obs_flat)  # (B, n_obstacles * n_edges, embed_dim)
-        obstacles_feat = jnp.max(obs_emb, axis=1)  # (B, embed_dim)
+        )(safe_obs_flat)  # (B, n_obstacles * n_edges, embed_dim)
+        valid_obs_mask_exp = jnp.expand_dims(valid_obs_mask, axis=-1)  # Shape: (B, N_e, 1)
+        masked_obs_emb = jnp.where(valid_obs_mask_exp, obs_emb, -1e9)
+        obstacles_feat = jnp.max(masked_obs_emb, axis=1)  # (B, embed_dim)
+        obstacles_feat = jnp.where(obstacles_feat == -1e9, 0.0, obstacles_feat)
         # 2. Humans processing: Robot-Human Cross-Attention (Q=Robot, K/V=Humans)
+        valid_humans_mask = ~jnp.isnan(humans_data[..., 0])  # Shape: (B, n_humans)
+        safe_humans_data = jnp.nan_to_num(humans_data, nan=0.0)
         robot_query = hk.Linear(self.embed_dim)(robot_data)[:, None, :]  # (B, 1, embed_dim)
-        humans_kv = hk.Linear(self.embed_dim)(humans_data)  # (B, n_humans, embed_dim)
+        humans_kv = hk.Linear(self.embed_dim)(safe_humans_data)  # (B, n_humans, embed_dim)
         humans_kv = nn.silu(humans_kv)  # (B, n_humans, embed_dim)
         norm_q = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(robot_query)  # (B, 1, embed_dim)
         norm_kv = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(humans_kv)  # (B, n_humans, embed_dim)
+        attn_mask = jnp.expand_dims(valid_humans_mask, axis=(1, 2))
         humans_attn = hk.MultiHeadAttention(
             num_heads=self.num_heads,
             key_size=self.embed_dim // self.num_heads,
             model_size=self.embed_dim,
             w_init=hk.initializers.VarianceScaling(),
-        )(norm_q, norm_kv, norm_kv)  # (B, 1, embed_dim)
+        )(query=norm_q, key=norm_kv, value=norm_kv, mask=attn_mask)  # (B, 1, embed_dim)
+        humans_attn = jnp.nan_to_num(humans_attn, nan=0.0)
         humans_feat = jnp.squeeze(robot_query + humans_attn, axis=1)  # (B, embed_dim)
         # 3. Multimodal Fusion & Value Estimation
         fused_features = jnp.concatenate([robot_data, humans_feat, obstacles_feat], axis=-1)  # (B, D_robot + 2 * embed_dim)
@@ -199,7 +208,7 @@ class Critic(hk.Module):
 
         # END: deal with batch dimension
         if not has_batch:
-            value = jnp.squeeze(value, axis=0)  # (1,)
+            value = value[0]  # (1,)
         return value
 
 class JESSI_S2R(JESSI):
