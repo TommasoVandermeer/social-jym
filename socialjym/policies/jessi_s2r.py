@@ -553,7 +553,6 @@ class JESSI_S2R(JESSI):
         def _compute_actor_loss_and_gradients(
             current_actor_params:dict,  
             experiences:dict,
-            # Experiences: {"inputs":dict, "actor_actions":jnp.ndarray}
         ) -> tuple:
             def _batch_loss_function(
                 current_actor_params:dict,
@@ -618,8 +617,19 @@ class JESSI_S2R(JESSI):
                     current_critic_params,
                     experiences["states"],
                     experiences["actions_histories"],
-                    experiences["env_params"],
-                    experiences["robot_params"],
+                    {
+                        "humans_goal": experiences["humans_goal"],
+                        "humans_parameters": experiences["humans_parameters"],
+                        "static_obstacles": experiences["static_obstacles"]
+                    },
+                    {
+                        "robot_goal": experiences["robot_goal"],
+                        "robot_radius": experiences["robot_radius"],
+                        "v_max": experiences["v_max"],
+                        "wheels_distance": experiences["wheels_distance"],
+                        "wheels_max_linear_acceleration": experiences["wheels_max_linear_acceleration"],
+                        "robot_delay": experiences["robot_delay"]
+                    },
                     experiences["action_space_params"],
                 )
                 total_loss = jnp.square(predicted_values - experiences["returns"])
