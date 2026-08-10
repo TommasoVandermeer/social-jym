@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 from jax import nn, random, vmap, jit, lax, value_and_grad, debug
-from jax.tree_util import tree_map
+from jax.tree_util import tree_map, tree_leaves
 from functools import partial
 import haiku as hk
 from typing import Sequence
