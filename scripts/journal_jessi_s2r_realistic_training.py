@@ -26,7 +26,7 @@ lidar_dt = 0.13
 odometry_dt = 0.05
 control_delay_mean = 0.1
 control_delay_sigma = 0.01
-wheels_max_linear_acceleration = 1.8
+wheels_max_linear_acceleration = 0.87
 leg_dynamics = True  # Whether to include leg dynamics in the simulation (introduces more realistic trajectories but also more noise in the data)
 ### Script parameters
 save_videos = False  # Whether to save videos of the debug inspections
