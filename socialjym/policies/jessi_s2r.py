@@ -205,7 +205,7 @@ class Critic(hk.Module):
             activation=nn.silu,
             activate_final=False,
         )(fused_features)  # (B, 1)
-
+        value = jnp.squeeze(value, axis=-1)
         # END: deal with batch dimension
         if not has_batch:
             value = value[0]  # (1,)

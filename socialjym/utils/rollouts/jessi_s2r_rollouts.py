@@ -171,11 +171,9 @@ def process_buffer_and_gae(
         }, # robot_params
         robot_state_inputs[:,0,:3] # action_space_parameters
     )
-    rewards = jnp.squeeze(history["rewards"])
-    values = jnp.squeeze(history["values"])
-    dones = jnp.squeeze(history["dones"])
-    last_values = jnp.squeeze(last_values)
-    last_dones = jnp.squeeze(last_dones)
+    rewards = history["rewards"]
+    values = history["values"]
+    dones = history["dones"]
     values_ext = jnp.concatenate([values, last_values[None, :]], axis=0)
     dones_ext = jnp.concatenate([dones, last_dones[None, :]], axis=0)
     def _gae_step(gae_carry, i):

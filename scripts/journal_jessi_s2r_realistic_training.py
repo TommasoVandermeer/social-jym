@@ -21,6 +21,7 @@ from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4
 from socialjym.utils.rollouts.jessi_s2r_rollouts import jessi_s2r_rl_rollout
 
+no_imitation_learning = False
 ### Sim-to-real parameters
 lidar_dt = 0.13
 odometry_dt = 0.05
@@ -78,14 +79,14 @@ training_hyperparams = {
     'rl_training_updates': rl_training_updates,
     'rl_parallel_envs': rl_n_parallel_envs,
     'rl_learning_rate': 1e-4, # 3e-4
-    "rl_critic_learning_rate": 1e-3, # 1e-3
+    "rl_critic_learning_rate": 0.2, # 1e-3
     'rl_learning_rate_final': 1e-5, # 2e-4
     'rl_total_batch_size': 10_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 500, # 2_000 Mini-batch size for each model update
     'rl_micro_batch_size': 250, # 1_000 # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
-    'rl_num_epochs': 6, # 6
-    'rl_beta_entropy': 5e-2, # 1e-4
+    'rl_num_epochs': 10, # 6
+    'rl_beta_entropy': 10e-2, # 1e-4
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
@@ -1073,9 +1074,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
         il_encoder_params = pickle.load(f)
-    with open(os.path.join(os.path.dirname(__file__), policy_nn_name), 'rb') as f:
-        il_actor_params = pickle.load(f)
-    with open(os.path.join(os.path.dirname(__file__), critic_nn_name), 'rb') as f:
+    if no_imitation_learning:
+        _, il_actor_params, critic_params, _ = policy.init_nns(
+            random.PRNGKey(random_seed),
+        )
+    else:
+        with open(os.path.join(os.path.dirname(__file__), policy_nn_name), 'rb') as f:
+            il_actor_params = pickle.load(f)
+        with open(os.path.join(os.path.dirname(__file__), critic_nn_name), 'rb') as f:
             il_critic_params = pickle.load(f)
     il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
     def label_params(params):
@@ -1118,7 +1124,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         label_params(il_network_params)
     )
     critic_network_optimizer = optax.chain(
-        optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
+        # optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
         optax.sgd(learning_rate=training_hyperparams['rl_critic_learning_rate'], momentum=0.9)
     )
     # Initialize RL rollout params
