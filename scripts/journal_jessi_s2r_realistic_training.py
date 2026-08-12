@@ -32,8 +32,8 @@ leg_dynamics = True  # Whether to include leg dynamics in the simulation (introd
 ### Script parameters
 save_videos = False  # Whether to save videos of the debug inspections
 perception_nn_name = 'realistic_pre_perception_network_32.pkl'
-policy_nn_name = 'jessi_s2r_pre_controller_network_32.pkl'
-critic_nn_name = 'jessi_s2r_pre_critic_network_32.pkl'
+policy_nn_name = 'jessi_s2r_pre_controller_network_32_2.pkl'
+critic_nn_name = 'jessi_s2r_pre_critic_network_32_2.pkl'
 multitask_network_name = 'jessi_s2r_multitask_rl_out_32.pkl'
 ### Environment parameters
 robot_radius = 0.3
@@ -78,15 +78,15 @@ training_hyperparams = {
     'n_obstacles': n_obstacles,
     'rl_training_updates': rl_training_updates,
     'rl_parallel_envs': rl_n_parallel_envs,
+    "rl_critic_learning_rate": 0.01, # 1e-3
     'rl_learning_rate': 1e-4, # 3e-4
-    "rl_critic_learning_rate": 0.2, # 1e-3
     'rl_learning_rate_final': 1e-5, # 2e-4
     'rl_total_batch_size': 10_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 500, # 2_000 Mini-batch size for each model update
     'rl_micro_batch_size': 250, # 1_000 # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
-    'rl_num_epochs': 10, # 6
-    'rl_beta_entropy': 10e-2, # 1e-4
+    'rl_num_epochs': 4, # 6
+    'rl_beta_entropy': 5e-3, # 1e-4
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
@@ -94,7 +94,7 @@ training_hyperparams = {
     'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
     'safety_loss': False,  # Whether to include safety loss in the RL training
-    'target_kl': None,  # Target KL divergence for early stopping in each update
+    'target_kl': 0.015,  # Target KL divergence for early stopping in each update
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 # JESSI policy
@@ -158,6 +158,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_percep
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
+            goal_reward=5.,
             collision_with_humans_penalty=-.5,
             v_max=robot_vmax,
         )
@@ -837,7 +838,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
     actor_optimizer_state = actor_optimizer.init(actor_params)
     critic_optimizer = optax.chain(
         optax.clip_by_global_norm(1.0),
-        optax.sgd(learning_rate=critic_learning_rate, momentum=0.9)
+        optax.adam(learning_rate=3e-4, eps=1e-5)
     )
     critic_optimizer_state = critic_optimizer.init(critic_params)
     n_data = controller_dataset["observations"].shape[0]
@@ -1017,6 +1018,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
+            goal_reward=5.,
             collision_with_humans_penalty=-.5,
             v_max=robot_vmax,
         )
@@ -1070,12 +1072,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         n_stack=n_stack,
         beam_dropout_rate=0.2,
         embedding_dim=embeddings_dim,
+        humans_trajectory_noise_std=0.,
     )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
         il_encoder_params = pickle.load(f)
     if no_imitation_learning:
-        _, il_actor_params, critic_params, _ = policy.init_nns(
+        _, il_actor_params, il_critic_params, _ = policy.init_nns(
             random.PRNGKey(random_seed),
         )
     else:

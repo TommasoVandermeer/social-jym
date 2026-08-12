@@ -584,12 +584,16 @@ class JESSI_S2R(JESSI):
                     )                    
                     ## Compute actor loss (MSE between expert action and predicted mean action)
                     predicted_action = self.action_distribution.mean(predicted_distr)
-                    actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
-                    ## Compute actor loss (NLL of expert action uneder current predicted distribution + entropy regularization)
-                    # actor_loss = self.action_distribution.neglogp(predicted_distr, expert_action)
-                    # # Entropy and final loss computation
+                    mse_loss = jnp.mean(jnp.square(predicted_action - expert_action))
+                    ## L2 Penalty on latent locs
+                    locs = predicted_distr["locs"]
+                    l2_penalty = 1e-3 * jnp.mean(jnp.square(locs)) 
+                    actor_loss = mse_loss + l2_penalty
+                    # ## Compute actor loss (NLL of expert action uneder current predicted distribution + entropy regularization)
+                    # nll_loss = self.action_distribution.neglogp(predicted_distr, expert_action)
+                    # ## Entropy and final loss computation
                     # entropy = - beta_entropy * self.action_distribution.entropy(predicted_distr)
-                    # loss = actor_loss + entropy
+                    # actor_loss = nll_loss + entropy
                     return actor_loss
                 
                 total_loss = _loss_function(

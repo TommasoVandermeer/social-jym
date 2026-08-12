@@ -176,11 +176,12 @@ def process_buffer_and_gae(
     dones = history["dones"]
     values_ext = jnp.concatenate([values, last_values[None, :]], axis=0)
     dones_ext = jnp.concatenate([dones, last_dones[None, :]], axis=0)
+    gamma_step = gamma ** (dt * vmax)
     def _gae_step(gae_carry, i):
         adv_next = gae_carry
         mask = 1.0 - dones_ext[i+1].astype(jnp.float32)
-        delta = rewards[i] + jnp.power(gamma,dt*vmax) * values_ext[i+1] * mask - values_ext[i]
-        advantage = delta + jnp.power(gamma*lambda_gae,dt*vmax) * adv_next * mask
+        delta = rewards[i] + gamma_step * values_ext[i+1] * mask - values_ext[i]
+        advantage = delta + gamma_step * lambda_gae * adv_next * mask
         return advantage, advantage # Carry, Output
     n_steps = rewards.shape[0]
     _, advantages = lax.scan(_gae_step, jnp.zeros_like(values[0]), jnp.arange(n_steps)[::-1])
@@ -338,7 +339,7 @@ def train_one_epoch(
             critic_keys = random.split(micro_batch_key, states.shape[0])
             pred_val = policy.batch_critic_forward(
                 critic_keys,
-                critic_network_params,
+                critic_p,
                 states,
                 actions_history,
                 env_params, # Environment params
@@ -448,6 +449,16 @@ def get_dynamic_probabilities(success_rates, min_prob=0.03):
     probs = probs / jnp.sum(probs)
     return probs
 
+def update_scenario_ema(
+    ema_success,
+    batch_success,
+    alpha=0.15,
+):
+    batch_success = jnp.asarray(batch_success, dtype=jnp.float32)
+    if ema_success is None:
+        return batch_success.copy()
+    return (1.0 - alpha) * ema_success + alpha * batch_success
+
 def jessi_s2r_rl_rollout(
     initial_actor_parameters,
     initial_critic_parameters,
@@ -522,6 +533,7 @@ def jessi_s2r_rl_rollout(
         suffix = "".join([w[0] for w in words[1:]]) 
         scenarios_labels[i] = prefix + suffix
     scenarios_prob = jnp.array([1.0 / (len(env.hybrid_scenario_subset))] * len(env.hybrid_scenario_subset))
+    scenario_ema_success = None
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
     for update in tqdm(range(train_updates)):
@@ -635,11 +647,16 @@ def jessi_s2r_rl_rollout(
             f"| Ret: {logs['returns'][-1]:.3f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
             f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
             f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
+            f"| EMA-SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {scenario_ema_success[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n" if scenario_ema_success is not None else "",
             f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
             f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} | Safety Loss: {logs['safety_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
             f"| Loss: {logs['losses'][-1]:.4f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f} | Clip frac: {logs['clip_frac'][-1]:.4f} | Explained Var: {logs['explained_var'][-1]:.4f} \n",
         )
         # H. UPDATE SCENARIO PROBS
-        scenarios_prob = get_dynamic_probabilities(jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)]))
+        batch_success_rate = jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)])
+        scenario_ema_success = update_scenario_ema(scenario_ema_success, batch_success_rate)
+        if update % 10 == 0:
+            scenarios_prob = get_dynamic_probabilities(batch_success_rate)
+        
     return best_params, device_get(params), best_critic_params, device_get(critic_params), logs 
              
