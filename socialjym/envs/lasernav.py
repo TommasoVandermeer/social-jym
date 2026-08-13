@@ -149,6 +149,7 @@ class LaserNav(BaseEnv):
         is_x_flipped:bool,
         is_y_flipped:bool,
         noise_key:random.PRNGKey,
+        visibility_chance:float,
     ) -> dict:
         """
         OVERRIDES BaseEnv._init_info method.
@@ -179,6 +180,7 @@ class LaserNav(BaseEnv):
             is_x_flipped,
             is_y_flipped,
             noise_key,
+            visibility_chance=visibility_chance,
         )
         noise_key1, noise_key2, noise_key3 = random.split(noise_key, 3)
         # Time from last LiDAR scan initialization
@@ -318,6 +320,7 @@ class LaserNav(BaseEnv):
         reset_key:random.PRNGKey=random.PRNGKey(0),
         env_key:random.PRNGKey=random.PRNGKey(0),
         scenarios_prob:jnp.ndarray=None,
+        visibility_chance:float=0.,
     )-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
@@ -400,7 +403,7 @@ class LaserNav(BaseEnv):
         if self.scenario != -1: # Custom scenario, no automatic reset
             new_state, reset_key, new_info = lax.cond(
                 (reset_if_done) & (~(outcome["nothing"])),
-                lambda x: self._reset(x[1], scenarios_prob=scenarios_prob),
+                lambda x: self._reset(x[1], scenarios_prob=scenarios_prob, visibility_chance=visibility_chance),
                 lambda x: x,
                 (new_state, reset_key, new_info)
             )
@@ -420,8 +423,9 @@ class LaserNav(BaseEnv):
         test:bool=False,
         reset_if_done:bool=False,
         scenarios_prob:jnp.ndarray=None,
+        visibility_chance:float=0.,
     ):
-        return vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0, None))(
+        return vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0, None, None))(
             self, 
             states, 
             infos, 
@@ -431,11 +435,12 @@ class LaserNav(BaseEnv):
             reset_keys,
             env_keys,
             scenarios_prob,
+            visibility_chance,
         )
     
     @partial(jit, static_argnames=("self"))
-    def reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None) -> tuple:
-        initial_state, key, info = self._reset(key, scenarios_prob=scenarios_prob)
+    def reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None, visibility_chance:float=0.) -> tuple:
+        initial_state, key, info = self._reset(key, scenarios_prob=scenarios_prob, visibility_chance=visibility_chance)
         return \
             initial_state, \
             key, \
@@ -504,6 +509,7 @@ class LaserNav(BaseEnv):
             False,
             False,
             noise_key,
+            visibility_chance=0.,
         )
         return \
             full_state, \

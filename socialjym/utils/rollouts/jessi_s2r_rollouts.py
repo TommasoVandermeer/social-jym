@@ -31,6 +31,7 @@ def collect_rollout_step(
     env:LaserNav, 
     n_steps,
     scenarios_prob,
+    visibility,
 ):
     def _scan_step(carry, _):
         (states, obses, infos, outcomes, returns, times, success_per_scenario, episodes_per_scenario, p_keys, r_keys, e_keys, outcomes_acc) = carry
@@ -65,7 +66,7 @@ def collect_rollout_step(
         )
         # Environment
         new_states, new_obses, new_infos, (rewards, _), new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
-            states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True, scenarios_prob=scenarios_prob
+            states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True, scenarios_prob=scenarios_prob, visibility_chance=visibility
         )
         rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(
             states[:,:-1,:2], 
@@ -458,15 +459,23 @@ def get_dynamic_probabilities(success_rates, min_prob=0.03):
     probs = probs / jnp.sum(probs)
     return probs
 
-def update_scenario_ema(
+def update_ema(
     ema_success,
     batch_success,
+    scenario_ema_success,
+    scenario_batch_success,
     alpha=0.08,
 ):
-    batch_success = jnp.asarray(batch_success, dtype=jnp.float32)
+    # Success
     if ema_success is None:
-        return batch_success.copy()
-    return (1.0 - alpha) * ema_success + alpha * batch_success
+        return batch_success
+    new_ema_success = (1.0 - alpha) * ema_success + alpha * batch_success
+    # Scenario success
+    scenario_batch_success = jnp.asarray(scenario_batch_success, dtype=jnp.float32)
+    if scenario_ema_success is None:
+        return scenario_batch_success.copy()
+    new_scenario_ema_success = (1.0 - alpha) * scenario_ema_success + alpha * scenario_batch_success
+    return new_ema_success, new_scenario_ema_success
 
 def jessi_s2r_rl_rollout(
     initial_actor_parameters,
@@ -544,7 +553,9 @@ def jessi_s2r_rl_rollout(
         suffix = "".join([w[0] for w in words[1:]]) 
         scenarios_labels[i] = prefix + suffix
     scenarios_prob = jnp.array([1.0 / (len(env.hybrid_scenario_subset))] * len(env.hybrid_scenario_subset))
+    visibility = 1.
     scenario_ema_success = None
+    ema_success = None
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
     for update in tqdm(range(train_updates)):
@@ -553,7 +564,7 @@ def jessi_s2r_rl_rollout(
         beta_entropy = init_beta_entropy * jnp.exp(-update/0.6*train_updates) # exponential
         # A. COLLECT ROLLOUT STEP (Parallel)
         env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum, returns, times, success_per_scenario, episodes_per_scenario = collect_rollout_step(
-            params, critic_params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps, scenarios_prob
+            params, critic_params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps, scenarios_prob, visibility
         )
         current_states, current_obs, current_infos, current_dones = env_state[0], env_state[1], env_state[2], ~(env_state[3]['nothing'])
         n_succ = jnp.sum(outcomes_sum["success"])
@@ -657,23 +668,35 @@ def jessi_s2r_rl_rollout(
         logs["clip_frac"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["clip_frac"]))))
         logs["successes_per_scenario"] = {k: logs["successes_per_scenario"][k] + [success_per_scenario[k]] for k in logs["successes_per_scenario"]}
         logs["episodes_per_scenario"] = {k: logs["episodes_per_scenario"][k] + [episodes_per_scenario[k]] for k in logs["episodes_per_scenario"]}
-        # G. PRINT LOGS
+        # G. EMA UPDATE and CURRICULUM UTILS
+        batch_scenario_success_rate = jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)])
+        batch_success_rate = logs['successes'][-1]/logs['episodes'][-1]
+        ema_success, scenario_ema_success = update_ema(ema_success, batch_success_rate, scenario_ema_success, batch_scenario_success_rate)
+        worst_3_scenarios_success_rate = jnp.mean(jnp.sort(batch_scenario_success_rate)[:3])
+        # H. PRINT LOGS
         print(
             f"\nUpd {update}:\n",
-            f"| Ret: {logs['returns'][-1]:.3f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
+            f"| Ret: {logs['returns'][-1]:.3f} | EMA Succ: {ema_success:.3f} | Succ: {batch_success_rate:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
             f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
             f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
             f"| EMA-SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {scenario_ema_success[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n" if scenario_ema_success is not None else "",
             f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
             f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} | Safety Loss: {logs['safety_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
-            f"| Weights entropy: {logs['weight_entropies'][-1]:.4f} | Max weights: {logs['max_weights'][-1]:.4f} \n",
+            f"| Weights entropy: {logs['weight_entropies'][-1]:.4f} | Max weights: {logs['max_weights'][-1]:.4f} | Visibility: {visibility:.2f} \n",
             f"| Loss: {logs['losses'][-1]:.4f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f} | Clip frac: {logs['clip_frac'][-1]:.4f} | Explained Var: {logs['explained_var'][-1]:.4f} \n",
         )
-        # H. UPDATE SCENARIO PROBS
-        batch_success_rate = jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)])
-        scenario_ema_success = update_scenario_ema(scenario_ema_success, batch_success_rate)
+        # I. CURRICULUM (each 10, 20 or more updates, slows down the dynamics)
         if (update % 10 == 0) and (update > 0):
+            # Scenarios probabilities
             scenarios_prob = get_dynamic_probabilities(scenario_ema_success)
+        if (update % 20 == 0) and (update > 0):
+            # Visibility
+            if ema_success > 0.5 and worst_3_scenarios_success_rate > 0.3:
+                visibility -= 0.1
+            elif ema_success < 0.4:
+                visibility += 0.05
+            visibility = min(max(visibility, 0.), 1.)
+        
         
     return best_params, device_get(params), best_critic_params, device_get(critic_params), logs 
              

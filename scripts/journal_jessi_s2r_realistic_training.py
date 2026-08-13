@@ -1039,7 +1039,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'robot_dt': 0.25,
         'wheels_distance': robot_wheel_distance,
         'humans_dt': 0.01,
-        'robot_visible': False,
+        'robot_visible': None,
         'scenario': training_hyperparams['scenario'],
         'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,9,10,11,12,13,14,15,16]),
         'circle_radius': 7,

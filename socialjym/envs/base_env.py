@@ -260,7 +260,7 @@ class BaseEnv(ABC):
         n_humans:int, 
         n_obstacles:int,
         humans_policy:str, 
-        robot_visible:bool, 
+        robot_visible:bool, # If set to None, it can be modified at each new episode (Curriculum setting)
         circle_radius:float, 
         traffic_height:float,
         traffic_length:float,
@@ -546,7 +546,7 @@ class BaseEnv(ABC):
     # --- Private methods --- #
 
     @partial(jit, static_argnames=("self"))
-    def _reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None) -> tuple[jnp.ndarray, random.PRNGKey, dict]:
+    def _reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None, visibility_chance:float=0.) -> tuple[jnp.ndarray, random.PRNGKey, dict]:
         key, scen_key, flip_key, noise_key = random.split(key, 4)
         if self.scenario == SCENARIOS.index('hybrid_scenario'):
             # Randomly choose a scenario between all then ones included in the hybrid_scenario subset
@@ -612,6 +612,7 @@ class BaseEnv(ABC):
             is_x_flipped=is_x_flipped,
             is_y_flipped=is_y_flipped,
             noise_key=noise_key,
+            visibility_chance=visibility_chance,
         )
         if self.grid_map_computation: # Compute the grid map of static obstacles for global planning
             info['grid_cells'], info['occupancy_grid'] = self.build_grid_map_and_occupancy(full_state, info)
@@ -695,6 +696,7 @@ class BaseEnv(ABC):
         is_x_flipped:bool,
         is_y_flipped:bool,
         noise_key:random.PRNGKey,
+        visibility_chance:float=0.,
     ) -> dict:
         """
         Initializes the info dictionary with the given parameters.
@@ -712,7 +714,7 @@ class BaseEnv(ABC):
         output:
         - info: dictionary containing the initialized values.
         """
-        leg_param_key, leg_init_key = random.split(noise_key)
+        leg_param_key, leg_init_key, visibility_key = random.split(noise_key, 3)
         leg_parameters = get_humans_standard_leg_parameters(self.n_humans)
         leg_state = vmap(init_single_human_leg_state, in_axes=(0, 0, 0, 0, None))(
                 random.split(leg_init_key, self.n_humans),
@@ -721,8 +723,17 @@ class BaseEnv(ABC):
                 leg_parameters,
                 self.humans_policy,
             )
+        # Visibility computation
+        if self.robot_visible is not None:
+            visibility_chance = float(self.robot_visible)
+        visibility = jnp.fill_diagonal(
+            jnp.ones((self.n_humans+1,self.n_humans+1), dtype=jnp.bool), 
+            jnp.zeros((self.n_humans+1,), dtype=jnp.bool), 
+            inplace=False
+        ).at[:-1,-1].set(random.bernoulli(visibility_key, p=visibility_chance, shape=(self.n_humans,)))
         info = {
             "humans_goal": humans_goal,
+            "visibility": visibility,
             "robot_goal": robot_goal,
             "robot_goal_index": 0, # If robot has a waypoint list, this is the index of the next waypoint to reach
             "robot_goal_list": robot_goal_list, # If robot has a waypoint list, this is the list of waypoints
@@ -2028,31 +2039,21 @@ class BaseEnv(ABC):
         static_obstacles = info["static_obstacles"]
         ## Humans update
         if self.humans_policy == HUMAN_POLICIES.index("hsfm"):
-            if self.robot_visible:
-                if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(state[-1,2:4]), 0., jnp.atan2(*jnp.flip(state[-1,2:4])), 0.])]) # HSFM fictitious state
-                elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], state[-1,2], 0., state[-1,4], state[-1,3]])]) # HSFM fictitious state
-                new_state = jnp.vstack(
-                    [self.humans_step(fictitious_state, goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
-                    state[-1]])
-            else:
-                new_state = jnp.vstack(
-                    [self.humans_step(state[0:self.n_humans], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles[0:self.n_humans], self.humans_dt), 
-                    state[-1]])
+            if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+                fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.linalg.norm(state[-1,2:4]), 0., jnp.atan2(*jnp.flip(state[-1,2:4])), 0.])]) # HSFM fictitious state
+            elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+                fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], state[-1,2], 0., state[-1,4], state[-1,3]])]) # HSFM fictitious state
+            new_state = jnp.vstack(
+                [self.humans_step(fictitious_state, info["visibility"], goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
+                state[-1]])
         elif self.humans_policy == HUMAN_POLICIES.index("sfm") or self.humans_policy == HUMAN_POLICIES.index("orca"):
-            if self.robot_visible:
-                if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], *state[-1,2:4], 0., 0.])]) # SFM or ORCA fictitious state
-                elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-                    fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.cos(state[-1,4]) * state[-1,2], jnp.sin(state[-1,4]) * state[-1,2], state[-1,4], 0.])]) # SFM or ORCA fictitious state
-                new_state = jnp.vstack(
-                    [self.humans_step(fictitious_state[:,0:4], goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
-                    state[-1,0:4]])
-            else:
-                new_state = jnp.vstack(
-                    [self.humans_step(state[0:self.n_humans,0:4], goals[0:self.n_humans], parameters[0:self.n_humans], static_obstacles[0:self.n_humans], self.humans_dt), 
-                    state[-1,0:4]])
+            if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
+                fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], *state[-1,2:4], 0., 0.])]) # SFM or ORCA fictitious state
+            elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
+                fictitious_state = jnp.vstack([state[0:self.n_humans], jnp.array([*state[-1,0:2], jnp.cos(state[-1,4]) * state[-1,2], jnp.sin(state[-1,4]) * state[-1,2], state[-1,4], 0.])]) # SFM or ORCA fictitious state
+            new_state = jnp.vstack(
+                [self.humans_step(fictitious_state[:,0:4], info["visibility"], goals, parameters, static_obstacles, self.humans_dt)[0:self.n_humans], 
+                state[-1,0:4]])
             new_state = jnp.pad(new_state, ((0,0),(0,2)))
             new_state = new_state.at[-1,4:].set(state[-1,4:])
         ## Robot update
@@ -2163,12 +2164,7 @@ class BaseEnv(ABC):
         second_parameter = 80. if self.humans_policy == HUMAN_POLICIES.index("hsfm") or self.humans_policy == HUMAN_POLICIES.index("sfm") else 5. # Mass if HSFM or SFM, time horizon if ORCA
         parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, second_parameter, *self.get_standard_humans_parameters(1)[0,2:-1], 0.1]))) # Add safety space of 0.1 to robot
         static_obstacles = info["static_obstacles"]
-        if self.robot_visible:
-            new_state = self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)
-        else:
-            new_state = jnp.vstack([
-                self.humans_step(state[0:-1], goals[0:-1], parameters[0:-1], static_obstacles[0:-1], self.humans_dt), 
-                self.humans_step(state, goals, parameters, static_obstacles, self.humans_dt)[-1]])
+        new_state = self.humans_step(state, info["visibility"], goals, parameters, static_obstacles, self.humans_dt)
         new_info, new_state = self._scenario_based_state_post_update(new_state, info)
         return (new_state, new_info)
 

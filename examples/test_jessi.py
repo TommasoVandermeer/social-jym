@@ -13,6 +13,7 @@ from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
 random_seed = 3
+visibility_chance=0.1
 robot_vmax = 1
 robot_wheel_distance = 0.7
 time_limit = 50
@@ -35,8 +36,8 @@ env_params = {
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
-    'robot_visible': True,
-    'scenario': 't_corridor', 
+    'robot_visible': None,
+    'scenario': 'parallel_traffic', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 10,
     'ccso_static_humans_radius_mean': 0.3,
@@ -85,7 +86,7 @@ with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out_32.pkl
 # Simulate some episodes
 for i in range(n_episodes):
     policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
-    state, reset_key, obs, info, outcome = env.reset(reset_key)
+    state, reset_key, obs, info, outcome = env.reset(reset_key, visibility_chance=visibility_chance)
     step = 0
     max_steps = int(env.reward_function.time_limit/env.robot_dt)+1
     all_states = jnp.array([state])
