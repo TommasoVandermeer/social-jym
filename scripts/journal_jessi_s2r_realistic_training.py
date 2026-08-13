@@ -86,7 +86,7 @@ training_hyperparams = {
     'rl_micro_batch_size': 250, # 1_000 # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 4, # 6
-    'rl_beta_entropy': 5e-3, # 1e-4
+    'rl_beta_entropy': 7e-3, # 1e-4
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
@@ -159,8 +159,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_percep
         reward_function = Reward1(
             robot_radius=0.3,
             goal_reward=5.,
-            collision_with_humans_penalty=-.5,
+            collision_with_humans_penalty=-1.,
             v_max=robot_vmax,
+            progress_to_goal_weight=0.3,
         )
     elif training_hyperparams['reward_function'] == 'lasernav_reward4': 
         reward_function = Reward4(
@@ -1019,8 +1020,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         reward_function = Reward1(
             robot_radius=0.3,
             goal_reward=5.,
-            collision_with_humans_penalty=-.5,
+            collision_with_humans_penalty=-1.,
             v_max=robot_vmax,
+            progress_to_goal_weight=0.3,
         )
     elif training_hyperparams['reward_function'] == 'lasernav_reward4': 
         reward_function = Reward4(
