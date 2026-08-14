@@ -12,7 +12,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     MPLBACKEND=TkAgg
 
+RUN apt-get update && apt-get install -y locales && \
+    locale-gen en_US en_US.UTF-8 && \
+    update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+ENV LANG=en_US.UTF-8
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gnupg2 \
+    software-properties-common \
     python3 \
     python3-pip \
     python3-dev \
@@ -24,6 +32,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     libsm6 \
     git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-desktop \
+    ros-humble-turtlebot4-desktop \
+    ros-humble-rmw-fastrtps-cpp \
+    ros-humble-irobot-create-msgs \
+    python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/social-jym
@@ -55,5 +74,7 @@ RUN pip3 install --upgrade pip && \
             "scipy==1.14.0"; \
     fi && \
     pip3 install -e JHSFM -e JSFM -e JORCA -e .
+
+RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 
 CMD ["bash"]

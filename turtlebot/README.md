@@ -1,3 +1,17 @@
+# Interfacing with TurtleBot4 via Docker
+
+You can interface with the TurtleBot4 directly using the provided Docker container. To do so, ensure the following requirements are met:
+1. The TurtleBot4 must be configured in **Discovery Server** mode.
+2. Your PC and the TurtleBot4 must be connected to the **same Wi-Fi network**.
+
+You can start the Docker container and connect to the robot by using the `run.sh` script. By default, the script is configured to connect to the Discovery Server at `192.168.8.4` with the namespace `turtlebot1`.
+
+If you need to specify a different IP address, you can pass them as arguments when running the script:
+
+```bash
+./docker/run.sh --ip <ROBOT_IP>
+```
+
 # Synchronize devices time (Laptop, Raspberry PI, Create3)
 Ssh into the turtlebot and add the following script in the home directory (```sync_create_time.py```):
 

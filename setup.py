@@ -23,10 +23,12 @@ setup(
         'jax==0.4.30; python_version == "3.10"',
         'jaxlib==0.4.30; python_version == "3.10"',
         'scipy==1.14.0; python_version == "3.10"',
+        'scikit-learn==1.7.2; python_version == "3.10"',
         # Python 3.13
         'jax==0.4.34; python_version == "3.13"',
         'jaxlib==0.4.34; python_version == "3.13"',
         'scipy==1.14.1; python_version == "3.13"',
+        'scikit-learn==1.9.0; python_version == "3.13"',
         # Common dependencies
         'jax_tqdm==0.2.2',
         'matplotlib==3.9.1',
@@ -34,6 +36,7 @@ setup(
         'optax==0.2.4',
         'notebook==7.2.2',
         'pandas==2.2.3',
+        
     ],
     extras_require={
         'cuda13': [

@@ -48,6 +48,7 @@ class TB4Controller(Node):
             diagnostics, 
             san_niccolo,
             engineering_filters,
+            pure_pursuit,
         ):
         super().__init__('TB4_controller')
 
@@ -108,6 +109,7 @@ class TB4Controller(Node):
             self.fig, self.ax = plt.subplots(figsize=(6, 6))
             self.scan_plot, = self.ax.plot([], [], 'r.', markersize=2, alpha=0.5, label='Lidar Scan')
             self.goal_plot, = self.ax.plot([], [], 'g*', markersize=12, label='Current Goal')
+            self.future_goals_plot, = self.ax.plot([], [], 'c*', markersize=8, alpha=0.5, label='Future Goals')
             self.ax.plot(0, 0, 'ks', markersize=8, label='Robot Center') 
             self.ax.plot([0, 3], [0, 0], 'b-', linewidth=1.5, label='X-Axis (Front)') 
             self.ax.set_xlim(-5.0, 5.0) 
@@ -121,6 +123,10 @@ class TB4Controller(Node):
             self.fig.canvas.flush_events()
         self.align=align
         self.first_scan_received = False
+        # Pure pursuit parameters
+        self.pure_pursuit = pure_pursuit
+        self.lookahead_distance = 1.0
+        self.initial_pos = None # Set on first iteration
 
         self.init_time = time.time()
         self.previous_control_time = time.time()
@@ -274,6 +280,41 @@ class TB4Controller(Node):
         self.cmd_list = []
 
         self.get_logger().info(f"{planner} Controller initialized at {self.frequency:.1f}Hz!")
+
+    def get_lookahead_point(self, rx, ry, A, B):
+        """
+        Calculate the lookahead point for Pure Pursuit on segment A -> B.
+        If the robot's distance from the segment exceeds `lookahead_distance`, use 
+        the orthogonal projection (Nearest Point) as a fallback.
+        """
+        A = np.array(A)
+        B = np.array(B)
+        P = np.array([rx, ry])
+        V = B - A
+        D = A - P
+        a = np.dot(V, V)
+        b = 2.0 * np.dot(D, V)
+        c = np.dot(D, D) - self.lookahead_distance**2
+        if a < 1e-6: # A e B coincide
+            return B
+        discriminant = b**2 - 4*a*c
+        t_proj = -b / (2*a) # t value for orthogonal projection
+        if discriminant < 0:
+            # No intersection: the robot is too far (fallback strategy)
+            t = np.clip(t_proj, 0.0, 1.0)
+            return A + t * V
+        # Compute the two possible intersections
+        t1 = (-b - np.sqrt(discriminant)) / (2*a)
+        t2 = (-b + np.sqrt(discriminant)) / (2*a)
+        valid_ts = [t for t in (t1, t2) if 0.0 <= t <= 1.0]   
+        if len(valid_ts) > 0:
+            t = max(valid_ts)
+        else:
+            if max(t1, t2) > 1.0:
+                t = 1.0
+            else:
+                t = 0.0     
+        return A + t * V
 
     def compute_alignment_angle_hough(self, scan_x, scan_y, theta_res=0.2, rho_res=0.05):
         """
@@ -505,9 +546,24 @@ class TB4Controller(Node):
         while len(self.obs_stack) < self.n_stack:
             self.obs_stack.appendleft(current_step_obs) 
         obs_matrix = jnp.array(self.obs_stack) # Shape: (n_stack, n_rays + 11)
-        info_dict = {
-            "robot_goal": jnp.array(self.robot_goal)
-        }
+
+        # Goal (with or without pure pursuit)
+        if self.pure_pursuit and len(self.robot_goal_list) > 1:
+            B = self.robot_goal # Current target
+            if self.robot_goal_forward:
+                A = self.robot_goal_list[self.robot_goal_index - 1] if self.robot_goal_index > 0 else self.initial_pos
+            else:
+                A = self.robot_goal_list[self.robot_goal_index + 1] if self.robot_goal_index < len(self.robot_goal_list) - 1 else self.initial_pos
+            # Lookahead goal
+            local_goal = self.get_lookahead_point(rx, ry, A, B)
+            info_dict = {
+                "robot_goal": jnp.array(local_goal)
+            }
+        else:
+            # No pure pursuit
+            info_dict = {
+                "robot_goal": jnp.array(self.robot_goal)
+            }
 
         # Check distance to goal
         dist = jnp.linalg.norm(jnp.array([rx, ry]) - self.robot_goal)
@@ -680,6 +736,16 @@ class TB4Controller(Node):
             translated_position = info_dict["robot_goal"] - jnp.array([rx, ry])
             rc_robot_goal = R @ translated_position
             self.goal_plot.set_data([rc_robot_goal[0]], [rc_robot_goal[1]])
+            if self.robot_goal_forward:
+                future_goals = self.robot_goal_list[self.robot_goal_index + 1 :]
+            else:
+                future_goals = self.robot_goal_list[: self.robot_goal_index]
+            if len(future_goals) > 0:
+                translated_futures = future_goals - jnp.array([rx, ry])
+                rc_future_goals = (R @ translated_futures.T).T
+                self.future_goals_plot.set_data(rc_future_goals[:, 0], rc_future_goals[:, 1])
+            else:
+                self.future_goals_plot.set_data([], [])
             self.fig.canvas.draw_idle()
             self.fig.canvas.flush_events()
 
@@ -724,7 +790,6 @@ def main(args=None):
     parser.add_argument('-g', '--goals', nargs='+', type=float, default=[2.0, 0.0], help='Sequence of Goal X Y pairs (in meters). Example: -g 2.0 0.0 3.0 1.0 4.0 -0.5')
     parser.add_argument('-p', '--patrol', action='store_true', help='Activate Patrol Mode (back and forth continuously)')
     parser.add_argument('-i', '--interp', action='store_true', help='Activate Interpolation Mode for pose with respect to LiDAR timestamp (instead of using the latest odometry)')
-    parser.add_argument('-c', '--collect', action='store_true', help='Activate Full Data Collection Mode')
     parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out_turtlebot.pkl', help='Network weights pickle file name')
     parser.add_argument('-s', '--save_file', type=str, default='jessi_recorded_obs.pkl', help='Output pickle file name for recorded data')
     parser.add_argument('-d', '--diagnostics', action='store_true', help='Activate diagnostic during control to debug')
@@ -733,6 +798,7 @@ def main(args=None):
     parser.add_argument('-l', '--lidar_rays', type=int, default=300, help='Number of rays used to infer the policy action')
     parser.add_argument('-sn', '--san_niccolo', action='store_true', help='Activare mode San Niccolò experiment with hardcoded waypoints')
     parser.add_argument('-e', '--engineering_filters', action='store_true', help='Activate Engineering Filters for enhanced sim-to-real performance')
+    parser.add_argument('-pp', '--pure_pursuit', action='store_true', help='Activate Pure Pursuit for intermediate goal generation')
 
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
 
@@ -754,11 +820,12 @@ def main(args=None):
         interp_mode=parsed_args.interp,
         network_name=parsed_args.network,
         save_file_name=parsed_args.save_file,
-        save_lists=parsed_args.collect,
+        save_lists=True,
         align=parsed_args.align,
         diagnostics=parsed_args.diagnostics,
         san_niccolo=parsed_args.san_niccolo,
-        engineering_filters=parsed_args.engineering_filters
+        engineering_filters=parsed_args.engineering_filters,
+        pure_pursuit=parsed_args.pure_pursuit,
     )
     mode_text = "🔄 PATROL MODE" if parsed_args.patrol else "🛑 SINGLE TARGET MODE"
     node.get_logger().info(f"Goals set to: {rc_goals_list} in the robot frame | {mode_text}")
