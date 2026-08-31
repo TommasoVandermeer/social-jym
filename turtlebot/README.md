@@ -103,3 +103,30 @@ python3 turtlebot_jessi_animate_recorded_trajectory.py -s REPLACE_WITH_EXPERIMEN
 
 # SYSTEM IDENTIFICATION ON TURTLEBOT4
 
+# REAL-WORLD JESSI VS DWA EXPERIMENTS
+
+The reproducible 20-run corridor protocol, ROS bag capture workflow, pedestrian
+tracking instructions, and metric tools are documented in
+[`experiments/README.md`](experiments/README.md).
+
+After collecting a trial, process the latest recorded run without looking up
+or typing its run-directory name:
+
+```bash
+python3 turtlebot/experiments/process_run.py \
+  --latest \
+  --config turtlebot/experiments/corridor_campaign.json \
+  --save-animation
+```
+
+`--latest` reads the campaign schedule and selects the highest-ordinal run that
+has an existing directory and `manifest.json`; pending trials are ignored. It
+cannot be combined with a positional run directory. The same shortcut supports
+`--skip-tracking` when only aligned data and metrics need to be regenerated:
+
+```bash
+python3 turtlebot/experiments/process_run.py \
+  --latest \
+  --config turtlebot/experiments/corridor_campaign.json \
+  --skip-tracking
+```

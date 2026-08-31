@@ -3,6 +3,10 @@
 *.eps
 *.mp4
 
+# Real-world experiment recordings and derived results
+turtlebot/experiments/data/*
+!turtlebot/experiments/data/.gitkeep
+
 # Vscode
 .vscode/
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import argparse
+import copy
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist, TwistStamped
@@ -17,6 +18,7 @@ import jax.numpy as jnp
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 import time
+from pathlib import Path
 from matplotlib import pyplot as plt
 
 from socialjym.policies.jessi import JESSI
@@ -49,6 +51,10 @@ class TB4Controller(Node):
             san_niccolo,
             engineering_filters,
             pure_pursuit,
+            experiment_dir=None,
+            timeout=None,
+            goal_tolerance=None,
+            stop_on_goal=False,
         ):
         super().__init__('TB4_controller')
 
@@ -103,6 +109,13 @@ class TB4Controller(Node):
         self.planner = planner
         self.diagnostics = diagnostics
         self.engineering_filters = engineering_filters
+        self.experiment_dir = Path(experiment_dir).resolve() if experiment_dir else None
+        self.timeout = timeout
+        self.goal_tolerance = goal_tolerance if goal_tolerance is not None else 0.8
+        self.stop_on_goal = stop_on_goal
+        self.first_command_timestamp = None
+        self.final_event = None
+        self.finished = False
         if self.diagnostics:
             self.get_logger().info("📈 Initialize live diagnostics plot...")
             plt.ion() # NON blocking mode for live update
@@ -150,6 +163,9 @@ class TB4Controller(Node):
         self.odom_buffer = deque(maxlen=200)
         self.odom_cmd_time_offset = None
         self.odom_scan_time_offset = None
+        self.latest_odom_aligned_time = None
+        self.latest_scan_aligned_time = None
+        self.latest_scan_odom_aligned_time = None
         if san_niccolo:
             self.robot_goal_list = waypoints
             self.robot_goal_index = 0
@@ -227,8 +243,11 @@ class TB4Controller(Node):
                 action_space_bounding=True,
             )
         self.rng_key = random.PRNGKey(0)
-        with open(os.path.join(os.path.dirname(__file__), network_name), 'rb') as f:
-            self.network_params, _, _ = pickle.load(f)
+        self.network_params = None
+        if planner in ('JESSI', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E'):
+            network_path = network_name if os.path.isabs(network_name) else os.path.join(os.path.dirname(__file__), network_name)
+            with open(network_path, 'rb') as f:
+                self.network_params, _, _ = pickle.load(f)
         
         # Reset turtlebot odometry
         self.odom_reset_confirmed = False
@@ -406,16 +425,19 @@ class TB4Controller(Node):
 
     def scan_callback(self, msg):
         raw_scan_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        if self.latest_odom is not None and self.odom_scan_time_offset is None:
-            raw_odom_t = self.latest_odom.header.stamp.sec + self.latest_odom.header.stamp.nanosec * 1e-9
-            self.odom_scan_time_offset = raw_scan_t - raw_odom_t
-            self.get_logger().info(f"🕒 Software Time-Sync: Applied offset {self.odom_scan_time_offset:+.3f}s to Scan w.r.t. Odometry!")
-        corrected_t = raw_scan_t - self.odom_scan_time_offset
-        msg.header.stamp.sec = int(corrected_t)
-        msg.header.stamp.nanosec = int((corrected_t - int(corrected_t)) * 1e9)
+        if self.latest_odom is None or self.latest_odom_aligned_time is None:
+            return
+        if self.odom_scan_time_offset is None:
+            # Map the scan device clock into the host/control clock without
+            # mutating the original ROS message header.
+            self.odom_scan_time_offset = self.latest_odom_aligned_time - raw_scan_t
+            self.get_logger().info(f"🕒 Software Time-Sync: Applied offset {self.odom_scan_time_offset:+.3f}s to Scan w.r.t. host control time!")
+        corrected_t = raw_scan_t + self.odom_scan_time_offset
         self.latest_scan = msg
+        self.latest_scan_aligned_time = corrected_t
         # Since odomoetry runs at higher freq. we save the latest odometry at the moment of receiving the scan, to have them synchronized for the control loop
         self.latest_scan_odom = self.latest_odom
+        self.latest_scan_odom_aligned_time = self.latest_odom_aligned_time
         ### Diagnostics
         if self.diagnostics:
             ranges = np.array(self.latest_scan.ranges)
@@ -445,7 +467,12 @@ class TB4Controller(Node):
             self.first_scan_received = True
         ### Collect data
         if self.save_lists:
-            self.scan_list.append(msg)
+            saved_msg = msg
+            if self.experiment_dir is None:
+                saved_msg = copy.deepcopy(msg)
+                saved_msg.header.stamp.sec = int(corrected_t)
+                saved_msg.header.stamp.nanosec = int((corrected_t - int(corrected_t)) * 1e9)
+            self.scan_list.append(saved_msg)
         ### DEBUG
         # t_scan = self.latest_scan.header.stamp
         # scan_time_sec = t_scan.sec + t_scan.nanosec * 1e-9
@@ -461,17 +488,21 @@ class TB4Controller(Node):
             self.odom_cmd_time_offset = local_t - raw_odom_t
             self.get_logger().info(f"🕒 Software Time-Sync: Applied offset {self.odom_cmd_time_offset:+.3f}s to Odometry w.r.t. Commands!")
         corrected_t = raw_odom_t + self.odom_cmd_time_offset
-        msg.header.stamp.sec = int(corrected_t)
-        msg.header.stamp.nanosec = int((corrected_t - int(corrected_t)) * 1e9)
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         theta = self.get_yaw_from_quaternion(msg.pose.pose.orientation)
         vx = msg.twist.twist.linear.x
         wz = msg.twist.twist.angular.z
         self.odom_buffer.append((corrected_t, x, y, theta, vx, wz))
-        self.latest_odom = msg 
+        self.latest_odom = msg
+        self.latest_odom_aligned_time = corrected_t
         if self.save_lists:
-            self.odom_list.append(msg)
+            saved_msg = msg
+            if self.experiment_dir is None:
+                saved_msg = copy.deepcopy(msg)
+                saved_msg.header.stamp.sec = int(corrected_t)
+                saved_msg.header.stamp.nanosec = int((corrected_t - int(corrected_t)) * 1e9)
+            self.odom_list.append(saved_msg)
 
     def cmd_callback(self, msg):
         if self.save_lists:
@@ -507,15 +538,36 @@ class TB4Controller(Node):
                 return x_interp, y_interp, theta_interp, vx_interp, wz_interp 
         return None
 
+    def finish_experiment(self, reason, timestamp, pose=None, goal_distance=None):
+        if self.final_event is not None:
+            return
+        self.final_event = {
+            'reason': reason,
+            'timestamp': float(timestamp),
+            'pose': list(map(float, pose)) if pose is not None else None,
+            'goal_distance': float(goal_distance) if goal_distance is not None else None,
+        }
+        self.goal_reached = reason == 'goal_reached'
+        if self.stop_on_goal or reason == 'timeout':
+            self.finished = True
+        stop = Twist()
+        self.pub_cmd.publish(stop)
+        stop_stamped = TwistStamped()
+        stop_stamped.header.stamp = self.get_clock().now().to_msg()
+        stop_stamped.twist = stop
+        self.pub_cmd_stamped.publish(stop_stamped)
+        self.get_logger().info(f"Experiment finished: {reason}")
+
     def control_loop(self):
         if self.latest_scan is None or self.latest_odom is None or not self.odom_reset_confirmed:
             self.get_logger().warn("Waiting data from sensors...")
             return
         # Timestamp extraction
-        t_scan = self.latest_scan.header.stamp
-        scan_time_sec = t_scan.sec + t_scan.nanosec * 1e-9
-        t_odom = self.latest_scan_odom.header.stamp
-        odom_time_sec = t_odom.sec + t_odom.nanosec * 1e-9
+        raw_scan_time_sec = self.latest_scan.header.stamp.sec + self.latest_scan.header.stamp.nanosec * 1e-9
+        raw_odom_time_sec = self.latest_scan_odom.header.stamp.sec + self.latest_scan_odom.header.stamp.nanosec * 1e-9
+        scan_time_sec = self.latest_scan_aligned_time
+        odom_time_sec = self.latest_scan_odom_aligned_time
+        control_time_sec = self.get_clock().now().nanoseconds * 1e-9
         # print(f"Scan time: {scan_time_sec}\nOdom time: {odom_time_sec}\nCmd time: {self.get_clock().now().nanoseconds * 1e-9}")
         # Odometry
         if self.interp_mode:
@@ -568,13 +620,18 @@ class TB4Controller(Node):
         # Check distance to goal
         dist = jnp.linalg.norm(jnp.array([rx, ry]) - self.robot_goal)
 
+        if self.first_command_timestamp is not None and self.timeout is not None:
+            if control_time_sec - self.first_command_timestamp >= self.timeout:
+                self.finish_experiment('timeout', control_time_sec, (rx, ry, r_theta), dist)
+                return
+
         if self.goal_reached:
             stop = Twist()
             self.pub_cmd.publish(stop)
             return
 
         # Goal reset logic
-        if dist < self.radius + 0.5:
+        if dist < self.goal_tolerance:
             if self.robot_goal_forward:
                 if self.robot_goal_index < len(self.robot_goal_list) - 1:
                     self.robot_goal_index += 1
@@ -590,9 +647,7 @@ class TB4Controller(Node):
                         info_dict["robot_goal"] = jnp.array(self.robot_goal)
                     else:
                         self.get_logger().info("🏆 Goal reached. Stopping the robot...")
-                        stop = Twist()
-                        self.pub_cmd.publish(stop)
-                        self.goal_reached = True
+                        self.finish_experiment('goal_reached', control_time_sec, (rx, ry, r_theta), dist)
             else:
                 if self.robot_goal_index > 0:
                     self.robot_goal_index -= 1
@@ -617,7 +672,7 @@ class TB4Controller(Node):
                         sample=False # Use mean action
                     )
                     v_cmd, w_cmd = float(action[0]), float(action[1])
-                    self.recorded_data.append({
+                    step_record = {
                         'observation': np.array(obs_matrix),
                         'robot_goal': np.array(self.robot_goal),
                         'action': np.array([v_cmd, w_cmd]),
@@ -628,21 +683,21 @@ class TB4Controller(Node):
                         'human_attention': human_attn[0],
                         'scan_timestamp': scan_time_sec,
                         'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
-                    })
+                    }
                 elif self.planner == 'DWA':
                     action, actions_costs = self.policy.act(
                         obs=obs_matrix,
                         info=info_dict,
                     )
                     v_cmd, w_cmd = float(action[0]), float(action[1])
-                    self.recorded_data.append({
+                    step_record = {
                         'observation': np.array(obs_matrix),
                         'robot_goal': np.array(self.robot_goal),
                         'action': np.array([v_cmd, w_cmd]),
                         'action_costs': actions_costs,
                         'scan_timestamp': scan_time_sec,
                         'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
-                    })
+                    }
                 elif self.planner == 'MPPI':
                     action, self.u_mean, trajectories, costs, self.rng_key  = self.policy.act(
                         obs=obs_matrix,
@@ -651,7 +706,7 @@ class TB4Controller(Node):
                         key=self.rng_key,
                     )
                     v_cmd, w_cmd = float(action[0]), float(action[1])
-                    self.recorded_data.append({
+                    step_record = {
                         'observation': np.array(obs_matrix),
                         'robot_goal': np.array(self.robot_goal),
                         'action': np.array([v_cmd, w_cmd]),
@@ -659,7 +714,7 @@ class TB4Controller(Node):
                         'costs': costs,
                         'scan_timestamp': scan_time_sec,
                         'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
-                    })
+                    }
                 elif self.planner == 'VANILLA-E2E' or self.planner == 'BOUNDED-VANILLA-E2E':
                     action, self.rng_key, _, _, _, actor_distr, _ = self.policy.act(
                         self.rng_key,
@@ -669,17 +724,18 @@ class TB4Controller(Node):
                         sample=False # Use mean action
                     )
                     v_cmd, w_cmd = float(action[0]), float(action[1])
-                    self.recorded_data.append({
+                    step_record = {
                         'observation': np.array(obs_matrix),
                         'robot_goal': np.array(self.robot_goal),
                         'action': np.array([v_cmd, w_cmd]),
                         'actor_distr': actor_distr,
                         'scan_timestamp': scan_time_sec,
                         'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
-                    })
+                    }
                 ### ==========================================================
                 ### SIM-TO-REAL ENGINEERING FILTERS
                 ### ==========================================================
+                policy_action = np.array([v_cmd, w_cmd], dtype=float)
                 if self.engineering_filters:
                     if self.planner in ['JESSI', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E']:
                         ## 1. Geometric auxiliary controller (P-Controller)
@@ -725,6 +781,29 @@ class TB4Controller(Node):
                 cmd_stamped.header.stamp = self.get_clock().now().to_msg()
                 cmd_stamped.twist = cmd_msg
                 self.pub_cmd_stamped.publish(cmd_stamped)
+                command_timestamp = (
+                    cmd_stamped.header.stamp.sec
+                    + cmd_stamped.header.stamp.nanosec * 1e-9
+                )
+                if self.first_command_timestamp is None:
+                    self.first_command_timestamp = command_timestamp
+                step_record.update({
+                    'action': np.array([v_cmd, w_cmd], dtype=float),
+                    'policy_action': policy_action,
+                    'published_action': np.array([v_cmd, w_cmd], dtype=float),
+                    'command_timestamp': command_timestamp,
+                    'control_loop_timestamp': control_time_sec,
+                    'raw_scan_timestamp': raw_scan_time_sec,
+                    'raw_odom_timestamp': raw_odom_time_sec,
+                    'scan_timestamp': scan_time_sec,
+                    'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
+                    'robot_pose': np.array([rx, ry, r_theta], dtype=float),
+                    'measured_twist': np.array([vx, wz], dtype=float),
+                    'goal_distance': float(dist),
+                    'planner': self.planner,
+                    'inference_ok': True,
+                })
+                self.recorded_data.append(step_record)
                 self.previous_action = jnp.array([v_cmd, w_cmd])
             except Exception as e:
                 self.get_logger().error(f"Error during {self.planner} inference: {e}")
@@ -750,39 +829,59 @@ class TB4Controller(Node):
             self.fig.canvas.flush_events()
 
     def save_data(self):
-        if len(self.recorded_data) > 0:
-            save_path = os.path.join(os.path.dirname(__file__), self.save_file_name)
-            try:
-                out = {
-                    'trajectory': self.recorded_data,
-                    'params': {
-                        'v_max':self.policy.v_max,
-                        'wheels_distance':self.policy.wheels_distance,
-                        'robot_radius':self.radius,
-                        'n_stack':self.policy.n_stack,
-                        'lidar_num_rays':self.lidar_num_rays,
-                        'lidar_angular_range':self.lidar_max_angle-self.lidar_min_angle,
-                        'lidar_max_dist':self.lidar_max_dist,
-                        'n_stack':self.policy.n_stack
-                    },
-                }
-                if self.planner == 'JESSI' or self.planner == 'BOUNDED-VANILLA-E2E':
-                    out['params']['n_stack_for_action_space_bounding'] = self.policy.n_stack_for_action_space_bounding
-                with open(save_path, 'wb') as f:
-                    pickle.dump(out, f)
-                if self.save_lists:
-                    lists_save_path = os.path.join(os.path.dirname(__file__), f"lists_{self.save_file_name}")
-                    with open(lists_save_path, 'wb') as f:
-                        pickle.dump({
-                            'scan': self.scan_list,
-                            'odom': self.odom_list,
-                            'cmd': self.cmd_list
-                        }, f)
-                self.get_logger().info(f"Record saved! {len(self.recorded_data)} frame saved in: {save_path}")
-            except Exception as e:
-                self.get_logger().error(f"Error during saving procedure: {e}")
-        else:
-            self.get_logger().info("NO DATA TO SAVE.")
+        save_path = (
+            self.experiment_dir / 'controller.pkl'
+            if self.experiment_dir
+            else Path(os.path.dirname(__file__)) / self.save_file_name
+        )
+        try:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            out = {
+                'schema_version': 2,
+                'trajectory': self.recorded_data,
+                'final_event': self.final_event,
+                'params': {
+                    'planner': self.planner,
+                    'v_max': self.policy.v_max,
+                    'wheels_distance': self.policy.wheels_distance,
+                    'robot_radius': self.radius,
+                    'n_stack': self.policy.n_stack,
+                    'lidar_num_rays': self.lidar_num_rays,
+                    'lidar_angular_range': self.lidar_max_angle-self.lidar_min_angle,
+                    'lidar_max_dist': self.lidar_max_dist,
+                    'frequency': self.frequency,
+                    'goal_tolerance': self.goal_tolerance,
+                    'timeout': self.timeout,
+                    'engineering_filters': self.engineering_filters,
+                },
+                'clock_offsets': {
+                    'odom_to_host': self.odom_cmd_time_offset,
+                    'scan_to_host': self.odom_scan_time_offset,
+                },
+            }
+            if self.planner == 'JESSI' or self.planner == 'BOUNDED-VANILLA-E2E':
+                out['params']['n_stack_for_action_space_bounding'] = self.policy.n_stack_for_action_space_bounding
+            temporary = save_path.with_suffix(save_path.suffix + '.tmp')
+            with open(temporary, 'wb') as f:
+                pickle.dump(out, f)
+            os.replace(temporary, save_path)
+            if self.save_lists:
+                lists_save_path = (
+                    self.experiment_dir / 'raw_sensor_messages.pkl'
+                    if self.experiment_dir
+                    else Path(os.path.dirname(__file__)) / f"lists_{self.save_file_name}"
+                )
+                temporary_lists = lists_save_path.with_suffix(lists_save_path.suffix + '.tmp')
+                with open(temporary_lists, 'wb') as f:
+                    pickle.dump({
+                        'scan': self.scan_list,
+                        'odom': self.odom_list,
+                        'cmd': self.cmd_list,
+                    }, f)
+                os.replace(temporary_lists, lists_save_path)
+            self.get_logger().info(f"Record saved! {len(self.recorded_data)} frames saved in: {save_path}")
+        except Exception as e:
+            self.get_logger().error(f"Error during saving procedure: {e}")
 
 def main(args=None):
     parser = argparse.ArgumentParser(description='TB4 Robot Controller - Local Planner')
@@ -799,6 +898,10 @@ def main(args=None):
     parser.add_argument('-sn', '--san_niccolo', action='store_true', help='Activare mode San Niccolò experiment with hardcoded waypoints')
     parser.add_argument('-e', '--engineering_filters', action='store_true', help='Activate Engineering Filters for enhanced sim-to-real performance')
     parser.add_argument('-pp', '--pure_pursuit', action='store_true', help='Activate Pure Pursuit for intermediate goal generation')
+    parser.add_argument('--experiment-dir', type=str, help='Structured experiment run directory')
+    parser.add_argument('--timeout', type=float, help='Automatically stop after this many seconds from the first command')
+    parser.add_argument('--goal-tolerance', type=float, default=0.8, help='Goal center-distance threshold in metres')
+    parser.add_argument('--stop-on-goal', action='store_true', help='Exit the controller after reaching the final goal')
 
     parsed_args, ros_args = parser.parse_known_args(sys.argv)
 
@@ -826,16 +929,31 @@ def main(args=None):
         san_niccolo=parsed_args.san_niccolo,
         engineering_filters=parsed_args.engineering_filters,
         pure_pursuit=parsed_args.pure_pursuit,
+        experiment_dir=parsed_args.experiment_dir,
+        timeout=parsed_args.timeout,
+        goal_tolerance=parsed_args.goal_tolerance,
+        stop_on_goal=parsed_args.stop_on_goal,
     )
     mode_text = "🔄 PATROL MODE" if parsed_args.patrol else "🛑 SINGLE TARGET MODE"
     node.get_logger().info(f"Goals set to: {rc_goals_list} in the robot frame | {mode_text}")
     
     try:
-        rclpy.spin(node)
+        if parsed_args.stop_on_goal or parsed_args.timeout is not None:
+            while rclpy.ok() and not node.finished:
+                rclpy.spin_once(node, timeout_sec=0.1)
+        else:
+            rclpy.spin(node)
     except KeyboardInterrupt:
         stop = Twist()
         node.pub_cmd.publish(stop)
         node.get_logger().info("🛑 Stopping control...")
+        if node.final_event is None:
+            node.final_event = {
+                'reason': 'interrupted',
+                'timestamp': node.get_clock().now().nanoseconds * 1e-9,
+                'pose': None,
+                'goal_distance': None,
+            }
     finally:
         node.save_data()
         if len(node.recorded_data) > 1:

@@ -5,6 +5,7 @@ artifacts and unrelated moving objects from creating false human tracks.
 """
 
 import argparse
+import json
 import math
 import os
 import pickle
@@ -27,8 +28,10 @@ PEDESTRIAN_MAX_ACCEL_M_S2 = 3.0
 class Track:
     """Constant-velocity Kalman track with history for RTS smoothing."""
 
-    def __init__(self, track_id, initial_pos, timestamp):
+    def __init__(self, track_id, initial_pos, timestamp, start_frame=0):
         self.track_id = track_id
+        self.start_frame = start_frame
+        self.active = True
         self.x = np.array([initial_pos[0], initial_pos[1], 0.0, 0.0], dtype=float)
         self.P = np.diag([0.12, 0.12, 1.0, 1.0])
         self.missed_frames = 0
@@ -41,6 +44,8 @@ class Track:
         self.transitions = [None]
         self.measurement_used = [True]
         self.manual_correction_used = [True]
+        self.active_history = [True]
+        self.valid_history = [True]
         self.smoothed_states = []
         self.last_manual_position = self.x[:2].copy()
         self.last_manual_timestamp = timestamp
@@ -115,9 +120,16 @@ class Track:
         self.missed_frames = 0
         self.last_manual_position = position.copy()
         self.last_manual_timestamp = timestamp
+        self.active = True
 
     def commit_frame(
-        self, timestamp, transition, prediction, used_measurement, manual_correction=False
+        self,
+        timestamp,
+        transition,
+        prediction,
+        used_measurement,
+        manual_correction=False,
+        valid=None,
     ):
         self.timestamps.append(timestamp)
         self.filtered_x.append(self.x.copy())
@@ -127,6 +139,20 @@ class Track:
         self.predicted_P.append(prediction[1])
         self.measurement_used.append(used_measurement)
         self.manual_correction_used.append(manual_correction)
+        self.active_history.append(self.active)
+        self.valid_history.append(
+            self.active and (used_measurement or self.missed_frames <= 3)
+            if valid is None
+            else bool(valid)
+        )
+
+    def state_at_frame(self, frame_index):
+        local_index = frame_index - self.start_frame
+        if local_index < 0 or local_index >= len(self.smoothed_states):
+            return None
+        if not self.active_history[local_index]:
+            return None
+        return self.smoothed_states[local_index]
 
     def apply_rts_smoother(self):
         self.smoothed_states = [state.copy() for state in self.filtered_x]
@@ -184,7 +210,17 @@ def parse_args(argv=None):
         action="store_true",
         help="do not open selection/animation windows (useful for automated tests)",
     )
+    parser.add_argument(
+        "--no-render",
+        action="store_true",
+        help="use selection GUIs but do not show the final repeating animation",
+    )
     parser.add_argument("--save", metavar="PATH", help="save the animation (for example out.gif)")
+    parser.add_argument(
+        "--tracks-output",
+        metavar="PATH",
+        help="save timestamped states and validity masks as a compressed NPZ",
+    )
     parser.add_argument(
         "--no-smoothing",
         action="store_true",
@@ -195,6 +231,13 @@ def parse_args(argv=None):
         metavar="N",
         type=int,
         help="pause every N displayed frames for optional manual track corrections",
+    )
+    parser.add_argument(
+        "--label-preview-window",
+        metavar="N",
+        type=int,
+        default=21,
+        help="odd number of scan frames in the looping labeling preview (default: 21)",
     )
     return parser.parse_args(argv)
 
@@ -281,7 +324,8 @@ def exclude_near_tracks(points, tracks, radius=HUMAN_EXCLUSION_RADIUS):
         return points
     keep = np.ones(len(points), dtype=bool)
     for track in tracks:
-        keep &= np.linalg.norm(points - track.x[:2], axis=1) > radius
+        if track.active:
+            keep &= np.linalg.norm(points - track.x[:2], axis=1) > radius
     return points[keep]
 
 
@@ -358,9 +402,152 @@ def show_fullscreen(fig, block=True):
     plt.show(block=block)
 
 
-def select_initial_humans(global_points, robot_pose):
+def preview_frame_bounds(frame_count, center_index, window_size):
+    """Return a clipped, near-centered half-open frame window."""
+    window_size = min(int(window_size), int(frame_count))
+    start = max(0, center_index - window_size // 2)
+    stop = min(frame_count, start + window_size)
+    start = max(0, stop - window_size)
+    return start, stop
+
+
+def build_label_preview(scans, pose_at_time, center_index, anchor_pose, window_size):
+    """Build odometry-relative scan frames anchored to the labeling frame."""
+    start, stop = preview_frame_bounds(len(scans), center_index, window_size)
+    center_scan = scans[center_index]
+    center_t = center_scan.header.stamp.sec + center_scan.header.stamp.nanosec * 1e-9
+    center_odom = pose_at_time(center_t)
+    cx, cy, cth = center_odom
+    ax, ay, ath = anchor_pose
+    c_anchor, s_anchor = np.cos(ath), np.sin(ath)
+    c_center, s_center = np.cos(-cth), np.sin(-cth)
+    preview = []
+    for index in range(start, stop):
+        scan = scans[index]
+        timestamp = scan.header.stamp.sec + scan.header.stamp.nanosec * 1e-9
+        ox, oy, oth = pose_at_time(timestamp)
+        relative_xy = np.array(
+            [[c_center, -s_center], [s_center, c_center]]
+        ) @ np.array([ox - cx, oy - cy])
+        px, py = np.array(
+            [[c_anchor, -s_anchor], [s_anchor, c_anchor]]
+        ) @ relative_xy + np.array([ax, ay])
+        pth = ath + math.atan2(math.sin(oth - cth), math.cos(oth - cth))
+        points = transform_points(scan_to_local_points(scan), px, py, pth)
+        preview.append(
+            {
+                "frame_number": index + 1,
+                "global_scan": points,
+                "robot_pose": (px, py, pth),
+                "is_label_frame": index == center_index,
+            }
+        )
+    return preview
+
+
+def add_track_positions_to_preview(preview_frames, tracks, current_frame_index):
+    """Add available filtered track positions to past/current preview frames."""
+    for frame in preview_frames:
+        frame_index = frame["frame_number"] - 1
+        frame["track_positions"] = []
+        frame["track_ids"] = []
+        frame["track_context_available"] = frame_index <= current_frame_index
+        if frame_index > current_frame_index:
+            continue
+        for track in tracks:
+            local_index = frame_index - track.start_frame
+            if 0 <= local_index < len(track.filtered_x):
+                if not (
+                    track.active_history[local_index]
+                    and track.valid_history[local_index]
+                ):
+                    continue
+                position = track.filtered_x[local_index][:2]
+            elif frame_index == current_frame_index and track.active:
+                # At a checkpoint the current prediction exists, but the frame
+                # has not yet been associated and committed.
+                if track.missed_frames > 3:
+                    continue
+                position = track.x[:2]
+            else:
+                continue
+            if np.all(np.isfinite(position)):
+                frame["track_positions"].append(np.asarray(position, dtype=float))
+                frame["track_ids"].append(track.track_id)
+    return preview_frames
+
+
+def add_looping_preview(fig, ax, preview_frames, anchor_pose):
+    """Attach a looping scan animation to the right-hand labeling axis."""
+    (scan_plot,) = ax.plot([], [], "k.", markersize=2, alpha=0.45)
+    (robot_plot,) = ax.plot([], [], "bo", markersize=8)
+    (heading_plot,) = ax.plot([], [], "b-", linewidth=2)
+    track_plot = ax.scatter(
+        [], [], c="red", s=80, edgecolors="black", label="Available track position",
+        zorder=5,
+    )
+    track_labels = {
+        track_id: ax.text(0, 0, "", color="darkred", weight="bold", zorder=6)
+        for track_id in sorted({
+            track_id
+            for frame in preview_frames
+            for track_id in frame.get("track_ids", [])
+        })
+    }
+    anchor_x, anchor_y, _ = anchor_pose
+    ax.set_xlim(anchor_x - 8, anchor_x + 8)
+    ax.set_ylim(anchor_y - 8, anchor_y + 8)
+    ax.set_aspect("equal")
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.set_xlabel("Global X [m]")
+    ax.set_ylabel("Global Y [m]")
+
+    def update(index):
+        frame = preview_frames[index]
+        points = frame["global_scan"]
+        rx, ry, rth = frame["robot_pose"]
+        scan_plot.set_data(points[:, 0], points[:, 1])
+        robot_plot.set_data([rx], [ry])
+        heading_plot.set_data([rx, rx + np.cos(rth)], [ry, ry + np.sin(rth)])
+        track_positions = np.asarray(frame.get("track_positions", []), dtype=float)
+        if len(track_positions):
+            track_positions = track_positions.reshape(-1, 2)
+        else:
+            track_positions = np.empty((0, 2))
+        track_plot.set_offsets(track_positions)
+        visible_ids = set(frame.get("track_ids", []))
+        positions_by_id = dict(zip(frame.get("track_ids", []), track_positions))
+        for track_id, label in track_labels.items():
+            if track_id in visible_ids:
+                position = positions_by_id[track_id]
+                label.set_position((position[0] + 0.08, position[1] + 0.08))
+                label.set_text(f"#{track_id}")
+                label.set_visible(True)
+            else:
+                label.set_visible(False)
+        suffix = " — LABEL FRAME" if frame["is_label_frame"] else ""
+        if frame.get("track_context_available") is False:
+            suffix += " — FUTURE (scan only)"
+        ax.set_title(f"Looping context — frame {frame['frame_number']}{suffix}")
+        return scan_plot, robot_plot, heading_plot, track_plot, *track_labels.values()
+
+    preview_animation = animation.FuncAnimation(
+        fig,
+        update,
+        frames=len(preview_frames),
+        interval=150,
+        repeat=True,
+        blit=False,
+    )
+    # Matplotlib otherwise garbage-collects an animation before the modal
+    # selection window closes.
+    fig._label_preview_animation = preview_animation
+    return preview_animation
+
+
+def select_initial_humans(global_points, robot_pose, preview_frames=None):
     """Open the first-frame GUI and return selected global coordinates."""
-    fig, ax = plt.subplots(figsize=(9, 8))
+    fig, (ax, preview_ax) = plt.subplots(1, 2, figsize=(16, 8))
     ax.scatter(global_points[:, 0], global_points[:, 1], c="black", s=5, alpha=0.55)
     rx, ry, rth = robot_pose
     ax.plot(rx, ry, "bo", markersize=9)
@@ -407,31 +594,36 @@ def select_initial_humans(global_points, robot_pose):
         "Select humans: left-click add, right-click/Delete undo, Enter start"
     )
     ax.margins(0.08)
+    add_looping_preview(
+        fig,
+        preview_ax,
+        preview_frames or [{
+            "frame_number": 1,
+            "global_scan": global_points,
+            "robot_pose": robot_pose,
+            "is_label_frame": True,
+        }],
+        robot_pose,
+    )
     plt.tight_layout()
     show_fullscreen(fig, block=True)
     return [np.asarray(point, dtype=float) for point in selected]
 
 
-def select_checkpoint_corrections(global_points, robot_pose, tracks, frame_number):
-    """Collect optional identity-preserving corrections at a periodic checkpoint."""
-    if not tracks:
-        return {}
-    fig, ax = plt.subplots(figsize=(9, 8))
+def select_checkpoint_corrections(
+    global_points, robot_pose, tracks, frame_number, preview_frames=None
+):
+    """Collect corrections plus additions/deactivations at a checkpoint."""
+    fig, (ax, preview_ax) = plt.subplots(1, 2, figsize=(16, 8))
     ax.scatter(global_points[:, 0], global_points[:, 1], c="black", s=5, alpha=0.55)
     rx, ry, rth = robot_pose
     ax.plot(rx, ry, "bo", markersize=9, label="Robot")
     ax.plot([rx, rx + np.cos(rth)], [ry, ry + np.sin(rth)], "b-", linewidth=2)
 
-    predicted = np.array([track.x[:2] for track in tracks])
-    ax.scatter(
-        predicted[:, 0],
-        predicted[:, 1],
-        c="orange",
-        marker="x",
-        s=140,
-        linewidths=3,
-        label="Current prediction",
-        zorder=5,
+    predicted = np.array([track.x[:2] for track in tracks]) if tracks else np.empty((0, 2))
+    prediction_markers = ax.scatter(
+        predicted[:, 0], predicted[:, 1], c="orange", marker="x", s=140,
+        linewidths=3, label="Current prediction", zorder=5,
     )
     predicted_labels = [
         ax.text(
@@ -443,17 +635,24 @@ def select_checkpoint_corrections(global_points, robot_pose, tracks, frame_numbe
         )
         for track, point in zip(tracks, predicted)
     ]
-    corrections = {}
+    corrections, reactivations = {}, {}
+    additions, deactivations = [], set()
     active_index = 0
+    mode = "correct"
     correction_markers = ax.scatter(
         [], [], c="red", s=120, edgecolors="black", label="Manual correction", zorder=6
     )
     correction_labels = []
+    addition_markers = ax.scatter(
+        [], [], c="magenta", marker="+", s=160, linewidths=3,
+        label="New identity", zorder=6,
+    )
 
     def redraw():
         nonlocal correction_labels
         points = np.array(list(corrections.values())) if corrections else np.empty((0, 2))
         correction_markers.set_offsets(points)
+        addition_markers.set_offsets(np.asarray(additions) if additions else np.empty((0, 2)))
         for label in correction_labels:
             label.remove()
         correction_labels = [
@@ -466,34 +665,70 @@ def select_checkpoint_corrections(global_points, robot_pose, tracks, frame_numbe
             )
             for track_id, position in corrections.items()
         ]
-        active_id = tracks[active_index].track_id
+        active_id = tracks[active_index].track_id if tracks else "none"
+        instruction = {
+            "correct": "click corrects selected track",
+            "add": "click adds a new identity",
+            "reactivate": "click reactivates selected track",
+        }[mode]
         ax.set_title(
-            f"Checkpoint frame {frame_number} — active track #{active_id}\n"
-            "Left-click its real position; number/Tab selects a track; Enter continues"
+            f"Checkpoint frame {frame_number} — track #{active_id}; {instruction}\n"
+            "N add, D deactivate, R reactivate, number/Tab select, Enter continue"
         )
         for index, label in enumerate(predicted_labels):
-            label.set_color("orangered" if index == active_index else "darkorange")
+            if tracks[index].track_id in deactivations or not tracks[index].active:
+                label.set_color("grey")
+            else:
+                label.set_color("orangered" if index == active_index else "darkorange")
+        if tracks:
+            colors = [
+                "grey" if (not track.active or track.track_id in deactivations) else "orange"
+                for track in tracks
+            ]
+            prediction_markers.set_color(colors)
         fig.canvas.draw_idle()
 
     def on_click(event):
-        nonlocal active_index
+        nonlocal active_index, mode
         if event.inaxes is not ax or event.xdata is None or event.button != 1:
             return
-        track_id = tracks[active_index].track_id
-        corrections[track_id] = np.array([event.xdata, event.ydata])
-        if len(tracks) > 1:
-            active_index = (active_index + 1) % len(tracks)
+        clicked = np.array([event.xdata, event.ydata])
+        if mode == "add" or not tracks:
+            additions.append(clicked)
+        elif mode == "reactivate":
+            reactivations[tracks[active_index].track_id] = clicked
+            deactivations.discard(tracks[active_index].track_id)
+        else:
+            corrections[tracks[active_index].track_id] = clicked
+            if len(tracks) > 1:
+                active_index = (active_index + 1) % len(tracks)
+        mode = "correct"
         redraw()
 
     def on_key(event):
-        nonlocal active_index
+        nonlocal active_index, mode
         if event.key in ("enter", "return"):
             plt.close(fig)
-        elif event.key == "tab":
+        elif event.key == "n":
+            mode = "add"
+            redraw()
+        elif event.key == "r" and tracks:
+            mode = "reactivate"
+            redraw()
+        elif event.key == "d" and tracks:
+            track_id = tracks[active_index].track_id
+            deactivations.add(track_id)
+            corrections.pop(track_id, None)
+            reactivations.pop(track_id, None)
+            redraw()
+        elif event.key == "tab" and tracks:
             active_index = (active_index + 1) % len(tracks)
             redraw()
-        elif event.key in ("backspace", "delete"):
-            corrections.pop(tracks[active_index].track_id, None)
+        elif event.key in ("backspace", "delete") and tracks:
+            track_id = tracks[active_index].track_id
+            corrections.pop(track_id, None)
+            reactivations.pop(track_id, None)
+            deactivations.discard(track_id)
             redraw()
         elif event.key and event.key.isdigit():
             requested_id = int(event.key)
@@ -511,23 +746,39 @@ def select_checkpoint_corrections(global_points, robot_pose, tracks, frame_numbe
     ax.set_ylabel("Global Y [m]")
     ax.legend(loc="upper right")
     ax.margins(0.08)
+    add_looping_preview(
+        fig,
+        preview_ax,
+        preview_frames or [{
+            "frame_number": frame_number,
+            "global_scan": global_points,
+            "robot_pose": robot_pose,
+            "is_label_frame": True,
+        }],
+        robot_pose,
+    )
     redraw()
     plt.tight_layout()
     show_fullscreen(fig, block=True)
-    return corrections
+    return {
+        "corrections": corrections,
+        "additions": additions,
+        "deactivations": deactivations,
+        "reactivations": reactivations,
+    }
 
 
 def associate_and_update(tracks, candidates, locked_track_indices=None):
     locked_track_indices = set(locked_track_indices or ())
     if not candidates:
         for index, track in enumerate(tracks):
-            if index not in locked_track_indices:
+            if track.active and index not in locked_track_indices:
                 track.missed_frames += 1
         return locked_track_indices
     large_cost = 1e6
     costs = np.full((len(tracks), len(candidates)), large_cost)
     for row, track in enumerate(tracks):
-        if row in locked_track_indices:
+        if row in locked_track_indices or not track.active:
             continue
         distance_gate = min(1.8, 0.8 + 0.08 * track.missed_frames)
         for col, candidate in enumerate(candidates):
@@ -541,7 +792,7 @@ def associate_and_update(tracks, candidates, locked_track_indices=None):
             tracks[row].update(candidates[col]["position"])
             updated.add(row)
     for row, track in enumerate(tracks):
-        if row not in updated:
+        if track.active and row not in updated:
             track.missed_frames += 1
     return updated
 
@@ -563,6 +814,7 @@ def process_recording(
     smooth=True,
     correction_interval=None,
     checkpoint_callback=None,
+    label_preview_window=21,
 ):
     scans, odoms = data["scan"], data["odom"]
     if not scans or not odoms:
@@ -592,7 +844,11 @@ def process_recording(
 
     seeds = [np.asarray(p, dtype=float) for p in (initial_positions or [])]
     if use_gui:
-        seeds.extend(select_initial_humans(first_points, (laser_rx, laser_ry, laser_rth)))
+        first_pose = (laser_rx, laser_ry, laser_rth)
+        initial_preview = build_label_preview(
+            scans, pose, 0, first_pose, label_preview_window
+        )
+        seeds.extend(select_initial_humans(first_points, first_pose, initial_preview))
     tracks = [Track(i + 1, point, first_t) for i, point in enumerate(seeds)]
     print(f"Initialised {len(tracks)} human track(s).")
 
@@ -627,31 +883,81 @@ def process_recording(
 
         transitions, predictions = [], []
         for track in tracks:
-            F, x_pred, P_pred = track.predict(dt)
+            if track.active:
+                F, x_pred, P_pred = track.predict(dt)
+            else:
+                F, x_pred, P_pred = np.eye(4), track.x.copy(), track.P.copy()
             transitions.append(F)
             predictions.append((x_pred, P_pred))
 
-        corrections = {}
+        checkpoint_actions = {
+            "corrections": {}, "additions": [], "deactivations": set(),
+            "reactivations": {},
+        }
         if correction_interval and frame_number % correction_interval == 0:
             callback = checkpoint_callback
             if callback is None and use_gui:
-                callback = select_checkpoint_corrections
-            if callback is not None:
-                corrections = callback(
+                checkpoint_preview = build_label_preview(
+                    scans,
+                    pose,
+                    frame_number - 1,
+                    (laser_rx, laser_ry, laser_rth),
+                    label_preview_window,
+                )
+                add_track_positions_to_preview(
+                    checkpoint_preview, tracks, frame_number - 1
+                )
+                result = select_checkpoint_corrections(
+                    global_points,
+                    (laser_rx, laser_ry, laser_rth),
+                    tracks,
+                    frame_number,
+                    checkpoint_preview,
+                )
+            elif callback is not None:
+                result = callback(
                     global_points,
                     (laser_rx, laser_ry, laser_rth),
                     tracks,
                     frame_number,
                 )
-                if corrections:
-                    corrected_ids = ", ".join(f"#{track_id}" for track_id in corrections)
-                    print(f"Checkpoint frame {frame_number}: corrected {corrected_ids}.")
-                else:
-                    print(f"Checkpoint frame {frame_number}: predictions accepted.")
+            else:
+                result = None
+            if result is not None:
+                if "corrections" in result:
+                    checkpoint_actions.update(result)
+                else:  # Backward-compatible callback returning {track_id: position}.
+                    checkpoint_actions["corrections"] = result
+                summary = []
+                if checkpoint_actions["corrections"]:
+                    summary.append("corrected " + ", ".join(
+                        f"#{track_id}" for track_id in checkpoint_actions["corrections"]
+                    ))
+                if checkpoint_actions["additions"]:
+                    summary.append(f"added {len(checkpoint_actions['additions'])}")
+                if checkpoint_actions["deactivations"]:
+                    summary.append("deactivated " + ", ".join(
+                        f"#{track_id}" for track_id in checkpoint_actions["deactivations"]
+                    ))
+                if checkpoint_actions["reactivations"]:
+                    summary.append("reactivated " + ", ".join(
+                        f"#{track_id}" for track_id in checkpoint_actions["reactivations"]
+                    ))
+                print(
+                    f"Checkpoint frame {frame_number}: "
+                    + ("; ".join(summary) if summary else "predictions accepted")
+                    + "."
+                )
         corrected_indices = set()
         for index, track in enumerate(tracks):
-            if track.track_id in corrections:
-                track.apply_manual_correction(corrections[track.track_id], t_scan)
+            if track.track_id in checkpoint_actions["deactivations"]:
+                track.active = False
+            correction = checkpoint_actions["reactivations"].get(
+                track.track_id,
+                checkpoint_actions["corrections"].get(track.track_id),
+            )
+            if correction is not None:
+                track.apply_manual_correction(correction, t_scan)
                 corrected_indices.add(index)
 
         dynamic_points, static_points = get_dynamic_points(global_points, map_points)
@@ -669,6 +975,18 @@ def process_recording(
                 manual_correction=i in corrected_indices,
             )
 
+        next_track_id = max((track.track_id for track in tracks), default=0) + 1
+        for position in checkpoint_actions["additions"]:
+            tracks.append(
+                Track(
+                    next_track_id,
+                    position,
+                    t_scan,
+                    start_frame=frame_number - 1,
+                )
+            )
+            next_track_id += 1
+
         safe_static = exclude_near_tracks(static_points, tracks)
         if len(safe_static):
             local_map_buffer.append(safe_static[::4])
@@ -680,8 +998,12 @@ def process_recording(
         else:
             track.smoothed_states = [state.copy() for state in track.filtered_x]
     for frame_index, frame in enumerate(render_frames):
-        frame["humans"] = [track.smoothed_states[frame_index] for track in tracks]
-        frame["measured"] = [track.measurement_used[frame_index] for track in tracks]
+        visible = [
+            (track, track.state_at_frame(frame_index)) for track in tracks
+        ]
+        visible = [(track, state) for track, state in visible if state is not None]
+        frame["humans"] = [state for _, state in visible]
+        frame["track_ids"] = [track.track_id for track, _ in visible]
     return render_frames, tracks
 
 
@@ -728,19 +1050,22 @@ def render_animation(render_frames, tracks, show=True, save_path=None):
         robot_plot.set_data([rx], [ry])
         robot_heading.set_data([rx, rx + np.cos(r_th)], [ry, ry + np.sin(r_th)])
         humans = np.asarray(frame["humans"])
-        if len(humans):
-            humans_scatter.set_offsets(humans[:, :2])
-            velocity_quiver.set_offsets(humans[:, :2])
-            velocity_quiver.set_UVC(humans[:, 2], humans[:, 3])
-            for label, track, state in zip(labels, tracks, humans):
+        padded = np.full((len(tracks), 4), np.nan)
+        id_to_index = {track.track_id: index for index, track in enumerate(tracks)}
+        for track_id, state in zip(frame.get("track_ids", []), humans):
+            padded[id_to_index[track_id]] = state
+        humans_scatter.set_offsets(padded[:, :2])
+        velocity_quiver.set_offsets(padded[:, :2])
+        velocity_quiver.set_UVC(padded[:, 2], padded[:, 3])
+        for label, track, state in zip(labels, tracks, padded):
+            if np.all(np.isfinite(state)):
                 label.set_position((state[0] + 0.08, state[1] + 0.08))
                 label.set_text(
                     f"#{track.track_id}  {np.linalg.norm(state[2:]):.2f} m/s"
                 )
-        else:
-            humans_scatter.set_offsets(np.empty((0, 2)))
-            velocity_quiver.set_offsets(np.empty((0, 2)))
-            velocity_quiver.set_UVC(np.array([]), np.array([]))
+                label.set_visible(True)
+            else:
+                label.set_visible(False)
         ax.set_title(f"Seeded ICP pedestrian tracking — frame {frame_idx + 1}/{len(render_frames)}")
         return scan_plot, robot_plot, robot_heading, humans_scatter, velocity_quiver
 
@@ -756,12 +1081,68 @@ def render_animation(render_frames, tracks, show=True, save_path=None):
     return ani
 
 
+def save_tracks(output_path, render_frames, tracks, source_recording):
+    """Save fixed-shape track arrays that can be interpolated for metrics."""
+    output_path = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    frame_count, track_count = len(render_frames), len(tracks)
+    states = np.full((frame_count, track_count, 4), np.nan, dtype=float)
+    active = np.zeros((frame_count, track_count), dtype=bool)
+    valid = np.zeros((frame_count, track_count), dtype=bool)
+    observed = np.zeros((frame_count, track_count), dtype=bool)
+    manual = np.zeros((frame_count, track_count), dtype=bool)
+    for column, track in enumerate(tracks):
+        for local_index, state in enumerate(track.smoothed_states):
+            frame_index = track.start_frame + local_index
+            if frame_index >= frame_count:
+                break
+            states[frame_index, column] = state
+            active[frame_index, column] = track.active_history[local_index]
+            valid[frame_index, column] = track.valid_history[local_index]
+            observed[frame_index, column] = track.measurement_used[local_index]
+            manual[frame_index, column] = track.manual_correction_used[local_index]
+    temporary = output_path + ".tmp.npz"
+    np.savez_compressed(
+        temporary,
+        timestamps=np.asarray([frame["t"] for frame in render_frames], dtype=float),
+        track_ids=np.asarray([track.track_id for track in tracks], dtype=int),
+        states=states,
+        active=active,
+        valid=valid,
+        observed=observed,
+        manual_correction=manual,
+        robot_pose=np.asarray([frame["robot_pose"] for frame in render_frames], dtype=float),
+    )
+    os.replace(temporary, output_path)
+    metadata_path = os.path.splitext(output_path)[0] + ".json"
+    metadata = {
+        "schema_version": 1,
+        "source_recording": os.path.abspath(source_recording),
+        "coordinate_frame": "aligned_odometry_global",
+        "position_units": "m",
+        "velocity_units": "m/s",
+        "frames": frame_count,
+        "tracks": track_count,
+        "validity_rule": "active and observed within the last three LiDAR frames",
+        "track_start_frames": {
+            str(track.track_id): track.start_frame for track in tracks
+        },
+    }
+    with open(metadata_path + ".tmp", "w", encoding="utf-8") as stream:
+        json.dump(metadata, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    os.replace(metadata_path + ".tmp", metadata_path)
+    print(f"Saved track data to {output_path}")
+
+
 def main(argv=None):
     args = parse_args(argv)
     if args.correction_interval is not None and args.correction_interval <= 0:
         raise SystemExit("--correction-interval must be a positive integer")
     if args.no_gui and args.correction_interval:
         raise SystemExit("--correction-interval requires the GUI; remove --no-gui")
+    if args.label_preview_window <= 0 or args.label_preview_window % 2 == 0:
+        raise SystemExit("--label-preview-window must be a positive odd integer")
     if args.no_gui and not args.initial_human:
         print("Warning: --no-gui without --initial-human will track no people.")
     data, filename = load_recording(args.input)
@@ -772,6 +1153,7 @@ def main(argv=None):
         use_gui=not args.no_gui,
         smooth=not args.no_smoothing,
         correction_interval=args.correction_interval,
+        label_preview_window=args.label_preview_window,
     )
     if tracks:
         print(
@@ -789,8 +1171,15 @@ def main(argv=None):
                     for track in tracks
                 )
             )
-    if not args.no_gui or args.save:
-        render_animation(render_frames, tracks, show=not args.no_gui, save_path=args.save)
+    if args.tracks_output:
+        save_tracks(args.tracks_output, render_frames, tracks, filename)
+    if (not args.no_gui and not args.no_render) or args.save:
+        render_animation(
+            render_frames,
+            tracks,
+            show=not args.no_gui and not args.no_render,
+            save_path=args.save,
+        )
 
 
 if __name__ == "__main__":
