@@ -143,6 +143,33 @@ If intervention is required:
 3. Select collision, safety stop, or unrelated operator abort.
 4. Add a concise note identifying what happened.
 
+If the interruption was an unrelated operator abort—for example, an incorrect
+start pose or unavailable ROS topics—the attempt can be repeated without
+consuming its scheduled trial. First archive and reset the latest attempt:
+
+```bash
+python3 turtlebot/experiments/run_experiment.py retry-last \
+  --config turtlebot/experiments/corridor_campaign.json
+```
+
+Then correct the setup problem and start it again with the normal command:
+
+```bash
+python3 turtlebot/experiments/run_experiment.py run-next \
+  --config turtlebot/experiments/corridor_campaign.json
+```
+
+The retry command never deletes or overwrites data. It moves the original run
+into `CAMPAIGN_NAME/aborted_attempts/RUN_DIRECTORY_attempt_01`, records that
+path in `schedule.json`, and resets the same policy/trial entry to pending.
+Additional retries receive increasing attempt numbers, and the replacement
+run's manifest records its `attempt_number`. The `status` command also reports
+how many attempts were archived. Only `operator_abort`
+and `controller_error` outcomes are retryable, and only when they are the most
+recent attempted schedule entry. Collisions, safety stops, timeouts, and
+successful trials remain part of the experiment and cannot be retried through
+this command.
+
 After every trial, and before repositioning for the next one:
 
 ```bash
@@ -151,8 +178,9 @@ ros2 bag info turtlebot/experiments/data/CAMPAIGN_NAME/RUN_DIRECTORY/rosbag
 
 Confirm that scan, odometry, and stamped command topics all contain messages,
 that the duration is plausible, and that `manifest.json` has a final outcome.
-If logging is incomplete, keep the directory and mark the trial failed; never
-reuse its run identifier or overwrite it.
+If logging is incomplete, label the attempt as an operator abort or let the
+runner record a controller error, then use `retry-last`. Never manually delete,
+rename, or overwrite a run directory.
 
 ## 5. Extract and verify pedestrian tracks
 

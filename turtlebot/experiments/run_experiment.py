@@ -44,6 +44,7 @@ else:
 HERE = Path(__file__).resolve().parent
 TURTLEBOT_DIR = HERE.parent
 REPO_ROOT = TURTLEBOT_DIR.parent
+RETRYABLE_OUTCOMES = {"operator_abort", "controller_error"}
 
 
 def resolve_network(config_path: Path, configured: str) -> Path:
@@ -164,6 +165,7 @@ def run_next(config_path: Path) -> Path:
         "ordinal": entry["ordinal"],
         "policy": entry["policy"],
         "policy_trial": entry["policy_trial"],
+        "attempt_number": len(entry.get("previous_attempts", [])) + 1,
         "started_at": utc_now(),
         "finished_at": None,
         "outcome": "running",
@@ -287,20 +289,82 @@ def run_next(config_path: Path) -> Path:
     return run_dir
 
 
+def prepare_retry(campaign_dir: Path) -> tuple[Path, dict]:
+    """Archive the latest retryable attempt and reset its schedule entry."""
+    schedule_path = campaign_dir / "schedule.json"
+    if not schedule_path.is_file():
+        raise FileNotFoundError(f"Campaign schedule not found: {schedule_path}")
+    schedule = read_json(schedule_path)
+    attempted = [entry for entry in schedule.get("runs", []) if entry.get("run_directory")]
+    if not attempted:
+        raise RuntimeError("No recorded campaign run is available to retry")
+    entry = max(attempted, key=lambda item: int(item["ordinal"]))
+    outcome = entry.get("outcome")
+    if outcome not in RETRYABLE_OUTCOMES:
+        allowed = ", ".join(sorted(RETRYABLE_OUTCOMES))
+        raise ValueError(
+            f"Latest run outcome '{outcome}' is not retryable. "
+            f"Only {allowed} attempts may be retried."
+        )
+
+    run_dir = campaign_dir / entry["run_directory"]
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"Run directory not found: {run_dir}")
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Run manifest not found: {manifest_path}")
+
+    archive_root = campaign_dir / "aborted_attempts"
+    archive_root.mkdir(exist_ok=True)
+    attempt_number = 1
+    while True:
+        archive_dir = archive_root / f"{run_dir.name}_attempt_{attempt_number:02d}"
+        if not archive_dir.exists():
+            break
+        attempt_number += 1
+
+    manifest = read_json(manifest_path)
+    archived_at = utc_now()
+    manifest["archived_for_retry_at"] = archived_at
+    manifest["archived_attempt_number"] = attempt_number
+    atomic_write_json(manifest_path, manifest)
+    run_dir.rename(archive_dir)
+
+    archived_relative = str(archive_dir.relative_to(campaign_dir))
+    entry.setdefault("previous_attempts", []).append(
+        {
+            "attempt": attempt_number,
+            "outcome": outcome,
+            "archived_at": archived_at,
+            "directory": archived_relative,
+        }
+    )
+    entry["status"] = "pending"
+    entry["run_directory"] = None
+    entry.pop("outcome", None)
+    atomic_write_json(schedule_path, schedule)
+    return archive_dir, entry
+
+
 def print_status(config_path: Path) -> None:
     config = load_config(config_path)
     root = campaign_root(config_path, config)
     schedule = read_json(root / "schedule.json")
     for run in schedule["runs"]:
+        archived_attempts = len(run.get("previous_attempts", []))
+        retry_text = f"  archived attempts {archived_attempts}" if archived_attempts else ""
         print(
             f"{run['ordinal']:02d}  {run['policy']:<5}  policy trial "
             f"{run['policy_trial']:02d}  {run['status']:<8}  {run.get('outcome', '')}"
+            f"{retry_text}"
         )
 
 
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init", "run-next", "status"))
+    parser.add_argument(
+        "command", choices=("init", "run-next", "retry-last", "status")
+    )
     parser.add_argument("--config", required=True, type=Path)
     args = parser.parse_args(argv)
     config_path = args.config.resolve()
@@ -308,6 +372,15 @@ def main(argv=None) -> None:
         print(f"Initialized campaign at {init_campaign(config_path)}")
     elif args.command == "run-next":
         print(f"Completed run at {run_next(config_path)}")
+    elif args.command == "retry-last":
+        config = load_config(config_path)
+        root = campaign_root(config_path, config)
+        archive_dir, entry = prepare_retry(root)
+        print(
+            f"Archived aborted attempt at {archive_dir}\n"
+            f"Reset run {entry['ordinal']:03d} ({entry['policy']} policy trial "
+            f"{entry['policy_trial']:02d}) to pending. Use 'run-next' to repeat it."
+        )
     else:
         print_status(config_path)
 
