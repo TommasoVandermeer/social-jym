@@ -580,7 +580,7 @@ class MPPI(DWA):
             humans_velocities,
             humans_radii,
             static_obstacles,
-            lidar_scans=observations[:,0,9:],
+            lidar_scans=observations[:,0,11:],
             point_clouds=point_clouds,
             x_lims=x_lims,
             y_lims=y_lims,

@@ -189,7 +189,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
         # Initialize setting data
         data = {
             "episode_starts": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs), dtype=bool),
-            "lasernav_observations": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_stack,lidar_num_rays+9)),
+            "lasernav_observations": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_stack,lidar_num_rays+11)),
             "humans_positions": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans,2)),
             "humans_velocities": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans,2)),
             "humans_orientations": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans)),
@@ -330,7 +330,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
                     alpha = 1 if robot_centric_data["obstacles_visibility"][frame][i,j] else 0.3
                     ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
             # Plot lidar scans
-            for distance, angle in zip(robot_centric_data["lasernav_observations"][frame,0,6:], jessi.lidar_angles_robot_frame):
+            for distance, angle in zip(robot_centric_data["lasernav_observations"][frame,0,11:], jessi.lidar_angles_robot_frame):
                 ax.plot(
                     [0, distance * jnp.cos(angle)],
                     [0, distance * jnp.sin(angle)],
@@ -845,6 +845,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
             )
             bounding_parameters = vmap(jessi.bound_action_space)(last_lidar_point_clouds)
             actor_input = vmap(jessi.compute_actor_input)(
+                batch["observations"][:,:,:11],
                 hcgs,
                 bounding_parameters,
                 batch["rc_robot_goals"],

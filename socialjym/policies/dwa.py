@@ -150,9 +150,7 @@ class DWA(BasePolicy):
         ## Split obs stack
         robot_position = obs_stack[:2]  # Shape: (2,)
         robot_orientation = obs_stack[2]  # Shape: ()
-        #robot_radius = obs_stack[3]  # Shape: ()
-        #robot_action = obs_stack[4:6]  # Shape: (2,)
-        lidar_measurements = obs_stack[9:]  # Shape: (lidar_num_rays)
+        lidar_measurements = obs_stack[11:]  # Shape: (lidar_num_rays)
         ## Align scan to reference frame
         # Compute LiDAR angles in world frame
         lidar_angles = self.lidar_angles_robot_frame + robot_orientation  # Shape: (lidar_num_rays)
@@ -484,7 +482,7 @@ class DWA(BasePolicy):
             c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
             rot = jnp.array([[c, -s], [s, c]])
             # AX 0,0: Simulation with LiDAR ranges
-            lidar_scan = observations[frame,0,9:]
+            lidar_scan = observations[frame,0,11:]
             for ray in range(len(lidar_scan)):
                 axs[0].plot(
                     [robot_poses[frame,0], robot_poses[frame,0] + lidar_scan[ray] * jnp.cos(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],

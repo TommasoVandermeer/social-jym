@@ -147,7 +147,7 @@ LRANGE = env.lidar_angular_range
 
 
 def _lidar_from_obs(o, robot_yaw):
-    dists = jnp.asarray(o[0, 6:])
+    dists = jnp.asarray(o[0, 11:])
     angles = jnp.linspace(robot_yaw - LRANGE / 2, robot_yaw + LRANGE / 2, NRAYS)
     return jnp.stack((dists, angles), axis=-1)
 

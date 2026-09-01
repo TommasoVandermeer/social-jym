@@ -13,16 +13,15 @@ rcParams['pdf.fonttype'] = 42
 rcParams['ps.fonttype'] = 42
 
 from socialjym.policies.dir_safe import DIRSAFE
-from socialjym.policies.jessi import JESSI
-from socialjym.policies.jessi_sa import JESSI_SA
+from socialjym.policies.jessi_s2r import JESSI_S2R
 from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4
-from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
+from socialjym.utils.rollouts.jessi_s2r_rollouts import jessi_s2r_rl_rollout
 
-state_augmented = True
+no_imitation_learning = False
 ### Sim-to-real parameters
 lidar_dt = 0.13
 odometry_dt = 0.05
@@ -33,11 +32,9 @@ leg_dynamics = True  # Whether to include leg dynamics in the simulation (introd
 ### Script parameters
 save_videos = False  # Whether to save videos of the debug inspections
 perception_nn_name = 'realistic_pre_perception_network_32.pkl'
-policy_nn_name = 'realistic_pre_controller_network_32.pkl'
-multitask_network_name = 'realistic_jessi_multitask_rl_out_32.pkl'
-if state_augmented:
-    policy_nn_name = "SA_" + policy_nn_name
-    multitask_network_name = "SA_" + multitask_network_name
+policy_nn_name = 'jessi_s2r_pre_controller_network_32_2.pkl'
+critic_nn_name = 'jessi_s2r_pre_critic_network_32_2.pkl'
+multitask_network_name = 'jessi_s2r_multitask_rl_out_32.pkl'
 ### Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -64,6 +61,8 @@ max_humans_velocity = 1.5  # Maximum humans velocity (m/s) used to compute the m
 perception_learning_rate = 0.0005
 perception_batch_size = 100
 policy_learning_rate = 0.005
+critic_learning_rate = 0.005
+beta_entropy_il = 0.001
 policy_batch_size = 200
 policy_n_epochs = 10 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
 n_max_epochs = 1000
@@ -79,14 +78,15 @@ training_hyperparams = {
     'n_obstacles': n_obstacles,
     'rl_training_updates': rl_training_updates,
     'rl_parallel_envs': rl_n_parallel_envs,
+    "rl_critic_learning_rate": 0.01, # 1e-3
     'rl_learning_rate': 1e-4, # 3e-4
     'rl_learning_rate_final': 1e-5, # 2e-4
     'rl_total_batch_size': 10_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
     'rl_mini_batch_size': 500, # 2_000 Mini-batch size for each model update
     'rl_micro_batch_size': 250, # 1_000 # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
-    'rl_num_epochs': 6, # 6
-    'rl_beta_entropy': 5e-2, # 1e-4
+    'rl_num_epochs': 4, # 6
+    'rl_beta_entropy': 7e-3, # 1e-4
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
@@ -94,38 +94,22 @@ training_hyperparams = {
     'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
     'safety_loss': False,  # Whether to include safety loss in the RL training
-    'target_kl': None,  # Target KL divergence for early stopping in each update
+    'target_kl': 0.015,  # Target KL divergence for early stopping in each update
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 # JESSI policy
-if state_augmented:
-    jessi = JESSI_SA(
-        v_max=robot_vmax, 
-        wheels_distance=robot_wheel_distance,
-        dt=robot_dt, 
-        lidar_num_rays=lidar_num_rays, 
-        lidar_max_dist=lidar_max_dist,
-        lidar_angular_range=lidar_angular_range,
-        n_stack=n_stack, 
-        n_detectable_humans=n_detectable_humans, 
-        max_humans_velocity=max_humans_velocity,
-        embedding_dim=embeddings_dim,
-        ablation_mode=6,
-    )
-else:
-    jessi = JESSI(
-        v_max=robot_vmax, 
-        wheels_distance=robot_wheel_distance,
-        dt=robot_dt, 
-        lidar_num_rays=lidar_num_rays, 
-        lidar_max_dist=lidar_max_dist,
-        lidar_angular_range=lidar_angular_range,
-        n_stack=n_stack, 
-        n_detectable_humans=n_detectable_humans, 
-        max_humans_velocity=max_humans_velocity,
-        embedding_dim=embeddings_dim,
-        ablation_mode=6,
-    )
+jessi = JESSI_S2R(
+    v_max=robot_vmax, 
+    wheels_distance=robot_wheel_distance,
+    dt=robot_dt, 
+    lidar_num_rays=lidar_num_rays, 
+    lidar_max_dist=lidar_max_dist,
+    lidar_angular_range=lidar_angular_range,
+    n_stack=n_stack, 
+    n_detectable_humans=n_detectable_humans, 
+    max_humans_velocity=max_humans_velocity,
+    embedding_dim=embeddings_dim,
+)
 # Plotting settings
 ax_visibility = 2
 ax_lims = jnp.array([
@@ -142,7 +126,7 @@ assert int(n_steps * data_split[1]) % perception_batch_size == 0, "Validation se
 assert int(n_steps * data_split[2]) % perception_batch_size == 0, "Test set size must be divisible by batch_size"
 
 ### GENERATE PRE-TRAINING DATASET
-if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_perception_dataset_{lidar_num_rays}.pkl')):
+if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_perception_dataset_{lidar_num_rays}.pkl')):
     env_params = {
         'robot_radius': 0.3,
         'n_humans': n_humans,
@@ -174,8 +158,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
-            collision_with_humans_penalty=-.5,
+            goal_reward=5.,
+            collision_with_humans_penalty=-1.,
             v_max=robot_vmax,
+            progress_to_goal_weight=0.3,
         )
     elif training_hyperparams['reward_function'] == 'lasernav_reward4': 
         reward_function = Reward4(
@@ -219,6 +205,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
                 test=False,
                 reset_if_done=True,
             )
+            ## Compute action space parameters
+            lidar_measurements = lasernav_obs[:,0,11:]  # Shape: (batch_size, lidar_num_rays)
+            lidar_angles = jnp.repeat(jessi.lidar_angles_robot_frame[None,:], n_parallel_envs, axis=0) + lasernav_obs[:,0,2][:,None]  # Shape: (batch_size, lidar_num_rays)
+            xs = lidar_measurements * jnp.cos(lidar_angles) + lasernav_obs[:,0,0][:,None]
+            ys = lidar_measurements * jnp.sin(lidar_angles) + lasernav_obs[:,0,1][:,None]
+            points = jnp.stack((xs, ys), axis=-1)  # Shape: (batch_size, lidar_num_rays, 2)
+            action_space_parameters = vmap(jessi.bound_action_space)(points)
             ## Save output data
             step_out_data = {
                 "episode_starts": ~outcome["nothing"],
@@ -235,6 +228,18 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
                 "rewards": final_lasernav_reward,
                 "humans_visibility": lasernav_info["humans_visibility_mask"],
                 "obstacles_visibility": lasernav_info["obstacles_visibility_mask"],
+                # Critic training stuff
+                "states": state,
+                "actions_histories": lasernav_obs[:,:jessi.n_actions_history,6:8],
+                "humans_goal": info["humans_goal"],
+                "humans_parameters": info["humans_parameters"],
+                "robot_goal": info["robot_goal"],
+                "robot_radius": jnp.full((n_parallel_envs,), jessi.robot_radius),
+                "v_max": jnp.full((n_parallel_envs,), jessi.v_max),
+                "wheels_distance": jnp.full((n_parallel_envs,), jessi.wheels_distance),
+                "wheels_max_linear_acceleration": jnp.full((n_parallel_envs,), laser_env.wheels_max_linear_acceleration),
+                "robot_delay": info["robot_delay"],
+                "action_space_params": action_space_parameters,
             }
             data = tree_map(lambda x, y: x.at[i].set(y), data, step_out_data)
             return data, final_state, final_info, final_reset_key, final_lasernav_obs, final_lasernav_info
@@ -258,6 +263,21 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
             "rewards": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs)),
             "humans_visibility": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs, n_humans)),
             "obstacles_visibility": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs, n_obstacles, 1)),
+            ## Critic training stuff
+            "states": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans+1,6)),
+            "actions_histories": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,jessi.n_actions_history,2)),
+            # Env params
+            "humans_goal": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans,2)),
+            "humans_parameters": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_humans,19)),
+            # Robot params
+            "robot_goal": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,2)),
+            "robot_radius": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs)),
+            "v_max": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs)),
+            "wheels_distance": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs)),
+            "wheels_max_linear_acceleration": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs)),
+            "robot_delay": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs)),
+            # Action space params
+            "action_space_params": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,3)),
         }
         # Step loop
         data, _, _, _, _, _ = lax.fori_loop(
@@ -281,18 +301,18 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         data = tree_map(lambda x: x.reshape((-1,) + x.shape[2:]), data)  # Merge parallel envs
         return data
     ## GENERATE RAW DATASET
-    if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_dir_safe_experiences_dataset_{lidar_num_rays}.pkl')):
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_dir_safe_experiences_dataset_{lidar_num_rays}.pkl')):
         # Generate raw data
         raw_data = simulate_n_steps(n_steps)
         # Save raw data dataset
-        with open(os.path.join(os.path.dirname(__file__), f'realistic_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
             pickle.dump(raw_data, f)
     else:
         # Load raw data dataset
-        with open(os.path.join(os.path.dirname(__file__), f'realistic_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             raw_data = pickle.load(f)
     ## GENERATE ROBOT-CENTERED DATASET
-    if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl')):
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl')):
         robot_centric_data = {
             "episode_starts": raw_data["episode_starts"],
             "lasernav_observations": raw_data["lasernav_observations"],
@@ -377,11 +397,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         fig.canvas.mpl_connect('button_press_event', toggle_pause)
         plt.show()
         # Save robot-centered robot_centric_data
-        with open(os.path.join(os.path.dirname(__file__), f'realistic_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
             pickle.dump(robot_centric_data, f)
     else:
         # Load robot-centered dataset
-        with open(os.path.join(os.path.dirname(__file__), f'realistic_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             robot_centric_data = pickle.load(f)
     ### GENERATE PERCEPTION NETWORK TRAINING DATASET
     # Initialize final dataset
@@ -448,14 +468,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
     fig.canvas.mpl_connect('button_press_event', toggle_pause)
     plt.show()
     # Save dataset
-    with open(os.path.join(os.path.dirname(__file__), f'realistic_perception_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
+    with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_perception_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
         pickle.dump(dataset, f)
     # Delete robot_centric_data and raw_data to save memory
     del robot_centric_data
     del raw_data
 else:
     # Load dataset
-    with open(os.path.join(os.path.dirname(__file__), f'realistic_perception_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
+    with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_perception_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
         dataset = pickle.load(f)
 
 ### PRE-TRAIN PERCEPTION NETWORK
@@ -743,29 +763,43 @@ else:
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
         encoder_params = pickle.load(f)
 
-### PRE-TRAIN POLICY NETWORK (IMITATION LEARNING)
+### PRE-TRAIN ACTOR & CRITIC NETWORKS (IMITATION LEARNING)
 if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
     # Load trained perception parameters
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
         encoder_params = pickle.load(f)
-    # CREATE ACTOR INPUTS DATASET
-    if not os.path.exists(os.path.join(os.path.dirname(__file__), f'controller_training_dataset_{lidar_num_rays}.pkl')):
+    # CREATE ACTOR & CRITIC INPUTS DATASET
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_actor_critic_training_dataset_{lidar_num_rays}.pkl')):
         # LOAD DATASETs
-        with open(os.path.join(os.path.dirname(__file__), f'realistic_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             raw_data = pickle.load(f)
-        with open(os.path.join(os.path.dirname(__file__), f'realistic_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             robot_centric_data = pickle.load(f)
-        with open(os.path.join(os.path.dirname(__file__), f'realistic_perception_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_perception_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             dataset = pickle.load(f)
-        # Compute actor-critic inputs for the entire dataset
+        # Compute actor inputs for the entire dataset
         controller_dataset = {
+            # Actor
             "observations": dataset['observations'],
             "rc_robot_goals": robot_centric_data["rc_robot_goals"],
             "actor_actions": raw_data["robot_actions"],
+            # Critic
+            "states": raw_data['states'],
+            "actions_history": raw_data["actions_histories"],
+            "humans_goal": raw_data["humans_goal"],
+            "humans_parameters": raw_data["humans_parameters"],
+            "static_obstacles": jnp.repeat(raw_data["static_obstacles"][:,None,:,:,:,:], n_humans+1, axis=1),
+            "robot_goal": raw_data["robot_goal"],
+            "robot_radius": raw_data["robot_radius"],
+            "v_max": raw_data["v_max"],
+            "wheels_distance": raw_data["wheels_distance"],
+            "wheels_max_linear_acceleration": raw_data["wheels_max_linear_acceleration"],
+            "robot_delay": raw_data["robot_delay"],
+            "action_space_params": raw_data["action_space_params"],
             "returns": raw_data["returns"],
         }
         # Save actor inputs
-        with open(os.path.join(os.path.dirname(__file__), f'controller_training_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_actor_critic_training_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
             pickle.dump(controller_dataset, f)
         # FREE UNUSED MEMORY
         del dataset
@@ -773,20 +807,41 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
         del raw_data
     else:
         # Load actor inputs
-        with open(os.path.join(os.path.dirname(__file__), f'controller_training_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
+        with open(os.path.join(os.path.dirname(__file__), f'jessi_s2r_actor_critic_training_dataset_{lidar_num_rays}.pkl'), 'rb') as f:
             controller_dataset = pickle.load(f)
+    print("Any critic target is finite?: ", jnp.all(jnp.isfinite(controller_dataset["returns"])))
+    print("Any actor target is finite?: ", jnp.all(jnp.isfinite(controller_dataset["actor_actions"])))
+    print("Any states is finite?: ", jnp.all(jnp.isfinite(controller_dataset["states"])))
+    print("Any actions_history is finite?: ", jnp.all(jnp.isfinite(controller_dataset["actions_history"])))
+    print("Any humans_goal is finite?: ", jnp.all(jnp.isfinite(controller_dataset["humans_goal"])))
+    print("Any humans_parameters is finite?: ", jnp.all(jnp.isfinite(controller_dataset["humans_parameters"])))
+    print("Any static_obstacles is finite?: ", jnp.all(jnp.isfinite(controller_dataset["static_obstacles"])))
+    print("Any robot_goal is finite?: ", jnp.all(jnp.isfinite(controller_dataset["robot_goal"])))
+    print("Any robot_radius is finite?: ", jnp.all(jnp.isfinite(controller_dataset["robot_radius"])))
+    print("Any v_max is finite?: ", jnp.all(jnp.isfinite(controller_dataset["v_max"])))
+    print("Any wheels_distance is finite?: ", jnp.all(jnp.isfinite(controller_dataset["wheels_distance"])))
+    print("Any wheels_max_linear_acceleration is finite?: ", jnp.all(jnp.isfinite(controller_dataset["wheels_max_linear_acceleration"])))
+    print("Any robot_delay is finite?: ", jnp.all(jnp.isfinite(controller_dataset["robot_delay"])))
+    print("Any action_space_params is finite?: ", jnp.all(jnp.isfinite(controller_dataset["action_space_params"])))
     # INITIALIZE ACTOR NETWORK
     # Initialize actor network
-    _, actor_critic_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
+    _, actor_params, critic_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
     # Count network parameters
-    def count_params(actor_critic_params):
-        return sum(jnp.prod(jnp.array(p.shape)) for layer in actor_critic_params.values() for p in layer.values())
-    n_params = count_params(actor_critic_params)
-    print(f"# Controller network parameters: {n_params}")
+    def count_params(params):
+        return sum(jnp.prod(jnp.array(p.shape)) for layer in params.values() for p in layer.values())
+    n_params = count_params(actor_params)
+    print(f"# Actor network parameters: {n_params}")
+    n_params = count_params(critic_params)
+    print(f"# Critic network parameters: {n_params}")
     # TRAINING LOOP
     # Initialize optimizer and its state
-    optimizer = optax.sgd(learning_rate=policy_learning_rate, momentum=0.9)
-    optimizer_state = optimizer.init(actor_critic_params)
+    actor_optimizer = optax.sgd(learning_rate=policy_learning_rate, momentum=0.9)
+    actor_optimizer_state = actor_optimizer.init(actor_params)
+    critic_optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adam(learning_rate=3e-4, eps=1e-5)
+    )
+    critic_optimizer_state = critic_optimizer.init(critic_params)
     n_data = controller_dataset["observations"].shape[0]
     n_train_batches = n_data // policy_batch_size
     print(f"# Training dataset size: {controller_dataset['observations'].shape[0]} experiences")
@@ -838,7 +893,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
         i:int,
         epoch_for_val:tuple,
     ) -> tuple:
-        dataset, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses = epoch_for_val
+        critic_key, dataset, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = epoch_for_val
         # Shuffle dataset at the beginning of the epoch
         shuffle_key = random.PRNGKey(random_seed + i)
         indexes = jnp.arange(n_data)
@@ -850,7 +905,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
             j:int,
             batch_for_val:tuple
         ) -> tuple:
-            epoch_data, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses = batch_for_val
+            critic_key, epoch_data, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = batch_for_val
             # Retrieve batch experiences
             indexes = (jnp.arange(policy_batch_size) + j * policy_batch_size).astype(jnp.int32)
             batch = vmap(lambda idxs, data: tree_map(lambda x: x[idxs], data), in_axes=(0, None))(indexes, epoch_data)
@@ -876,41 +931,65 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
                 batch["rc_robot_goals"],
             )
             train_batch = {
+                # Actor
                 "actor_inputs": actor_input,
                 "scan_embeddings": scan_embeddings,
                 "actor_actions": batch["actor_actions"],
+                # Critic
+                "states": batch["states"],
+                "actions_history": batch["actions_history"],
+                "humans_goal": batch["humans_goal"],
+                "humans_parameters": batch["humans_parameters"],
+                "static_obstacles": batch["static_obstacles"],
+                "robot_goal": batch["robot_goal"],
+                "robot_radius": batch["robot_radius"],
+                "v_max": batch["v_max"],
+                "wheels_distance": batch["wheels_distance"],
+                "wheels_max_linear_acceleration": batch["wheels_max_linear_acceleration"],
+                "robot_delay": batch["robot_delay"],
+                "action_space_params": batch["action_space_params"],
                 "returns": batch["returns"],
             }
             # Update parameters
-            actor_critic_params, optimizer_state, loss, actor_loss, critic_loss = jessi.update_il(
-                actor_critic_params, 
-                optimizer, 
-                optimizer_state,
+            critic_key, subkey = random.split(critic_key)
+            actor_params, actor_optimizer_state, actor_loss, critic_params, critic_optimizer_state, critic_loss = jessi.update_il(
+                actor_params, 
+                actor_optimizer, 
+                actor_optimizer_state,
+                subkey,
+                critic_params,
+                critic_optimizer,
+                critic_optimizer_state,
                 train_batch,
+                beta_entropy=beta_entropy_il,
             )
             # Save loss
-            losses = losses.at[i,j].set(loss)
+            losses = losses.at[i,j].set(actor_loss)
             actor_losses = actor_losses.at[i,j].set(actor_loss)
             critic_losses = critic_losses.at[i,j].set(critic_loss)
-            return epoch_data, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses
+            return critic_key, epoch_data, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses
         n_batches = n_data // policy_batch_size
-        _, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses = lax.fori_loop(
+        critic_key, _, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = lax.fori_loop(
             0,
             n_batches,
             _batch_loop,
-            (epoch_data, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses)
+            (critic_key, epoch_data, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses)
         )
-        return dataset, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses
+        return critic_key, dataset, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses
     # Epoch loop
-    _, actor_critic_params, optimizer_state, losses, actor_losses, critic_losses = lax.fori_loop(
+    _, _, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, losses, actor_losses, critic_losses = lax.fori_loop(
         0,
         policy_n_epochs,
         _epoch_loop,
-        (controller_dataset, actor_critic_params, optimizer_state, jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))), jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))), jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))))
+        (random.PRNGKey(random_seed), controller_dataset, actor_params, actor_optimizer_state, critic_params, critic_optimizer_state, jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))), jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))), jnp.zeros((policy_n_epochs, int(n_data // policy_batch_size))))
     )
     # Save trained parameters
     with open(os.path.join(os.path.dirname(__file__), policy_nn_name), 'wb') as f:
-        pickle.dump(actor_critic_params, f)
+        pickle.dump(actor_params, f)
+    with open(os.path.join(os.path.dirname(__file__), critic_nn_name), 'wb') as f:
+        pickle.dump(critic_params, f)
+    print("Actor losses: ", actor_losses)
+    print("Critic losses: ", critic_losses)
     # FREE MEMORY
     del controller_dataset
     # Plot training loss
@@ -940,8 +1019,10 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
         reward_function = Reward1(
             robot_radius=0.3,
-            collision_with_humans_penalty=-.5,
+            goal_reward=5.,
+            collision_with_humans_penalty=-1.,
             v_max=robot_vmax,
+            progress_to_goal_weight=0.3,
         )
     elif training_hyperparams['reward_function'] == 'lasernav_reward4': 
         reward_function = Reward4(
@@ -958,7 +1039,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'robot_dt': 0.25,
         'wheels_distance': robot_wheel_distance,
         'humans_dt': 0.01,
-        'robot_visible': False,
+        'robot_visible': None,
         'scenario': training_hyperparams['scenario'],
         'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,9,10,11,12,13,14,15,16]),
         'circle_radius': 7,
@@ -982,47 +1063,39 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     env = LaserNav(**env_params)
     _, _, obs, info, _ = env.reset(random.PRNGKey(training_hyperparams['random_seed']))
     # Initialize robot policy and vnet params
-    if state_augmented:
-        policy = JESSI_SA(
-            robot_radius=env_params['robot_radius'],
-            v_max=robot_vmax, 
-            wheels_distance=robot_wheel_distance,
-            dt=env_params['robot_dt'], 
-            lidar_num_rays=lidar_num_rays, 
-            lidar_max_dist=lidar_max_dist,
-            lidar_angular_range=lidar_angular_range,
-            n_stack=n_stack,
-            beam_dropout_rate=0.2,
-            embedding_dim=embeddings_dim,
-            ablation_mode=6,
-        )
-    else:
-        policy = JESSI(
-            robot_radius=env_params['robot_radius'],
-            v_max=robot_vmax, 
-            wheels_distance=robot_wheel_distance,
-            dt=env_params['robot_dt'], 
-            lidar_num_rays=lidar_num_rays, 
-            lidar_max_dist=lidar_max_dist,
-            lidar_angular_range=lidar_angular_range,
-            n_stack=n_stack,
-            beam_dropout_rate=0.2,
-            embedding_dim=embeddings_dim,
-            ablation_mode=6,
-        )
+    policy = JESSI_S2R(
+        robot_radius=env_params['robot_radius'],
+        v_max=robot_vmax, 
+        wheels_distance=robot_wheel_distance,
+        dt=env_params['robot_dt'], 
+        lidar_num_rays=lidar_num_rays, 
+        lidar_max_dist=lidar_max_dist,
+        lidar_angular_range=lidar_angular_range,
+        n_stack=n_stack,
+        beam_dropout_rate=0.2,
+        embedding_dim=embeddings_dim,
+        humans_trajectory_noise_std=0.,
+    )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
         il_encoder_params = pickle.load(f)
-    with open(os.path.join(os.path.dirname(__file__), policy_nn_name), 'rb') as f:
-        il_actor_params = pickle.load(f)
+    if no_imitation_learning:
+        _, il_actor_params, il_critic_params, _ = policy.init_nns(
+            random.PRNGKey(random_seed),
+        )
+    else:
+        with open(os.path.join(os.path.dirname(__file__), policy_nn_name), 'rb') as f:
+            il_actor_params = pickle.load(f)
+        with open(os.path.join(os.path.dirname(__file__), critic_nn_name), 'rb') as f:
+            il_critic_params = pickle.load(f)
     il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
     def label_params(params):
         labels = {}
         for module_name, module_params in params.items():
             if jessi.perception_name in module_name.lower(): 
                 label = 'perception'
-            elif jessi.actor_critic_name in module_name.lower():
-                label = 'actor_critic'
+            elif jessi.actor_name in module_name.lower():
+                label = 'actor'
             labels[module_name] = {k: label for k in module_params.keys()}
         return labels
     network_optimizer = optax.multi_transform(
@@ -1040,7 +1113,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
                 eps=1e-7, 
             ),
         ),
-        'actor_critic': optax.chain(
+        'actor': optax.chain(
             optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
             optax.adam(
                 learning_rate=optax.schedules.linear_schedule(
@@ -1055,13 +1128,19 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         },
         label_params(il_network_params)
     )
+    critic_network_optimizer = optax.chain(
+        # optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
+        optax.sgd(learning_rate=training_hyperparams['rl_critic_learning_rate'], momentum=0.9)
+    )
     # Initialize RL rollout params
     rl_rollout_params = {
-        'initial_network_params': il_network_params,
+        'initial_actor_parameters': il_network_params,
+        'initial_critic_parameters': il_critic_params,
         'n_parallel_envs': training_hyperparams['rl_parallel_envs'],
         'train_updates': training_hyperparams['rl_training_updates'],
         'random_seed': training_hyperparams['random_seed'],
-        'network_optimizer': network_optimizer,
+        'actor_network_optimizer': network_optimizer,
+        'critic_network_optimizer': critic_network_optimizer,
         'total_batch_size': training_hyperparams['rl_total_batch_size'],
         'mini_batch_size': training_hyperparams['rl_mini_batch_size'],
         'micro_batch_size': training_hyperparams['rl_micro_batch_size'],
@@ -1077,11 +1156,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'debugging': False,
     }
     # REINFORCEMENT LEARNING ROLLOUT
-    rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)
+    rl_out = jessi_s2r_rl_rollout(**rl_rollout_params)
     # Save RL rollout output
     with open(os.path.join(os.path.dirname(__file__),multitask_network_name), 'wb') as f:
         pickle.dump(rl_out, f)
-    final_params, _, metrics = rl_out
+    final_params, best_final_params, final_critic_params, best_final_critic_params, metrics = rl_out
     processed_metrics = {}
     for key, value in metrics.items():
         if isinstance(value, list):

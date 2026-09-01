@@ -12,15 +12,20 @@ set -e
 GPU=false
 BUILD=false
 MOUNT=true
-for arg in "$@"; do
-    case $arg in
-        --gpu)      GPU=true    ;;
-        --no-gpu)   GPU=false   ;;
-        --build)    BUILD=true  ;;
-        --no-mount) MOUNT=false ;;
+TB4_IP="192.168.8.4"
+TB4_PORT="11811"
+TB4_DOMAIN_ID="0"
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --gpu)      GPU=true; shift ;;
+        --no-gpu)   GPU=false; shift ;;
+        --build)    BUILD=true; shift ;;
+        --no-mount) MOUNT=false; shift ;;
+        --ip)       TB4_IP="$2"; shift 2 ;;
         *)
-            echo "Unknown argument: $arg"
-            echo "Usage: $0 [--gpu|--no-gpu] [--build] [--no-mount]"
+            echo "Unknown argument: $1"
+            echo "Usage: $0 [--gpu|--no-gpu] [--build] [--no-mount] [--ip <IP>] "
             exit 1
             ;;
     esac
@@ -57,6 +62,10 @@ DOCKER_ARGS=(
     -v /tmp/.X11-unix:/tmp/.X11-unix
     --workdir /opt/social-jym
     --network host
+    -e RMW_IMPLEMENTATION="rmw_fastrtps_cpp"
+    -e ROS_DOMAIN_ID="${TB4_DOMAIN_ID}"
+    -e ROS_DISCOVERY_SERVER="${TB4_IP}:${TB4_PORT};"
+    -e ROS_SUPER_CLIENT="True"
 )
 
 if [ "$MOUNT" = true ]; then
@@ -69,5 +78,11 @@ if [ "$GPU" = true ]; then
     DOCKER_ARGS+=(--gpus all)
 fi
 
-echo "Starting $IMAGE_NAME container..."
+echo "=========================================================="
+echo "Starting $IMAGE_NAME container"
+echo "Discovery Server IP:   $TB4_IP"
+echo "Discovery Port:        $TB4_PORT"
+echo "ROS Domain ID:         $TB4_DOMAIN_ID"
+echo "=========================================================="
+
 docker run "${DOCKER_ARGS[@]}" "$IMAGE_NAME" bash

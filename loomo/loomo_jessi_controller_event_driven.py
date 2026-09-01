@@ -140,11 +140,12 @@ class JessiController(Node):
             return
 
         current_time = self.get_clock().now().nanoseconds / 1e9
-        # if (current_time - self.last_control_time) < self.dt:
-        #     # Sono passati meno di 250ms dall'ultima inferenza, ignoriamo questo scan
-        #     return
         print(f"Delta t: {current_time-self.last_control_time}") 
         self.last_control_time = current_time
+        t_scan = self.latest_scan.header.stamp
+        scan_time_sec = t_scan.sec + t_scan.nanosec * 1e-9
+        t_odom = self.latest_odom.header.stamp
+        odom_time_sec = t_odom.sec + t_odom.nanosec * 1e-9
 
         # scan_time = self.latest_scan.header.stamp
 
@@ -172,9 +173,11 @@ class JessiController(Node):
         curr_rx = self.latest_odom.pose.pose.position.x
         curr_ry = self.latest_odom.pose.pose.position.y
         curr_r_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        vx = self.latest_odom.twist.twist.linear.x
+        wz = self.latest_odom.twist.twist.angular.z
         print(f"Robot pose:         {curr_rx:.3f}, {curr_ry:.3f}, {curr_r_theta:.3f}")
 
-        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], safe_ranges))
+        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, vx, wz, self.previous_action[0], self.previous_action[1]], [scan_time_sec], [odom_time_sec], [current_time], safe_ranges))
         self.obs_stack.appendleft(current_step_obs)
         while len(self.obs_stack) < self.n_stack:
             self.obs_stack.appendleft(current_step_obs) 
@@ -287,6 +290,7 @@ class JessiController(Node):
                 translated_position = info_dict["robot_goal"] - robot_position
                 rc_robot_goal = R @ translated_position
                 robot_state_input = self.jessi.compute_robot_state_input(
+                    obs_matrix[:,:11],
                     bounding_parameters,
                     rc_robot_goal,
                 )

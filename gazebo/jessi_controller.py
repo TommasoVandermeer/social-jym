@@ -97,6 +97,14 @@ class JessiController(Node):
             self.get_logger().warn("Waiting data from sensors...")
             return
 
+        current_time = self.get_clock().now().nanoseconds / 1e9
+        print(f"Delta t: {current_time-self.last_control_time}") 
+        self.last_control_time = current_time
+        t_scan = self.latest_scan.header.stamp
+        scan_time_sec = t_scan.sec + t_scan.nanosec * 1e-9
+        t_odom = self.latest_odom.header.stamp
+        odom_time_sec = t_odom.sec + t_odom.nanosec * 1e-9
+
         # Ranges cleaning
         ranges = np.array(self.latest_scan.ranges)
         cleaned = np.nan_to_num(ranges, nan=self.lidar_max_dist, posinf=self.lidar_max_dist, neginf=self.lidar_max_dist)
@@ -127,10 +135,12 @@ class JessiController(Node):
         rx = dx * math.cos(-init_theta) - dy * math.sin(-init_theta)
         ry = dx * math.sin(-init_theta) + dy * math.cos(-init_theta)
         r_theta = wrap_angle(curr_theta - init_theta)
+        vx = self.latest_odom.twist.twist.linear.x
+        wz = self.latest_odom.twist.twist.angular.z
         print(f"Current pose - x: {rx} , y: {ry}, theta: {r_theta}")
         
         # Observation
-        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, self.previous_action[0], self.previous_action[1]], lidar_scan))
+        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, vx, wz, self.previous_action[0], self.previous_action[1]], [scan_time_sec], [odom_time_sec], [current_time], lidar_scan))
         self.obs_stack.appendleft(current_step_obs)
         while len(self.obs_stack) < self.n_stack:
             self.obs_stack.appendleft(current_step_obs) 

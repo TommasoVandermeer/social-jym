@@ -36,6 +36,20 @@ class LogisticNormal(BaseDistribution):
         return vmap(LogisticNormal.entropy, in_axes=(None, 0))(self, distributions)
 
     @partial(jit, static_argnames=("self"))
+    def weight_entropy(self, distribution:dict) -> float:
+        """
+        Computes the entropy of the latent Gaussian distribution as a surrogate 
+        for the Logistic-Normal entropy, which has no closed-form solution.
+        This provides a highly stable regularization signal for RL.
+        """
+        weights = jax.nn.softmax(distribution["locs"])
+        return -jnp.sum(weights * jnp.log(weights))
+
+    @partial(jit, static_argnames=("self"))
+    def batch_weight_entropy(self, distributions:dict) -> jnp.ndarray:
+        return vmap(LogisticNormal.weight_entropy, in_axes=(None, 0))(self, distributions)
+
+    @partial(jit, static_argnames=("self"))
     def sample(self, distribution:dict, key:random.PRNGKey):
         """
         Returns LATENT z. 

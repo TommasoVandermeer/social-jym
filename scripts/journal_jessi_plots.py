@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import vmap, random
+from jax import vmap, random, lax, tree_map
 import matplotlib.pyplot as plt
 import os
 from scipy.spatial import ConvexHull
@@ -11,11 +11,14 @@ font = {
 rc('font', **font)
 rcParams['pdf.fonttype'] = 42
 rcParams['ps.fonttype'] = 42
+from matplotlib.patches import Ellipse
+import pickle
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward
 from socialjym.policies.jessi import JESSI
-from socialjym.envs.base_env import SCENARIOS
+from socialjym.envs.base_env import SCENARIOS, HUMAN_POLICIES
+from jhsfm.hsfm import get_linear_velocity
 
 ### PARAMETERS
 L = 0.7 # Distance between the wheels of the robot
@@ -868,3 +871,262 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'scenarios.eps')):
             current_ax.set_title(title, fontsize=18, fontweight='bold')
             current_ax.tick_params(axis='both', which='major', labelsize=18)
     figure.savefig(os.path.join(os.path.dirname(__file__), "scenarios.eps"), format='eps')
+    plt.close()
+
+### FIG7: teaser.eps
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.eps')):
+    font = {
+        'weight' : 'regular',
+        'size'   : 15
+    }
+    rc('font', **font)
+    lidar_num_rays = 50
+    lidar_angular_range = jnp.pi
+    obstacles = jnp.array([
+        [[[-3.,2.],[3.,2.]],[[3.,2.],[3.,1.9]],[[3.,1.9],[-3.,1.9]],[[-3.,1.9],[-3.,2.]]],
+        [[[-3.,-2.],[3.,-2.]],[[3.,-2.],[3.,-1.9]],[[3.,-1.9],[-3.,-1.9]],[[-3.,-1.9],[-3.,-2.]]],
+    ])
+    full_state = jnp.array([
+        [0.2, 1.5,0.9,0.1,jnp.pi,0.02],
+        [-.5, -1.3,0.8,-0.2,jnp.pi,-0.01],
+        [-2., 0.,0.,0.,0.,0.], # ROBOT
+    ])
+    humans_goal = jnp.array([
+        [-3., 1.2],
+        [-3, .5],
+    ])
+    robot_goal = jnp.array([2.5, 0.])
+    custom_episode = {
+        "full_state": full_state,
+        "humans_goal": humans_goal,
+        "robot_goal": robot_goal,
+        "humans_radius": jnp.ones((humans_goal.shape[0],)) * 0.3,
+        "humans_speed": jnp.ones((humans_goal.shape[0],)) * 1.,
+        "scenario": -1,
+        "static_obstacles": jnp.repeat(obstacles[None, ...], full_state.shape[0], axis=0)
+    }
+    env_params = {
+        'n_stack': 5,
+        'lidar_num_rays': lidar_num_rays,
+        'lidar_angular_range': lidar_angular_range,
+        'lidar_max_dist': 10.,
+        'n_humans': 2, #5,
+        'n_obstacles': 2, #5,
+        'robot_radius': 0.3,
+        'robot_dt': dt,
+        'humans_dt': 0.01,
+        'robot_visible': True,
+        'scenario': None,
+        'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
+        'kinematics': 'unicycle',
+    }
+    env = LaserNav(**env_params)
+    with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out.pkl'), 'rb') as f:
+        network_params, _, _ = pickle.load(f)
+    policy = JESSI(
+        radius, 
+        v_max, 
+        dt, 
+        L,
+        5,
+        lidar_angular_range=lidar_angular_range,
+        lidar_max_dist=10.,
+        lidar_num_rays=lidar_num_rays,
+    )
+    state, env_key, obs, info, _ = env.reset_custom_episode(random.PRNGKey(0), custom_episode)
+    for i in range (policy.n_stack):
+        state, obs, info, _, _, (_, env_key) = env.step(state, info, jnp.array([0.,0.]), env_key=env_key)
+    action, _, perc_input, _, _, _, human_distr, actor_distr, _, _, _, _  = policy.act(random.PRNGKey(0),obs,info,network_params)
+    ### Plot
+    fig, ax = plt.subplots(2,1,figsize=(5,6.5))
+    fig.subplots_adjust(left=0.09, right=0.98, top=0.98, bottom=0.07, hspace=0.)
+    # Plot humans
+    for h in range(len(state[:-1])):
+        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.6, zorder=1)
+        ax[0].add_patch(head)
+        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+        ax[0].add_patch(circle)
+    # Plot human velocities
+    humans_velocities = lax.cond(
+        env.humans_policy == HUMAN_POLICIES.index('hsfm'),
+        lambda: vmap(get_linear_velocity, in_axes=(0,0))(
+                state[:-1,4],
+                state[:-1,2:4],
+            ),
+        lambda: state[:-1,2:4],
+    )
+    for h in range(len(state[:-1])):
+        ax[0].arrow(
+            state[h,0],
+            state[h,1],
+            humans_velocities[h,0],
+            humans_velocities[h,1],
+            head_width=0.1,
+            head_length=0.1,
+            fc='blue',
+            ec='blue',
+            alpha=0.6,
+            zorder=30,
+        )
+    lidar_scan = obs[0,11:]
+    for ray in range(len(lidar_scan)):
+        rgba_color = 'black'
+        ax[0].plot(
+            [state[-1,0], state[-1,0] + lidar_scan[ray] * jnp.cos(state[-1,4] + policy.lidar_angles_robot_frame[ray])],
+            [state[-1,1], state[-1,1] + lidar_scan[ray] * jnp.sin(state[-1,4] + policy.lidar_angles_robot_frame[ray])],
+            color=rgba_color, 
+            linewidth=0.5, 
+            zorder=0
+        )
+    # Pointcloud
+    point_cloud = policy.align_lidar(obs)[1]
+    for i, cloud in enumerate(point_cloud):
+        # color/alpha fade with i (smaller i -> less faded)
+        t = (1 - i / (policy.n_stack - 1))  # in [0,1]
+        ax[0].scatter(
+            cloud[:,0],
+            cloud[:,1],
+            c=0.3 + 0.7 * jnp.ones((policy.lidar_num_rays,)) * t,
+            cmap='Reds',
+            vmin=0.0,
+            vmax=1.0,
+            alpha=0.3 + 0.7 * t,
+            zorder=20 + policy.n_stack - i,
+        )
+    # Robot action
+    action_linear = lax.cond(
+        jnp.abs(action[1]) > 1e-3,
+        lambda: jnp.array([
+            (action[0]/action[1])*(jnp.sin(state[-1,4]+action[1]*0.5)-jnp.sin(state[-1,4])),
+            (action[0]/action[1])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+action[1]*0.5)),
+        ]),
+        lambda: jnp.array([
+            action[0]*dt*jnp.cos(state[-1,4]),
+            action[0]*dt*jnp.sin(state[-1,4]),
+        ]),
+    )
+    ax[1].arrow(
+        state[-1,0],
+        state[-1,1],
+        action_linear[0],
+        action_linear[1]+0.15,
+        head_width=0.1,
+        head_length=0.1,
+        fc='green',
+        ec='green',
+        alpha=1.,
+        zorder=30,
+    )
+    ax[0].set_xticks([])
+    ax[1].set_xlabel('X', labelpad=-2)
+    # Plots in both AX
+    for i, a in enumerate(ax):
+        a.set_ylabel('Y', labelpad=-13)
+        a.set_aspect('equal', adjustable='datalim')
+        y_min_slack = -0.13 if i==0 else 0.
+        y_max_slack = 0.13 if i==1 else 0.
+        a.set(xlim=[jnp.min(obstacles[:,:,:,0])-0.1,jnp.max(obstacles[:,:,:,0])+0.1],ylim=[jnp.min(obstacles[:,:,:,1])-0.1+y_min_slack,jnp.max(obstacles[:,:,:,1])+0.1+y_max_slack])
+        # Plot robot
+        robot_position = state[-1,:2]
+        head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+        a.add_patch(head)
+        circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+        a.add_patch(circle)
+        # Plot robot goal
+        a.plot(
+            robot_goal[0],
+            robot_goal[1],
+            marker='*',
+            markersize=10,
+            color='red',
+            zorder=5,
+        )
+        # Plot static obstacles
+        for o in obstacles: a.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+    # Human-centric Gaussians (HCGs) positions and velocities
+    pos_distrs = human_distr["pos_distrs"]
+    vel_distrs = human_distr["vel_distrs"]
+    probs = human_distr["weights"]
+    robot_pose = state[-1,[0,1,4]]
+    for h in range(policy.n_detectable_humans):
+        human_pos_distr = tree_map(lambda x: x[h], pos_distrs)
+        human_vel_distr = tree_map(lambda x: x[h], vel_distrs)
+        human_pos_distr = policy.bivariate_gaussian.roto_translate(
+            human_pos_distr, 
+            robot_pose
+        )
+        human_vel_distr = policy.bivariate_gaussian.roto_translate(
+            human_vel_distr, 
+            jnp.array([0, 0, robot_pose[2]]) # Velocities are not affected by translation, only rotation
+        )
+        pos = human_pos_distr["means"]
+        vel = human_vel_distr["means"] + pos
+        if probs[h] > 0.5:
+            # Position HCG
+            cov_matrix = policy.bivariate_gaussian.covariance(human_pos_distr)
+            eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+            angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+            width, height = 2 * jnp.sqrt(eigenvalues)
+            ellipse = Ellipse(
+                xy=pos,
+                width=width,
+                height=height,
+                angle=jnp.degrees(angle),
+                edgecolor='blue',
+                facecolor='lightblue',
+                alpha=0.8,
+                zorder=15,
+            )
+            ax[1].add_patch(ellipse)
+            ax[1].scatter(pos[0], pos[1], c='red', s=30, marker='x', zorder=100)
+            text_dir = jnp.arctan2(-(vel[1] - pos[1]), -(vel[0] - pos[0]))
+            ax[1].text(
+                pos[0] + jnp.cos(text_dir) * 0.5, 
+                pos[1] - jnp.sin(text_dir) * 0.5, 
+                f"score\n{probs[h]:.2f}", 
+                fontsize=8, 
+                color="red", 
+                fontweight="bold", 
+                zorder=101,
+                horizontalalignment='center',
+                verticalalignment='center',
+                bbox=dict(
+                    boxstyle='round,pad=0.2', 
+                    facecolor='white', 
+                    alpha=0.5, 
+                )
+            )
+            # Velocity HCG
+            cov_matrix = policy.bivariate_gaussian.covariance(human_vel_distr)
+            eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+            angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+            width, height = 2 * jnp.sqrt(eigenvalues)
+            ellipse = Ellipse(
+                xy=vel,
+                width=width,
+                height=height,
+                angle=jnp.degrees(angle),
+                edgecolor='blue',
+                facecolor='lightblue',
+                alpha=0.8,
+                zorder=15,
+            )
+            ax[1].add_patch(ellipse)
+            ax[1].arrow(
+                pos[0],
+                pos[1],
+                vel[0] - pos[0],
+                vel[1] - pos[1],
+                head_width=0.1,
+                head_length=0.1,
+                fc='red',
+                ec='red',
+                zorder=100,
+            )
+    fig.savefig(os.path.join(os.path.dirname(__file__), "teaser.eps"), format='eps')
+    plt.close()
+    font = {
+        'weight' : 'regular',
+        'size'   : 23
+    }
+    rc('font', **font)

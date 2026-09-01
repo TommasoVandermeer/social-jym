@@ -514,6 +514,7 @@ for a, ablation_mode in enumerate(ABLATIONS):
                 )
                 bounding_parameters = vmap(jessi.bound_action_space)(last_lidar_point_clouds)
                 actor_input = vmap(jessi.compute_actor_input)(
+                    batch["observations"][:,:,:11],
                     hcgs,
                     bounding_parameters,
                     batch["rc_robot_goals"],

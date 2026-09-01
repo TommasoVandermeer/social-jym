@@ -149,6 +149,7 @@ class LaserNav(BaseEnv):
         is_x_flipped:bool,
         is_y_flipped:bool,
         noise_key:random.PRNGKey,
+        visibility_chance:float,
     ) -> dict:
         """
         OVERRIDES BaseEnv._init_info method.
@@ -179,6 +180,7 @@ class LaserNav(BaseEnv):
             is_x_flipped,
             is_y_flipped,
             noise_key,
+            visibility_chance=visibility_chance,
         )
         noise_key1, noise_key2, noise_key3 = random.split(noise_key, 3)
         # Time from last LiDAR scan initialization
@@ -190,10 +192,11 @@ class LaserNav(BaseEnv):
         if self.odometry_misalignment:
             info["substeps_from_last_odom_ref_scan"] += random.randint(noise_key3, (), 0, self.odometry_substeps)
         # Previous observation initialization
-        info["previous_obs"], humans_visibility_mask, obstacles_visibility_mask = vmap(self._get_current_obs, in_axes=(None,None,None,None,None,None,None,None,None,0))(
+        info["previous_obs"], humans_visibility_mask, obstacles_visibility_mask = vmap(self._get_current_obs, in_axes=(None,None,None,None,None,None,None,None,None,None,0))(
             initial_state,
             info["humans_leg_state"],
             initial_state,
+            jnp.zeros((2,)),
             humans_parameters[:,0],
             info["humans_leg_parameters"][:,-1],
             static_obstacles[-1],
@@ -212,6 +215,7 @@ class LaserNav(BaseEnv):
         lidar_state:jnp.ndarray, 
         legs_lidar_state:jnp.ndarray, 
         odom_state:jnp.ndarray, 
+        robot_action:jnp.ndarray,
         humans_radii:jnp.ndarray, 
         legs_radii:jnp.ndarray, 
         static_obstacles:jnp.ndarray, 
@@ -228,6 +232,7 @@ class LaserNav(BaseEnv):
         - lidar_state: current state at the LiDAR update step.
         - legs_lidar_state: current state of humans' legs at the LiDAR update step.
         - odom_state: current state at the Odometry update step.
+        - robot_action: last reference velocity commanded to the robot
         - humans_radii: radii of the humans.
         - legs_radii: radii of the humans' legs.
         - static_obstacles: static obstacles in the environment.
@@ -237,7 +242,7 @@ class LaserNav(BaseEnv):
         - noise_key: random.PRNGKey for noise generation.
 
         output:
-        - current_obs: [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements]
+        - current_obs: [rx,ry,r_theta,r_radius,r_v,r_w,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements]
         """
         measurements, humans_visibility_mask, obstacles_visibility_mask = self.get_lidar_measurements(
             lidar_state[-1, :2], # Lidar position (robot position)
@@ -257,7 +262,8 @@ class LaserNav(BaseEnv):
             *robot_position, # Robot position
             robot_orientation, # Robot orientation
             self.robot_radius, # Robot radius
-            *robot_velocity, # Robot action (either (vx,vy) or (v,w))
+            *robot_velocity, # Robot velocity (either (vx,vy) or (v,w))
+            *robot_action, # Last robot reference velocity (either (vx,vy) or (v,w))
             lidar_timestamp,
             odom_timestamp,
             control_timestamp,
@@ -266,7 +272,7 @@ class LaserNav(BaseEnv):
         return current_obs, humans_visibility_mask, obstacles_visibility_mask
 
     @partial(jit, static_argnames=("self"))
-    def _get_obs(self, state:jnp.ndarray, info:dict, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment,
         this function computes the observation of the current state (which is a stack of the last n_stack observations).
@@ -274,10 +280,11 @@ class LaserNav(BaseEnv):
         args:
         - state: current state of the environment. (UNUSED HERE, STATE IS GATHERED FROM INTERMEDIATE_STATES IN INFO BASED ON SENSORS FREQUENCIES)
         - info: dictionary containing additional information about the environment.
+        - action: last robot action (t-1).
         - noise_key: random.PRNGKey for noise generation.
 
         output:
-        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_v,r_w,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
         """
         lidar_state = info['intermediate_states'][-(1+info["substeps_from_last_scan"])]
@@ -287,6 +294,7 @@ class LaserNav(BaseEnv):
             lidar_state, 
             legs_lidar_state, 
             odom_state, 
+            action,
             info["humans_parameters"][:,0], 
             info["humans_leg_parameters"][:,-1], 
             info["static_obstacles"][-1], 
@@ -312,6 +320,7 @@ class LaserNav(BaseEnv):
         reset_key:random.PRNGKey=random.PRNGKey(0),
         env_key:random.PRNGKey=random.PRNGKey(0),
         scenarios_prob:jnp.ndarray=None,
+        visibility_chance:float=0.,
     )-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
@@ -394,12 +403,12 @@ class LaserNav(BaseEnv):
         if self.scenario != -1: # Custom scenario, no automatic reset
             new_state, reset_key, new_info = lax.cond(
                 (reset_if_done) & (~(outcome["nothing"])),
-                lambda x: self._reset(x[1], scenarios_prob=scenarios_prob),
+                lambda x: self._reset(x[1], scenarios_prob=scenarios_prob, visibility_chance=visibility_chance),
                 lambda x: x,
                 (new_state, reset_key, new_info)
             )
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
-        new_obs, new_info["humans_visibility_mask"], new_info["obstacles_visibility_mask"] = self._get_obs(new_state, new_info, new_env_key)
+        new_obs, new_info["humans_visibility_mask"], new_info["obstacles_visibility_mask"] = self._get_obs(new_state, new_info, action, new_env_key)
         new_info["previous_obs"] = new_obs
         return new_state, new_obs, new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
 
@@ -414,8 +423,9 @@ class LaserNav(BaseEnv):
         test:bool=False,
         reset_if_done:bool=False,
         scenarios_prob:jnp.ndarray=None,
+        visibility_chance:float=0.,
     ):
-        return vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0, None))(
+        return vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0, None, None))(
             self, 
             states, 
             infos, 
@@ -425,11 +435,12 @@ class LaserNav(BaseEnv):
             reset_keys,
             env_keys,
             scenarios_prob,
+            visibility_chance,
         )
     
     @partial(jit, static_argnames=("self"))
-    def reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None) -> tuple:
-        initial_state, key, info = self._reset(key, scenarios_prob=scenarios_prob)
+    def reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None, visibility_chance:float=0.) -> tuple:
+        initial_state, key, info = self._reset(key, scenarios_prob=scenarios_prob, visibility_chance=visibility_chance)
         return \
             initial_state, \
             key, \
@@ -498,6 +509,7 @@ class LaserNav(BaseEnv):
             False,
             False,
             noise_key,
+            visibility_chance=0.,
         )
         return \
             full_state, \

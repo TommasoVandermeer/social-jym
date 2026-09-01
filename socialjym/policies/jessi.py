@@ -26,9 +26,9 @@ ABLATIONS = [
     1, # No action space bounding
     2, # No uncertainty on human detection for actor critic module
     3, # MLP in place of scene self-attention
-    # 4, # Gaussian parameterization of the action space (in place of Dirichlet)
-    # 5, # CNN + temporal attention perception (loss of lidar agnosticity)
-    # 6, # Logistic normal parameterization of the action space (in place of Dirichlet)
+    4, # Gaussian parameterization of the action space (in place of Dirichlet)
+    5, # CNN + temporal attention perception (loss of lidar agnosticity)
+    6, # Logistic normal parameterization of the action space (in place of Dirichlet)
 ]
 
 class MultiHeadAttention(hk.MultiHeadAttention):
@@ -529,6 +529,7 @@ class ActorCritic(hk.Module):
 class E2E(hk.Module):
     def __init__(
         self,
+        actor_critic_module:hk.Module,
         name: str,
         perception_name: str,
         controller_name: str,
@@ -581,7 +582,7 @@ class E2E(hk.Module):
             legit=legit,
         )
         # Initialize Actor-Critic module
-        self.actor_critic = ActorCritic(
+        self.actor_critic = actor_critic_module(
             controller_name,
             n_detectable_humans=n_detectable_humans,
             v_max=v_max,
@@ -746,6 +747,7 @@ class JESSI(BasePolicy):
         @hk.transform
         def e2e_network(x, y, stop_perception_gradient=False, only_perception=False, **kwargs) -> jnp.ndarray:
             e2e = E2E(
+                ActorCritic,
                 self.e2e_name,
                 self.perception_name,
                 self.actor_critic_name,
@@ -779,9 +781,7 @@ class JESSI(BasePolicy):
         ## Split obs stack
         robot_position = obs_stack[:2]  # Shape: (2,)
         robot_orientation = obs_stack[2]  # Shape: ()
-        #robot_radius = obs_stack[3]  # Shape: ()
-        #robot_action = obs_stack[4:6]  # Shape: (2,)
-        lidar_measurements = obs_stack[9:]  # Shape: (lidar_num_rays)
+        lidar_measurements = obs_stack[11:]  # Shape: (lidar_num_rays)
         ## Align scan to reference frame
         # Compute LiDAR angles in world frame
         lidar_angles = self.lidar_angles_robot_frame + robot_orientation  # Shape: (lidar_num_rays)
@@ -1114,6 +1114,7 @@ class JESSI(BasePolicy):
     @partial(jit, static_argnames=("self"))
     def compute_robot_state_input(
         self,
+        robot_obs_stack,
         action_space_params,
         robot_goal, # In cartesian coordinates (gx, gy) IN THE ROBOT FRAME
     ):
@@ -1134,12 +1135,13 @@ class JESSI(BasePolicy):
     @partial(jit, static_argnames=("self"))
     def compute_actor_input(
         self,
+        robot_obs_stack,
         hcgs,
         action_space_params,
         robot_goal, # In cartesian coordinates (gx, gy) IN THE ROBOT FRAME
     ):
         # Compute ROBOT state inputs
-        robot_state_input = self.compute_robot_state_input(action_space_params, robot_goal)
+        robot_state_input = self.compute_robot_state_input(robot_obs_stack, action_space_params, robot_goal)
         # HCGs from dict to jnp.array
         hcgs = jnp.concatenate((
             hcgs["pos_distrs"]["means"],
@@ -1166,7 +1168,7 @@ class JESSI(BasePolicy):
         Prepare the input for the encoder network.
 
         args:
-        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 11): Each stack [rx,ry,r_theta,r_radius,r_vx, r_wz,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
 
         output:
@@ -1175,7 +1177,7 @@ class JESSI(BasePolicy):
         - last LiDAR point cloud (lidar_num_rays, 2): in robot frame of the most recent observation.
         """
         # Limit readings to self.lidar_max_dist
-        clipped_obs = obs.at[:, 9:].set(jnp.clip(obs[:, 9:], a_min=0.0, a_max=self.lidar_max_dist))
+        clipped_obs = obs.at[:, 11:].set(jnp.clip(obs[:, 11:], a_min=0.0, a_max=self.lidar_max_dist))
         # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.
         aligned_lidar_scans = self.align_lidar(clipped_obs)[0]  # Shape: (n_stack, lidar_num_rays, 2)
         point_cloud_for_bounding = aligned_lidar_scans[:self.n_stack_for_action_space_bounding,:, :]  # Shape: (n_stack_for_action_space_bounding, lidar_num_rays, 2)
@@ -1198,7 +1200,7 @@ class JESSI(BasePolicy):
             cos_current_theta = jnp.cos(current_theta)
             hit = jnp.where(distance < self.lidar_max_dist, 1.0, 0.0)
             # Compute stack index features
-            delta_t = obs[0, 8] - obs[scan_index, 6] # Time difference from the control sampling time
+            delta_t = obs[0, 10] - obs[scan_index, 8] # Time difference from the control sampling time
             # Sector attendance
             beam_dir = jnp.array([sin_current_theta, cos_current_theta])
             cos_diffs = jnp.dot(self.sectors_latent_vecs, beam_dir)
@@ -1236,9 +1238,7 @@ class JESSI(BasePolicy):
         if self.ablation_mode == 1: # Ablation: No action space bounding
             bounding_parameters = jnp.ones((3,), dtype=jnp.float32)
         else:
-            bounding_parameters = self.bound_action_space(
-                point_cloud_for_bounding,  
-            )
+            bounding_parameters = self.bound_action_space(point_cloud_for_bounding)
         # Prepare input for network
         robot_position = obs[0,:2]
         robot_orientation = obs[0,2]
@@ -1248,6 +1248,7 @@ class JESSI(BasePolicy):
         translated_position = robot_goal - robot_position
         rc_robot_goal = R @ translated_position
         robot_state_input = self.compute_robot_state_input(
+            obs[:,:11],
             bounding_parameters,
             rc_robot_goal,
         )
@@ -1896,7 +1897,7 @@ class JESSI(BasePolicy):
             c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
             rot = jnp.array([[c, -s], [s, c]])
             # AX 0,0: Simulation with LiDAR ranges
-            lidar_scan = observations[frame,0,9:]
+            lidar_scan = observations[frame,0,11:]
             for ray in range(len(lidar_scan)):
                 if spatial_attentions is not None:
                     attention = float(spatial_attentions[frame, ray])

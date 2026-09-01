@@ -605,7 +605,7 @@ class DRAMPPI(MPPI):
             humans_velocities,
             humans_radii,
             static_obstacles,
-            lidar_scans=observations[:,0,6:],
+            lidar_scans=observations[:,0,11:],
             # point_clouds=point_clouds,
             humans_distributions=humans_distributions,
             perception_distributions=perception_distributions,

@@ -8,14 +8,14 @@ import matplotlib.pyplot as plt
 from socialjym.envs.lasernav import LaserNav
 # from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
 from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4 as Reward
-from socialjym.policies.jessi import JESSI
+from socialjym.policies.jessi_sa import JESSI_SA
 from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
 random_seed = 3
-visibility_chance=0.1
-robot_vmax = 1
-robot_wheel_distance = 0.7
+robot_vmax = .45
+robot_wmax = 1.9
+robot_wheel_distance = 2 * robot_vmax / robot_wmax
 time_limit = 50
 n_episodes = 100
 kinematics = 'unicycle'
@@ -29,17 +29,17 @@ env_params = {
     'odometry_dt': 0.05,
     'control_delay_mean': 0.1, 
     'control_delay_sigma': 0.01,
-    'wheels_max_linear_acceleration': 1.8, #0.87,
+    'wheels_max_linear_acceleration': 0.87,
     'wheels_distance': robot_wheel_distance,
-    'n_humans': 15,
+    'n_humans': 5,
     'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
-    'robot_visible': None,
-    'scenario': 'parallel_traffic', 
-    'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
-    'ccso_n_static_humans': 10,
+    'robot_visible': True,
+    'scenario': 'hybrid_scenario', 
+    # 'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
+    'ccso_n_static_humans': 3,
     'ccso_static_humans_radius_mean': 0.3,
     'ccso_static_humans_radius_std': 0.025,
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
@@ -54,7 +54,7 @@ env_params = {
 env = LaserNav(**env_params)
 
 # Initialize the policy
-policy = JESSI(
+policy = JESSI_SA(
     v_max=robot_vmax,
     wheels_distance=robot_wheel_distance,
     lidar_num_rays=env.lidar_num_rays,
@@ -64,16 +64,9 @@ policy = JESSI(
     n_stack_for_action_space_bounding=n_stack_for_action_space_bounding,
     embedding_dim=32,
 )
-# with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_perception_network_32.pkl'), 'rb') as f:
-#     encoder_params = pickle.load(f)
-# with open(os.path.join(os.path.dirname(__file__), 'realistic_pre_controller_network_32.pkl'), 'rb') as f:
-#     actor_params = pickle.load(f)
-# network_params = policy.merge_nns_params(encoder_params, actor_params)
 
-with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out_32.pkl'), 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'SA_realistic_jessi_multitask_rl_out_32_reward1_6.pkl'), 'rb') as f:
     network_params, _, _ = pickle.load(f)
-
-# _, _, network_params = policy.init_nns(random.PRNGKey(random_seed))
 
 # Test the trained JESSI policy
 # metrics = policy.evaluate(
@@ -86,7 +79,7 @@ with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out_32.pkl
 # Simulate some episodes
 for i in range(n_episodes):
     policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
-    state, reset_key, obs, info, outcome = env.reset(reset_key, visibility_chance=visibility_chance)
+    state, reset_key, obs, info, outcome = env.reset(reset_key)
     step = 0
     max_steps = int(env.reward_function.time_limit/env.robot_dt)+1
     all_states = jnp.array([state])

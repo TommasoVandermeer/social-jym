@@ -156,7 +156,7 @@ class Reward3(BaseReward):
         time = info["time"]
         # Compute next positions
         next_robot_pos = lax.cond(
-            action[1] != 0,
+            jnp.abs(action[1]) > 1e-3,
             lambda x: x.at[:].set(jnp.array([
                 x[0] + (action[0]/action[1]) * (jnp.sin(robot_yaw + action[1] * dt) - jnp.sin(robot_yaw)),
                 x[1] + (action[0]/action[1]) * (jnp.cos(robot_yaw) - jnp.cos(robot_yaw + action[1] * dt))
