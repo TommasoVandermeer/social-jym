@@ -235,8 +235,8 @@ def compute_episode_metrics(
             m < episode_steps,
             lambda y: lax.cond(
                 end_info["current_scenario"] == SCENARIOS.index('circular_crossing_with_static_obstacles'), # Static humans in this scenario are not used to compute min_distance and space_compliance
-                lambda z: z.at[m].set(jnp.min(jnp.linalg.norm(all_states[m, ccso_n_static_humans:-1, :2] - all_states[m, -1, :2], axis=1) - end_info["humans_parameters"][ccso_n_static_humans:,0]) - robot_radius),
-                lambda z: z.at[m].set(jnp.min(jnp.linalg.norm(all_states[m, :-1, :2] - all_states[m, -1, :2], axis=1) - end_info["humans_parameters"][:,0]) - robot_radius),
+                lambda z: z.at[m].set(jnp.min(jnp.linalg.norm(all_states[m, ccso_n_static_humans:-1, :2] - all_states[m, -1, :2], axis=1) - end_info["humans_parameters"][ccso_n_static_humans:,0], initial=jnp.inf) - robot_radius),
+                lambda z: z.at[m].set(jnp.min(jnp.linalg.norm(all_states[m, :-1, :2] - all_states[m, -1, :2], axis=1) - end_info["humans_parameters"][:,0], initial=jnp.inf) - robot_radius),
                 y),
             lambda y: y.at[m].set(jnp.nan),
             x),

@@ -387,8 +387,24 @@ class DRAMPPI(MPPI):
             robot_pose, V_clamped, robot_goal, humans_state, monte_carlo_keys, info['static_obstacles'][-1],
         )
         # Compute weights and update u_mean
-        rho = jnp.min(costs)
-        weights = jnp.exp(-(costs - rho) / beta)
+        finite_costs = jnp.isfinite(costs)
+        rho = jnp.min(jnp.where(finite_costs, costs, jnp.inf))
+        safe_rho = jnp.where(jnp.any(finite_costs), rho, 0.0)
+        centered_costs = jnp.where(finite_costs, costs - safe_rho, 0.0)
+        log_weights = jnp.where(
+            finite_costs,
+            -centered_costs / jnp.maximum(beta, 1e-6),
+            -jnp.inf,
+        )
+        weights = jnp.exp(jnp.clip(log_weights, -60.0, 0.0))
+        # If every sampled trajectory is invalid, deterministically retain the
+        # full-braking sample instead of evaluating inf-inf and emitting NaNs.
+        weights = lax.cond(
+            jnp.any(finite_costs),
+            lambda x: x,
+            lambda x: x.at[0].set(1.0),
+            weights,
+        )
         eta = jnp.sum(weights) + 1e-5
         case = jnp.argmax(jnp.array([
             eta > self.eta_max, 
@@ -521,8 +537,22 @@ class DRAMPPI(MPPI):
             robot_pose, V_clamped, robot_goal, humans_state, monte_carlo_keys, point_cloud
         )
         # Compute weights and update u_mean
-        rho = jnp.min(costs)
-        weights = jnp.exp(-(costs - rho) / beta)
+        finite_costs = jnp.isfinite(costs)
+        rho = jnp.min(jnp.where(finite_costs, costs, jnp.inf))
+        safe_rho = jnp.where(jnp.any(finite_costs), rho, 0.0)
+        centered_costs = jnp.where(finite_costs, costs - safe_rho, 0.0)
+        log_weights = jnp.where(
+            finite_costs,
+            -centered_costs / jnp.maximum(beta, 1e-6),
+            -jnp.inf,
+        )
+        weights = jnp.exp(jnp.clip(log_weights, -60.0, 0.0))
+        weights = lax.cond(
+            jnp.any(finite_costs),
+            lambda x: x,
+            lambda x: x.at[0].set(1.0),
+            weights,
+        )
         eta = jnp.sum(weights) + 1e-5
         case = jnp.argmax(jnp.array([
             eta > self.eta_max, 

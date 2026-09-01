@@ -155,6 +155,8 @@ class Reward4(BaseReward):
         robot_goal = info["robot_goal"]
         humans_radiuses = info["humans_parameters"][:,0]
         time = info["time"]
+        robot_radius = info["_robot_params"]["radius"] if "_robot_params" in info else self.robot_radius
+        v_max = info["_robot_params"]["v_max"] if "_robot_params" in info else self.v_max
         
         # Calculate next states
         next_robot_pos = lax.cond(
@@ -182,13 +184,13 @@ class Reward4(BaseReward):
 
         # Terminations
         collision_with_human, _ = self.interval_human_collision_termination(
-            robot_pos, next_robot_pos, self.robot_radius, humans_pos, next_humans_pos, humans_radiuses
+            robot_pos, next_robot_pos, robot_radius, humans_pos, next_humans_pos, humans_radiuses
         )
         collision_with_obstacle, _ = self.instant_obstacle_collision_termination(
-            next_robot_pos, self.robot_radius, info['static_obstacles'][-1]
+            next_robot_pos, robot_radius, info['static_obstacles'][-1]
         )
         reached_goal, _ = self.goal_reached_termination(
-            next_robot_pos, self.robot_radius, robot_goal
+            next_robot_pos, robot_radius, robot_goal
         )
         timeout, _ = self.timeout(time)
         
@@ -246,7 +248,7 @@ class Reward4(BaseReward):
             
             # Predict minimum distance at t_min
             min_dist_predicted = jnp.linalg.norm(rel_pos + jnp.expand_dims(safe_t_min, 1) * rel_vel, axis=1)
-            collision_radius = self.robot_radius + humans_radiuses
+            collision_radius = robot_radius + humans_radiuses
             
             # Conditions for TTC penalty: moving towards, within horizon, predicted distance < safe threshold
             valid_ttc = (t_min > 0) & (t_min < self.ttc_horizon) & (min_dist_predicted < collision_radius * 1.5)
@@ -259,7 +261,7 @@ class Reward4(BaseReward):
         social_intrusion_penalty = 0.
         if self.social_intrusion_penalty_reward:
             dists = jnp.sqrt(jnp.sum((next_robot_pos - next_humans_pos)**2, axis=1) + 1e-8)
-            d_min = self.robot_radius + humans_radiuses
+            d_min = robot_radius + humans_radiuses
             
             # Exponential penalty when entering comfort zone
             violations = (dists < self.social_comfort_dist) & (dists > d_min)
@@ -292,7 +294,7 @@ class Reward4(BaseReward):
             # RL-friendly smoothness (L1 norm of discrete 2nd derivative)
             delta_v = action[0] - prev_action[0]
             prev_delta_v = prev_action[0] - prev_prev_action[0]
-            jerk_mag = jnp.abs(delta_v - prev_delta_v) / self.v_max
+            jerk_mag = jnp.abs(delta_v - prev_delta_v) / v_max
             linear_jerk_penalty = self.linear_jerk_weight * jerk_mag * dt
 
         # --- AGGREGATION ---

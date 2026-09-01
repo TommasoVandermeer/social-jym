@@ -39,9 +39,9 @@ setup(
         
     ],
     extras_require={
-        'cuda13': [
-            'jax[cuda13]>=0.8.0',
-        ],
+        # CUDA 13 requires a newer JAX line than this repository currently
+        # supports. Keeping an incompatible extra here allowed pip to resolve a
+        # materially different runtime, so CUDA 12 is the newest supported extra.
         'cuda12': [
             'jax[cuda12]==0.4.30; python_version == "3.10"',
             'jax[cuda12]==0.4.34; python_version == "3.13"',

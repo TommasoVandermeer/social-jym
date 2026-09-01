@@ -218,7 +218,18 @@ class SARLStar(SARL):
         safe_actions = self._compute_safe_action_space(obs, info)
         ## Compute best action
         action, key, vnet_input, action_values = lax.cond(explore, _random_action, _forward_pass, (obs, info, vnet_params, safe_actions, key))
-        return action, key, vnet_input, action_values, info['robot_goal'], info['occupancy_grid']
+        occupancy_grid = (
+            info['occupancy_grid']
+            if 'occupancy_grid' in info
+            else jnp.empty((0, 0), dtype=bool)
+        )
+        return action, key, vnet_input, action_values, info['robot_goal'], occupancy_grid
+
+    def _act_for_evaluation(self, key, obs, info, network_params):
+        action, key, _, _, _, _ = self.act(
+            key, obs, info, network_params, epsilon=0.0
+        )
+        return action, key
     
     @partial(jit, static_argnames=("self"))
     def batch_act(

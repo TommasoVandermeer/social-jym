@@ -1,0 +1,105 @@
+{
+  "env_param_bounds": {
+    "lidar_latency": [
+      0.0,
+      0.25
+    ],
+    "lidar_period": [
+      0.0706813850402832,
+      0.25
+    ],
+    "odometry_latency": [
+      0.0,
+      0.25
+    ],
+    "odometry_period": [
+      0.0706813850402832,
+      0.25
+    ]
+  },
+  "estimator": {
+    "best_delay_fit_error": 0.04760540489914896,
+    "best_delay_steps": 3,
+    "margin": 0.2,
+    "percentiles": [
+      1.0,
+      99.0
+    ],
+    "records": 669,
+    "uncapped_identification_bounds": {
+      "actuation_gain": [
+        1e-06,
+        1.820952391029342
+      ],
+      "tau": [
+        1e-06,
+        3.9428501873762563
+      ],
+      "wheel_accel_max": [
+        1e-06,
+        2.2043642058431447
+      ]
+    }
+  },
+  "robot_param_bounds": {
+    "actuation_gain": [
+      0.5,
+      1.5
+    ],
+    "control_delay_mean": [
+      0.6249868869781494,
+      0.8749816417694092
+    ],
+    "control_delay_std": [
+      0.0,
+      0.12499737739562988
+    ],
+    "control_dt": [
+      0.25,
+      0.25
+    ],
+    "radius": [
+      0.3,
+      0.3
+    ],
+    "slip_scale": [
+      0.9,
+      1.1
+    ],
+    "tau_angular": [
+      1e-06,
+      1.0
+    ],
+    "tau_linear": [
+      1e-06,
+      1.0
+    ],
+    "v_max": [
+      0.36000000000000004,
+      0.49500000000000005
+    ],
+    "wheel_accel_max": [
+      0.1,
+      2.2043642058431447
+    ],
+    "wheels_distance": [
+      0.45,
+      0.4973684210526316
+    ]
+  },
+  "schema_version": 1,
+  "sources": [
+    "turtlebot/experiments/data/test_campaign/run_001_dwa_trial_01/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_002_jessi_trial_01/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_003_jessi_trial_02/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_004_dwa_trial_02/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_005_jessi_trial_03/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_006_dwa_trial_03/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_007_jessi_trial_04/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_008_dwa_trial_04/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_009_jessi_trial_05/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_010_dwa_trial_05/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_011_jessi_trial_06/controller.pkl",
+    "turtlebot/experiments/data/test_campaign/run_013_dwa_trial_06/controller.pkl"
+  ]
+}

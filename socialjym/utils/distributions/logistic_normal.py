@@ -42,8 +42,9 @@ class LogisticNormal(BaseDistribution):
         for the Logistic-Normal entropy, which has no closed-form solution.
         This provides a highly stable regularization signal for RL.
         """
-        weights = jax.nn.softmax(distribution["locs"])
-        return -jnp.sum(weights * jnp.log(weights))
+        log_weights = jax.nn.log_softmax(distribution["locs"])
+        weights = jnp.exp(log_weights)
+        return -jnp.sum(jnp.where(weights > 0.0, weights * log_weights, 0.0))
 
     @partial(jit, static_argnames=("self"))
     def batch_weight_entropy(self, distributions:dict) -> jnp.ndarray:
@@ -55,7 +56,7 @@ class LogisticNormal(BaseDistribution):
         Returns LATENT z. 
         """
         locs = distribution["locs"]
-        scales = jnp.exp(distribution["log_scales"])
+        scales = jnp.exp(jnp.clip(distribution["log_scales"], -10.0, 2.0))
         return locs + scales * random.normal(key, locs.shape)
 
     @partial(jit, static_argnames=("self"))
@@ -82,7 +83,7 @@ class LogisticNormal(BaseDistribution):
     @partial(jit, static_argnames=("self"))
     def var(self, distribution:dict) -> jnp.ndarray:
         locs = distribution["locs"]
-        scales = jnp.exp(distribution["log_scales"])
+        scales = jnp.exp(jnp.clip(distribution["log_scales"], -10.0, 2.0))
         vertices = distribution["vertices"]
         # Delta method approximation for the variance mapped through the softmax
         weights = jax.nn.softmax(locs)
@@ -102,7 +103,7 @@ class LogisticNormal(BaseDistribution):
         Computes log-probability from latent z. 
         """
         locs = distribution["locs"]
-        scales = jnp.exp(distribution["log_scales"])
+        scales = jnp.exp(jnp.clip(distribution["log_scales"], -10.0, 2.0))
         return -jnp.sum(norm.logpdf(latent_action, loc=locs, scale=scales))
 
     @partial(jit, static_argnames=("self"))

@@ -463,6 +463,12 @@ class SARLPPO(SARL):
         # if self.distr_id == DISTRIBUTIONS.index('gaussian'):
         #     action = self.distr.bound_action(action, self.kinematics, self.v_max, self.wheels_distance)
         return action, key, input, sampled_action, distr
+
+    def _act_for_evaluation(self, key, obs, info, network_params):
+        action, key, _, _, _ = self.act(
+            key, obs, info, network_params, sample=False
+        )
+        return action, key
     
     @partial(jit, static_argnames=("self"))
     def batch_act(

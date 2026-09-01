@@ -91,6 +91,9 @@ class Actor(hk.Module):
         hcg_scores = x[..., 10:11] 
         global_robot_state = x[:, 0, 11:22] 
         action_space_params = global_robot_state[:, :3]
+        runtime_vmax = global_robot_state[:, 6]
+        runtime_wheels_distance = jnp.maximum(global_robot_state[:, 8], 1e-5)
+        runtime_wmax = 2.0 * runtime_vmax / runtime_wheels_distance
         action_history = x[:, 0, 22:]
         x = x[:, :, :22]
         ### CONTEXT EXTRACTION
@@ -122,14 +125,14 @@ class Actor(hk.Module):
         ### ACTOR
         ## Compute dirchlet distribution vetices
         zeros = jnp.zeros((batch_size,))
-        v1 = jnp.stack([zeros, action_space_params[:, 1] * self.wmax], axis=-1)
-        v2 = jnp.stack([zeros, action_space_params[:, 2] * self.wmin], axis=-1)
-        v3 = jnp.stack([action_space_params[:, 0] * self.vmax, zeros], axis=-1)
+        v1 = jnp.stack([zeros, action_space_params[:, 1] * runtime_wmax], axis=-1)
+        v2 = jnp.stack([zeros, action_space_params[:, 2] * -runtime_wmax], axis=-1)
+        v3 = jnp.stack([action_space_params[:, 0] * runtime_vmax, zeros], axis=-1)
         vertices = jnp.stack([v1, v2, v3], axis=1)  # Shape: (batch_size, 3, 2)
         distributions = {"vertices": vertices}
         locs = self.actor_head(context)
         raw_logscales_param = hk.get_parameter("raw_logscales", shape=[3], init=hk.initializers.Constant(jnp.arctanh(9/11)))
-        logscales_bounded = jnp.tanh(raw_logscales_param) * 11 - 9 # Bound logscales between [-20,2]
+        logscales_bounded = jnp.tanh(raw_logscales_param) * 4.5 - 3.5 # Bound logscales between [-8,1]
         logscales = jnp.broadcast_to(logscales_bounded, locs.shape)
         distributions["locs"] = locs
         distributions["log_scales"] = logscales
@@ -167,11 +170,18 @@ class Critic(hk.Module):
             humans_data = jnp.expand_dims(humans_data, 0)
             static_obstacles_data = jnp.expand_dims(static_obstacles_data, 0)
 
+        # Robust scale compression prevents privileged simulator coordinates and
+        # physical parameters from dominating the value network.
+        robot_data = jnp.arcsinh(jnp.nan_to_num(robot_data, nan=0.0, posinf=1e4, neginf=-1e4))
+        humans_data = jnp.arcsinh(jnp.nan_to_num(humans_data, nan=0.0, posinf=1e4, neginf=-1e4))
+        static_obstacles_data = jnp.arcsinh(
+            jnp.nan_to_num(static_obstacles_data, nan=0.0, posinf=1e4, neginf=-1e4)
+        )
         # MAIN BODY
         # 1. Obstacles processing: Pure Deep Sets (MLP + Max-Pooling)
         obs_flat = jnp.reshape(static_obstacles_data, (static_obstacles_data.shape[0], static_obstacles_data.shape[1], -1))  # (B, n_obstacles * n_edges, 4)
-        valid_obs_mask = jnp.all(jnp.isfinite(obs_flat), axis=-1)  
-        safe_obs_flat = jnp.nan_to_num(obs_flat, nan=0.0, posinf=0.0, neginf=0.0)
+        valid_obs_mask = jnp.any(obs_flat != 0.0, axis=-1)
+        safe_obs_flat = obs_flat
         obs_emb = hk.nets.MLP(
             [self.embed_dim, self.embed_dim], 
             activation=nn.silu,
@@ -182,8 +192,8 @@ class Critic(hk.Module):
         obstacles_feat = jnp.max(masked_obs_emb, axis=1)  # (B, embed_dim)
         obstacles_feat = jnp.where(obstacles_feat == -1e9, 0.0, obstacles_feat)
         # 2. Humans processing: Robot-Human Cross-Attention (Q=Robot, K/V=Humans)
-        valid_humans_mask = jnp.all(jnp.isfinite(humans_data), axis=-1)  
-        safe_humans_data = jnp.nan_to_num(humans_data, nan=0.0, posinf=0.0, neginf=0.0)
+        valid_humans_mask = jnp.any(humans_data != 0.0, axis=-1)
+        safe_humans_data = humans_data
         robot_query = hk.Linear(self.embed_dim)(robot_data)[:, None, :]  # (B, 1, embed_dim)
         humans_kv = hk.Linear(self.embed_dim)(safe_humans_data)  # (B, n_humans, embed_dim)
         humans_kv = nn.silu(humans_kv)  # (B, n_humans, embed_dim)
@@ -213,8 +223,11 @@ class Critic(hk.Module):
 
 class JESSI_S2R(JESSI):
     """
-    A state augmented version of JESSI specialized for SIM2REAL designed to operate on systems with delayed actuation.
-    This version also implements a separated and asynchronous actor critic.
+    State-augmented JESSI specialized for delayed, uncertain real systems.
+
+    Training uses PPO with separate asymmetric actor and critic networks.  The
+    actor consumes deployable observations and robot context; the critic may
+    consume privileged simulation state only during training.
     """
     def __init__(
         self, 
@@ -240,7 +253,7 @@ class JESSI_S2R(JESSI):
         n_stack_for_action_space_bounding:int=1,
         beam_dropout_rate:float=0.0,
     ) -> None:
-        assert n_actions_history <= n_stack, "The length of the actions history must be greater than the length of the observation stack"
+        assert n_actions_history <= n_stack, "The action history cannot exceed the observation stack"
         self.n_actions_history = n_actions_history
         self.humans_dt = humans_dt
         self.humans_prediction_horizon = humans_prediction_horizon
@@ -317,13 +330,16 @@ class JESSI_S2R(JESSI):
         key:random.PRNGKey, 
     ) -> tuple:
         # Perception input is shaped (self.n_stack, self.lidar_num_rays, 7)
-        # Actor input is shaped (n_detectable_humans, 22 + 2*n_actions_history) and (self.n_sectors, self.embedding_dim))
-        # Critic input is (12 + 2*n_actions_history,) and (n_humans, 11 + horizon_length*6) and (n_obstacles * n_edges, 2, 2)
-        # E2E input is shaped (self.n_stack, self.lidar_num_rays, 7) and (self.n_detectable_humans, 11 + 2*n_actions_history)
+        # Actor input contains HCGs plus robot context, measured velocity history,
+        # and command history: (n_detectable_humans, 20 + 4*n_actions_history).
+        # Critic input is (12 + 2*n_actions_history,), current privileged human
+        # state (11 fields), and obstacle edges. Future HSFM simulation is not
+        # part of the value-function forward pass.
+        # E2E robot input is (n_detectable_humans, 9 + 4*n_actions_history).
         perception_params = self.perception.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7))) # Cardinality invariant for n_stack and lidar_num_rays
-        actor_params = self.actor.init(key, jnp.zeros((self.n_detectable_humans, 22+2*self.n_actions_history)), jnp.zeros((self.n_sectors, self.embedding_dim)))
-        critic_params = self.critic.init(key, jnp.zeros((12 + 2*self.n_actions_history,)), jnp.zeros((1, 11 + self.humans_prediction_horizon*6)), jnp.zeros((1, 2, 2))) # Cardinality invariant for n_obstacles and n_edges
-        e2e_params = self.e2e.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7)), jnp.zeros((self.n_detectable_humans, 11+2*self.n_actions_history))) # Cardinality invariant for n_stack and lidar_num_rays
+        actor_params = self.actor.init(key, jnp.zeros((self.n_detectable_humans, 20+4*self.n_actions_history)), jnp.zeros((self.n_sectors, self.embedding_dim)))
+        critic_params = self.critic.init(key, jnp.zeros((12 + 2*self.n_actions_history,)), jnp.zeros((1, 11)), jnp.zeros((1, 2, 2))) # Cardinality invariant for n_obstacles and n_edges
+        e2e_params = self.e2e.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7)), jnp.zeros((self.n_detectable_humans, 9+4*self.n_actions_history))) # Cardinality invariant for n_stack and lidar_num_rays
         return perception_params, actor_params, critic_params, e2e_params
 
     @partial(jit, static_argnames=("self"))
@@ -332,24 +348,160 @@ class JESSI_S2R(JESSI):
         robot_obs_stack, # (N_stack, 11): : Each stack [rx,ry,r_theta,r_radius,r_vx, r_wz,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements]. The first stack is the most recent one.
         action_space_params,
         robot_goal, # In cartesian coordinates (gx, gy) IN THE ROBOT FRAME
+        robot_params=None,
     ):
         robot_goal_dist = jnp.linalg.norm(robot_goal)
         robot_goal_theta = jnp.arctan2(robot_goal[1], robot_goal[0])
         robot_goal_sin_theta = jnp.sin(robot_goal_theta)
         robot_goal_cos_theta = jnp.cos(robot_goal_theta)
         tiled_action_space_params = jnp.tile(action_space_params, (self.n_detectable_humans,1)) # Shape: (n_detectable_humans, 3)
-        tiled_robot_params = jnp.tile(jnp.array([self.v_max, self.robot_radius, self.wheels_distance]), (self.n_detectable_humans,1)) # Shape: (n_detectable_humans, 3)
+        runtime_robot_params = (
+            jnp.array([self.v_max, self.robot_radius, self.wheels_distance])
+            if robot_params is None
+            else jnp.array([
+                robot_params["v_max"],
+                robot_params["radius"],
+                robot_params["wheels_distance"],
+            ])
+        )
+        tiled_robot_params = jnp.tile(runtime_robot_params, (self.n_detectable_humans,1)) # Shape: (n_detectable_humans, 3)
         tiled_robot_goals = jnp.tile(jnp.array([robot_goal_dist, robot_goal_sin_theta, robot_goal_cos_theta]), (self.n_detectable_humans,1)) # Shape: (n_detectable_humans, 3)
-        tiled_robot_velocity = jnp.tile(robot_obs_stack[0,4:6], (self.n_detectable_humans,1))
+        # Paired measured-velocity and command histories make delay, lag and
+        # actuation gain identifiable from deployable observations. Feeding only
+        # the latest velocity cannot distinguish those effects reliably.
+        tiled_robot_velocities = jnp.tile(
+            jnp.reshape(robot_obs_stack[:self.n_actions_history, 4:6], (-1,)),
+            (self.n_detectable_humans, 1),
+        )
         tiled_robot_actions = jnp.tile(jnp.reshape(robot_obs_stack[:self.n_actions_history,6:8],(-1,)), (self.n_detectable_humans,1))
         robot_state_input = jnp.concatenate((
             tiled_action_space_params,
             tiled_robot_goals,
             tiled_robot_params,
-            tiled_robot_velocity,
+            tiled_robot_velocities,
             tiled_robot_actions
-        ), axis=-1)  # Shape: (n_detectable_humans, 11 + 2*n_actions_history)
+        ), axis=-1)  # Shape: (n_detectable_humans, 9 + 4*n_actions_history)
         return robot_state_input
+
+    @partial(jit, static_argnames=("self"))
+    def compute_e2e_input_with_params(
+        self,
+        obs,
+        robot_goal,
+        robot_params,
+        sensor_timing=None,
+    ):
+        """Build S2R inputs using runtime robot geometry and relative timing."""
+        corrected_obs = obs
+        if sensor_timing is not None:
+            corrected_obs = corrected_obs.at[:, 8:11].set(sensor_timing)
+        # Keep small, translation-invariant time values inside float32.  Real ROS
+        # epoch timestamps otherwise collapse multiple samples to one value.
+        corrected_obs = corrected_obs.at[:, 8:11].set(
+            corrected_obs[:, 8:11] - corrected_obs[0, 10]
+        )
+        perception_input, point_cloud_for_bounding = self.compute_perception_input(
+            corrected_obs
+        )
+        bounding_parameters = self.bound_action_space(
+            point_cloud_for_bounding,
+            v_max=robot_params["v_max"],
+            wheels_distance=robot_params["wheels_distance"],
+            robot_radius=robot_params["radius"],
+        )
+        robot_position = corrected_obs[0, :2]
+        robot_orientation = corrected_obs[0, 2]
+        c, s = jnp.cos(-robot_orientation), jnp.sin(-robot_orientation)
+        rotation = jnp.array([[c, -s], [s, c]])
+        robot_goal_robot_frame = rotation @ (robot_goal - robot_position)
+        robot_state_input = self.compute_robot_state_input(
+            corrected_obs[:, :11],
+            bounding_parameters,
+            robot_goal_robot_frame,
+            robot_params,
+        )
+        return perception_input, robot_state_input
+
+    @partial(jit, static_argnames=("self", "sample"))
+    def act_with_params(
+        self,
+        key,
+        obs,
+        info,
+        robot_params,
+        e2e_network_params,
+        sample=False,
+    ):
+        """Context-aware inference; the inherited legacy ``act`` is unchanged."""
+        sensor_timing = info["_sensor_timing"] if "_sensor_timing" in info else None
+        perception_input, robot_state_input = self.compute_e2e_input_with_params(
+            obs,
+            info["robot_goal"],
+            robot_params,
+            sensor_timing,
+        )
+        key, subkey = random.split(key)
+        outputs = self.e2e.apply(
+            e2e_network_params,
+            None,
+            perception_input,
+            robot_state_input,
+            random_key=subkey,
+        )
+        (
+            perception_output,
+            actor_input,
+            sampled_action,
+            actor_distr,
+            concentration,
+            state_value,
+            spat_attn,
+            temp_attn,
+            human_attn,
+        ) = outputs
+        action = lax.cond(
+            sample,
+            lambda _: self.action_distribution.to_env_action(actor_distr, sampled_action),
+            lambda _: self.action_distribution.mean(actor_distr),
+            operand=None,
+        )
+        return (
+            action,
+            key,
+            perception_input,
+            robot_state_input,
+            actor_input,
+            sampled_action,
+            perception_output,
+            actor_distr,
+            state_value,
+            spat_attn,
+            temp_attn,
+            human_attn,
+        )
+
+    @partial(jit, static_argnames=("self", "sample"))
+    def batch_act_with_params(
+        self,
+        keys,
+        obses,
+        infos,
+        robot_params,
+        e2e_network_params,
+        sample=False,
+    ):
+        return vmap(
+            JESSI_S2R.act_with_params,
+            in_axes=(None, 0, 0, 0, 0, None, None),
+        )(
+            self,
+            keys,
+            obses,
+            infos,
+            robot_params,
+            e2e_network_params,
+            sample,
+        )
 
     @partial(jit, static_argnames=("self"))
     def next_humans_state(
@@ -375,7 +527,19 @@ class JESSI_S2R(JESSI):
         - new_humans_state: shape is (n_humans, 6) where each row is (px, py, bvx, bvy, theta, omega)
         """
         def scan_step(state, _):
-            new_state = humans_step(state, humans_goal, humans_parameters, obstacles, self.humans_dt)
+            visibility = jnp.fill_diagonal(
+                jnp.ones((state.shape[0], state.shape[0]), dtype=jnp.bool_),
+                jnp.zeros((state.shape[0],), dtype=jnp.bool_),
+                inplace=False,
+            )
+            new_state = humans_step(
+                state,
+                visibility,
+                humans_goal,
+                humans_parameters,
+                obstacles,
+                self.humans_dt,
+            )
             return new_state, new_state
         new_humans_state, _ = lax.scan(
             f=scan_step,
@@ -454,7 +618,8 @@ class JESSI_S2R(JESSI):
         Forward pass of the critic network.
 
         Args:
-            random_key: PRNG key for random number generation. Used for predicting noised humans' trajectory.
+            random_key: retained for API compatibility; the stable critic no
+                longer performs stochastic HSFM rollouts.
             critic_params: Parameters of the critic network.
             state: Current state of the environment. (full state humans + robot)
             robot_goal: Goal position of the robot.
@@ -475,15 +640,6 @@ class JESSI_S2R(JESSI):
         Returns:
             value: Estimated value of the current state.
         """
-        ### Preliminaries: predict humans' trajectories and build inputs for the critic network
-        # Predict humans' trajectories
-        humans_trajectory, _ = self.predict_humans_trajectory(
-            random_key,
-            state[:-1],
-            env_params["humans_goal"],
-            env_params["humans_parameters"],
-            env_params["static_obstacles"][:-1]
-        ) 
         ### Transformations (robot-centric parameterization)
         robot_state = state[-1]
         robot_position = robot_state[:2]
@@ -498,9 +654,6 @@ class JESSI_S2R(JESSI):
         humans_state = humans_state.at[:, 2:4].set(vmap(get_linear_velocity)(humans_state[:, 4],humans_state[:, 2:4]) @ rotation_matrix) # Transform humans' velocities to robot-centric coordinates
         humans_state = humans_state.at[:, 4].set(humans_state[:, 4] - robot_orientation) # Transform humans' orientations to robot-centric coordinates
         humans_goal = (env_params["humans_goal"] - robot_position) @ rotation_matrix # Transform humans' goals to robot-centric coordinates
-        humans_trajectory = humans_trajectory.at[:, :, :2].set((humans_trajectory[:, :, :2] - robot_position) @ rotation_matrix) # Transform humans' trajectories to robot-centric coordinates
-        humans_trajectory = humans_trajectory.at[:, :, 2:4].set((vmap(vmap(get_linear_velocity))(humans_trajectory[:, :, 4],humans_trajectory[:, :, 2:4]) @ rotation_matrix)) # Transform humans' velocities to robot-centric coordinates
-        humans_trajectory = humans_trajectory.at[:, :, 4].set(humans_trajectory[:, :, 4] - robot_orientation) # Transform humans' orientations to robot-centric coordinates
         static_obstacles = (env_params["static_obstacles"][-1] - robot_position) @ rotation_matrix # Transform static obstacles to robot-centric coordinates
         ### Build Critic inputs: robot_data, humans_data, static_obstacles_data       
         # Build robot_data input. (robot_velocity + robot_goal + robot_params + action_space_params + actions_history)
@@ -511,13 +664,14 @@ class JESSI_S2R(JESSI):
             action_space_params, # action_space_params
             actions_history.flatten() # actions_history
         ), axis=-1) # Shape: (2 + 2 + 5 + 3 + 2*n_actions_history,) --> e.g., n_actions_history=5 --> (2 + 2 + 5 + 3 + 10,) = (22,)
-        # Build humans_data input. (humans_state + humans_trajectory + humans_goal + humans_parameters)
+        # Build humans_data input from the current privileged state.  The old
+        # horizon rollout added hundreds of HSFM substeps per sample and exposed
+        # all force-model singularities directly to PPO's critic.
         humans_data = jnp.concatenate((
             humans_state, # humans_state
-            jnp.reshape(humans_trajectory, (humans_state.shape[0], -1)), # humans_trajectory
             humans_goal, # humans_goal
             env_params["humans_parameters"][:,:3] # humans_parameters (radius, mass, v_max)
-        ), axis=-1) # Shape: (n_humans, 6 + horizon_length*6 + 2 + 3) --> e.g., n_humans=5, horizon_length=20 --> (5, 6 + 120 + 2 + 3) = (5, 131)
+        ), axis=-1) # Shape: (n_humans, 11)
         # Build static_obstacles_data input. (static_obstacles)
         static_obstacles_data = jnp.reshape(static_obstacles, (-1, 2, 2)) # Shape: (n_obstacles * n_edges, 2, 2) --> e.g., n_obstacles=5, n_edges=4 --> (20, 2, 2)
         ### Critic forward pass

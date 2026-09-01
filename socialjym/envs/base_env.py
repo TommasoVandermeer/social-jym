@@ -2033,9 +2033,26 @@ class BaseEnv(ABC):
         output:
         - new_state ((n_humans+1,6): jnp.ndarray containing the new state of the environment.
         """
+        if "_robot_params" in info:
+            robot_params = info["_robot_params"]
+            robot_radius = robot_params["radius"]
+            tau_action_0 = robot_params["tau_linear"]
+            tau_action_1 = robot_params["tau_angular"]
+            wheels_distance = robot_params["wheels_distance"]
+            wheels_max_linear_acceleration = robot_params["wheel_accel_max"]
+            actuation_gain = robot_params["actuation_gain"]
+            slip_scale = robot_params["slip_scale"]
+        else:
+            robot_radius = self.robot_radius
+            tau_action_0 = self.tau_action_0
+            tau_action_1 = self.tau_action_1
+            wheels_distance = self.wheels_distance
+            wheels_max_linear_acceleration = self.wheels_max_linear_acceleration
+            actuation_gain = 1.0
+            slip_scale = 1.0
         goals = jnp.vstack((info["humans_goal"], info["robot_goal"]))
         second_parameter = 80. if self.humans_policy == HUMAN_POLICIES.index("hsfm") or self.humans_policy == HUMAN_POLICIES.index("sfm") else 5.  # Mass if HSFM or SFM, time horizon if ORCA
-        parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, second_parameter, *self.get_standard_humans_parameters(1)[0,2:]])))
+        parameters = jnp.vstack((info["humans_parameters"], jnp.array([robot_radius, second_parameter, *self.get_standard_humans_parameters(1)[0,2:]])))
         static_obstacles = info["static_obstacles"]
         ## Humans update
         if self.humans_policy == HUMAN_POLICIES.index("hsfm"):
@@ -2063,26 +2080,35 @@ class BaseEnv(ABC):
             lambda: action,
             lambda: info["action_history"][(info["robot_delay"] // self.robot_dt).astype(jnp.int32)],
         )
+        robot_velocity = robot_velocity * actuation_gain
+        robot_velocity = robot_velocity.at[0].set(robot_velocity[0] * slip_scale)
         # Apply velocity dynamics
         if self.robot_velocity_dynamics == ROBOT_VELOCITY_DYNAMICS.index("first_order_system"):
-            if self.action_0_dynamics:
-                alpha = jnp.exp(-self.humans_dt/self.tau_action_0)
-                robot_velocity = robot_velocity.at[0].set(alpha * state[-1,2] + (1 - alpha) * robot_velocity[0])
-            if self.action_1_dynamics:
-                alpha = jnp.exp(-self.humans_dt/self.tau_action_1)
-                robot_velocity = robot_velocity.at[1].set(alpha * state[-1,3] + (1 - alpha) * robot_velocity[1])
+            alpha_0 = jnp.exp(-self.humans_dt / jnp.maximum(tau_action_0, EPSILON))
+            alpha_1 = jnp.exp(-self.humans_dt / jnp.maximum(tau_action_1, EPSILON))
+            robot_velocity = robot_velocity.at[0].set(jnp.where(
+                tau_action_0 > 0.0,
+                alpha_0 * state[-1, 2] + (1.0 - alpha_0) * robot_velocity[0],
+                robot_velocity[0],
+            ))
+            robot_velocity = robot_velocity.at[1].set(jnp.where(
+                tau_action_1 > 0.0,
+                alpha_1 * state[-1, 3] + (1.0 - alpha_1) * robot_velocity[1],
+                robot_velocity[1],
+            ))
         elif self.robot_velocity_dynamics == ROBOT_VELOCITY_DYNAMICS.index("coupled_slew_rate"):
-            if self.limited_acceleration:
-                a_req = (robot_velocity[0] - state[-1,2]) / self.humans_dt
-                alpha_req = (robot_velocity[1] - state[-1,3]) / self.humans_dt
-                effort = abs(a_req) + (self.wheels_distance / 2.0) * abs(alpha_req)
-                scale = lax.cond(
-                    (effort > self.wheels_max_linear_acceleration) & (effort > 1e-6),
-                    lambda: self.wheels_max_linear_acceleration / effort, 
-                    lambda: 1.0,
-                )
-                robot_velocity = robot_velocity.at[0].set(state[-1,2] + (a_req * scale) * self.humans_dt)
-                robot_velocity = robot_velocity.at[1].set(state[-1,3] + (alpha_req * scale) * self.humans_dt)
+            a_req = (robot_velocity[0] - state[-1,2]) / self.humans_dt
+            alpha_req = (robot_velocity[1] - state[-1,3]) / self.humans_dt
+            effort = abs(a_req) + (wheels_distance / 2.0) * abs(alpha_req)
+            scale = lax.cond(
+                jnp.isfinite(wheels_max_linear_acceleration)
+                & (effort > wheels_max_linear_acceleration)
+                & (effort > 1e-6),
+                lambda: wheels_max_linear_acceleration / effort,
+                lambda: 1.0,
+            )
+            robot_velocity = robot_velocity.at[0].set(state[-1,2] + (a_req * scale) * self.humans_dt)
+            robot_velocity = robot_velocity.at[1].set(state[-1,3] + (alpha_req * scale) * self.humans_dt)
         # Apply position dynamics
         if self.kinematics == ROBOT_KINEMATICS.index("holonomic"):
             new_state = new_state.at[-1,0:4].set(jnp.array([
@@ -2182,6 +2208,41 @@ class BaseEnv(ABC):
             if not callable(value):
                 params[key] = value
         return params
+
+    def get_default_robot_params(self):
+        """Return the legacy constructor settings as a v2 robot context."""
+        v_max = getattr(self.reward_function, "v_max", 1.0)
+        return {
+            "radius": jnp.asarray(self.robot_radius, dtype=jnp.float32),
+            "v_max": jnp.asarray(v_max, dtype=jnp.float32),
+            "wheels_distance": jnp.asarray(self.wheels_distance, dtype=jnp.float32),
+            "control_dt": jnp.asarray(self.robot_dt, dtype=jnp.float32),
+            "wheel_accel_max": jnp.asarray(self.wheels_max_linear_acceleration, dtype=jnp.float32),
+            "tau_linear": jnp.asarray(self.tau_action_0, dtype=jnp.float32),
+            "tau_angular": jnp.asarray(self.tau_action_1, dtype=jnp.float32),
+            "control_delay_mean": jnp.asarray(self.control_delay_mean, dtype=jnp.float32),
+            "control_delay_std": jnp.asarray(self.control_delay_sigma, dtype=jnp.float32),
+            "actuation_gain": jnp.asarray(1.0, dtype=jnp.float32),
+            "slip_scale": jnp.asarray(1.0, dtype=jnp.float32),
+        }
+
+    def get_default_env_params(self):
+        """Return deployable sensor/domain defaults as a v2 environment context."""
+        lidar_noise_enabled = float(self.lidar_noise)
+        return {
+            "lidar_period": jnp.asarray(getattr(self, "lidar_dt", self.robot_dt), dtype=jnp.float32),
+            "odometry_period": jnp.asarray(getattr(self, "odometry_dt", self.robot_dt), dtype=jnp.float32),
+            "lidar_latency": jnp.asarray(0.0, dtype=jnp.float32),
+            "odometry_latency": jnp.asarray(0.0, dtype=jnp.float32),
+            "lidar_noise_fixed": jnp.asarray(lidar_noise_enabled * self.lidar_noise_fixed_std, dtype=jnp.float32),
+            "lidar_noise_proportional": jnp.asarray(lidar_noise_enabled * self.lidar_noise_proportional_std, dtype=jnp.float32),
+            "lidar_dropout_probability": jnp.asarray(lidar_noise_enabled * self.lidar_salt_and_pepper_prob, dtype=jnp.float32),
+            "lidar_range_scale": jnp.asarray(1.0, dtype=jnp.float32),
+            "obstacle_noise": jnp.asarray(self.obstacles_noise, dtype=jnp.float32),
+            "robot_visibility_probability": jnp.asarray(float(self.robot_visible) if self.robot_visible is not None else 0.0, dtype=jnp.float32),
+            "human_speed_scale": jnp.asarray(1.0, dtype=jnp.float32),
+            "human_radius_scale": jnp.asarray(1.0, dtype=jnp.float32),
+        }
     
     @partial(jit, static_argnames=("self"))
     def batch_ray_cast(self, angles:float, lidar_position:jnp.ndarray, human_positions:jnp.ndarray, human_radiuses:jnp.ndarray, static_obstacles:jnp.ndarray) -> jnp.ndarray:
@@ -2212,7 +2273,8 @@ class BaseEnv(ABC):
         human_radii:jnp.ndarray,
         human_legs_radii:jnp.ndarray,
         static_obstacles:jnp.ndarray,
-        noise_key=random.PRNGKey(0)
+        noise_key=random.PRNGKey(0),
+        noise_params=None,
     ) -> jnp.ndarray:
         """
         Given the current state of the environment, the robot orientation and the additional information about the environment,
@@ -2258,13 +2320,29 @@ class BaseEnv(ABC):
             jnp.arange(self.n_segments), 
             obstacle_collision_idxs
         ) # Shape: (n_obstacles, n_segments)
-        if self.lidar_noise:
-            measurements = self.add_lidar_noise(measurements,noise_key)
+        if noise_params is not None:
+            measurements = measurements * noise_params["lidar_range_scale"]
+            measurements = self.add_lidar_noise(
+                measurements,
+                noise_key,
+                fixed_std=noise_params["lidar_noise_fixed"],
+                proportional_std=noise_params["lidar_noise_proportional"],
+                dropout_probability=noise_params["lidar_dropout_probability"],
+            )
+        elif self.lidar_noise:
+            measurements = self.add_lidar_noise(measurements, noise_key)
         lidar_output = jnp.stack((measurements, angles), axis=-1)
         return lidar_output, humans_visibility_mask, obstacles_visibility_mask
     
     @partial(jit, static_argnames=("self"))
-    def add_lidar_noise(self, measurements:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def add_lidar_noise(
+        self,
+        measurements:jnp.ndarray,
+        noise_key:random.PRNGKey,
+        fixed_std=None,
+        proportional_std=None,
+        dropout_probability=None,
+    ) -> jnp.ndarray:
         """
         Add noise and salt-and-pepper to the given lidar measurements.
 
@@ -2277,10 +2355,25 @@ class BaseEnv(ABC):
         """
         beam_dropout_key, noise_key = random.split(noise_key)
         ## Gaussian noise to LiDAR scans + Beam dropout
-        sigma = self.lidar_noise_fixed_std + self.lidar_noise_proportional_std * measurements 
+        fixed_std = self.lidar_noise_fixed_std if fixed_std is None else fixed_std
+        proportional_std = (
+            self.lidar_noise_proportional_std
+            if proportional_std is None
+            else proportional_std
+        )
+        dropout_probability = (
+            self.lidar_salt_and_pepper_prob
+            if dropout_probability is None
+            else dropout_probability
+        )
+        sigma = fixed_std + proportional_std * measurements
         noise = random.normal(noise_key, shape=measurements.shape) * sigma 
         noisy_distances = jnp.clip(measurements + noise, 0., self.lidar_max_dist)
-        is_dropout = random.bernoulli(beam_dropout_key, p=self.lidar_salt_and_pepper_prob, shape=measurements.shape)
+        is_dropout = random.bernoulli(
+            beam_dropout_key,
+            p=jnp.clip(dropout_probability, 0.0, 1.0),
+            shape=measurements.shape,
+        )
         noisy_distances = jnp.where(is_dropout, self.lidar_max_dist, noisy_distances) 
         return noisy_distances
 

@@ -3,7 +3,13 @@ from jax import random, jit, lax, debug, vmap
 from functools import partial
 from types import FunctionType
 
-from .base_env import BaseEnv, SCENARIOS, ENVIRONMENTS, is_multiple
+from .base_env import BaseEnv, SCENARIOS, ENVIRONMENTS, is_multiple, wrap_angle
+from .parameter_context import (
+    bounds_from_nominal,
+    sample_context,
+    validate_env_params,
+    validate_robot_params,
+)
 
 class LaserNav(BaseEnv):
     """
@@ -132,8 +138,203 @@ class LaserNav(BaseEnv):
 
     # --- Private methods --- #
 
+    @partial(jit, static_argnames=("self"))
+    def _attach_parameter_context(self, info, robot_params, env_params):
+        """Attach v2 contexts to runtime state without affecting legacy resets."""
+        contextual_info = info.copy()
+        contextual_info["_robot_params"] = robot_params
+        contextual_info["_env_params"] = env_params
+        contextual_info["previous_obs"] = contextual_info["previous_obs"].at[:, 3].set(
+            robot_params["radius"]
+        )
+        return contextual_info
+
+    @partial(jit, static_argnames=("self"))
+    def _runtime_sensor_substeps(self, info):
+        """Return discrete sensor periods supported by the simulator history."""
+        if "_env_params" not in info:
+            return self.lidar_substeps, self.odometry_substeps
+        lidar_substeps = jnp.clip(
+            jnp.rint(info["_env_params"]["lidar_period"] / self.humans_dt).astype(jnp.int32),
+            1,
+            self.control_substeps,
+        )
+        odometry_substeps = jnp.clip(
+            jnp.rint(info["_env_params"]["odometry_period"] / self.humans_dt).astype(jnp.int32),
+            1,
+            self.control_substeps,
+        )
+        return lidar_substeps, odometry_substeps
+
+    @partial(jit, static_argnames=("self"))
+    def _refresh_context_observation(self, state, info, noise_key):
+        """Regenerate reset observations after a v2 context has been attached."""
+        lidar_substeps, odometry_substeps = self._runtime_sensor_substeps(info)
+        refreshed_info = info.copy()
+        refreshed_info["substeps_from_last_scan"] %= lidar_substeps
+        refreshed_info["substeps_from_last_odom_ref_scan"] %= odometry_substeps
+        obs, humans_mask, obstacles_mask = self._get_obs(
+            state, refreshed_info, jnp.zeros((2,)), noise_key
+        )
+        # The legacy reset built every stack entry before the context existed.
+        # Do not retain those un-randomized scans behind the new contextual one.
+        obs = jnp.repeat(obs[:1], self.n_stack, axis=0)
+        refreshed_info["humans_visibility_mask"] = humans_mask
+        refreshed_info["obstacles_visibility_mask"] = obstacles_mask
+        refreshed_info["previous_obs"] = obs
+        return obs, refreshed_info
+
+    @partial(jit, static_argnames=("self"))
+    def _reset_with_param_bounds(
+        self,
+        key,
+        robot_lower,
+        robot_upper,
+        env_lower,
+        env_upper,
+        scenarios_prob=None,
+    ):
+        param_key, robot_key, env_key, reset_key = random.split(key, 4)
+        del param_key
+        robot_params = sample_context(
+            robot_key, self.get_default_robot_params(), robot_lower, robot_upper
+        )
+        env_params = sample_context(
+            env_key, self.get_default_env_params(), env_lower, env_upper
+        )
+        state, next_key, obs, info, outcome = self.reset(
+            reset_key,
+            scenarios_prob=scenarios_prob,
+            visibility_chance=env_params["robot_visibility_probability"],
+        )
+        del obs
+        info = self._attach_parameter_context(info, robot_params, env_params)
+        observation_key, next_key = random.split(next_key)
+        obs, info = self._refresh_context_observation(state, info, observation_key)
+        return state, next_key, obs, info, robot_params, env_params, outcome
+
+    @partial(jit, static_argnames=("self", "test", "reset_if_done"))
+    def _step_with_param_bounds(
+        self,
+        state,
+        info,
+        robot_params,
+        env_params,
+        action,
+        robot_lower,
+        robot_upper,
+        env_lower,
+        env_upper,
+        test=False,
+        reset_if_done=False,
+        reset_key=random.PRNGKey(0),
+        env_key=random.PRNGKey(0),
+        scenarios_prob=None,
+    ):
+        info = self._attach_parameter_context(info, robot_params, env_params)
+        # Enforce the runtime triangular differential-drive action envelope.
+        v_max = robot_params["v_max"]
+        wheels_distance = jnp.maximum(robot_params["wheels_distance"], 1e-5)
+        w_max = 2.0 * v_max / wheels_distance
+        bounded_action = jnp.array([
+            jnp.clip(action[0], 0.0, v_max),
+            jnp.clip(action[1], -w_max, w_max),
+        ])
+        envelope = bounded_action[0] / jnp.maximum(v_max, 1e-5) + jnp.abs(
+            bounded_action[1]
+        ) / jnp.maximum(w_max, 1e-5)
+        bounded_action = bounded_action / jnp.maximum(envelope, 1.0)
+        result = self.step(
+            state,
+            info,
+            bounded_action,
+            test=test,
+            reset_if_done=False,
+            reset_key=reset_key,
+            env_key=env_key,
+            scenarios_prob=scenarios_prob,
+            visibility_chance=env_params["robot_visibility_probability"],
+        )
+        next_state, next_obs, next_info, reward, outcome, (next_reset_key, next_env_key) = result
+
+        if self.scenario != -1:
+            def _reset_done(_):
+                robot_key, env_param_key, episode_key = random.split(next_reset_key, 3)
+                new_robot_params = sample_context(
+                    robot_key, self.get_default_robot_params(), robot_lower, robot_upper
+                )
+                new_env_params = sample_context(
+                    env_param_key, self.get_default_env_params(), env_lower, env_upper
+                )
+                reset_state, returned_key, reset_info = self._reset(
+                    episode_key,
+                    scenarios_prob=scenarios_prob,
+                    visibility_chance=new_env_params["robot_visibility_probability"],
+                )
+                reset_info = self._attach_parameter_context(
+                    reset_info, new_robot_params, new_env_params
+                )
+                observation_key, returned_key = random.split(returned_key)
+                reset_obs, reset_info = self._refresh_context_observation(
+                    reset_state, reset_info, observation_key
+                )
+                return (
+                    reset_state,
+                    reset_obs,
+                    reset_info,
+                    new_robot_params,
+                    new_env_params,
+                    returned_key,
+                )
+
+            def _keep(_):
+                return (
+                    next_state,
+                    next_obs,
+                    next_info,
+                    robot_params,
+                    env_params,
+                    next_reset_key,
+                )
+
+            next_state, next_obs, next_info, robot_params, env_params, next_reset_key = lax.cond(
+                reset_if_done & (~outcome["nothing"]),
+                _reset_done,
+                _keep,
+                operand=None,
+            )
+        return (
+            next_state,
+            next_obs,
+            next_info,
+            robot_params,
+            env_params,
+            reward,
+            outcome,
+            (next_reset_key, next_env_key),
+        )
+
     def __repr__(self) -> str:
         return str(self.__dict__)
+
+    def _validate_runtime_bounds(self, robot_lower, robot_upper, env_lower, env_upper):
+        """Reject contexts the fixed-rate simulator cannot represent faithfully."""
+        if float(robot_lower["wheels_distance"]) <= 0.0:
+            raise ValueError("LaserNav robot_params require a positive wheels_distance")
+        if (
+            float(robot_lower["control_dt"]) != self.robot_dt
+            or float(robot_upper["control_dt"]) != self.robot_dt
+        ):
+            raise ValueError("control_dt changes require constructing a matching LaserNav instance")
+        for name in ("lidar_period", "odometry_period"):
+            if (
+                float(env_lower[name]) < self.humans_dt
+                or float(env_upper[name]) > self.robot_dt
+            ):
+                raise ValueError(
+                    f"{name} bounds must lie in [humans_dt, robot_dt] "
+                    "because LaserNav stores one control interval of sensor history"
+                )
 
     @partial(jit, static_argnames=("self"))
     def _init_info(
@@ -223,6 +424,7 @@ class LaserNav(BaseEnv):
         odom_timestamp:float,
         control_timestamp:float,
         noise_key:random.PRNGKey,
+        env_params=None,
     ) -> jnp.ndarray:
         """
         Given the current state, the additional information about the environment,
@@ -252,7 +454,8 @@ class LaserNav(BaseEnv):
             humans_radii,
             legs_radii,
             static_obstacles, 
-            noise_key=noise_key
+            noise_key=noise_key,
+            noise_params=env_params,
         )
         robot_velocity = odom_state[-1,2:4] # Robot action (either (vx,vy) or (v,w))
         robot_position = odom_state[-1,:2]
@@ -298,11 +501,16 @@ class LaserNav(BaseEnv):
             info["humans_parameters"][:,0], 
             info["humans_leg_parameters"][:,-1], 
             info["static_obstacles"][-1], 
-            info["time"] - info["substeps_from_last_scan"]*self.humans_dt,
-            info["time"] - info["substeps_from_last_odom_ref_scan"]*self.humans_dt,
+            info["time"] - info["substeps_from_last_scan"]*self.humans_dt
+            - (info["_env_params"]["lidar_latency"] if "_env_params" in info else 0.0),
+            info["time"] - info["substeps_from_last_odom_ref_scan"]*self.humans_dt
+            - (info["_env_params"]["odometry_latency"] if "_env_params" in info else 0.0),
             info["time"],
-            noise_key
+            noise_key,
+            info["_env_params"] if "_env_params" in info else None,
         )
+        if "_robot_params" in info:
+            current_obs = current_obs.at[3].set(info["_robot_params"]["radius"])
         # Stack the current observation with the previous ones
         obs = jnp.vstack((current_obs,info["previous_obs"][:-1]))
         return obs, humans_visibility_mask, obstacles_visibility_mask
@@ -341,42 +549,82 @@ class LaserNav(BaseEnv):
         - outcome: dictionary indicating whether the episode is in a terminal state or not.
         - (reset_key, env_key): tuple of random.PRNGKey used to reset the environment (only if reset_if_done is True) and to advance the environment key.
         """
+        robot_radius = info["_robot_params"]["radius"] if "_robot_params" in info else self.robot_radius
+        robot_v_max = info["_robot_params"]["v_max"] if "_robot_params" in info else self.reward_function.v_max
+        control_delay_mean = info["_robot_params"]["control_delay_mean"] if "_robot_params" in info else self.control_delay_mean
+        control_delay_sigma = info["_robot_params"]["control_delay_std"] if "_robot_params" in info else self.control_delay_sigma
         ### Advance Environment noise key
         new_env_key, delay_key,_ = random.split(env_key, 3) 
         ### Robot goal update (next waypoint, if present)
         if self.scenario != -1: # Custom scenario, no automatic goal update
             info["robot_goal"], info["robot_goal_index"] = lax.cond(
-                (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= self.robot_radius*3) & # Waypoint reached threshold is set to be higher
+                (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= robot_radius*3) & # Waypoint reached threshold is set to be higher
                 (info['robot_goal_index'] < len(info['robot_goal_list'])-1) & # Check if current goal is not the last one
                 (~(jnp.any(jnp.isnan(info['robot_goal_list'][info['robot_goal_index']+1])))), # Check if next goal is not NaN
                 lambda _: (info['robot_goal_list'][info['robot_goal_index']+1], info['robot_goal_index']+1),
                 lambda x: x,
                 (info["robot_goal"], info["robot_goal_index"])
             )
-        ### Compute reward and outcome
-        reward, outcome, reward_terms = self.reward_function(state, action, info, self.robot_dt)
         ### Compute robot delay
-        info["robot_delay"] = jnp.clip(random.normal(delay_key) * self.control_delay_sigma + self.control_delay_mean, 0., self.actions_history_length * self.robot_dt) # Delay must be positive and lower than maximum history length * robot_dt
+        info["robot_delay"] = jnp.clip(random.normal(delay_key) * control_delay_sigma + control_delay_mean, 0., self.actions_history_length * self.robot_dt) # Delay must be positive and lower than maximum history length * robot_dt
         ### Update state and info
         new_state, new_info, (state_history, humans_leg_state_history) = self._step(state, info, action) 
+        ### Compute reward and outcome from the transition that was actually
+        # executed.  Reward implementations historically integrate one constant
+        # action from ``state``.  Reconstructing endpoint-equivalent velocities
+        # keeps that public reward API intact while accounting for control delay,
+        # actuator lag and acceleration limiting.
+        human_displacements = new_state[:-1, :2] - state[:-1, :2]
+        human_global_velocities = human_displacements / self.robot_dt
+        human_theta = state[:-1, 4]
+        human_body_velocities = jnp.stack(
+            (
+                jnp.cos(human_theta) * human_global_velocities[:, 0]
+                + jnp.sin(human_theta) * human_global_velocities[:, 1],
+                -jnp.sin(human_theta) * human_global_velocities[:, 0]
+                + jnp.cos(human_theta) * human_global_velocities[:, 1],
+            ),
+            axis=-1,
+        )
+        reward_state = state.at[:-1, 2:4].set(human_body_velocities)
+        delta_theta = wrap_angle(new_state[-1, 4] - state[-1, 4])
+        effective_w = delta_theta / self.robot_dt
+        robot_displacement = new_state[-1, :2] - state[-1, :2]
+        mid_theta = state[-1, 4] + delta_theta / 2.0
+        signed_chord = jnp.dot(
+            robot_displacement,
+            jnp.array([jnp.cos(mid_theta), jnp.sin(mid_theta)]),
+        )
+        effective_v = lax.cond(
+            jnp.abs(delta_theta) > 1e-5,
+            lambda: signed_chord * effective_w / (2.0 * jnp.sin(delta_theta / 2.0)),
+            lambda: signed_chord / self.robot_dt,
+        )
+        effective_action = jnp.array([effective_v, effective_w])
+        reward, outcome, reward_terms = self.reward_function(
+            reward_state,
+            effective_action,
+            info,
+            self.robot_dt,
+        )
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):
             state, info, outcome = val
             success, _ = self.reward_function.goal_reached_termination(
                 state[-1,:2],
-                self.robot_radius,
+                robot_radius,
                 info["robot_goal"],
             )
             collision_with_human, _ = self.reward_function.instant_human_collision_termination(
                 state[-1,:2],
-                self.robot_radius,
+                robot_radius,
                 state[:-1,:2],
                 info["humans_parameters"][:,0]
             )
             collision_with_obstacle, _ = self.reward_function.instant_obstacle_collision_termination(
                 state[-1,:2],
-                self.robot_radius,
+                robot_radius,
                 info['static_obstacles'][-1],
             )
             failure = collision_with_human | collision_with_obstacle
@@ -393,17 +641,40 @@ class LaserNav(BaseEnv):
         new_info["action_history"] = jnp.concatenate((action[None,:], new_info["action_history"][:-1]), axis=0)
         new_info["intermediate_states"] = state_history
         new_info["intermediate_leg_states"] = humans_leg_state_history
-        new_info["substeps_from_last_scan"] = (new_info["substeps_from_last_scan"] + self.control_substeps) % self.lidar_substeps
-        new_info["substeps_from_last_odom_ref_scan"] = ((new_info["substeps_from_last_odom_ref_scan"] + self.control_substeps - new_info["substeps_from_last_scan"]) % self.odometry_substeps) + new_info["substeps_from_last_scan"]
+        lidar_substeps, odometry_substeps = self._runtime_sensor_substeps(new_info)
+        new_info["substeps_from_last_scan"] = (
+            new_info["substeps_from_last_scan"] + self.control_substeps
+        ) % lidar_substeps
+        new_info["substeps_from_last_odom_ref_scan"] = (
+            (
+                new_info["substeps_from_last_odom_ref_scan"]
+                + self.control_substeps
+                - new_info["substeps_from_last_scan"]
+            )
+            % odometry_substeps
+        ) + new_info["substeps_from_last_scan"]
         gammas = jnp.array(tuple(reward_terms.keys()))
         rewards = jnp.array(tuple(reward_terms.values()))
-        exponent = info["step"] * self.robot_dt * self.reward_function.v_max
+        exponent = info["step"] * self.robot_dt * robot_v_max
         new_info["return"] += jnp.sum(jnp.power(gammas, exponent) * rewards)
         ### If done and reset_if_done, automatically reset the environment (available only if using standard scenarios)
         if self.scenario != -1: # Custom scenario, no automatic reset
+            def _auto_reset(x):
+                reset_state, returned_key, reset_info = self._reset(
+                    x[1],
+                    scenarios_prob=scenarios_prob,
+                    visibility_chance=visibility_chance,
+                )
+                if "_robot_params" in x[2]:
+                    reset_info = self._attach_parameter_context(
+                        reset_info,
+                        x[2]["_robot_params"],
+                        x[2]["_env_params"],
+                    )
+                return reset_state, returned_key, reset_info
             new_state, reset_key, new_info = lax.cond(
                 (reset_if_done) & (~(outcome["nothing"])),
-                lambda x: self._reset(x[1], scenarios_prob=scenarios_prob, visibility_chance=visibility_chance),
+                _auto_reset,
                 lambda x: x,
                 (new_state, reset_key, new_info)
             )
@@ -437,6 +708,89 @@ class LaserNav(BaseEnv):
             scenarios_prob,
             visibility_chance,
         )
+
+    @partial(jit, static_argnames=("self", "test", "reset_if_done"))
+    def batch_step_with_param_bounds(
+        self,
+        states,
+        infos,
+        robot_params,
+        env_params,
+        actions,
+        reset_keys,
+        env_keys,
+        robot_lower,
+        robot_upper,
+        env_lower,
+        env_upper,
+        test=False,
+        reset_if_done=False,
+        scenarios_prob=None,
+    ):
+        return vmap(
+            LaserNav._step_with_param_bounds,
+            in_axes=(
+                None, 0, 0, 0, 0, 0,
+                None, None, None, None,
+                None, None, 0, 0, None,
+            ),
+        )(
+            self,
+            states,
+            infos,
+            robot_params,
+            env_params,
+            actions,
+            robot_lower,
+            robot_upper,
+            env_lower,
+            env_upper,
+            test,
+            reset_if_done,
+            reset_keys,
+            env_keys,
+            scenarios_prob,
+        )
+
+    def batch_step_with_params(
+        self,
+        states,
+        infos,
+        robot_params,
+        env_params,
+        actions,
+        reset_keys,
+        env_keys,
+        *,
+        robot_param_bounds=None,
+        env_param_bounds=None,
+        test=False,
+        reset_if_done=False,
+        scenarios_prob=None,
+    ):
+        robot_nominal = validate_robot_params(self.get_default_robot_params())
+        env_nominal = validate_env_params(self.get_default_env_params())
+        robot_lower, robot_upper = bounds_from_nominal(robot_nominal, robot_param_bounds)
+        env_lower, env_upper = bounds_from_nominal(env_nominal, env_param_bounds)
+        self._validate_runtime_bounds(
+            robot_lower, robot_upper, env_lower, env_upper
+        )
+        return self.batch_step_with_param_bounds(
+            states,
+            infos,
+            robot_params,
+            env_params,
+            actions,
+            reset_keys,
+            env_keys,
+            robot_lower,
+            robot_upper,
+            env_lower,
+            env_upper,
+            test=test,
+            reset_if_done=reset_if_done,
+            scenarios_prob=scenarios_prob,
+        )
     
     @partial(jit, static_argnames=("self"))
     def reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None, visibility_chance:float=0.) -> tuple:
@@ -449,8 +803,105 @@ class LaserNav(BaseEnv):
             {"success": False, "collision_with_human": False, "collision_with_obstacle": False, "timeout": False, "nothing": True}
     
     @partial(jit, static_argnames=("self"))
-    def batch_reset(self, keys):
-        return vmap(LaserNav.reset, in_axes=(None,0))(self, keys)
+    def batch_reset(self, keys, scenarios_prob=None, visibility_chance=0.):
+        """Vectorized reset preserving the legacy defaults.
+
+        ``scenarios_prob`` and ``visibility_chance`` are additive arguments used
+        by curricula.  Previously the first rollout reset silently ignored both
+        while auto-resets used them, so the first episodes came from a different
+        distribution.
+        """
+        return vmap(LaserNav.reset, in_axes=(None, 0, None, None))(
+            self,
+            keys,
+            scenarios_prob,
+            visibility_chance,
+        )
+
+    def reset_with_params(
+        self,
+        key,
+        robot_param_bounds=None,
+        env_param_bounds=None,
+        scenarios_prob=None,
+    ):
+        """Reset with per-episode contexts while retaining the legacy reset API."""
+        robot_nominal = validate_robot_params(self.get_default_robot_params())
+        env_nominal = validate_env_params(self.get_default_env_params())
+        robot_lower, robot_upper = bounds_from_nominal(robot_nominal, robot_param_bounds)
+        env_lower, env_upper = bounds_from_nominal(env_nominal, env_param_bounds)
+        self._validate_runtime_bounds(
+            robot_lower, robot_upper, env_lower, env_upper
+        )
+        return self._reset_with_param_bounds(
+            key,
+            robot_lower,
+            robot_upper,
+            env_lower,
+            env_upper,
+            scenarios_prob,
+        )
+
+    def batch_reset_with_params(
+        self,
+        keys,
+        robot_param_bounds=None,
+        env_param_bounds=None,
+        scenarios_prob=None,
+    ):
+        robot_nominal = validate_robot_params(self.get_default_robot_params())
+        env_nominal = validate_env_params(self.get_default_env_params())
+        robot_lower, robot_upper = bounds_from_nominal(robot_nominal, robot_param_bounds)
+        env_lower, env_upper = bounds_from_nominal(env_nominal, env_param_bounds)
+        self._validate_runtime_bounds(
+            robot_lower, robot_upper, env_lower, env_upper
+        )
+        return vmap(LaserNav._reset_with_param_bounds, in_axes=(None, 0, None, None, None, None, None))(
+            self,
+            keys,
+            robot_lower,
+            robot_upper,
+            env_lower,
+            env_upper,
+            scenarios_prob,
+        )
+
+    def step_with_params(
+        self,
+        state,
+        info,
+        robot_params,
+        env_params,
+        action,
+        *,
+        robot_param_bounds=None,
+        env_param_bounds=None,
+        test=False,
+        reset_if_done=False,
+        reset_key=random.PRNGKey(0),
+        env_key=random.PRNGKey(0),
+        scenarios_prob=None,
+    ):
+        robot_params = validate_robot_params(robot_params)
+        env_params = validate_env_params(env_params)
+        robot_lower, robot_upper = bounds_from_nominal(robot_params, robot_param_bounds)
+        env_lower, env_upper = bounds_from_nominal(env_params, env_param_bounds)
+        return self._step_with_param_bounds(
+            state,
+            info,
+            robot_params,
+            env_params,
+            action,
+            robot_lower,
+            robot_upper,
+            env_lower,
+            env_upper,
+            test=test,
+            reset_if_done=reset_if_done,
+            reset_key=reset_key,
+            env_key=env_key,
+            scenarios_prob=scenarios_prob,
+        )
 
     @partial(jit, static_argnames=("self"))
     def reset_custom_episode(self, key:random.PRNGKey, custom_episode:dict) -> tuple:

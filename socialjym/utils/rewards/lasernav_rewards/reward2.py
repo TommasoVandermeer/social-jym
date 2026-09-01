@@ -161,7 +161,8 @@ class Reward2(BaseReward):
         humans_pos = state[:-1,:2]
         robot_goal = info["robot_goal"]
         humans_radiuses = info["humans_parameters"][:,0]
-        robot_radius = self.robot_radius
+        robot_radius = info["_robot_params"]["radius"] if "_robot_params" in info else self.robot_radius
+        v_max = info["_robot_params"]["v_max"] if "_robot_params" in info else self.v_max
         time = info["time"]
         # Compute next positions
         next_robot_pos = lax.cond(
@@ -284,7 +285,7 @@ class Reward2(BaseReward):
             urgency = jnp.clip((self.accountability_danger_dist - min_distance) / self.accountability_danger_dist, 0.0, 1.0)
             v = action[0]
             is_fast = v > 0.1
-            fast_penalty = -self.accountability_fast_penalty_coeff * urgency * (v / self.v_max)
+            fast_penalty = -self.accountability_fast_penalty_coeff * urgency * (v / v_max)
             stop_reward = self.accountability_stop_reward_coeff * urgency
             accountability_reward = jnp.where(
                 in_zone,

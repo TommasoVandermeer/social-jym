@@ -886,8 +886,12 @@ class JESSI(BasePolicy):
         Computes a safety loss that penalizes MEAN actions that bring the robot too close to a collision
         in the next time interval in the relative position space, considering the uncertainty in human positions.
         """
-        ### Compute distance threshold
-        distance_threshold = self.v_max * dt * 2
+        ### Compute distance threshold. Include the required body clearance as
+        # well as relative travel over the prediction horizon; the previous
+        # threshold was smaller than the clearance being enforced and activated
+        # the loss only after avoidance was already urgent.
+        required_safety_dist = self.robot_radius * 2 + 0.05
+        distance_threshold = required_safety_dist + self.v_max * dt * 2
         ### Extract human distribution parameters (STOP GRADIENTS)
         raw_weights = lax.stop_gradient(human_distrs['weights']) # (B, M)
         if raw_weights.ndim == 3:
@@ -969,7 +973,6 @@ class JESSI(BasePolicy):
         cos_impact = closest_point[..., 0] / safe_den
         alignment_factor = 1.0 + 5.0 * jnp.maximum(0.0, cos_impact)
         ### Compute safety loss
-        required_safety_dist = self.robot_radius * 2 + 0.05
         violations = jnp.maximum(0.0, required_safety_dist - min_dist) # (B, M)
         weighted_loss = jnp.square(violations) * alignment_factor * confidence_weight * final_mask # (B, M)
         frame_safety_loss = jnp.sum(weighted_loss, axis=-1) # (B,)
@@ -1013,17 +1016,27 @@ class JESSI(BasePolicy):
         return perception_params, actor_critic_params, e2e_params
 
     @partial(jit, static_argnames=("self"))
-    def bound_action_space(self, lidar_point_cloud, eps=1e-6):
+    def bound_action_space(
+        self,
+        lidar_point_cloud,
+        eps=1e-6,
+        v_max=None,
+        wheels_distance=None,
+        robot_radius=None,
+    ):
         """
         Compute the bounds of the action space based on the control parameters alpha, beta, gamma.
         WARNING: Assumes LiDAR orientation is align with robot frame.
         """
+        v_max = self.v_max if v_max is None else v_max
+        wheels_distance = self.wheels_distance if wheels_distance is None else wheels_distance
+        robot_radius = self.robot_radius if robot_radius is None else robot_radius
         # Lower ALPHA
         is_inside_frontal_rect = (
             (lidar_point_cloud[:,0] >=  0 + eps) & # xmin
-            (lidar_point_cloud[:,0] <= self.v_max * self.dt + self.robot_radius - eps) & # xmax
-            (lidar_point_cloud[:,1] >= -self.robot_radius + eps) &  # ymin
-            (lidar_point_cloud[:,1] <= self.robot_radius - eps) # ymax
+            (lidar_point_cloud[:,0] <= v_max * self.dt + robot_radius - eps) & # xmax
+            (lidar_point_cloud[:,1] >= -robot_radius + eps) &  # ymin
+            (lidar_point_cloud[:,1] <= robot_radius - eps) # ymax
         )
         intersection_points = jnp.where(
             is_inside_frontal_rect[:, None],
@@ -1033,19 +1046,19 @@ class JESSI(BasePolicy):
         min_x = jnp.nanmin(intersection_points[:,0])
         new_alpha = lax.cond(
             ~jnp.isnan(min_x),
-            lambda _: jnp.max(jnp.array([0, min_x - self.robot_radius])) / (self.v_max * self.dt),
+            lambda _: jnp.max(jnp.array([0, min_x - robot_radius])) / (v_max * self.dt),
             lambda _: 1.,
             None,
         )
         @jit
         def _lower_beta_and_gamma(tup:tuple):
-            lidar_point_cloud, new_alpha, vmax, wheels_distance, dt = tup
+            lidar_point_cloud, new_alpha, vmax, wheels_distance, radius, dt = tup
             # Lower BETA
             is_inside_left_rect = (
-                (lidar_point_cloud[:,0] >= -self.robot_radius + eps) & # xmin
-                (lidar_point_cloud[:,0] <= new_alpha * vmax * dt + self.robot_radius - eps) & # xmax
-                (lidar_point_cloud[:,1] >= self.robot_radius + eps) &  # ymin
-                (lidar_point_cloud[:,1] <= self.robot_radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance)) - eps) # ymax
+                (lidar_point_cloud[:,0] >= -radius + eps) & # xmin
+                (lidar_point_cloud[:,0] <= new_alpha * vmax * dt + radius - eps) & # xmax
+                (lidar_point_cloud[:,1] >= radius + eps) &  # ymin
+                (lidar_point_cloud[:,1] <= radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance)) - eps) # ymax
             )
             intersection_points = jnp.where(
                 is_inside_left_rect[:, None],
@@ -1055,16 +1068,16 @@ class JESSI(BasePolicy):
             min_y = jnp.nanmin(intersection_points[:,1])
             new_beta = lax.cond(
                 ~jnp.isnan(min_y),
-                lambda _: (min_y - self.robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
+                lambda _: (min_y - radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
                 lambda _: 1.,
                 None,
             )
             # Lower GAMMA
             is_inside_right_rect = (
-                (lidar_point_cloud[:,0] >=  -self.robot_radius + eps) & # xmin
-                (lidar_point_cloud[:,0] <= new_alpha * vmax * dt + self.robot_radius - eps) & # xmax
-                (lidar_point_cloud[:,1] >= -self.robot_radius - (new_alpha*dt**2*vmax**2/(4*wheels_distance)) + eps) & # ymin
-                (lidar_point_cloud[:,1] <= -self.robot_radius - eps) # ymax
+                (lidar_point_cloud[:,0] >=  -radius + eps) & # xmin
+                (lidar_point_cloud[:,0] <= new_alpha * vmax * dt + radius - eps) & # xmax
+                (lidar_point_cloud[:,1] >= -radius - (new_alpha*dt**2*vmax**2/(4*wheels_distance)) + eps) & # ymin
+                (lidar_point_cloud[:,1] <= -radius - eps) # ymax
             )
             intersection_points = jnp.where(
                 is_inside_right_rect[:, None],
@@ -1074,7 +1087,7 @@ class JESSI(BasePolicy):
             max_y = jnp.nanmax(intersection_points[:,1])
             new_gamma = lax.cond(
                 ~jnp.isnan(max_y),
-                lambda _: (-max_y - self.robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
+                lambda _: (-max_y - radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
                 lambda _: 1.,
                 None,
             )
@@ -1083,7 +1096,7 @@ class JESSI(BasePolicy):
             new_alpha == 0.,
             lambda _: (1., 1.),
             _lower_beta_and_gamma,
-            (lidar_point_cloud, new_alpha, self.v_max, self.wheels_distance, self.dt)
+            (lidar_point_cloud, new_alpha, v_max, wheels_distance, robot_radius, self.dt)
         )
         # Apply lower bound to new_alpha, new_beta, new_gamma
         new_alpha = jnp.max(jnp.array([EPSILON, new_alpha]))

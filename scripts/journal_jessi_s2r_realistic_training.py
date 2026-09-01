@@ -4,6 +4,7 @@ from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
 import matplotlib.pyplot as plt
 import os
+import json
 import pickle
 import optax
 from matplotlib import rc, rcParams
@@ -32,9 +33,20 @@ leg_dynamics = True  # Whether to include leg dynamics in the simulation (introd
 ### Script parameters
 save_videos = False  # Whether to save videos of the debug inspections
 perception_nn_name = 'realistic_pre_perception_network_32.pkl'
-policy_nn_name = 'jessi_s2r_pre_controller_network_32_2.pkl'
-critic_nn_name = 'jessi_s2r_pre_critic_network_32_2.pkl'
-multitask_network_name = 'jessi_s2r_multitask_rl_out_32.pkl'
+policy_nn_name = 'jessi_s2r_v2_pre_controller_network_32.pkl'
+critic_nn_name = 'jessi_s2r_v2_pre_critic_network_32.pkl'
+multitask_network_name = 'jessi_s2r_v2_multitask_rl_out_32.pkl'
+calibration_manifest_path = os.path.join(
+    os.path.dirname(__file__), "jessi_s2r_calibration.json"
+)
+if os.path.exists(calibration_manifest_path):
+    with open(calibration_manifest_path) as calibration_stream:
+        calibration_manifest = json.load(calibration_stream)
+    robot_param_bounds = calibration_manifest["robot_param_bounds"]
+    env_param_bounds = calibration_manifest["env_param_bounds"]
+else:
+    robot_param_bounds = None
+    env_param_bounds = None
 ### Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -93,7 +105,7 @@ training_hyperparams = {
     'hybrid_scenario_subset': hybrid_scenario_subset,
     'reward_function': 'lasernav_reward1',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
-    'safety_loss': False,  # Whether to include safety loss in the RL training
+    'safety_loss': True,  # Penalize predicted near-term human path conflicts
     'target_kl': 0.015,  # Target KL divergence for early stopping in each update
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
@@ -1154,6 +1166,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'training_type': "multitask",
         'target_kl': training_hyperparams['target_kl'],
         'debugging': False,
+        'robot_param_bounds': robot_param_bounds,
+        'env_param_bounds': env_param_bounds,
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_s2r_rl_rollout(**rl_rollout_params)

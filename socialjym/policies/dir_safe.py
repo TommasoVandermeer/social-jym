@@ -606,6 +606,12 @@ class DIRSAFE(SARL):
         )
         action = lax.cond(sample, lambda _: sampled_action, lambda _: self.distr.mean(distr), None)
         return action, key, input, sampled_action, distr
+
+    def _act_for_evaluation(self, key, obs, info, network_params):
+        action, key, _, _, _ = self.act(
+            key, obs, info, network_params, sample=False
+        )
+        return action, key
     
     @partial(jit, static_argnames=("self"))
     def batch_act(

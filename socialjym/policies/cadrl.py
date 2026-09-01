@@ -371,7 +371,9 @@ class CADRL(BasePolicy):
             def _while_body(while_val:tuple):
                 # Retrieve data from the tuple
                 state, obs, info, outcome, policy_key, steps, all_actions, all_states = while_val
-                action, policy_key, _, _ = self.act(policy_key, obs, info, network_params, epsilon=0.)
+                action, policy_key = self._act_for_evaluation(
+                    policy_key, obs, info, network_params
+                )
                 state, obs, info, _, outcome, _ = env.step(state,info,action,test=True)    
                 # Save data
                 all_actions = all_actions.at[steps].set(action)
@@ -423,6 +425,13 @@ class CADRL(BasePolicy):
         # Print results
         print_average_metrics(n_trials, metrics)
         return metrics
+
+    def _act_for_evaluation(self, key, obs, info, network_params):
+        """Adapter hook for CADRL-family policies with different ``act`` APIs."""
+        action, key, _, _ = self.act(
+            key, obs, info, network_params, epsilon=0.0
+        )
+        return action, key
     
     def animate_trajectory(
         self,

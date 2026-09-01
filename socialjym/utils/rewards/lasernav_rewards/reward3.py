@@ -152,7 +152,7 @@ class Reward3(BaseReward):
         humans_pos = state[:-1,:2]
         robot_goal = info["robot_goal"]
         humans_radiuses = info["humans_parameters"][:,0]
-        robot_radius = self.robot_radius
+        robot_radius = info["_robot_params"]["radius"] if "_robot_params" in info else self.robot_radius
         time = info["time"]
         # Compute next positions
         next_robot_pos = lax.cond(

@@ -1,6 +1,6 @@
 import optax
 from jax import jit, lax, random, vmap, device_put, device_get, device_count, eval_shape, ShapeDtypeStruct, debug
-from jax.tree_util import tree_map
+from jax.tree_util import tree_map, tree_leaves
 import jax.numpy as jnp
 from jax import nn
 import numpy as np
@@ -13,10 +13,28 @@ from jax.experimental import mesh_utils
 from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.base_env import SCENARIOS
 from socialjym.envs.lasernav import LaserNav
+from socialjym.envs.parameter_context import (
+    bounds_from_nominal,
+    validate_env_params,
+    validate_robot_params,
+)
 from socialjym.policies.jessi_s2r import JESSI_S2R
 
 
 TRAINING_TYPES = ["multitask", "modular", "policy"]
+
+
+def tree_all_finite(tree):
+    """Return a scalar JAX boolean indicating whether every leaf is finite."""
+    leaves = tree_leaves(tree)
+    if not leaves:
+        return jnp.array(True)
+    return jnp.all(jnp.stack([jnp.all(jnp.isfinite(leaf)) for leaf in leaves]))
+
+
+def tree_select(predicate, true_tree, false_tree):
+    """Select between matching pytrees using a scalar JAX predicate."""
+    return tree_map(lambda new, old: jnp.where(predicate, new, old), true_tree, false_tree)
 
 @partial(jit, static_argnames=("policy", "env", "n_steps"))
 def collect_rollout_step(
@@ -32,14 +50,25 @@ def collect_rollout_step(
     n_steps,
     scenarios_prob,
     visibility,
+    robot_lower,
+    robot_upper,
+    env_lower,
+    env_upper,
 ):
     def _scan_step(carry, _):
         (states, obses, infos, outcomes, returns, times, success_per_scenario, episodes_per_scenario, p_keys, r_keys, e_keys, outcomes_acc) = carry
         keys = vmap(random.split)(p_keys)
         p_keys, c_keys = keys[:,0], keys[:,1]
         # Actor
-        actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, _, _, _, _ = policy.batch_act(
-            p_keys, obses, infos, network_params, sample=True
+        runtime_robot_params = infos["_robot_params"]
+        runtime_env_params = infos["_env_params"]
+        actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, _, _, _, _ = policy.batch_act_with_params(
+            p_keys,
+            obses,
+            infos,
+            runtime_robot_params,
+            network_params,
+            sample=True,
         )
         # Critic
         env_params = {
@@ -49,10 +78,10 @@ def collect_rollout_step(
         }
         robot_params = {
             "robot_goal": infos["robot_goal"],
-            "robot_radius": jnp.full((len(infos["robot_goal"]),), policy.robot_radius),
-            "v_max": jnp.full((len(infos["robot_goal"]),), policy.v_max),
-            "wheels_distance": jnp.full((len(infos["robot_goal"]),), policy.wheels_distance),
-            "wheels_max_linear_acceleration": jnp.full((len(infos["robot_goal"]),), env.wheels_max_linear_acceleration),
+            "robot_radius": runtime_robot_params["radius"],
+            "v_max": runtime_robot_params["v_max"],
+            "wheels_distance": runtime_robot_params["wheels_distance"],
+            "wheels_max_linear_acceleration": runtime_robot_params["wheel_accel_max"],
             "robot_delay": infos["robot_delay"],
         }
         values = policy.batch_critic_forward(
@@ -65,8 +94,30 @@ def collect_rollout_step(
             inputs1[:,0,:3], # Action space parameters
         )
         # Environment
-        new_states, new_obses, new_infos, (rewards, _), new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
-            states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True, scenarios_prob=scenarios_prob, visibility_chance=visibility
+        (
+            new_states,
+            new_obses,
+            new_infos,
+            _,
+            _,
+            (rewards, _),
+            new_outcomes,
+            (new_r_keys, new_e_keys),
+        ) = env.batch_step_with_param_bounds(
+            states,
+            infos,
+            runtime_robot_params,
+            runtime_env_params,
+            actions,
+            r_keys,
+            e_keys,
+            robot_lower,
+            robot_upper,
+            env_lower,
+            env_upper,
+            test=False,
+            reset_if_done=True,
+            scenarios_prob=scenarios_prob,
         )
         rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(
             states[:,:-1,:2], 
@@ -97,7 +148,13 @@ def collect_rollout_step(
             "stds": policy.action_distribution.batch_std(actor_distrs)
         }
         new_times = times + (new_outcomes["success"]) * (infos['time'] + policy.dt)
-        new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(env.reward_function.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards)
+        new_returns = returns + (~new_outcomes["nothing"]) * (
+            infos['return']
+            + jnp.power(
+                env.reward_function.gamma,
+                (infos['step'] + 1) * policy.dt * runtime_robot_params["v_max"],
+            ) * rewards
+        )
         new_success_per_scenario = {k: success_per_scenario[k] + (new_outcomes["success"]) * (infos["current_scenario"] == k) for k in success_per_scenario}
         new_episodes_per_scenario = {k: episodes_per_scenario[k] + (~new_outcomes["nothing"]) * (infos["current_scenario"] == k) for k in episodes_per_scenario}
         new_outcomes_acc = {k: outcomes_acc[k] + new_outcomes[k] for k in new_outcomes}
@@ -145,8 +202,14 @@ def process_buffer_and_gae(
     """
     Calcola l'ultimo value, GAE, Returns e appiattisce il buffer.
     """
-    _, robot_state_inputs = vmap(policy.compute_e2e_input, in_axes=(0,0))(
-        last_obs, last_info['robot_goal']
+    _, robot_state_inputs = vmap(
+        policy.compute_e2e_input_with_params,
+        in_axes=(0, 0, 0, None),
+    )(
+        last_obs,
+        last_info['robot_goal'],
+        last_info['_robot_params'],
+        None,
     )
     # _, _, _, _, _, last_values, _, _, _ = policy.e2e.apply(
     #     network_params, None, perception_inputs, robot_state_inputs
@@ -164,10 +227,10 @@ def process_buffer_and_gae(
         }, # env_params
         {
             "robot_goal": last_info["robot_goal"],
-            "robot_radius": jnp.full((len(last_info["robot_goal"]),), policy.robot_radius),
-            "v_max": jnp.full((len(last_info["robot_goal"]),), policy.v_max),
-            "wheels_distance": jnp.full((len(last_info["robot_goal"]),), policy.wheels_distance),
-            "wheels_max_linear_acceleration": jnp.full((len(last_info["robot_goal"]),), env.wheels_max_linear_acceleration),
+            "robot_radius": last_info["_robot_params"]["radius"],
+            "v_max": last_info["_robot_params"]["v_max"],
+            "wheels_distance": last_info["_robot_params"]["wheels_distance"],
+            "wheels_max_linear_acceleration": last_info["_robot_params"]["wheel_accel_max"],
             "robot_delay": last_info["robot_delay"],
         }, # robot_params
         robot_state_inputs[:,0,:3] # action_space_parameters
@@ -177,12 +240,12 @@ def process_buffer_and_gae(
     dones = history["dones"]
     values_ext = jnp.concatenate([values, last_values[None, :]], axis=0)
     dones_ext = jnp.concatenate([dones, last_dones[None, :]], axis=0)
-    gamma_step = gamma ** (dt * vmax)
+    gamma_step = gamma ** (dt * history["robot_params"]["v_max"])
     def _gae_step(gae_carry, i):
         adv_next = gae_carry
         mask = 1.0 - dones_ext[i+1].astype(jnp.float32)
-        delta = rewards[i] + gamma_step * values_ext[i+1] * mask - values_ext[i]
-        advantage = delta + gamma_step * lambda_gae * adv_next * mask
+        delta = rewards[i] + gamma_step[i] * values_ext[i+1] * mask - values_ext[i]
+        advantage = delta + gamma_step[i] * lambda_gae * adv_next * mask
         return advantage, advantage # Carry, Output
     n_steps = rewards.shape[0]
     _, advantages = lax.scan(_gae_step, jnp.zeros_like(values[0]), jnp.arange(n_steps)[::-1])
@@ -256,12 +319,12 @@ def train_one_epoch(
                 inputs1_f16 = inputs1.astype(jnp.bfloat16)
                 # Actor forward pass 
                 (safety_perc_dist, _, _, actor_dist, _, __build_class__, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training)
+                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=not multitask_training
                 )
             else:
                 # Actor forward pass
                 (safety_perc_dist, _, _, actor_dist, _, _, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training)
+                    p, None, inputs0, inputs1, stop_perception_gradient=not multitask_training
                 )               
             # Cast back to higher precision for loss computation
             if multitask_training or modular_training:
@@ -271,8 +334,7 @@ def train_one_epoch(
                 safety_perc_dist = dist_to_f32(safety_perc_dist)
             # Actor
             new_neglogp = policy.action_distribution.batch_neglogp(actor_dist, u_mb["actions"])
-            log_ratio = u_mb["neglogpdfs"] - new_neglogp
-            # log_ratio = jnp.clip(log_ratio, -10, 10) # MORE STABLE
+            log_ratio = jnp.clip(u_mb["neglogpdfs"] - new_neglogp, -20.0, 20.0)
             ratio = jnp.exp(log_ratio)
             lax.cond(
                 debugging & (batch_idx == 0),
@@ -415,9 +477,36 @@ def train_one_epoch(
         )
         updates, new_opt_st_inner = optimizer.update(grads_avg, opt_st_inner)
         critic_updates, new_critic_opt_st_inner = critic_optimizer.update(critic_grads_avg, critic_opt_st_inner)
-        new_params_inner = optax.apply_updates(params_inner, updates)
-        new_critic_params_inner = optax.apply_updates(critic_params_inner, critic_updates)
-        return (new_params_inner, new_critic_params_inner, new_opt_st_inner, new_critic_opt_st_inner, batch_idx + 1, batch_key), aux_avg
+        candidate_params = optax.apply_updates(params_inner, updates)
+        candidate_critic_params = optax.apply_updates(critic_params_inner, critic_updates)
+        update_is_finite = (
+            tree_all_finite(grads_avg)
+            & tree_all_finite(critic_grads_avg)
+            & tree_all_finite(candidate_params)
+            & tree_all_finite(candidate_critic_params)
+            & tree_all_finite(new_opt_st_inner)
+            & tree_all_finite(new_critic_opt_st_inner)
+        )
+        # Never allow a bad CUDA/JAX update to corrupt the last known-good
+        # training state.  The host loop below observes this flag and aborts with
+        # an actionable error after synchronization.
+        committed_params = tree_select(update_is_finite, candidate_params, params_inner)
+        committed_critic_params = tree_select(
+            update_is_finite, candidate_critic_params, critic_params_inner
+        )
+        committed_opt_state = tree_select(update_is_finite, new_opt_st_inner, opt_st_inner)
+        committed_critic_opt_state = tree_select(
+            update_is_finite, new_critic_opt_st_inner, critic_opt_st_inner
+        )
+        aux_avg = (*aux_avg, update_is_finite.astype(jnp.float32))
+        return (
+            committed_params,
+            committed_critic_params,
+            committed_opt_state,
+            committed_critic_opt_state,
+            batch_idx + 1,
+            batch_key,
+        ), aux_avg
 
     (new_params, new_critic_params, new_opt_st, new_critic_opt_st, _, _), batch_aux = lax.scan(
         _batch_step, (network_params, critic_network_params, opt_state, critic_opt_state, 0, key), batched_buffer
@@ -435,6 +524,7 @@ def train_one_epoch(
         "clip_frac": jnp.mean(batch_aux[9]),
         "explained_var": jnp.mean(batch_aux[10]),
         "grad_norm": jnp.mean(batch_aux[11]),
+        "finite": jnp.all(batch_aux[12] > 0.5),
     }
     return (new_params, new_critic_params, new_opt_st, new_critic_opt_st), epoch_metrics
 
@@ -464,17 +554,35 @@ def update_ema(
     batch_success,
     scenario_ema_success,
     scenario_batch_success,
+    scenario_observed=None,
     alpha=0.08,
 ):
-    # Success
-    if ema_success is None:
-        return batch_success
-    new_ema_success = (1.0 - alpha) * ema_success + alpha * batch_success
-    # Scenario success
     scenario_batch_success = jnp.asarray(scenario_batch_success, dtype=jnp.float32)
+    scenario_observed = (
+        jnp.ones_like(scenario_batch_success, dtype=bool)
+        if scenario_observed is None
+        else jnp.asarray(scenario_observed, dtype=bool)
+    )
+    # Both branches must preserve the same public tuple contract.  Returning one
+    # scalar/array here used to make the first curriculum update fail while its
+    # caller attempted to unpack two values.
+    new_ema_success = (
+        batch_success
+        if ema_success is None
+        else (1.0 - alpha) * ema_success + alpha * batch_success
+    )
     if scenario_ema_success is None:
-        return scenario_batch_success.copy()
-    new_scenario_ema_success = (1.0 - alpha) * scenario_ema_success + alpha * scenario_batch_success
+        new_scenario_ema_success = jnp.where(
+            scenario_observed, scenario_batch_success, 0.0
+        )
+    else:
+        candidate_scenario_ema = (
+            (1.0 - alpha) * scenario_ema_success
+            + alpha * scenario_batch_success
+        )
+        new_scenario_ema_success = jnp.where(
+            scenario_observed, candidate_scenario_ema, scenario_ema_success
+        )
     return new_ema_success, new_scenario_ema_success
 
 def jessi_s2r_rl_rollout(
@@ -498,6 +606,8 @@ def jessi_s2r_rl_rollout(
     target_kl:float = None,
     safety_loss:bool = False,
     debugging:bool = False,
+    robot_param_bounds:dict = None,
+    env_param_bounds:dict = None,
 ):
     assert training_type in TRAINING_TYPES, "Invalid training type. Must be one of: " + ", ".join(TRAINING_TYPES)
     assert total_batch_size % n_parallel_envs == 0, "Total batch size must be divisible by number of parallel envs."
@@ -513,11 +623,40 @@ def jessi_s2r_rl_rollout(
     sharding_env = NamedSharding(mesh, PartitionSpec('env_axis'))
     sharding_replicated = NamedSharding(mesh, PartitionSpec())
     key = random.PRNGKey(random_seed)
+    robot_nominal = validate_robot_params(env.get_default_robot_params())
+    env_nominal = validate_env_params(env.get_default_env_params())
+    robot_lower, robot_upper = bounds_from_nominal(robot_nominal, robot_param_bounds)
+    env_lower, env_upper = bounds_from_nominal(env_nominal, env_param_bounds)
     key, subkey = random.split(key)
     reset_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
     key, subkey = random.split(key)
     env_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
-    states, reset_keys, obses, infos, init_outcomes = env.batch_reset(reset_keys)
+    scenarios_prob = jnp.full(
+        (len(env.hybrid_scenario_subset),),
+        1.0 / len(env.hybrid_scenario_subset),
+    )
+    visibility = 1.0
+    nominal_robot_bounds = {
+        name: (value, value) for name, value in robot_nominal.items()
+    }
+    nominal_env_bounds = {
+        name: (value, value) for name, value in env_nominal.items()
+    }
+    nominal_env_bounds["robot_visibility_probability"] = (visibility, visibility)
+    (
+        states,
+        reset_keys,
+        obses,
+        infos,
+        _,
+        _,
+        init_outcomes,
+    ) = env.batch_reset_with_params(
+        reset_keys,
+        robot_param_bounds=nominal_robot_bounds,
+        env_param_bounds=nominal_env_bounds,
+        scenarios_prob=scenarios_prob,
+    )
     states = tree_map(lambda x: device_put(x, sharding_env), states)
     obses = tree_map(lambda x: device_put(x, sharding_env), obses)
     infos = tree_map(lambda x: device_put(x, sharding_env), infos)
@@ -544,6 +683,7 @@ def jessi_s2r_rl_rollout(
         "stds": [], "grad_norm": [], "approx_kl": [], "clip_frac": [], "explained_var": [],
         "successes_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
         "episodes_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
+        "domain_randomization_fraction": [],
     }
     init_beta_entropy = beta_entropy
     scenarios_labels = {}
@@ -552,8 +692,6 @@ def jessi_s2r_rl_rollout(
         prefix = words[0][:2].capitalize()
         suffix = "".join([w[0] for w in words[1:]]) 
         scenarios_labels[i] = prefix + suffix
-    scenarios_prob = jnp.array([1.0 / (len(env.hybrid_scenario_subset))] * len(env.hybrid_scenario_subset))
-    visibility = 1.
     scenario_ema_success = None
     ema_success = None
     print(f"Starting optimized training loop for {train_updates} updates.")
@@ -561,10 +699,57 @@ def jessi_s2r_rl_rollout(
     for update in tqdm(range(train_updates)):
         # Entropy linear decay to zero
         # beta_entropy = init_beta_entropy - ((init_beta_entropy / train_updates) * update) # linear
-        beta_entropy = init_beta_entropy * jnp.exp(-update/0.6*train_updates) # exponential
+        beta_entropy = init_beta_entropy * jnp.exp(-update / (0.6 * train_updates)) # exponential
         # A. COLLECT ROLLOUT STEP (Parallel)
+        curriculum_start = 0.05
+        curriculum_end = 0.65
+        progress = update / max(train_updates - 1, 1)
+        domain_fraction = float(jnp.clip(
+            (progress - curriculum_start) / (curriculum_end - curriculum_start),
+            0.0,
+            1.0,
+        ))
+        rollout_robot_lower = tree_map(
+            lambda nominal, bound: nominal + domain_fraction * (bound - nominal),
+            robot_nominal,
+            robot_lower,
+        )
+        rollout_robot_upper = tree_map(
+            lambda nominal, bound: nominal + domain_fraction * (bound - nominal),
+            robot_nominal,
+            robot_upper,
+        )
+        rollout_env_lower = tree_map(
+            lambda nominal, bound: nominal + domain_fraction * (bound - nominal),
+            env_nominal,
+            env_lower,
+        ) | {
+            "robot_visibility_probability": jnp.asarray(visibility, dtype=jnp.float32),
+        }
+        rollout_env_upper = tree_map(
+            lambda nominal, bound: nominal + domain_fraction * (bound - nominal),
+            env_nominal,
+            env_upper,
+        ) | {
+            "robot_visibility_probability": jnp.asarray(visibility, dtype=jnp.float32),
+        }
         env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum, returns, times, success_per_scenario, episodes_per_scenario = collect_rollout_step(
-            params, critic_params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps, scenarios_prob, visibility
+            params,
+            critic_params,
+            env_state,
+            policy_keys,
+            reset_keys,
+            env_keys,
+            init_outcomes,
+            policy,
+            env,
+            n_steps,
+            scenarios_prob,
+            visibility,
+            rollout_robot_lower,
+            rollout_robot_upper,
+            rollout_env_lower,
+            rollout_env_upper,
         )
         current_states, current_obs, current_infos, current_dones = env_state[0], env_state[1], env_state[2], ~(env_state[3]['nothing'])
         n_succ = jnp.sum(outcomes_sum["success"])
@@ -637,6 +822,11 @@ def jessi_s2r_rl_rollout(
                 debugging=(epoch==0) & (debugging),
             )
             metrics_one_epoch["loss"].block_until_ready() # SYNC
+            if not bool(device_get(metrics_one_epoch["finite"])):
+                raise FloatingPointError(
+                    "Rejected a non-finite JESSI-S2R update; parameters and optimizer "
+                    "state were rolled back to the last finite minibatch."
+                )
             for k in epoch_metrics_acc:
                 if k not in metrics_one_epoch: continue
                 epoch_metrics_acc[k].append(metrics_one_epoch[k])
@@ -661,6 +851,7 @@ def jessi_s2r_rl_rollout(
         logs["collisions_humans"].append(int(n_coll_hum))
         logs["collisions_obstacles"].append(int(n_coll_obs))
         logs["episodes"].append(int(ep_count))
+        logs["domain_randomization_fraction"].append(domain_fraction)
         logs["stds"].append(avg_action_std)
         logs["grad_norm"].append(grad_norm)
         logs["approx_kl"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["approx_kl"]))))
@@ -670,33 +861,55 @@ def jessi_s2r_rl_rollout(
         logs["episodes_per_scenario"] = {k: logs["episodes_per_scenario"][k] + [episodes_per_scenario[k]] for k in logs["episodes_per_scenario"]}
         # G. EMA UPDATE and CURRICULUM UTILS
         batch_scenario_success_rate = jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)])
-        batch_success_rate = logs['successes'][-1]/logs['episodes'][-1]
-        ema_success, scenario_ema_success = update_ema(ema_success, batch_success_rate, scenario_ema_success, batch_scenario_success_rate)
-        worst_3_scenarios_success_rate = jnp.mean(jnp.sort(batch_scenario_success_rate)[:3])
+        scenario_observed = jnp.array([
+            episodes_per_scenario[k] > 0 for k in sorted(episodes_per_scenario)
+        ])
+        has_completed_episode = logs['episodes'][-1] > 0
+        batch_success_rate = (
+            logs['successes'][-1] / logs['episodes'][-1]
+            if has_completed_episode
+            else (float(ema_success) if ema_success is not None else 0.0)
+        )
+        if has_completed_episode:
+            ema_success, scenario_ema_success = update_ema(
+                ema_success,
+                batch_success_rate,
+                scenario_ema_success,
+                batch_scenario_success_rate,
+                scenario_observed,
+            )
+        worst_3_scenarios_success_rate = (
+            jnp.mean(jnp.sort(scenario_ema_success)[:3])
+            if scenario_ema_success is not None
+            else 0.0
+        )
         # H. PRINT LOGS
         print(
             f"\nUpd {update}:\n",
-            f"| Ret: {logs['returns'][-1]:.3f} | EMA Succ: {ema_success:.3f} | Succ: {batch_success_rate:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
+            f"| Ret: {logs['returns'][-1]:.3f} | EMA Succ: {(ema_success if ema_success is not None else 0.0):.3f} | Succ: {batch_success_rate:.3f} | Fail: {logs['failures'][-1]/max(logs['episodes'][-1], 1):.3f} (hum {int(n_coll_hum)/max(logs['episodes'][-1], 1):.2f}, obs {int(n_coll_obs)/max(logs['episodes'][-1], 1):.2f}) | Timeouts: {logs['timeouts'][-1]/max(logs['episodes'][-1], 1):.3f}\n",
             f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
             f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
             f"| EMA-SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {scenario_ema_success[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n" if scenario_ema_success is not None else "",
             f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
             f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} | Safety Loss: {logs['safety_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
-            f"| Weights entropy: {logs['weight_entropies'][-1]:.4f} | Max weights: {logs['max_weights'][-1]:.4f} | Visibility: {visibility:.2f} \n",
+            f"| Weights entropy: {logs['weight_entropies'][-1]:.4f} | Max weights: {logs['max_weights'][-1]:.4f} | Visibility: {visibility:.2f} | Domain rand: {domain_fraction:.2f} \n",
             f"| Loss: {logs['losses'][-1]:.4f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f} | Clip frac: {logs['clip_frac'][-1]:.4f} | Explained Var: {logs['explained_var'][-1]:.4f} \n",
         )
         # I. CURRICULUM (each 10, 20 or more updates, slows down the dynamics)
-        if (update % 10 == 0) and (update > 0):
+        if (
+            (update % 10 == 0)
+            and (update > 0)
+            and (scenario_ema_success is not None)
+        ):
             # Scenarios probabilities
             scenarios_prob = get_dynamic_probabilities(scenario_ema_success)
-        if (update % 20 == 0) and (update > 0):
+        if (update % 20 == 0) and (update > 0) and (ema_success is not None):
             # Visibility
             if ema_success > 0.5 and worst_3_scenarios_success_rate > 0.3:
                 visibility -= 0.1
             elif ema_success < 0.4:
                 visibility += 0.05
             visibility = min(max(visibility, 0.), 1.)
-        
-        
-    return best_params, device_get(params), best_critic_params, device_get(critic_params), logs 
-             
+
+
+    return best_params, device_get(params), best_critic_params, device_get(critic_params), logs

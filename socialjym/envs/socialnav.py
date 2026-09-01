@@ -4,6 +4,12 @@ from functools import partial
 from types import FunctionType
 
 from .base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS, ENVIRONMENTS, wrap_angle
+from .parameter_context import (
+    bounds_from_nominal,
+    sample_context,
+    validate_env_params,
+    validate_robot_params,
+)
 
 class SocialNav(BaseEnv):
     """
@@ -98,8 +104,48 @@ class SocialNav(BaseEnv):
 
     # --- Private methods ---
 
+    @partial(jit, static_argnames=("self"))
+    def _attach_parameter_context(self, info, robot_params, env_params):
+        contextual_info = info.copy()
+        contextual_info["_robot_params"] = robot_params
+        contextual_info["_env_params"] = env_params
+        return contextual_info
+
+    @partial(jit, static_argnames=("self"))
+    def _reset_with_param_bounds(
+        self,
+        key,
+        robot_lower,
+        robot_upper,
+        env_lower,
+        env_upper,
+    ):
+        robot_key, env_key, reset_key = random.split(key, 3)
+        robot_params = sample_context(
+            robot_key, self.get_default_robot_params(), robot_lower, robot_upper
+        )
+        env_params = sample_context(
+            env_key, self.get_default_env_params(), env_lower, env_upper
+        )
+        state, next_key, info = self._reset(
+            reset_key,
+            visibility_chance=env_params["robot_visibility_probability"],
+        )
+        info = self._attach_parameter_context(info, robot_params, env_params)
+        obs = self._get_obs(state, info)
+        outcome = {"success": False, "failure": False, "timeout": False, "nothing": True}
+        return state, next_key, obs, info, robot_params, env_params, outcome
+
     def __repr__(self) -> str:
         return str(self.__dict__)
+
+    def _validate_runtime_robot_context(self, robot_lower, robot_upper=None):
+        robot_upper = robot_lower if robot_upper is None else robot_upper
+        if (
+            float(robot_lower["control_dt"]) != self.robot_dt
+            or float(robot_upper["control_dt"]) != self.robot_dt
+        ):
+            raise ValueError("control_dt changes require constructing a matching SocialNav instance")
 
     @partial(jit, static_argnames=("self"))
     def _get_obs(self, state:jnp.ndarray, info:dict) -> jnp.ndarray:
@@ -127,9 +173,11 @@ class SocialNav(BaseEnv):
         elif self.humans_policy == HUMAN_POLICIES.index('sfm') or self.humans_policy == HUMAN_POLICIES.index('orca'): # For sfm and orca policies the state already contains the linear velocities
             obs = lax.fori_loop(0, self.n_humans, lambda i, obs: obs.at[i].set(jnp.array([state[i,0], state[i,1], state[i,2], state[i,3], info['humans_parameters'][i,0], 0.])), obs)
         if self.kinematics == ROBOT_KINEMATICS.index('holonomic'):
-            obs = obs.at[-1].set(jnp.array([*state[-1,0:4], self.robot_radius, 0.]))
+            robot_radius = info["_robot_params"]["radius"] if "_robot_params" in info else self.robot_radius
+            obs = obs.at[-1].set(jnp.array([*state[-1,0:4], robot_radius, 0.]))
         elif self.kinematics == ROBOT_KINEMATICS.index('unicycle'):
-            obs = obs.at[-1].set(jnp.array([*state[-1,0:4], self.robot_radius, state[-1,4]]))
+            robot_radius = info["_robot_params"]["radius"] if "_robot_params" in info else self.robot_radius
+            obs = obs.at[-1].set(jnp.array([*state[-1,0:4], robot_radius, state[-1,4]]))
         return obs
 
     # --- Public methods ---
@@ -229,10 +277,12 @@ class SocialNav(BaseEnv):
         - outcome: dictionary indicating whether the episode is in a terminal state or not.
         - reset_key: random.PRNGKey used to reset the environment. Only used if reset_if_done is True.
         """
+        robot_radius = info["_robot_params"]["radius"] if "_robot_params" in info else self.robot_radius
+        robot_v_max = info["_robot_params"]["v_max"] if "_robot_params" in info else self.reward_function.v_max
         ### Robot goal update (next waypoint, if present)
         if self.scenario != -1: # Custom scenario, no automatic goal update
             info["robot_goal"], info["robot_goal_index"] = lax.cond(
-                (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= self.robot_radius*3) & # Waypoint reached threshold is set to be higher
+                (jnp.linalg.norm(state[-1,:2] - info["robot_goal"]) <= robot_radius*3) & # Waypoint reached threshold is set to be higher
                 (info['robot_goal_index'] < len(info['robot_goal_list'])-1) & # Check if current goal is not the last one
                 (~(jnp.any(jnp.isnan(info['robot_goal_list'][info['robot_goal_index']+1])))), # Check if next goal is not NaN
                 lambda _: (info['robot_goal_list'][info['robot_goal_index']+1], info['robot_goal_index']+1),
@@ -250,12 +300,12 @@ class SocialNav(BaseEnv):
             state, info, outcome = val
             success, _ = self.reward_function.goal_reached_termination(
                 state[-1,:2],
-                self.robot_radius,
+                robot_radius,
                 info["robot_goal"],
             )
             failure, _ = self.reward_function.instant_collision_termination(
                 state[-1,:2],
-                self.robot_radius,
+                robot_radius,
                 state[:-1,:2],
                 info["humans_parameters"][:,0]
             )
@@ -273,13 +323,29 @@ class SocialNav(BaseEnv):
         new_info["intermediate_leg_states"] = humans_leg_state_history
         gammas = jnp.array(list(reward_terms.keys()))
         rewards = jnp.array(list(reward_terms.values()))
-        exponent = info["step"] * self.robot_dt * self.reward_function.v_max
+        exponent = info["step"] * self.robot_dt * robot_v_max
         new_info["return"] += jnp.sum(jnp.power(gammas, exponent) * rewards)
         ### If done and reset_if_done, automatically reset the environment (available only if using standard scenarios)
         if self.scenario != -1: # Custom scenario, no automatic reset
+            def _auto_reset(x):
+                reset_state, returned_key, reset_info = self._reset(
+                    x[1],
+                    visibility_chance=(
+                        x[2]["_env_params"]["robot_visibility_probability"]
+                        if "_env_params" in x[2]
+                        else 0.0
+                    ),
+                )
+                if "_robot_params" in x[2]:
+                    reset_info = self._attach_parameter_context(
+                        reset_info,
+                        x[2]["_robot_params"],
+                        x[2]["_env_params"],
+                    )
+                return reset_state, returned_key, reset_info
             new_state, reset_key, new_info = lax.cond(
                 (reset_if_done) & (~(outcome["nothing"])),
-                lambda x: self._reset(x[1]),
+                _auto_reset,
                 lambda x: x,
                 (new_state, reset_key, new_info)
             )
@@ -338,6 +404,78 @@ class SocialNav(BaseEnv):
     @partial(jit, static_argnames=("self"))
     def batch_reset(self, keys):
         return vmap(SocialNav.reset, in_axes=(None,0))(self, keys)
+
+    def reset_with_params(self, key, robot_param_bounds=None, env_param_bounds=None):
+        """Additive per-episode parameter reset; legacy ``reset`` is unchanged."""
+        robot_nominal = validate_robot_params(self.get_default_robot_params())
+        env_nominal = validate_env_params(self.get_default_env_params())
+        robot_lower, robot_upper = bounds_from_nominal(robot_nominal, robot_param_bounds)
+        env_lower, env_upper = bounds_from_nominal(env_nominal, env_param_bounds)
+        self._validate_runtime_robot_context(robot_lower, robot_upper)
+        return self._reset_with_param_bounds(
+            key, robot_lower, robot_upper, env_lower, env_upper
+        )
+
+    def batch_reset_with_params(self, keys, robot_param_bounds=None, env_param_bounds=None):
+        robot_nominal = validate_robot_params(self.get_default_robot_params())
+        env_nominal = validate_env_params(self.get_default_env_params())
+        robot_lower, robot_upper = bounds_from_nominal(robot_nominal, robot_param_bounds)
+        env_lower, env_upper = bounds_from_nominal(env_nominal, env_param_bounds)
+        self._validate_runtime_robot_context(robot_lower, robot_upper)
+        return vmap(SocialNav._reset_with_param_bounds, in_axes=(None, 0, None, None, None, None))(
+            self, keys, robot_lower, robot_upper, env_lower, env_upper
+        )
+
+    def step_with_params(
+        self,
+        state,
+        info,
+        robot_params,
+        env_params,
+        action,
+        *,
+        test=False,
+        reset_if_done=False,
+        reset_key=random.PRNGKey(0),
+    ):
+        """Step using runtime robot limits while retaining legacy ``step``."""
+        robot_params = validate_robot_params(robot_params)
+        env_params = validate_env_params(env_params)
+        self._validate_runtime_robot_context(robot_params)
+        info = self._attach_parameter_context(info, robot_params, env_params)
+        v_max = robot_params["v_max"]
+        if self.kinematics == ROBOT_KINEMATICS.index("holonomic"):
+            norm = jnp.linalg.norm(action)
+            bounded_action = action * jnp.minimum(1.0, v_max / jnp.maximum(norm, 1e-5))
+        else:
+            wheels_distance = jnp.maximum(robot_params["wheels_distance"], 1e-5)
+            w_max = 2.0 * v_max / wheels_distance
+            bounded_action = jnp.array([
+                jnp.clip(action[0], 0.0, v_max),
+                jnp.clip(action[1], -w_max, w_max),
+            ])
+            envelope = bounded_action[0] / jnp.maximum(v_max, 1e-5) + jnp.abs(
+                bounded_action[1]
+            ) / jnp.maximum(w_max, 1e-5)
+            bounded_action = bounded_action / jnp.maximum(envelope, 1.0)
+        next_state, next_obs, next_info, reward, outcome, next_reset_key = self.step(
+            state,
+            info,
+            bounded_action,
+            test=test,
+            reset_if_done=reset_if_done,
+            reset_key=reset_key,
+        )
+        return (
+            next_state,
+            next_obs,
+            next_info,
+            robot_params,
+            env_params,
+            reward,
+            outcome,
+            next_reset_key,
+        )
 
     @partial(jit, static_argnames=("self"))
     def reset_custom_episode(self, key:random.PRNGKey, custom_episode:dict) -> tuple:
@@ -410,4 +548,3 @@ class SocialNav(BaseEnv):
             humans_delay=jnp.zeros((self.n_humans,)),
         )
         return full_state, key, self._get_obs(full_state, info), info, {"success": False, "failure": False, "timeout": False, "nothing": True}
-        
