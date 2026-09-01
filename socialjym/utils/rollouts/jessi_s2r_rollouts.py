@@ -549,6 +549,21 @@ def get_dynamic_probabilities(success_rates, min_prob=0.03):
     probs = probs / jnp.sum(probs)
     return probs
 
+
+def scenario_curriculum_arrays(scenario_keys, success_rates, episode_counts):
+    """Build aligned curriculum arrays for the configured scenario subset.
+
+    Rollout accounting may contain entries for every scenario supported by the
+    environment, while a training run can sample only a subset.  Always use the
+    configured subset (and its order) for both the rates and observation mask so
+    they remain aligned with ``scenarios_prob``.
+    """
+    return (
+        jnp.asarray([success_rates[key] for key in scenario_keys], dtype=jnp.float32),
+        jnp.asarray([episode_counts[key] > 0 for key in scenario_keys], dtype=bool),
+    )
+
+
 def update_ema(
     ema_success,
     batch_success,
@@ -627,6 +642,7 @@ def jessi_s2r_rl_rollout(
     env_nominal = validate_env_params(env.get_default_env_params())
     robot_lower, robot_upper = bounds_from_nominal(robot_nominal, robot_param_bounds)
     env_lower, env_upper = bounds_from_nominal(env_nominal, env_param_bounds)
+    scenario_keys = tuple(int(s) for s in env.hybrid_scenario_subset)
     key, subkey = random.split(key)
     reset_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
     key, subkey = random.split(key)
@@ -681,8 +697,8 @@ def jessi_s2r_rl_rollout(
         "perception_losses": [], "safety_losses": [], "actor_losses": [], "critic_losses": [], "entropy_losses": [],
         "weight_entropies": [], "max_weights": [],
         "stds": [], "grad_norm": [], "approx_kl": [], "clip_frac": [], "explained_var": [],
-        "successes_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
-        "episodes_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
+        "successes_per_scenario": {s: [] for s in scenario_keys},
+        "episodes_per_scenario": {s: [] for s in scenario_keys},
         "domain_randomization_fraction": [],
     }
     init_beta_entropy = beta_entropy
@@ -860,10 +876,11 @@ def jessi_s2r_rl_rollout(
         logs["successes_per_scenario"] = {k: logs["successes_per_scenario"][k] + [success_per_scenario[k]] for k in logs["successes_per_scenario"]}
         logs["episodes_per_scenario"] = {k: logs["episodes_per_scenario"][k] + [episodes_per_scenario[k]] for k in logs["episodes_per_scenario"]}
         # G. EMA UPDATE and CURRICULUM UTILS
-        batch_scenario_success_rate = jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)])
-        scenario_observed = jnp.array([
-            episodes_per_scenario[k] > 0 for k in sorted(episodes_per_scenario)
-        ])
+        batch_scenario_success_rate, scenario_observed = scenario_curriculum_arrays(
+            scenario_keys,
+            success_rate_per_scenario,
+            episodes_per_scenario,
+        )
         has_completed_episode = logs['episodes'][-1] > 0
         batch_success_rate = (
             logs['successes'][-1] / logs['episodes'][-1]

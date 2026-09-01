@@ -11,6 +11,7 @@ from socialjym.policies.jessi_s2r import JESSI_S2R
 from socialjym.utils.distributions.logistic_normal import LogisticNormal
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rollouts.jessi_s2r_rollouts import (
+    scenario_curriculum_arrays,
     tree_all_finite,
     tree_select,
     update_ema,
@@ -22,6 +23,18 @@ def _all_finite(tree):
 
 
 class JessiS2RUtilityContracts(unittest.TestCase):
+    def test_scenario_curriculum_arrays_use_subset_order(self):
+        rates = {0: 0.1, 1: 0.2, 2: 0.3, 3: 0.4}
+        episodes = {0: 1, 1: 0, 2: 4, 3: 9, 4: 12}
+
+        scenario_rates, observed = scenario_curriculum_arrays(
+            (3, 1, 2), rates, episodes
+        )
+
+        self.assertTrue(jnp.allclose(scenario_rates, jnp.array([0.4, 0.2, 0.3])))
+        self.assertTrue(jnp.array_equal(observed, jnp.array([True, False, True])))
+        self.assertEqual(scenario_rates.shape, observed.shape)
+
     def test_update_ema_always_returns_both_emas(self):
         overall, scenarios = update_ema(
             None,
