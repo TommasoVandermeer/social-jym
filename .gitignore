@@ -3,6 +3,9 @@
 *.eps
 *.mp4
 
+# Pi coding agent files
+.pi/
+
 # Real-world experiment recordings and derived results
 turtlebot/experiments/data/*
 !turtlebot/experiments/data/.gitkeep
