@@ -1,4 +1,5 @@
 from jax import random, jit, vmap, lax, debug
+import argparse
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
@@ -20,7 +21,22 @@ from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4
+from socialjym.utils.rewards.lasernav_rewards.s2r_reward import S2RReward
 from socialjym.utils.rollouts.jessi_s2r_rollouts import jessi_s2r_rl_rollout
+
+parser = argparse.ArgumentParser(description="Train the resumable JESSI-S2R v3 policy.")
+parser.add_argument("--run-id", default="jessi_s2r_v3")
+parser.add_argument("--checkpoint-every", type=int, default=25)
+parser.add_argument("--resume", default=None)
+parser.add_argument("--resume-latest", action="store_true")
+parser.add_argument(
+    "--safety-mode", choices=("off", "legacy", "risk_aux"), default="off"
+)
+cli_args = parser.parse_args()
+run_dir = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "training_runs", "jessi_s2r", cli_args.run_id
+))
+checkpoint_dir = os.path.join(run_dir, "checkpoints")
 
 no_imitation_learning = False
 ### Sim-to-real parameters
@@ -35,7 +51,7 @@ save_videos = False  # Whether to save videos of the debug inspections
 perception_nn_name = 'realistic_pre_perception_network_32.pkl'
 policy_nn_name = 'jessi_s2r_v2_pre_controller_network_32.pkl'
 critic_nn_name = 'jessi_s2r_v2_pre_critic_network_32.pkl'
-multitask_network_name = 'jessi_s2r_v2_multitask_rl_out_32.pkl'
+multitask_network_name = os.path.join(run_dir, 'jessi_s2r_v3_multitask_rl_out_32.pkl')
 calibration_manifest_path = os.path.join(
     os.path.dirname(__file__), "jessi_s2r_calibration.json"
 )
@@ -90,7 +106,10 @@ training_hyperparams = {
     'n_obstacles': n_obstacles,
     'rl_training_updates': rl_training_updates,
     'rl_parallel_envs': rl_n_parallel_envs,
-    "rl_critic_learning_rate": 0.01, # 1e-3
+    # The previous 1e-2 SGD critic produced large value oscillations and could
+    # dominate shared-policy updates.  Adam at this scale is substantially less
+    # sensitive to the changing return distribution across curricula.
+    "rl_critic_learning_rate": 3e-4,
     'rl_learning_rate': 1e-4, # 3e-4
     'rl_learning_rate_final': 1e-5, # 2e-4
     'rl_total_batch_size': 10_000, # 50_000 Nsteps for env = rl_total_batch_size / rl_parallel_envs
@@ -98,14 +117,15 @@ training_hyperparams = {
     'rl_micro_batch_size': 250, # 1_000 # Micro-batch size for gradient accumulation 
     'rl_clip_frac': 0.2, # 0.2
     'rl_num_epochs': 4, # 6
-    'rl_beta_entropy': 7e-3, # 1e-4
+    'rl_beta_entropy': 1e-3,
     'lambda_gae': 0.95, # 0.95
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': hybrid_scenario_subset,
-    'reward_function': 'lasernav_reward1',
+    'reward_function': 'lasernav_s2r',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
-    'safety_loss': True,  # Penalize predicted near-term human path conflicts
+    'safety_loss': False,
+    'safety_mode': cli_args.safety_mode,
     'target_kl': 0.015,  # Target KL divergence for early stopping in each update
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
@@ -180,6 +200,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_percep
             robot_radius=0.3,
             v_max=robot_vmax,
         )
+    elif training_hyperparams['reward_function'] == 'lasernav_s2r':
+        reward_function = S2RReward(robot_radius=0.3, v_max=robot_vmax)
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
     laser_env = LaserNav(**laser_env_params, n_stack=n_stack, reward_function=reward_function)
@@ -1025,7 +1047,19 @@ else:
         actor_critic_params = pickle.load(f)
 
 ### JESSI-MULTITASK: MULTI-TASK REINFORCEMENT LEARNING
+resume_path = cli_args.resume
+if cli_args.resume and cli_args.resume_latest:
+    raise ValueError("Use either --resume or --resume-latest, not both.")
+if cli_args.resume_latest:
+    import glob
+    available_checkpoints = sorted(
+        glob.glob(os.path.join(checkpoint_dir, "update_*.pkl"))
+    )
+    if not available_checkpoints:
+        raise FileNotFoundError(f"No checkpoint found in {checkpoint_dir}")
+    resume_path = available_checkpoints[-1]
 if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_name)):
+    os.makedirs(checkpoint_dir, exist_ok=True)
     print(f"\nSTARTING JESSI-MULTITASK RL TRAINING\nParallel envs {training_hyperparams['rl_parallel_envs']}\nSteps per env {training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_parallel_envs']}\nTotal batch size {training_hyperparams['rl_total_batch_size']}\nMini-batch size {training_hyperparams['rl_mini_batch_size']}\nBatches per update {training_hyperparams['rl_num_batches']}\nMicro-batch size {training_hyperparams['rl_micro_batch_size']}\nTraining updates {training_hyperparams['rl_training_updates']}\nEpochs per update {training_hyperparams['rl_num_epochs']}\n")
     # Initialize reward function
     if training_hyperparams['reward_function'] == 'lasernav_reward1': 
@@ -1041,6 +1075,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
             robot_radius=0.3,
             v_max=robot_vmax,
         )
+    elif training_hyperparams['reward_function'] == 'lasernav_s2r':
+        reward_function = S2RReward(robot_radius=0.3, v_max=robot_vmax)
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
     # Environment parameters
@@ -1141,8 +1177,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         label_params(il_network_params)
     )
     critic_network_optimizer = optax.chain(
-        # optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
-        optax.sgd(learning_rate=training_hyperparams['rl_critic_learning_rate'], momentum=0.9)
+        optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
+        optax.adam(
+            learning_rate=training_hyperparams['rl_critic_learning_rate'],
+            eps=1e-7,
+        ),
     )
     # Initialize RL rollout params
     rl_rollout_params = {
@@ -1163,18 +1202,29 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         'beta_entropy': training_hyperparams['rl_beta_entropy'],
         'lambda_gae': training_hyperparams['lambda_gae'],
         'safety_loss': training_hyperparams['safety_loss'],
+        'safety_mode': training_hyperparams['safety_mode'],
         'training_type': "multitask",
         'target_kl': training_hyperparams['target_kl'],
         'debugging': False,
         'robot_param_bounds': robot_param_bounds,
         'env_param_bounds': env_param_bounds,
+        'checkpoint_dir': checkpoint_dir,
+        'checkpoint_every': cli_args.checkpoint_every,
+        'resume_from': resume_path,
+        'keep_checkpoints': 3,
+        'checkpoint_config': {
+            'training_hyperparams': training_hyperparams,
+            'calibration_manifest': calibration_manifest if os.path.exists(calibration_manifest_path) else None,
+        },
+        'evaluation_every': 25,
+        'evaluation_episodes': 16,
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_s2r_rl_rollout(**rl_rollout_params)
     # Save RL rollout output
     with open(os.path.join(os.path.dirname(__file__),multitask_network_name), 'wb') as f:
         pickle.dump(rl_out, f)
-    final_params, best_final_params, final_critic_params, best_final_critic_params, metrics = rl_out
+    best_final_params, final_params, best_final_critic_params, final_critic_params, metrics = rl_out
     processed_metrics = {}
     for key, value in metrics.items():
         if isinstance(value, list):
@@ -1307,7 +1357,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     ax[2,1].grid()
     ax[2,1].set(
         xlabel='Training Update',
-        ylabel='$\sigma(v)$',
+        ylabel=r'$\sigma(v)$',
         title='Std velocity',
         ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
     )
@@ -1319,7 +1369,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     ax[2,2].grid()
     ax[2,2].set(
         xlabel='Training Update',
-        ylabel='$\sigma(\omega)$',
+        ylabel=r'$\sigma(\omega)$',
         title='Std ang. vel.',
         ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
     )

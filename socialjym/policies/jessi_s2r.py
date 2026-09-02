@@ -324,6 +324,65 @@ class JESSI_S2R(JESSI):
             return e2e(x, y, stop_perception_gradient=stop_perception_gradient, only_perception=only_perception, **kwargs)
         self.e2e = e2e_network
 
+    @partial(jit, static_argnames=("self",))
+    def _risk_auxiliary_loss(
+        self,
+        actor_distributions,
+        human_distributions,
+        safety_margin=0.8,
+        uncertainty_scale=1.0,
+    ):
+        """Optional multi-horizon, uncertainty-aware risk regularizer."""
+        horizons = jnp.array([0.25, 0.5, 1.0, 1.5], dtype=jnp.float32)
+        weights = lax.stop_gradient(human_distributions["weights"])
+        if weights.ndim == 3:
+            weights = weights[..., 0]
+        weights = jnp.clip(weights, 0.0, 1.0)
+        positions = lax.stop_gradient(
+            human_distributions["pos_distrs"]["means"]
+        )
+        velocities = lax.stop_gradient(
+            human_distributions["vel_distrs"]["means"]
+        )
+        pos_sigma = jnp.exp(lax.stop_gradient(
+            human_distributions["pos_distrs"]["logsigmas"]
+        ))
+        vel_sigma = jnp.exp(lax.stop_gradient(
+            human_distributions["vel_distrs"]["logsigmas"]
+        ))
+        mean_actions = vmap(self.action_distribution.mean)(actor_distributions)
+        linear, angular = mean_actions[:, 0], mean_actions[:, 1]
+
+        def risk_at_horizon(horizon):
+            theta = angular * horizon
+            safe_angular = jnp.where(jnp.abs(angular) < 1e-5, 1.0, angular)
+            curved = jnp.stack((
+                linear / safe_angular * jnp.sin(theta),
+                linear / safe_angular * (1.0 - jnp.cos(theta)),
+            ), axis=-1)
+            straight = jnp.stack(
+                (linear * horizon, jnp.zeros_like(linear)), axis=-1
+            )
+            robot_displacement = jnp.where(
+                (jnp.abs(angular) < 1e-5)[:, None], straight, curved
+            )
+            relative_future = (
+                positions + velocities * horizon - robot_displacement[:, None, :]
+            )
+            mean_distance = jnp.linalg.norm(relative_future, axis=-1)
+            radial_sigma = jnp.linalg.norm(
+                pos_sigma + horizon * vel_sigma, axis=-1
+            )
+            effective_distance = mean_distance - uncertainty_scale * radial_sigma
+            violation = 0.1 * nn.softplus(
+                (safety_margin - effective_distance) / 0.1
+            )
+            return jnp.sum(weights * jnp.square(violation), axis=-1) / (
+                jnp.sum(weights, axis=-1) + 1e-6
+            )
+
+        return jnp.mean(vmap(risk_at_horizon)(horizons))
+
     @partial(jit, static_argnames=("self"))
     def init_nns(
         self, 

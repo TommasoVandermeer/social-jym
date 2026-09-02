@@ -1,4 +1,6 @@
 import math
+import os
+import tempfile
 import unittest
 
 import jax.numpy as jnp
@@ -11,10 +13,14 @@ from socialjym.policies.jessi_s2r import JESSI_S2R
 from socialjym.utils.distributions.logistic_normal import LogisticNormal
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rollouts.jessi_s2r_rollouts import (
+    get_social_curriculum_probabilities,
+    load_training_checkpoint,
+    save_training_checkpoint,
     scenario_curriculum_arrays,
     tree_all_finite,
     tree_select,
     update_ema,
+    update_difficulty_curriculum,
 )
 
 
@@ -23,6 +29,39 @@ def _all_finite(tree):
 
 
 class JessiS2RUtilityContracts(unittest.TestCase):
+    def test_social_curriculum_preserves_group_budgets(self):
+        keys = (0, 1, 10, 11)
+        initial = get_social_curriculum_probabilities(keys, update=0)
+        final = get_social_curriculum_probabilities(keys, update=500)
+        self.assertAlmostEqual(float(jnp.sum(initial[:2])), 0.9, places=6)
+        self.assertAlmostEqual(float(jnp.sum(final[:2])), 0.7, places=6)
+        self.assertAlmostEqual(float(jnp.sum(initial)), 1.0, places=6)
+
+    def test_difficulty_curriculum_requires_two_promotions(self):
+        keys = (0, 1, 10)
+        rates = jnp.array([0.9, 0.8, 1.0])
+        first = update_difficulty_curriculum(0.0, 1.0, keys, rates, 0.1)
+        second = update_difficulty_curriculum(
+            first[0], first[1], keys, rates, 0.1, first[2], first[3]
+        )
+        self.assertEqual(first[0], 0.0)
+        self.assertAlmostEqual(second[0], 0.1)
+        self.assertAlmostEqual(second[1], 0.9)
+
+    def test_checkpoint_roundtrip_and_config_validation(self):
+        config = {"devices": 1, "scenarios": [0, 1]}
+        state = {"params": {"x": jnp.array([1.0, 2.0])}, "logs": [0.5]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = save_training_checkpoint(directory, 7, state, config)
+            loaded = load_training_checkpoint(path, config)
+            self.assertEqual(loaded["next_update"], 7)
+            self.assertTrue(jnp.array_equal(
+                loaded["state"]["params"]["x"], state["params"]["x"]
+            ))
+            with self.assertRaisesRegex(ValueError, "configuration mismatch"):
+                load_training_checkpoint(path, {"devices": 2, "scenarios": [0, 1]})
+            self.assertTrue(os.path.exists(path))
+
     def test_scenario_curriculum_arrays_use_subset_order(self):
         rates = {0: 0.1, 1: 0.2, 2: 0.3, 3: 0.4}
         episodes = {0: 1, 1: 0, 2: 4, 3: 9, 4: 12}

@@ -601,11 +601,12 @@ class LaserNav(BaseEnv):
             lambda: signed_chord / self.robot_dt,
         )
         effective_action = jnp.array([effective_v, effective_w])
-        reward, outcome, reward_terms = self.reward_function(
+        reward, outcome, reward_terms = self.reward_function.evaluate_transition(
             reward_state,
             effective_action,
             info,
             self.robot_dt,
+            state_history=state_history,
         )
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit

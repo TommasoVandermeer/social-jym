@@ -12,6 +12,17 @@ class BaseReward(ABC):
     def __call__(self, state, action) -> tuple:
         pass
 
+    def evaluate_transition(self, state, action, info, dt, state_history=None):
+        """Evaluate an executed transition while preserving legacy rewards.
+
+        Environments with a finer internal integration step may provide the
+        executed ``state_history``.  Existing rewards intentionally ignore it
+        and retain their historical semantics; transition-aware rewards can
+        override this method without changing the public environment API.
+        """
+        del state_history
+        return self(state, action, info, dt)
+
     # --- Public methods ---
 
     def get_parameters(self) -> tuple:

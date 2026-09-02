@@ -1,4 +1,6 @@
 import unittest
+import os
+import tempfile
 
 import jax.numpy as jnp
 from jax import random, tree_util
@@ -41,7 +43,9 @@ class JessiS2RTrainingSmoke(unittest.TestCase):
             random.PRNGKey(0)
         )
         network_params = policy.merge_nns_params(perception_params, actor_params)
-        result = jessi_s2r_rl_rollout(
+        checkpoint_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(checkpoint_dir.cleanup)
+        rollout_args = dict(
             initial_actor_parameters=network_params,
             initial_critic_parameters=critic_params,
             n_parallel_envs=2,
@@ -69,7 +73,28 @@ class JessiS2RTrainingSmoke(unittest.TestCase):
                 "lidar_period": (0.10, 0.25),
                 "lidar_latency": (0.0, 0.10),
             },
+            checkpoint_dir=checkpoint_dir.name,
+            checkpoint_every=1,
+            evaluation_every=1,
+            evaluation_episodes=1,
         )
+        result = jessi_s2r_rl_rollout(**rollout_args)
+        checkpoint_path = os.path.join(
+            checkpoint_dir.name, "update_000001.pkl"
+        )
+        self.assertTrue(os.path.exists(
+            checkpoint_path
+        ))
+        resumed = jessi_s2r_rl_rollout(
+            **(rollout_args | {"checkpoint_dir": None, "resume_from": checkpoint_path})
+        )
+        self.assertTrue(all(
+            jnp.array_equal(a, b)
+            for a, b in zip(
+                tree_util.tree_leaves(result[1]),
+                tree_util.tree_leaves(resumed[1]),
+            )
+        ))
         leaves = tree_util.tree_leaves(result[:4])
         self.assertTrue(all(bool(jnp.all(jnp.isfinite(x))) for x in leaves))
         logs = result[-1]

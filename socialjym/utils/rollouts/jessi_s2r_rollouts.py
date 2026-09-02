@@ -1,4 +1,9 @@
 import optax
+import glob
+import hashlib
+import os
+import pickle
+import tempfile
 from jax import jit, lax, random, vmap, device_put, device_get, device_count, eval_shape, ShapeDtypeStruct, debug
 from jax.tree_util import tree_map, tree_leaves
 import jax.numpy as jnp
@@ -22,6 +27,85 @@ from socialjym.policies.jessi_s2r import JESSI_S2R
 
 
 TRAINING_TYPES = ["multitask", "modular", "policy"]
+CHECKPOINT_SCHEMA_VERSION = 1
+SOCIAL_SCENARIOS = (0, 1, 2, 3, 4, 6, 9)
+NAVIGATION_SCENARIOS = (10, 11, 12, 13, 14, 15, 16)
+
+
+def _host_tree(tree):
+    # ``device_get`` may return a zero-copy NumPy view backed by a JAX buffer.
+    # PPO donates several of those buffers to compiled updates, so a checkpoint
+    # assembled before a later donation can otherwise contain deleted arrays.
+    # Materialise an owning host copy at the checkpoint boundary.
+    return tree_map(lambda leaf: np.array(device_get(leaf), copy=True), tree)
+
+
+def _checkpoint_fingerprint(config):
+    return hashlib.sha256(pickle.dumps(config, protocol=5)).hexdigest()
+
+
+def _plain_value(value):
+    if isinstance(value, dict):
+        return {str(key): _plain_value(value[key]) for key in sorted(value)}
+    if isinstance(value, (tuple, list)):
+        return [_plain_value(item) for item in value]
+    array = np.asarray(device_get(value))
+    return array.item() if array.ndim == 0 else array.tolist()
+
+
+def _atomic_pickle(path, payload):
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=directory, prefix=".checkpoint-", delete=False
+        ) as temporary:
+            temporary_path = temporary.name
+            pickle.dump(payload, temporary, protocol=5)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+def save_training_checkpoint(checkpoint_dir, next_update, state, config, keep=3):
+    """Atomically save a full update-boundary checkpoint."""
+    payload = {
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "config": config,
+        "fingerprint": _checkpoint_fingerprint(config),
+        "next_update": int(next_update),
+        "state": _host_tree(state),
+    }
+    path = os.path.join(checkpoint_dir, f"update_{next_update:06d}.pkl")
+    _atomic_pickle(path, payload)
+    checkpoints = sorted(glob.glob(os.path.join(checkpoint_dir, "update_*.pkl")))
+    for stale_path in checkpoints[:-max(int(keep), 1)]:
+        os.unlink(stale_path)
+    return path
+
+
+def load_training_checkpoint(path, expected_config):
+    with open(path, "rb") as checkpoint_file:
+        payload = pickle.load(checkpoint_file)
+    if payload.get("schema_version") != CHECKPOINT_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported checkpoint schema {payload.get('schema_version')}; "
+            f"expected {CHECKPOINT_SCHEMA_VERSION}."
+        )
+    expected_fingerprint = _checkpoint_fingerprint(expected_config)
+    if payload.get("fingerprint") != expected_fingerprint:
+        actual = payload.get("config", {})
+        differences = {
+            key: (actual.get(key), expected_config.get(key))
+            for key in sorted(set(actual) | set(expected_config))
+            if actual.get(key) != expected_config.get(key)
+        }
+        raise ValueError(f"Checkpoint configuration mismatch: {differences}")
+    return payload
 
 
 def tree_all_finite(tree):
@@ -276,7 +360,7 @@ def process_buffer_and_gae(
 
 @partial(
     jit,
-    static_argnames=("policy", "optimizer", "critic_optimizer", "clip_range", "compute_safety_loss", "training_type"),
+    static_argnames=("policy", "optimizer", "critic_optimizer", "clip_range", "compute_safety_loss", "compute_risk_auxiliary_loss", "training_type"),
     donate_argnums=(1, 2, 3, 4)
 )
 def train_one_epoch(
@@ -292,6 +376,7 @@ def train_one_epoch(
     clip_range,
     beta_entropy,
     compute_safety_loss,
+    compute_risk_auxiliary_loss,
     training_type,
     debugging=False,
 ):
@@ -386,7 +471,12 @@ def train_one_epoch(
             else:
                 perception_loss = 0.0
             # Safety loss (optional)
-            if compute_safety_loss:
+            if compute_risk_auxiliary_loss:
+                safety_loss = 0.25 * policy._risk_auxiliary_loss(
+                    actor_dist,
+                    safety_perc_dist,
+                )
+            elif compute_safety_loss:
                 safety_loss = policy._safety_loss(
                     actor_dist,
                     safety_perc_dist,
@@ -550,6 +640,88 @@ def get_dynamic_probabilities(success_rates, min_prob=0.03):
     return probs
 
 
+def get_social_curriculum_probabilities(
+    scenario_keys,
+    scenario_success=None,
+    update=0,
+):
+    """Return aligned 90/10 -> 70/30 social-first sampling weights."""
+    scenario_keys = tuple(int(key) for key in scenario_keys)
+    social_fraction = 0.9 - 0.2 * float(jnp.clip((update - 200) / 300, 0.0, 1.0))
+    success = (
+        np.zeros((len(scenario_keys),), dtype=np.float32)
+        if scenario_success is None
+        else np.asarray(device_get(scenario_success), dtype=np.float32)
+    )
+    result = np.zeros((len(scenario_keys),), dtype=np.float32)
+
+    def fill_group(group, budget):
+        indices = [i for i, key in enumerate(scenario_keys) if key in group]
+        if not indices:
+            return False
+        group_success = success[indices]
+        difficulty = np.maximum(1.0 - group_success, 0.05)
+        adaptive = difficulty / np.sum(difficulty)
+        conditional = 0.3 / len(indices) + 0.7 * adaptive
+        result[indices] = budget * conditional
+        return True
+
+    has_social = any(key in SOCIAL_SCENARIOS for key in scenario_keys)
+    has_navigation = any(key in NAVIGATION_SCENARIOS for key in scenario_keys)
+    if has_social and has_navigation:
+        fill_group(SOCIAL_SCENARIOS, social_fraction)
+        fill_group(NAVIGATION_SCENARIOS, 1.0 - social_fraction)
+    elif has_social:
+        fill_group(SOCIAL_SCENARIOS, 1.0)
+    elif has_navigation:
+        fill_group(NAVIGATION_SCENARIOS, 1.0)
+    else:
+        result[:] = 1.0 / len(scenario_keys)
+    return jnp.asarray(result / np.sum(result), dtype=jnp.float32)
+
+
+def update_difficulty_curriculum(
+    domain_fraction,
+    visibility,
+    scenario_keys,
+    scenario_success,
+    human_collision_rate,
+    promotion_streak=0,
+    visibility_streak=0,
+):
+    """Advance performance-gated domain and robot-visibility curricula."""
+    rates = np.asarray(device_get(scenario_success), dtype=np.float32)
+    social_rates = np.asarray(
+        [rates[i] for i, key in enumerate(scenario_keys) if key in SOCIAL_SCENARIOS]
+    )
+    if social_rates.size == 0:
+        return domain_fraction, visibility, promotion_streak, visibility_streak
+    social_macro = float(np.mean(social_rates))
+    social_worst = float(np.min(social_rates))
+    promote = social_macro >= 0.70 and social_worst >= 0.25
+    promotion_streak = promotion_streak + 1 if promote else 0
+    if social_macro < 0.50 or human_collision_rate > 0.35:
+        domain_fraction = max(0.0, domain_fraction - 0.05)
+        promotion_streak = 0
+    elif promotion_streak >= 2:
+        domain_fraction = min(1.0, domain_fraction + 0.1)
+        promotion_streak = 0
+
+    visibility_ready = (
+        social_macro >= 0.80
+        and social_worst >= 0.50
+        and human_collision_rate <= 0.15
+    )
+    visibility_streak = visibility_streak + 1 if visibility_ready else 0
+    if social_macro < 0.65 or human_collision_rate > 0.25:
+        visibility = min(1.0, visibility + 0.1)
+        visibility_streak = 0
+    elif visibility_streak >= 2:
+        visibility = max(0.0, visibility - 0.1)
+        visibility_streak = 0
+    return domain_fraction, visibility, promotion_streak, visibility_streak
+
+
 def scenario_curriculum_arrays(scenario_keys, success_rates, episode_counts):
     """Build aligned curriculum arrays for the configured scenario subset.
 
@@ -562,6 +734,118 @@ def scenario_curriculum_arrays(scenario_keys, success_rates, episode_counts):
         jnp.asarray([success_rates[key] for key in scenario_keys], dtype=jnp.float32),
         jnp.asarray([episode_counts[key] > 0 for key in scenario_keys], dtype=bool),
     )
+
+
+def evaluate_jessi_s2r_policy(
+    params,
+    policy,
+    env,
+    scenario_keys,
+    episodes_per_scenario=16,
+    seed=10_000,
+    robot_param_bounds=None,
+    env_param_bounds=None,
+    visibility=1.0,
+):
+    """Deterministically evaluate fixed seeds without touching training state."""
+    robot_nominal = validate_robot_params(env.get_default_robot_params())
+    env_nominal = validate_env_params(env.get_default_env_params())
+    robot_lower, robot_upper = bounds_from_nominal(robot_nominal, robot_param_bounds)
+    eval_env_bounds = dict(env_param_bounds or {})
+    eval_env_bounds["robot_visibility_probability"] = (visibility, visibility)
+    env_lower, env_upper = bounds_from_nominal(env_nominal, eval_env_bounds)
+    subset = tuple(int(value) for value in env.hybrid_scenario_subset)
+    max_steps = int(np.ceil(env.reward_function.time_limit / env.robot_dt)) + 1
+    per_scenario = {}
+
+    for scenario in scenario_keys:
+        probabilities = jnp.zeros((len(subset),), dtype=jnp.float32)
+        probabilities = probabilities.at[subset.index(int(scenario))].set(1.0)
+        reset_seed, env_seed, policy_seed = random.split(
+            random.PRNGKey(seed + int(scenario)), 3
+        )
+        reset_keys = random.split(reset_seed, episodes_per_scenario)
+        env_keys = random.split(env_seed, episodes_per_scenario)
+        policy_keys = random.split(policy_seed, episodes_per_scenario)
+        (
+            states,
+            reset_keys,
+            observations,
+            infos,
+            robot_params,
+            env_params,
+            _,
+        ) = env.batch_reset_with_params(
+            reset_keys,
+            robot_param_bounds=robot_param_bounds,
+            env_param_bounds=eval_env_bounds,
+            scenarios_prob=probabilities,
+        )
+        completed = jnp.zeros((episodes_per_scenario,), dtype=bool)
+        results = {
+            name: jnp.zeros((episodes_per_scenario,), dtype=bool)
+            for name in ("success", "collision_with_human", "collision_with_obstacle", "timeout")
+        }
+        for _ in range(max_steps):
+            actions, policy_keys, *_ = policy.batch_act_with_params(
+                policy_keys,
+                observations,
+                infos,
+                robot_params,
+                params,
+                sample=False,
+            )
+            (
+                states,
+                observations,
+                infos,
+                robot_params,
+                env_params,
+                _,
+                outcomes,
+                (reset_keys, env_keys),
+            ) = env.batch_step_with_param_bounds(
+                states,
+                infos,
+                robot_params,
+                env_params,
+                actions,
+                reset_keys,
+                env_keys,
+                robot_lower,
+                robot_upper,
+                env_lower,
+                env_upper,
+                test=False,
+                reset_if_done=False,
+                scenarios_prob=probabilities,
+            )
+            newly_completed = (~outcomes["nothing"]) & (~completed)
+            for name in results:
+                results[name] = results[name] | (newly_completed & outcomes[name])
+            completed = completed | newly_completed
+            if bool(device_get(jnp.all(completed))):
+                break
+        per_scenario[int(scenario)] = {
+            name: float(device_get(jnp.mean(values.astype(jnp.float32))))
+            for name, values in results.items()
+        }
+
+    return {
+        "per_scenario": per_scenario,
+        "macro_success": float(np.mean([
+            result["success"] for result in per_scenario.values()
+        ])),
+        "human_collision_rate": float(np.mean([
+            result["collision_with_human"] for result in per_scenario.values()
+        ])),
+        "obstacle_collision_rate": float(np.mean([
+            result["collision_with_obstacle"] for result in per_scenario.values()
+        ])),
+        "timeout_rate": float(np.mean([
+            result["timeout"] for result in per_scenario.values()
+        ])),
+    }
 
 
 def update_ema(
@@ -620,15 +904,27 @@ def jessi_s2r_rl_rollout(
     training_type:str = "multitask",
     target_kl:float = None,
     safety_loss:bool = False,
+    safety_mode:str = None,
     debugging:bool = False,
     robot_param_bounds:dict = None,
     env_param_bounds:dict = None,
+    checkpoint_dir:str = None,
+    checkpoint_every:int = 25,
+    resume_from:str = None,
+    keep_checkpoints:int = 3,
+    checkpoint_config:dict = None,
+    evaluation_every:int = 0,
+    evaluation_episodes:int = 16,
 ):
+    safety_mode = ("legacy" if safety_loss else "off") if safety_mode is None else safety_mode
+    if safety_mode not in ("off", "legacy", "risk_aux"):
+        raise ValueError("safety_mode must be one of: off, legacy, risk_aux")
     assert training_type in TRAINING_TYPES, "Invalid training type. Must be one of: " + ", ".join(TRAINING_TYPES)
     assert total_batch_size % n_parallel_envs == 0, "Total batch size must be divisible by number of parallel envs."
     assert mini_batch_size % micro_batch_size == 0, "Mini-batch size must be divisible by micro-batch size."
     assert total_batch_size % mini_batch_size == 0, "Total batch size must be divisible by mini-batch size."
     assert micro_batch_size % device_count() == 0, "Micro-batch size must be divisible by number of devices."
+    training_type_name = training_type
     training_type = TRAINING_TYPES.index(training_type)
     n_steps = total_batch_size // n_parallel_envs
     n_minibatches = total_batch_size // mini_batch_size
@@ -643,15 +939,32 @@ def jessi_s2r_rl_rollout(
     robot_lower, robot_upper = bounds_from_nominal(robot_nominal, robot_param_bounds)
     env_lower, env_upper = bounds_from_nominal(env_nominal, env_param_bounds)
     scenario_keys = tuple(int(s) for s in env.hybrid_scenario_subset)
+    resume_config = {
+        "device_count": device_count(),
+        "n_parallel_envs": n_parallel_envs,
+        "train_updates": train_updates,
+        "total_batch_size": total_batch_size,
+        "mini_batch_size": mini_batch_size,
+        "micro_batch_size": micro_batch_size,
+        "n_epochs": n_epochs,
+        "training_type": training_type_name,
+        "safety_mode": safety_mode,
+        "scenario_keys": list(scenario_keys),
+        "robot_param_bounds": _plain_value(robot_param_bounds or {}),
+        "env_param_bounds": _plain_value(env_param_bounds or {}),
+        "extra": _plain_value(checkpoint_config or {}),
+        "evaluation_every": evaluation_every,
+        "evaluation_episodes": evaluation_episodes,
+    }
     key, subkey = random.split(key)
     reset_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
     key, subkey = random.split(key)
     env_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
-    scenarios_prob = jnp.full(
-        (len(env.hybrid_scenario_subset),),
-        1.0 / len(env.hybrid_scenario_subset),
-    )
+    scenarios_prob = get_social_curriculum_probabilities(scenario_keys)
     visibility = 1.0
+    domain_fraction = 0.0
+    promotion_streak = 0
+    visibility_streak = 0
     nominal_robot_bounds = {
         name: (value, value) for name, value in robot_nominal.items()
     }
@@ -680,17 +993,6 @@ def jessi_s2r_rl_rollout(
     env_state = (states, obses, infos, init_outcomes)
     key, subkey = random.split(key)
     policy_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
-    params = initial_actor_parameters
-    best_params = initial_actor_parameters.copy()
-    critic_params = initial_critic_parameters
-    best_critic_params = initial_critic_parameters.copy()
-    best_return = -jnp.inf
-    opt_state = actor_network_optimizer.init(params)
-    critic_opt_state = critic_network_optimizer.init(critic_params)
-    params = device_put(params, sharding_replicated)
-    critic_params = device_put(critic_params, sharding_replicated)
-    opt_state = device_put(opt_state, sharding_replicated)
-    critic_opt_state = device_put(critic_opt_state, sharding_replicated)
     logs = {
         "losses": [], "returns": [], "successes": [], "failures": [], "timeouts": [],
         "collisions_humans": [], "collisions_obstacles": [], "times_to_goal": [], "episodes": [], 
@@ -700,6 +1002,8 @@ def jessi_s2r_rl_rollout(
         "successes_per_scenario": {s: [] for s in scenario_keys},
         "episodes_per_scenario": {s: [] for s in scenario_keys},
         "domain_randomization_fraction": [],
+        "visibility": [], "social_macro_success": [], "navigation_macro_success": [],
+        "social_evaluations": [], "robust_evaluations": [],
     }
     init_beta_entropy = beta_entropy
     scenarios_labels = {}
@@ -710,21 +1014,55 @@ def jessi_s2r_rl_rollout(
         scenarios_labels[i] = prefix + suffix
     scenario_ema_success = None
     ema_success = None
+    start_update = 0
+    if resume_from is None:
+        params = initial_actor_parameters
+        critic_params = initial_critic_parameters
+        # These snapshots must own their host memory: the working device arrays
+        # are donated to the compiled PPO update.
+        best_params = _host_tree(initial_actor_parameters)
+        best_critic_params = _host_tree(initial_critic_parameters)
+        best_score = (-jnp.inf, -jnp.inf, -jnp.inf)
+        opt_state = actor_network_optimizer.init(params)
+        critic_opt_state = critic_network_optimizer.init(critic_params)
+        params = device_put(params, sharding_replicated)
+        critic_params = device_put(critic_params, sharding_replicated)
+        opt_state = device_put(opt_state, sharding_replicated)
+        critic_opt_state = device_put(critic_opt_state, sharding_replicated)
+    else:
+        checkpoint = load_training_checkpoint(resume_from, resume_config)
+        restored = checkpoint["state"]
+        params = device_put(restored["params"], sharding_replicated)
+        critic_params = device_put(restored["critic_params"], sharding_replicated)
+        opt_state = device_put(restored["opt_state"], sharding_replicated)
+        critic_opt_state = device_put(
+            restored["critic_opt_state"], sharding_replicated
+        )
+        best_params = restored["best_params"]
+        best_critic_params = restored["best_critic_params"]
+        best_score = tuple(restored["best_score"])
+        key = device_put(restored["key"])
+        policy_keys = device_put(restored["policy_keys"], sharding_env)
+        reset_keys = device_put(restored["reset_keys"], sharding_env)
+        env_keys = device_put(restored["env_keys"], sharding_env)
+        env_state = tree_map(lambda x: device_put(x, sharding_env), restored["env_state"])
+        logs = restored["logs"]
+        ema_success = restored["ema_success"]
+        scenario_ema_success = restored["scenario_ema_success"]
+        scenarios_prob = jnp.asarray(restored["scenarios_prob"])
+        visibility = float(restored["visibility"])
+        domain_fraction = float(restored["domain_fraction"])
+        promotion_streak = int(restored["promotion_streak"])
+        visibility_streak = int(restored["visibility_streak"])
+        start_update = int(checkpoint["next_update"])
+        print(f"Resuming from {resume_from} at update {start_update}.")
+    train_one_epoch_sharded = None
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
-    for update in tqdm(range(train_updates)):
-        # Entropy linear decay to zero
-        # beta_entropy = init_beta_entropy - ((init_beta_entropy / train_updates) * update) # linear
-        beta_entropy = init_beta_entropy * jnp.exp(-update / (0.6 * train_updates)) # exponential
+    for update in tqdm(range(start_update, train_updates)):
+        entropy_progress = min(update / max(int(0.7 * train_updates), 1), 1.0)
+        beta_entropy = init_beta_entropy * (1.0 - 0.9 * entropy_progress)
         # A. COLLECT ROLLOUT STEP (Parallel)
-        curriculum_start = 0.05
-        curriculum_end = 0.65
-        progress = update / max(train_updates - 1, 1)
-        domain_fraction = float(jnp.clip(
-            (progress - curriculum_start) / (curriculum_end - curriculum_start),
-            0.0,
-            1.0,
-        ))
         rollout_robot_lower = tree_map(
             lambda nominal, bound: nominal + domain_fraction * (bound - nominal),
             robot_nominal,
@@ -780,11 +1118,6 @@ def jessi_s2r_rl_rollout(
         success_per_scenario = {k: int(jnp.sum(success_per_scenario[k])) for k in success_per_scenario}
         episodes_per_scenario = {k: int(jnp.sum(episodes_per_scenario[k])) for k in episodes_per_scenario}
         success_rate_per_scenario = {k: (success_per_scenario[k] / episodes_per_scenario[k]) if episodes_per_scenario[k] > 0 else 0.0 for k in logs["successes_per_scenario"]}
-        # A.5 SAVE BEST PARAMS
-        if batch_mean_return > best_return:
-            best_return = batch_mean_return
-            best_params = device_get(params)
-            best_critic_params = device_get(critic_params)
         # B. PROCESS BUFFER (Parallel)
         keys = vmap(random.split)(policy_keys)
         policy_keys, critic_keys = keys[:,0], keys[:,1]
@@ -795,7 +1128,7 @@ def jessi_s2r_rl_rollout(
         def get_batched_shape_struct(x):
             target_shape = (n_minibatches, n_micro_splits, micro_batch_size, *x.shape[1:])
             return ShapeDtypeStruct(target_shape, x.dtype)
-        if update == 0:
+        if train_one_epoch_sharded is None:
             dummy_buffer_struct = tree_map(get_batched_shape_struct, buffer_gpu)
             train_pure = partial(
                 train_one_epoch, 
@@ -803,7 +1136,8 @@ def jessi_s2r_rl_rollout(
                 optimizer=actor_network_optimizer, 
                 critic_optimizer=critic_network_optimizer,
                 clip_range=clip_range, 
-                compute_safety_loss=safety_loss,
+                compute_safety_loss=(safety_mode == "legacy"),
+                compute_risk_auxiliary_loss=(safety_mode == "risk_aux"),
                 training_type=training_type,
             )
             abstract_train_out = eval_shape(
@@ -868,6 +1202,7 @@ def jessi_s2r_rl_rollout(
         logs["collisions_obstacles"].append(int(n_coll_obs))
         logs["episodes"].append(int(ep_count))
         logs["domain_randomization_fraction"].append(domain_fraction)
+        logs["visibility"].append(visibility)
         logs["stds"].append(avg_action_std)
         logs["grad_norm"].append(grad_norm)
         logs["approx_kl"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["approx_kl"]))))
@@ -895,6 +1230,26 @@ def jessi_s2r_rl_rollout(
                 batch_scenario_success_rate,
                 scenario_observed,
             )
+        social_rates = [
+            float(scenario_ema_success[i])
+            for i, scenario in enumerate(scenario_keys)
+            if scenario in SOCIAL_SCENARIOS
+        ] if scenario_ema_success is not None else []
+        navigation_rates = [
+            float(scenario_ema_success[i])
+            for i, scenario in enumerate(scenario_keys)
+            if scenario in NAVIGATION_SCENARIOS
+        ] if scenario_ema_success is not None else []
+        social_macro_success = float(np.mean(social_rates)) if social_rates else 0.0
+        navigation_macro_success = float(np.mean(navigation_rates)) if navigation_rates else 0.0
+        logs["social_macro_success"].append(social_macro_success)
+        logs["navigation_macro_success"].append(navigation_macro_success)
+        human_collision_rate = int(n_coll_hum) / max(int(ep_count), 1)
+        score = (social_macro_success, -human_collision_rate, batch_success_rate)
+        if evaluation_every <= 0 and score > best_score:
+            best_score = score
+            best_params = device_get(params)
+            best_critic_params = device_get(critic_params)
         worst_3_scenarios_success_rate = (
             jnp.mean(jnp.sort(scenario_ema_success)[:3])
             if scenario_ema_success is not None
@@ -905,6 +1260,7 @@ def jessi_s2r_rl_rollout(
             f"\nUpd {update}:\n",
             f"| Ret: {logs['returns'][-1]:.3f} | EMA Succ: {(ema_success if ema_success is not None else 0.0):.3f} | Succ: {batch_success_rate:.3f} | Fail: {logs['failures'][-1]/max(logs['episodes'][-1], 1):.3f} (hum {int(n_coll_hum)/max(logs['episodes'][-1], 1):.2f}, obs {int(n_coll_obs)/max(logs['episodes'][-1], 1):.2f}) | Timeouts: {logs['timeouts'][-1]/max(logs['episodes'][-1], 1):.3f}\n",
             f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
+            f"| Macro SR: social {social_macro_success:.3f}, navigation {navigation_macro_success:.3f}\n",
             f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
             f"| EMA-SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {scenario_ema_success[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n" if scenario_ema_success is not None else "",
             f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
@@ -918,15 +1274,125 @@ def jessi_s2r_rl_rollout(
             and (update > 0)
             and (scenario_ema_success is not None)
         ):
-            # Scenarios probabilities
-            scenarios_prob = get_dynamic_probabilities(scenario_ema_success)
-        if (update % 20 == 0) and (update > 0) and (ema_success is not None):
-            # Visibility
-            if ema_success > 0.5 and worst_3_scenarios_success_rate > 0.3:
-                visibility -= 0.1
-            elif ema_success < 0.4:
-                visibility += 0.05
-            visibility = min(max(visibility, 0.), 1.)
+            scenarios_prob = get_social_curriculum_probabilities(
+                scenario_keys, scenario_ema_success, update
+            )
+        if evaluation_every > 0 and (
+            (update + 1) % evaluation_every == 0
+            or (update + 1 == train_updates)
+        ):
+            evaluated_social_keys = tuple(
+                scenario for scenario in scenario_keys if scenario in SOCIAL_SCENARIOS
+            )
+            social_evaluation = evaluate_jessi_s2r_policy(
+                params,
+                policy,
+                env,
+                evaluated_social_keys,
+                episodes_per_scenario=evaluation_episodes,
+                seed=10_000,
+                visibility=1.0,
+            )
+            social_evaluation["update"] = update + 1
+            logs["social_evaluations"].append(social_evaluation)
+            evaluation_score = (
+                social_evaluation["macro_success"],
+                -social_evaluation["human_collision_rate"],
+                -social_evaluation["timeout_rate"],
+            )
+            if evaluation_score > best_score:
+                best_score = evaluation_score
+                best_params = _host_tree(params)
+                best_critic_params = _host_tree(critic_params)
+            evaluated_rates = jnp.asarray([
+                social_evaluation["per_scenario"].get(scenario, {"success": 0.0})["success"]
+                if scenario in SOCIAL_SCENARIOS
+                else float(scenario_ema_success[i])
+                for i, scenario in enumerate(scenario_keys)
+            ])
+            domain_fraction, visibility, promotion_streak, visibility_streak = (
+                update_difficulty_curriculum(
+                    domain_fraction,
+                    visibility,
+                    scenario_keys,
+                    evaluated_rates,
+                    social_evaluation["human_collision_rate"],
+                    promotion_streak,
+                    visibility_streak,
+                )
+            )
+            print(
+                "Deterministic social evaluation: "
+                f"SR={social_evaluation['macro_success']:.3f}, "
+                f"human collisions={social_evaluation['human_collision_rate']:.3f}, "
+                f"timeouts={social_evaluation['timeout_rate']:.3f}"
+            )
+            if (update + 1) % 100 == 0:
+                robust_evaluation = evaluate_jessi_s2r_policy(
+                    params,
+                    policy,
+                    env,
+                    scenario_keys,
+                    episodes_per_scenario=evaluation_episodes,
+                    seed=20_000,
+                    robot_param_bounds=robot_param_bounds,
+                    env_param_bounds=env_param_bounds,
+                    visibility=0.5,
+                )
+                robust_evaluation["update"] = update + 1
+                logs["robust_evaluations"].append(robust_evaluation)
+
+        if evaluation_every <= 0 and (
+            (update % 25 == 0)
+            and (update > 0)
+            and (scenario_ema_success is not None)
+        ):
+            domain_fraction, visibility, promotion_streak, visibility_streak = (
+                update_difficulty_curriculum(
+                    domain_fraction,
+                    visibility,
+                    scenario_keys,
+                    scenario_ema_success,
+                    human_collision_rate,
+                    promotion_streak,
+                    visibility_streak,
+                )
+            )
+
+        if checkpoint_dir is not None and (
+            ((update + 1) % max(int(checkpoint_every), 1) == 0)
+            or (update + 1 == train_updates)
+        ):
+            checkpoint_state = {
+                "params": params,
+                "critic_params": critic_params,
+                "opt_state": opt_state,
+                "critic_opt_state": critic_opt_state,
+                "best_params": best_params,
+                "best_critic_params": best_critic_params,
+                "best_score": best_score,
+                "key": key,
+                "policy_keys": policy_keys,
+                "reset_keys": reset_keys,
+                "env_keys": env_keys,
+                "env_state": env_state,
+                "logs": logs,
+                "ema_success": ema_success,
+                "scenario_ema_success": scenario_ema_success,
+                "scenarios_prob": scenarios_prob,
+                "visibility": visibility,
+                "domain_fraction": domain_fraction,
+                "promotion_streak": promotion_streak,
+                "visibility_streak": visibility_streak,
+            }
+            saved_path = save_training_checkpoint(
+                checkpoint_dir,
+                update + 1,
+                checkpoint_state,
+                resume_config,
+                keep=keep_checkpoints,
+            )
+            print(f"Saved checkpoint: {saved_path}")
 
 
     return best_params, device_get(params), best_critic_params, device_get(critic_params), logs
