@@ -1,5 +1,6 @@
 import unittest
 import os
+import pickle
 import tempfile
 
 import jax.numpy as jnp
@@ -85,6 +86,15 @@ class JessiS2RTrainingSmoke(unittest.TestCase):
         self.assertTrue(os.path.exists(
             checkpoint_path
         ))
+        with open(checkpoint_path, "rb") as checkpoint_file:
+            checkpoint = pickle.load(checkpoint_file)
+        self.assertEqual(checkpoint["schema_version"], 2)
+        saved_state = checkpoint["state"]
+        self.assertIn("curriculum", saved_state)
+        self.assertIn("phase", saved_state["curriculum"])
+        self.assertIn("best_curriculum_level", saved_state)
+        self.assertIn("nominal_best_params", saved_state)
+        self.assertIn("robust_best_params", saved_state)
         resumed = jessi_s2r_rl_rollout(
             **(rollout_args | {"checkpoint_dir": None, "resume_from": checkpoint_path})
         )

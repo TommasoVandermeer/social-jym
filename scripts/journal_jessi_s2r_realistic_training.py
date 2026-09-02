@@ -22,13 +22,19 @@ from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward a
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4
 from socialjym.utils.rewards.lasernav_rewards.s2r_reward import S2RReward
-from socialjym.utils.rollouts.jessi_s2r_rollouts import jessi_s2r_rl_rollout
+from socialjym.utils.rollouts.jessi_s2r_rollouts import (
+    atomic_pickle,
+    jessi_s2r_rl_rollout,
+    prepare_numeric_metrics,
+)
 
-parser = argparse.ArgumentParser(description="Train the resumable JESSI-S2R v3 policy.")
-parser.add_argument("--run-id", default="jessi_s2r_v3")
+parser = argparse.ArgumentParser(description="Train the resumable JESSI-S2R v4 policy.")
+parser.add_argument("--run-id", default="jessi_s2r_v4")
 parser.add_argument("--checkpoint-every", type=int, default=25)
 parser.add_argument("--resume", default=None)
 parser.add_argument("--resume-latest", action="store_true")
+parser.add_argument("--warm-start", default=None)
+parser.add_argument("--plot-only", action="store_true")
 parser.add_argument(
     "--safety-mode", choices=("off", "legacy", "risk_aux"), default="off"
 )
@@ -51,7 +57,48 @@ save_videos = False  # Whether to save videos of the debug inspections
 perception_nn_name = 'realistic_pre_perception_network_32.pkl'
 policy_nn_name = 'jessi_s2r_v2_pre_controller_network_32.pkl'
 critic_nn_name = 'jessi_s2r_v2_pre_critic_network_32.pkl'
-multitask_network_name = os.path.join(run_dir, 'jessi_s2r_v3_multitask_rl_out_32.pkl')
+multitask_network_name = os.path.join(
+    run_dir, f'{cli_args.run_id}_multitask_rl_out_32.pkl'
+)
+
+
+def plot_saved_rl_summary(rl_output, output_path):
+    """Generate a compact report from a completed run without retraining."""
+    metrics = prepare_numeric_metrics(rl_output[-1])
+    episodes = jnp.maximum(metrics["episodes"], 1)
+    figure, axes = plt.subplots(2, 2, figsize=(13, 9))
+    axes[0, 0].plot(metrics["returns"])
+    axes[0, 0].set(title="Mean completed-episode return", xlabel="Update")
+    axes[0, 1].plot(metrics["successes"] / episodes, label="rollout")
+    axes[0, 1].plot(metrics["social_macro_success"], label="social EMA")
+    axes[0, 1].plot(metrics["navigation_macro_success"], label="navigation EMA")
+    axes[0, 1].set(title="Success", xlabel="Update", ylim=(-0.05, 1.05))
+    axes[0, 1].legend()
+    axes[1, 0].plot(metrics["domain_randomization_fraction"], label="domain")
+    axes[1, 0].plot(metrics["visibility"], label="pedestrian robot visibility")
+    axes[1, 0].set(title="Curriculum", xlabel="Update", ylim=(-0.05, 1.05))
+    axes[1, 0].legend()
+    axes[1, 1].plot(metrics["collisions_humans"] / episodes, label="human")
+    axes[1, 1].plot(metrics["collisions_obstacles"] / episodes, label="obstacle")
+    axes[1, 1].set(title="Collision rates", xlabel="Update", ylim=(-0.05, 1.05))
+    axes[1, 1].legend()
+    for axis in axes.flat:
+        axis.grid()
+    figure.tight_layout()
+    figure.savefig(output_path, format="pdf")
+    plt.close(figure)
+
+
+if cli_args.plot_only:
+    if not os.path.exists(multitask_network_name):
+        raise FileNotFoundError(multitask_network_name)
+    with open(multitask_network_name, "rb") as saved_stream:
+        saved_output = pickle.load(saved_stream)
+    plot_saved_rl_summary(
+        saved_output, multitask_network_name.replace(".pkl", "_summary.pdf")
+    )
+    print(f"Saved report for {multitask_network_name}")
+    raise SystemExit(0)
 calibration_manifest_path = os.path.join(
     os.path.dirname(__file__), "jessi_s2r_calibration.json"
 )
@@ -1048,8 +1095,10 @@ else:
 
 ### JESSI-MULTITASK: MULTI-TASK REINFORCEMENT LEARNING
 resume_path = cli_args.resume
-if cli_args.resume and cli_args.resume_latest:
-    raise ValueError("Use either --resume or --resume-latest, not both.")
+if sum(bool(value) for value in (
+    cli_args.resume, cli_args.resume_latest, cli_args.warm_start
+)) > 1:
+    raise ValueError("Use exactly one of --resume, --resume-latest, or --warm-start.")
 if cli_args.resume_latest:
     import glob
     available_checkpoints = sorted(
@@ -1218,19 +1267,17 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         },
         'evaluation_every': 25,
         'evaluation_episodes': 16,
+        'audit_every': 100,
+        'audit_episodes': 32,
+        'warm_start_from': cli_args.warm_start,
+        'curriculum_version': 'v4',
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_s2r_rl_rollout(**rl_rollout_params)
     # Save RL rollout output
-    with open(os.path.join(os.path.dirname(__file__),multitask_network_name), 'wb') as f:
-        pickle.dump(rl_out, f)
+    atomic_pickle(multitask_network_name, rl_out)
     best_final_params, final_params, best_final_critic_params, final_critic_params, metrics = rl_out
-    processed_metrics = {}
-    for key, value in metrics.items():
-        if isinstance(value, list):
-            processed_metrics[key] = jnp.array(value)
-        if isinstance(value, dict):
-            processed_metrics[key] = tree_map(lambda x: jnp.array(x), value)
+    processed_metrics = prepare_numeric_metrics(metrics)
     # Other metrics
     losses = processed_metrics['losses']
     perception_losses = processed_metrics['perception_losses']

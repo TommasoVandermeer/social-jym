@@ -2,6 +2,8 @@ import math
 import os
 import tempfile
 import unittest
+import pickle
+from unittest.mock import patch
 
 import jax.numpy as jnp
 from jax import random, tree_util
@@ -13,6 +15,15 @@ from socialjym.policies.jessi_s2r import JESSI_S2R
 from socialjym.utils.distributions.logistic_normal import LogisticNormal
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rollouts.jessi_s2r_rollouts import (
+    CURRICULUM_STAGES,
+    evaluate_at_curriculum_stage,
+    get_v4_scenario_probabilities,
+    group_normalize_advantages,
+    group_weighted_mean,
+    initial_v4_curriculum,
+    interpolated_bounds,
+    load_warm_start_candidates,
+    prepare_numeric_metrics,
     get_social_curriculum_probabilities,
     load_training_checkpoint,
     save_training_checkpoint,
@@ -21,6 +32,7 @@ from socialjym.utils.rollouts.jessi_s2r_rollouts import (
     tree_select,
     update_ema,
     update_difficulty_curriculum,
+    update_v4_curriculum,
 )
 
 
@@ -29,6 +41,152 @@ def _all_finite(tree):
 
 
 class JessiS2RUtilityContracts(unittest.TestCase):
+    def test_v4_stages_change_one_axis_and_reach_zero_visibility(self):
+        self.assertEqual(CURRICULUM_STAGES[0], (0.0, 1.0))
+        self.assertEqual(CURRICULUM_STAGES[-1], (1.0, 0.0))
+        for previous, current in zip(CURRICULUM_STAGES, CURRICULUM_STAGES[1:]):
+            changed = sum(a != b for a, b in zip(previous, current))
+            self.assertEqual(changed, 1)
+        self.assertEqual(initial_v4_curriculum(0)["phase"], "domain_ramp")
+        self.assertEqual(initial_v4_curriculum(6)["phase"], "joint_alternation")
+        self.assertEqual(initial_v4_curriculum(16)["phase"], "visibility_ramp")
+
+    def test_stage_evaluation_receives_exact_bounds_and_visibility(self):
+        captured = {}
+
+        def fake_evaluation(*args, **kwargs):
+            captured.update(kwargs)
+            return {
+                "per_scenario": {
+                    0: {
+                        "success": 1.0,
+                        "collision_with_human": 0.0,
+                        "collision_with_obstacle": 0.0,
+                        "timeout": 0.0,
+                    }
+                }
+            }
+
+        nominal = {"x": jnp.array(2.0)}
+        lower = {"x": jnp.array(0.0)}
+        upper = {"x": jnp.array(6.0)}
+        with patch(
+            "socialjym.utils.rollouts.jessi_s2r_rollouts.evaluate_jessi_s2r_policy",
+            side_effect=fake_evaluation,
+        ):
+            result = evaluate_at_curriculum_stage(
+                None, None, None, (0,), (0.5, 0.7),
+                nominal, lower, upper, nominal, lower, upper,
+            )
+        self.assertAlmostEqual(float(captured["robot_param_bounds"]["x"][0]), 1.0)
+        self.assertAlmostEqual(float(captured["robot_param_bounds"]["x"][1]), 4.0)
+        self.assertAlmostEqual(float(captured["env_param_bounds"]["x"][0]), 1.0)
+        self.assertEqual(captured["visibility"], 0.7)
+        self.assertEqual(result["domain_fraction"], 0.5)
+
+    def test_v4_curriculum_promotes_and_regresses_with_streaks(self):
+        good = {
+            "social_macro_success": 0.9,
+            "social_worst_success": 0.7,
+            "social_human_collision_rate": 0.05,
+            "navigation_macro_success": 0.9,
+            "navigation_worst_success": 0.6,
+            "navigation_present": True,
+        }
+        state = initial_v4_curriculum()
+        for update in (25, 50):
+            state = update_v4_curriculum(state, good, update)
+            self.assertEqual(state["level"], 0)
+        state = update_v4_curriculum(state, good, 75)
+        self.assertEqual(state["level"], 1)
+        bad = good | {"social_macro_success": 0.5}
+        state = update_v4_curriculum(state, bad, 100)
+        state = update_v4_curriculum(state, bad, 125)
+        self.assertEqual(state["level"], 0)
+
+    def test_v4_curriculum_can_traverse_complete_ordered_sequence(self):
+        passing = {
+            "social_macro_success": 0.9,
+            "social_worst_success": 0.7,
+            "social_human_collision_rate": 0.05,
+            "navigation_macro_success": 0.9,
+            "navigation_worst_success": 0.6,
+            "navigation_present": True,
+        }
+        state = initial_v4_curriculum()
+        update = 0
+        visited = [state["level"]]
+        while state["level"] < len(CURRICULUM_STAGES) - 1:
+            previous_level = state["level"]
+            for _ in range(3):
+                update += 25
+                state = update_v4_curriculum(state, passing, update)
+            self.assertEqual(state["level"], previous_level + 1)
+            visited.append(state["level"])
+        self.assertEqual(visited, list(range(len(CURRICULUM_STAGES))))
+        self.assertEqual((state["domain_fraction"], state["visibility"]), (1.0, 0.0))
+
+    def test_v4_sampling_budgets_and_group_statistics(self):
+        keys = (0, 1, 10, 11)
+        recovery = get_v4_scenario_probabilities(keys, social_mastered=False)
+        mastered = get_v4_scenario_probabilities(keys, social_mastered=True)
+        self.assertAlmostEqual(float(jnp.sum(recovery[:2])), 0.9, places=6)
+        self.assertAlmostEqual(float(jnp.sum(mastered[:2])), 0.8, places=6)
+        equal_metrics = {
+            "per_scenario": {
+                key: {
+                    "success": 0.5,
+                    "collision_with_human": 0.2,
+                    "collision_with_obstacle": 0.1,
+                    "timeout": 0.1,
+                }
+                for key in keys
+            }
+        }
+        adaptive = get_v4_scenario_probabilities(keys, equal_metrics, False)
+        self.assertGreater(float(adaptive[1]), float(adaptive[0]))
+        self.assertTrue(bool(jnp.all(adaptive > 0.0)))
+        advantages = jnp.array([1.0, 3.0, 10.0, 14.0])
+        scenarios = jnp.array(keys)
+        normalized = group_normalize_advantages(advantages, scenarios)
+        self.assertAlmostEqual(float(jnp.mean(normalized[:2])), 0.0, places=6)
+        self.assertAlmostEqual(float(jnp.mean(normalized[2:])), 0.0, places=6)
+        only_social = group_weighted_mean(
+            jnp.array([1.0, 3.0]), jnp.array([0, 1]), 0.8
+        )
+        self.assertAlmostEqual(float(only_social), 2.0, places=6)
+
+    def test_interpolated_bounds_and_structured_metrics(self):
+        nominal = {"x": jnp.array(1.0)}
+        bounds = interpolated_bounds(
+            nominal, {"x": jnp.array(0.0)}, {"x": jnp.array(3.0)}, 0.5
+        )
+        self.assertAlmostEqual(float(bounds["x"][0]), 0.5)
+        self.assertAlmostEqual(float(bounds["x"][1]), 2.0)
+        structured = [{"macro": 0.5, "per_scenario": {0: {"success": 1.0}}}]
+        processed = prepare_numeric_metrics({
+            "losses": [1.0, 2.0], "stage_evaluations": structured
+        })
+        self.assertTrue(jnp.array_equal(processed["losses"], jnp.array([1.0, 2.0])))
+        self.assertIs(processed["stage_evaluations"], structured)
+
+    def test_legacy_checkpoint_is_accepted_only_as_warm_start(self):
+        payload = {
+            "schema_version": 1,
+            "state": {
+                "params": {"x": jnp.array([1.0])},
+                "critic_params": {"x": jnp.array([2.0])},
+                "best_params": {"x": jnp.array([3.0])},
+                "best_critic_params": {"x": jnp.array([4.0])},
+            },
+        }
+        with tempfile.NamedTemporaryFile(suffix=".pkl") as stream:
+            pickle.dump(payload, stream)
+            stream.flush()
+            candidates = load_warm_start_candidates(stream.name)
+        self.assertTrue(jnp.array_equal(candidates["final"][0]["x"], jnp.array([1.0])))
+        self.assertTrue(jnp.array_equal(candidates["best"][0]["x"], jnp.array([3.0])))
+
     def test_social_curriculum_preserves_group_budgets(self):
         keys = (0, 1, 10, 11)
         initial = get_social_curriculum_probabilities(keys, update=0)

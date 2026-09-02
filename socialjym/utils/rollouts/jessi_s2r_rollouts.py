@@ -16,7 +16,7 @@ from jax.sharding import Mesh, PartitionSpec, NamedSharding
 from jax.experimental import mesh_utils
 
 from jhsfm.hsfm import get_linear_velocity
-from socialjym.envs.base_env import SCENARIOS
+from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS
 from socialjym.envs.lasernav import LaserNav
 from socialjym.envs.parameter_context import (
     bounds_from_nominal,
@@ -27,9 +27,21 @@ from socialjym.policies.jessi_s2r import JESSI_S2R
 
 
 TRAINING_TYPES = ["multitask", "modular", "policy"]
-CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 2
+LEGACY_CHECKPOINT_SCHEMA_VERSIONS = (1,)
 SOCIAL_SCENARIOS = (0, 1, 2, 3, 4, 6, 9)
 NAVIGATION_SCENARIOS = (10, 11, 12, 13, 14, 15, 16)
+
+# Exactly one source of difficulty changes between adjacent stages.
+CURRICULUM_STAGES = tuple(
+    [(round(0.1 * level, 1), 1.0) for level in range(6)]
+    + [
+        (0.5, 0.9), (0.6, 0.9), (0.6, 0.8), (0.7, 0.8),
+        (0.7, 0.7), (0.8, 0.7), (0.8, 0.6), (0.9, 0.6),
+        (0.9, 0.5), (1.0, 0.5),
+    ]
+    + [(1.0, round(value, 1)) for value in (0.4, 0.3, 0.2, 0.1, 0.0)]
+)
 
 
 def _host_tree(tree):
@@ -37,7 +49,11 @@ def _host_tree(tree):
     # PPO donates several of those buffers to compiled updates, so a checkpoint
     # assembled before a later donation can otherwise contain deleted arrays.
     # Materialise an owning host copy at the checkpoint boundary.
-    return tree_map(lambda leaf: np.array(device_get(leaf), copy=True), tree)
+    def copy_leaf(leaf):
+        if isinstance(leaf, (str, bytes)):
+            return leaf
+        return np.array(device_get(leaf), copy=True)
+    return tree_map(copy_leaf, tree)
 
 
 def _checkpoint_fingerprint(config):
@@ -108,6 +124,56 @@ def load_training_checkpoint(path, expected_config):
     return payload
 
 
+def load_warm_start_candidates(path):
+    """Load actor/critic candidates without restoring legacy optimizer state."""
+    with open(path, "rb") as checkpoint_file:
+        payload = pickle.load(checkpoint_file)
+    if isinstance(payload, dict) and "schema_version" in payload:
+        schema = payload.get("schema_version")
+        if schema not in (*LEGACY_CHECKPOINT_SCHEMA_VERSIONS, CHECKPOINT_SCHEMA_VERSION):
+            raise ValueError(f"Unsupported warm-start checkpoint schema {schema}.")
+        state = payload["state"]
+        return {
+            "final": (state["params"], state["critic_params"]),
+            "best": (state.get("best_params", state["params"]), state.get("best_critic_params", state["critic_params"])),
+        }
+    if isinstance(payload, tuple) and len(payload) >= 4:
+        return {
+            "best": (payload[0], payload[2]),
+            "final": (payload[1], payload[3]),
+        }
+    raise ValueError("Warm-start file is neither a training checkpoint nor an RL output tuple.")
+
+
+def atomic_pickle(path, payload):
+    """Public wrapper used by training scripts for crash-safe result files."""
+    _atomic_pickle(path, _host_tree(payload))
+
+
+def prepare_numeric_metrics(metrics):
+    """Convert plottable logs while preserving structured evaluation records."""
+    processed = {}
+    for key, value in metrics.items():
+        if isinstance(value, list):
+            processed[key] = (
+                value
+                if value and isinstance(value[0], dict)
+                else jnp.asarray(value)
+            )
+        elif isinstance(value, dict):
+            def convert_leaf(leaf):
+                if isinstance(leaf, (str, bytes)):
+                    return leaf
+                try:
+                    return jnp.asarray(leaf)
+                except (TypeError, ValueError):
+                    return leaf
+            processed[key] = tree_map(convert_leaf, value)
+        else:
+            processed[key] = value
+    return processed
+
+
 def tree_all_finite(tree):
     """Return a scalar JAX boolean indicating whether every leaf is finite."""
     leaves = tree_leaves(tree)
@@ -119,6 +185,49 @@ def tree_all_finite(tree):
 def tree_select(predicate, true_tree, false_tree):
     """Select between matching pytrees using a scalar JAX predicate."""
     return tree_map(lambda new, old: jnp.where(predicate, new, old), true_tree, false_tree)
+
+
+def social_mask_from_scenarios(scenarios):
+    scenarios = jnp.asarray(scenarios)
+    return jnp.any(
+        scenarios[..., None] == jnp.asarray(SOCIAL_SCENARIOS), axis=-1
+    )
+
+
+def group_normalize_advantages(advantages, scenarios):
+    """Normalize social/navigation advantages independently and safely."""
+    social_mask = social_mask_from_scenarios(scenarios)
+
+    def normalize(values, mask):
+        mask_f = mask.astype(values.dtype)
+        count = jnp.sum(mask_f)
+        mean = jnp.sum(values * mask_f) / jnp.maximum(count, 1.0)
+        variance = jnp.sum(jnp.square(values - mean) * mask_f) / jnp.maximum(count, 1.0)
+        normalized = (values - mean) / jnp.sqrt(variance + 1e-8)
+        return jnp.where(mask & (count >= 2), normalized, values)
+
+    return jnp.where(
+        social_mask,
+        normalize(advantages, social_mask),
+        normalize(advantages, ~social_mask),
+    )
+
+
+def group_weighted_mean(values, scenarios, social_weight):
+    """Combine group means without NaNs when a minibatch lacks one group."""
+    social_mask = social_mask_from_scenarios(scenarios)
+    social_count = jnp.sum(social_mask)
+    navigation_count = jnp.sum(~social_mask)
+    social_mean = jnp.sum(jnp.where(social_mask, values, 0.0)) / jnp.maximum(social_count, 1)
+    navigation_mean = jnp.sum(jnp.where(~social_mask, values, 0.0)) / jnp.maximum(navigation_count, 1)
+    social_available = (social_count > 0).astype(values.dtype)
+    navigation_available = (navigation_count > 0).astype(values.dtype)
+    social_budget = social_weight * social_available
+    navigation_budget = (1.0 - social_weight) * navigation_available
+    total_budget = jnp.maximum(social_budget + navigation_budget, 1e-8)
+    return (
+        social_budget * social_mean + navigation_budget * navigation_mean
+    ) / total_budget
 
 @partial(jit, static_argnames=("policy", "env", "n_steps"))
 def collect_rollout_step(
@@ -212,6 +321,51 @@ def collect_rollout_step(
             states[:,-1,4], 
             infos["robot_goal"],
         )
+        human_radii = infos["humans_parameters"][:, :, 0]
+        robot_radii = runtime_robot_params["radius"][:, None]
+        human_clearances = jnp.linalg.norm(rc_humans_positions, axis=-1) - (
+            human_radii + robot_radii
+        )
+        if env.kinematics == ROBOT_KINEMATICS.index("holonomic"):
+            robot_heading = states[:, -1, 4]
+            cos_heading = jnp.cos(robot_heading)
+            sin_heading = jnp.sin(robot_heading)
+            robot_velocity_rc = jnp.stack(
+                (
+                    cos_heading * states[:, -1, 2] + sin_heading * states[:, -1, 3],
+                    -sin_heading * states[:, -1, 2] + cos_heading * states[:, -1, 3],
+                ),
+                axis=-1,
+            )
+        else:
+            # In the unicycle body frame the robot velocity is (linear speed, 0).
+            robot_velocity_rc = jnp.stack(
+                (states[:, -1, 2], jnp.zeros_like(states[:, -1, 2])), axis=-1
+            )
+        relative_velocities = rc_humans_velocities - robot_velocity_rc[:, None, :]
+        relative_speed_sq = jnp.sum(relative_velocities**2, axis=-1) + 1e-6
+        raw_ttc = -jnp.sum(
+            rc_humans_positions * relative_velocities, axis=-1
+        ) / relative_speed_sq
+        closest = (
+            rc_humans_positions
+            + jnp.clip(raw_ttc, 0.0, 2.5)[..., None] * relative_velocities
+        )
+        predicted_clearance = jnp.linalg.norm(closest, axis=-1) - (
+            human_radii + robot_radii
+        )
+        ttc_violation = jnp.any(
+            (raw_ttc > 0.0) & (raw_ttc < 2.5) & (predicted_clearance < 0.4),
+            axis=-1,
+        )
+        front_human = jnp.any(
+            (rc_humans_positions[..., 0] > 0.0)
+            & (jnp.abs(jnp.arctan2(
+                rc_humans_positions[..., 1], rc_humans_positions[..., 0]
+            )) <= jnp.pi / 3.0)
+            & (jnp.linalg.norm(rc_humans_positions, axis=-1) <= 2.5),
+            axis=-1,
+        )
         step_data = {
             # "obs": obses,
             # "robot_goal": infos["robot_goal"],
@@ -229,7 +383,14 @@ def collect_rollout_step(
             "rewards": rewards,
             "dones": ~(outcomes["nothing"]),
             "neglogpdfs": policy.action_distribution.batch_neglogp(actor_distrs, sampled_actions),
-            "stds": policy.action_distribution.batch_std(actor_distrs)
+            "stds": policy.action_distribution.batch_std(actor_distrs),
+            "scenario": infos["current_scenario"],
+            "min_human_clearance": jnp.min(human_clearances, axis=-1),
+            "ttc_violation": ttc_violation,
+            "yielding_violation": front_human & (actions[:, 0] > 0.1),
+            "completed_episode": ~new_outcomes["nothing"],
+            "collision_with_human": new_outcomes["collision_with_human"],
+            "collision_with_obstacle": new_outcomes["collision_with_obstacle"],
         }
         new_times = times + (new_outcomes["success"]) * (infos['time'] + policy.dt)
         new_returns = returns + (~new_outcomes["nothing"]) * (
@@ -354,6 +515,7 @@ def process_buffer_and_gae(
         "neglogpdfs": flatten(history["neglogpdfs"]),
         "critic_targets": flatten(critic_targets),
         "advantages": flatten(advantages),
+        "scenario": flatten(history["scenario"]),
     }
     
     return flattened_buffer
@@ -375,6 +537,7 @@ def train_one_epoch(
     critic_optimizer,
     clip_range,
     beta_entropy,
+    social_weight,
     compute_safety_loss,
     compute_risk_auxiliary_loss,
     training_type,
@@ -390,9 +553,12 @@ def train_one_epoch(
     def _batch_step(carry_inner, micro_batches): 
         params_inner, critic_params_inner, opt_st_inner, critic_opt_st_inner, batch_idx, batch_key = carry_inner 
 
-        # Normalize advantages within mini-batch
+        # Normalize advantages within task group so the easier navigation
+        # distribution cannot set the scale for social updates.
         all_mb_advantages = micro_batches["advantages"]
-        norm_advantages = (all_mb_advantages - jnp.mean(all_mb_advantages)) / (jnp.std(all_mb_advantages) + 1e-8)
+        norm_advantages = group_normalize_advantages(
+            all_mb_advantages, micro_batches["scenario"]
+        )
         # We clip the normalized advantages to avoid too large policy updates
         micro_batches["advantages"] = micro_batches["advantages"].at[:].set(jnp.clip(norm_advantages, -5, 5))
 
@@ -428,14 +594,37 @@ def train_one_epoch(
             )
             surr1 = ratio * u_mb["advantages"]
             surr2 = jnp.clip(ratio, 1.0 - clip_range, 1.0 + clip_range) * u_mb["advantages"]
-            actor_loss = -jnp.mean(jnp.minimum(surr1, surr2))
-            approx_kl = jnp.mean((ratio - 1) - log_ratio)
-            clip_frac = jnp.mean(jnp.abs(ratio - 1.0) > clip_range)
+            surrogate = jnp.minimum(surr1, surr2)
+            actor_loss = -group_weighted_mean(
+                surrogate, u_mb["scenario"], social_weight
+            )
+            social_actor_loss = -group_weighted_mean(
+                surrogate, u_mb["scenario"], 1.0
+            )
+            navigation_actor_loss = -group_weighted_mean(
+                surrogate, u_mb["scenario"], 0.0
+            )
+            approx_kl = group_weighted_mean(
+                (ratio - 1) - log_ratio, u_mb["scenario"], social_weight
+            )
+            clip_frac = group_weighted_mean(
+                (jnp.abs(ratio - 1.0) > clip_range).astype(jnp.float32),
+                u_mb["scenario"], social_weight,
+            )
             # Entropy
-            locs_entropy = jnp.mean(policy.action_distribution.batch_entropy(actor_dist))
-            weight_entropy = jnp.mean(policy.action_distribution.batch_weight_entropy(actor_dist))
+            locs_entropy = group_weighted_mean(
+                policy.action_distribution.batch_entropy(actor_dist),
+                u_mb["scenario"], social_weight,
+            )
+            weight_entropy = group_weighted_mean(
+                policy.action_distribution.batch_weight_entropy(actor_dist),
+                u_mb["scenario"], social_weight,
+            )
             entropy_loss = -beta_entropy * (locs_entropy + 10 * weight_entropy)
-            max_weight = jnp.mean(jnp.max(nn.softmax(actor_dist["locs"]), axis=-1)) # Diagnostic measure
+            max_weight = group_weighted_mean(
+                jnp.max(nn.softmax(actor_dist["locs"]), axis=-1),
+                u_mb["scenario"], social_weight,
+            )
             policy_loss = actor_loss + entropy_loss
             # Perception
             if multitask_training or modular_training:
@@ -485,7 +674,7 @@ def train_one_epoch(
                 safety_loss = 0.0
             # Total loss
             total_loss = policy_loss + .05 * perception_loss + safety_loss
-            return total_loss, (actor_loss, perception_loss, safety_loss, entropy_loss, weight_entropy, max_weight, approx_kl, clip_frac)
+            return total_loss, (actor_loss, perception_loss, safety_loss, entropy_loss, weight_entropy, max_weight, approx_kl, clip_frac, social_actor_loss, navigation_actor_loss)
 
         def micro_batch_critic_loss_fn(critic_p, u_mb, micro_batch_key):
             states, actions_history, env_params, robot_params, inputs1 = u_mb["states"], u_mb["actions_history"], u_mb["env_params"], u_mb["robot_params"], u_mb["inputs1"]
@@ -505,7 +694,11 @@ def train_one_epoch(
             v_loss = jnp.square(pred_val - u_mb["critic_targets"])
             v_clipped = u_mb["values"] + jnp.clip(pred_val - u_mb["values"], -clip_range, clip_range)
             v_loss_clipped = jnp.square(v_clipped - u_mb["critic_targets"])
-            critic_loss = 0.5 * jnp.mean(jnp.maximum(v_loss, v_loss_clipped))
+            critic_loss = 0.5 * group_weighted_mean(
+                jnp.maximum(v_loss, v_loss_clipped),
+                u_mb["scenario"],
+                social_weight,
+            )
             y_true = u_mb["critic_targets"].flatten()
             y_pred = pred_val.flatten()
             var_y = jnp.var(y_true)
@@ -518,12 +711,12 @@ def train_one_epoch(
             # Actor
             (policy_loss, aux), grads = value_and_grad(micro_batch_loss_fn, has_aux=True)(params_inner, u_mb, sub_key1)
             actor_new_grads_acc = tree_map(lambda acc, g: acc + g, current_grads_acc, grads)
-            l_act, l_perc, l_safety, l_ent, w_ent, max_w, approx_kl, clip_frac = aux
+            l_act, l_perc, l_safety, l_ent, w_ent, max_w, approx_kl, clip_frac, social_actor, navigation_actor = aux
             # Critic
             (critic_loss, explained_var), grads = value_and_grad(micro_batch_critic_loss_fn, has_aux=True)(critic_params_inner, u_mb, subkey2)
             critic_new_grads_acc = tree_map(lambda acc, g: acc + g, current_critic_grads_acc, grads)
             # Accumulation
-            acc_pol, acc_act, acc_crit, acc_perc, acc_safety, acc_ent, acc_w_ent, acc_max_w, acc_kl, acc_clip, acc_explained_var = current_metrics_acc
+            acc_pol, acc_act, acc_crit, acc_perc, acc_safety, acc_ent, acc_w_ent, acc_max_w, acc_kl, acc_clip, acc_explained_var, acc_social_actor, acc_navigation_actor = current_metrics_acc
             new_metrics_acc = (
                 acc_pol + policy_loss,
                 acc_act + l_act, 
@@ -535,13 +728,15 @@ def train_one_epoch(
                 acc_max_w + max_w,
                 acc_kl + approx_kl, 
                 acc_clip + clip_frac, 
-                acc_explained_var + explained_var
+                acc_explained_var + explained_var,
+                acc_social_actor + social_actor,
+                acc_navigation_actor + navigation_actor,
             )
             return (actor_new_grads_acc, critic_new_grads_acc, new_metrics_acc, batch_key), None
 
         grads_acc_init = tree_map(jnp.zeros_like, params_inner)
         critic_grads_acc_init = tree_map(jnp.zeros_like, critic_params_inner)
-        metrics_acc_init = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) # (policy, actor, critic, perc, safety, ent, weight_ent, max_w, kl, clip, explained_var)
+        metrics_acc_init = (0.0,) * 13
         (grads_sum, critic_grads_sum, metrics_sum, batch_key), _ = lax.scan(
             _micro_step_scan, 
             (grads_acc_init, critic_grads_acc_init, metrics_acc_init, batch_key), 
@@ -549,7 +744,7 @@ def train_one_epoch(
         )
         grads_avg = tree_map(lambda x: x / n_micro_splits, grads_sum)
         critic_grads_avg = tree_map(lambda x: x / n_micro_splits, critic_grads_sum)
-        pol_sum, act_sum, crit_sum, perc_sum, safety_sum, ent_sum, w_ent_sum, max_w_sum, kl_sum, clip_sum, explained_var_sum = metrics_sum
+        pol_sum, act_sum, crit_sum, perc_sum, safety_sum, ent_sum, w_ent_sum, max_w_sum, kl_sum, clip_sum, explained_var_sum, social_actor_sum, navigation_actor_sum = metrics_sum
         grad_norm = optax.global_norm(grads_avg)
         aux_avg = (
             pol_sum / n_micro_splits,
@@ -564,6 +759,8 @@ def train_one_epoch(
             clip_sum / n_micro_splits,
             explained_var_sum / n_micro_splits,
             grad_norm,
+            social_actor_sum / n_micro_splits,
+            navigation_actor_sum / n_micro_splits,
         )
         updates, new_opt_st_inner = optimizer.update(grads_avg, opt_st_inner)
         critic_updates, new_critic_opt_st_inner = critic_optimizer.update(critic_grads_avg, critic_opt_st_inner)
@@ -614,7 +811,9 @@ def train_one_epoch(
         "clip_frac": jnp.mean(batch_aux[9]),
         "explained_var": jnp.mean(batch_aux[10]),
         "grad_norm": jnp.mean(batch_aux[11]),
-        "finite": jnp.all(batch_aux[12] > 0.5),
+        "actor_social": jnp.mean(batch_aux[12]),
+        "actor_navigation": jnp.mean(batch_aux[13]),
+        "finite": jnp.all(batch_aux[14] > 0.5),
     }
     return (new_params, new_critic_params, new_opt_st, new_critic_opt_st), epoch_metrics
 
@@ -678,6 +877,162 @@ def get_social_curriculum_probabilities(
     else:
         result[:] = 1.0 / len(scenario_keys)
     return jnp.asarray(result / np.sum(result), dtype=jnp.float32)
+
+
+def summarize_evaluation(evaluation, scenario_keys):
+    """Add social/navigation macro and worst-case metrics to an evaluation."""
+    result = dict(evaluation)
+    per_scenario = result["per_scenario"]
+    for name, group in (("social", SOCIAL_SCENARIOS), ("navigation", NAVIGATION_SCENARIOS)):
+        selected = [per_scenario[key] for key in scenario_keys if key in group]
+        result[f"{name}_present"] = bool(selected)
+        successes = [item["success"] for item in selected]
+        result[f"{name}_macro_success"] = float(np.mean(successes)) if successes else 0.0
+        result[f"{name}_worst_success"] = float(np.min(successes)) if successes else 0.0
+        result[f"{name}_human_collision_rate"] = (
+            float(np.mean([item["collision_with_human"] for item in selected]))
+            if selected else 0.0
+        )
+    return result
+
+
+def interpolated_bounds(nominal, lower, upper, fraction):
+    """Return explicit (low, high) bounds for one curriculum stage."""
+    low = tree_map(
+        lambda base, bound: base + fraction * (bound - base), nominal, lower
+    )
+    high = tree_map(
+        lambda base, bound: base + fraction * (bound - base), nominal, upper
+    )
+    return {name: (low[name], high[name]) for name in nominal}
+
+
+def get_v4_scenario_probabilities(
+    scenario_keys,
+    evaluation=None,
+    social_mastered=False,
+):
+    """Social-first fixed-budget probabilities driven only by gate evaluation."""
+    scenario_keys = tuple(int(key) for key in scenario_keys)
+    social_budget = 0.8 if social_mastered else 0.9
+    result = np.zeros((len(scenario_keys),), dtype=np.float32)
+
+    def difficulty(key, group):
+        if evaluation is None or key not in evaluation.get("per_scenario", {}):
+            return 1.0
+        metrics = evaluation["per_scenario"][key]
+        if group is SOCIAL_SCENARIOS:
+            score = max(
+                0.05,
+                0.5 * (1.0 - metrics["success"])
+                + 0.35 * metrics["collision_with_human"]
+                + 0.15 * metrics["timeout"],
+            )
+            # Parallel traffic was the persistent weak social case in v3.  The
+            # uniform half still bounds this modest targeted emphasis.
+            return score * (1.25 if key == 1 else 1.0)
+        return max(
+            0.05,
+            0.7 * (1.0 - metrics["success"])
+            + 0.2 * metrics["collision_with_obstacle"]
+            + 0.1 * metrics["timeout"],
+        )
+
+    def fill(group, budget):
+        indices = [i for i, key in enumerate(scenario_keys) if key in group]
+        if not indices:
+            return False
+        values = np.asarray([difficulty(scenario_keys[i], group) for i in indices])
+        adaptive = values / values.sum()
+        conditional = 0.5 / len(indices) + 0.5 * adaptive
+        result[indices] = budget * conditional
+        return True
+
+    has_social = any(key in SOCIAL_SCENARIOS for key in scenario_keys)
+    has_navigation = any(key in NAVIGATION_SCENARIOS for key in scenario_keys)
+    if has_social and has_navigation:
+        fill(SOCIAL_SCENARIOS, social_budget)
+        fill(NAVIGATION_SCENARIOS, 1.0 - social_budget)
+    elif has_social:
+        fill(SOCIAL_SCENARIOS, 1.0)
+    elif has_navigation:
+        fill(NAVIGATION_SCENARIOS, 1.0)
+    else:
+        result[:] = 1.0 / len(scenario_keys)
+    return jnp.asarray(result / result.sum(), dtype=jnp.float32)
+
+
+def initial_v4_curriculum(level=0):
+    level = int(np.clip(level, 0, len(CURRICULUM_STAGES) - 1))
+    domain_fraction, visibility = CURRICULUM_STAGES[level]
+    return {
+        "level": level,
+        "phase": curriculum_phase(level),
+        "domain_fraction": domain_fraction,
+        "visibility": visibility,
+        "promotion_streak": 0,
+        "regression_streak": 0,
+        "last_transition_update": -50,
+        "social_mastered": False,
+        "transition_reason": "initialized",
+    }
+
+
+def update_v4_curriculum(curriculum, evaluation, update):
+    """Update one ordered curriculum level from a current-stage evaluation."""
+    state = dict(curriculum)
+    social_ready = (
+        evaluation["social_macro_success"] >= 0.80
+        and evaluation["social_worst_success"] >= 0.50
+        and evaluation["social_human_collision_rate"] <= 0.15
+    )
+    navigation_ready = (not evaluation.get("navigation_present", True)) or (
+        evaluation["navigation_macro_success"] >= 0.75
+        and evaluation["navigation_worst_success"] >= 0.40
+    )
+    regression = (
+        evaluation["social_macro_success"] < 0.65
+        or evaluation["social_human_collision_rate"] > 0.25
+        or (
+            evaluation.get("navigation_present", True)
+            and evaluation["navigation_macro_success"] < 0.60
+        )
+    )
+    state["social_mastered"] = bool(social_ready)
+    state["promotion_streak"] = state["promotion_streak"] + 1 if social_ready and navigation_ready else 0
+    state["regression_streak"] = state["regression_streak"] + 1 if regression else 0
+    cooldown_ready = update - state["last_transition_update"] >= 50
+    reason = "holding"
+    next_level = state["level"]
+    if cooldown_ready and state["regression_streak"] >= 2 and state["level"] > 0:
+        next_level -= 1
+        reason = "regressed: current-stage validation below safety floor"
+    elif (
+        cooldown_ready
+        and state["promotion_streak"] >= 3
+        and state["level"] < len(CURRICULUM_STAGES) - 1
+    ):
+        next_level += 1
+        reason = "promoted: three consecutive current-stage validations passed"
+    if next_level != state["level"]:
+        state["level"] = next_level
+        state["phase"] = curriculum_phase(next_level)
+        state["domain_fraction"], state["visibility"] = CURRICULUM_STAGES[next_level]
+        state["promotion_streak"] = 0
+        state["regression_streak"] = 0
+        state["social_mastered"] = False
+        state["last_transition_update"] = int(update)
+    state["transition_reason"] = reason
+    return state
+
+
+def curriculum_phase(level):
+    """Human-readable phase persisted in v4 checkpoints and logs."""
+    if level <= 5:
+        return "domain_ramp"
+    if level <= 15:
+        return "joint_alternation"
+    return "visibility_ramp"
 
 
 def update_difficulty_curriculum(
@@ -848,6 +1203,124 @@ def evaluate_jessi_s2r_policy(
     }
 
 
+def evaluate_at_curriculum_stage(
+    params,
+    policy,
+    env,
+    scenario_keys,
+    stage,
+    robot_nominal,
+    robot_lower,
+    robot_upper,
+    env_nominal,
+    env_lower,
+    env_upper,
+    episodes_per_scenario=16,
+    seed=10_000,
+):
+    domain_fraction, visibility = stage
+    robot_bounds = interpolated_bounds(
+        robot_nominal, robot_lower, robot_upper, domain_fraction
+    )
+    env_bounds = interpolated_bounds(
+        env_nominal, env_lower, env_upper, domain_fraction
+    )
+    evaluation = evaluate_jessi_s2r_policy(
+        params,
+        policy,
+        env,
+        scenario_keys,
+        episodes_per_scenario=episodes_per_scenario,
+        seed=seed,
+        robot_param_bounds=robot_bounds,
+        env_param_bounds=env_bounds,
+        visibility=visibility,
+    )
+    evaluation.update({
+        "domain_fraction": domain_fraction,
+        "visibility": visibility,
+    })
+    return summarize_evaluation(evaluation, scenario_keys)
+
+
+def select_warm_start_candidate(
+    path,
+    policy,
+    env,
+    scenario_keys,
+    robot_nominal,
+    robot_lower,
+    robot_upper,
+    env_nominal,
+    env_lower,
+    env_upper,
+    episodes_per_scenario=16,
+):
+    """Select final/best legacy weights and the highest already-mastered stage."""
+    candidates = load_warm_start_candidates(path)
+    matrix_stages = ((0.0, 1.0), (0.5, 0.5), (1.0, 0.5), (1.0, 0.0))
+    reports = {}
+    scores = {}
+    for candidate_name, (actor_params, critic_params) in candidates.items():
+        evaluations = [
+            evaluate_at_curriculum_stage(
+                actor_params, policy, env, scenario_keys, stage,
+                robot_nominal, robot_lower, robot_upper,
+                env_nominal, env_lower, env_upper,
+                episodes_per_scenario=episodes_per_scenario,
+                seed=30_000 + index * 1_000,
+            )
+            for index, stage in enumerate(matrix_stages)
+        ]
+        target = evaluations[-1]
+        scores[candidate_name] = (
+            target["social_macro_success"],
+            -target["social_human_collision_rate"],
+            float(np.mean([item["social_macro_success"] for item in evaluations])),
+            target["navigation_macro_success"],
+        )
+        reports[candidate_name] = evaluations
+    selected_name = max(scores, key=scores.get)
+    actor_params, critic_params = candidates[selected_name]
+    mastered_level = -1
+    low, high = 0, len(CURRICULUM_STAGES) - 1
+    # The ordered stages are monotonically harder by construction; binary
+    # search keeps warm-start evaluation bounded to five stage evaluations.
+    while low <= high:
+        level = (low + high) // 2
+        stage = CURRICULUM_STAGES[level]
+        evaluation = evaluate_at_curriculum_stage(
+            actor_params, policy, env, scenario_keys, stage,
+            robot_nominal, robot_lower, robot_upper,
+            env_nominal, env_lower, env_upper,
+            episodes_per_scenario=episodes_per_scenario,
+            seed=40_000,
+        )
+        social_ready = (
+            evaluation["social_macro_success"] >= 0.80
+            and evaluation["social_worst_success"] >= 0.50
+            and evaluation["social_human_collision_rate"] <= 0.15
+        )
+        navigation_ready = (
+            not evaluation["navigation_present"]
+            or (
+                evaluation["navigation_macro_success"] >= 0.75
+                and evaluation["navigation_worst_success"] >= 0.40
+            )
+        )
+        if social_ready and navigation_ready:
+            mastered_level = level
+            low = level + 1
+        else:
+            high = level - 1
+    mastered_level = max(mastered_level, 0)
+    return actor_params, critic_params, mastered_level, {
+        "selected": selected_name,
+        "scores": scores,
+        "matrix": reports,
+    }
+
+
 def update_ema(
     ema_success,
     batch_success,
@@ -915,6 +1388,10 @@ def jessi_s2r_rl_rollout(
     checkpoint_config:dict = None,
     evaluation_every:int = 0,
     evaluation_episodes:int = 16,
+    audit_every:int = 100,
+    audit_episodes:int = 32,
+    warm_start_from:str = None,
+    curriculum_version:str = "v4",
 ):
     safety_mode = ("legacy" if safety_loss else "off") if safety_mode is None else safety_mode
     if safety_mode not in ("off", "legacy", "risk_aux"):
@@ -955,16 +1432,18 @@ def jessi_s2r_rl_rollout(
         "extra": _plain_value(checkpoint_config or {}),
         "evaluation_every": evaluation_every,
         "evaluation_episodes": evaluation_episodes,
+        "audit_every": audit_every,
+        "audit_episodes": audit_episodes,
+        "curriculum_version": curriculum_version,
     }
     key, subkey = random.split(key)
     reset_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
     key, subkey = random.split(key)
     env_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
-    scenarios_prob = get_social_curriculum_probabilities(scenario_keys)
-    visibility = 1.0
-    domain_fraction = 0.0
-    promotion_streak = 0
-    visibility_streak = 0
+    curriculum = initial_v4_curriculum()
+    scenarios_prob = get_v4_scenario_probabilities(scenario_keys)
+    visibility = curriculum["visibility"]
+    domain_fraction = curriculum["domain_fraction"]
     nominal_robot_bounds = {
         name: (value, value) for name, value in robot_nominal.items()
     }
@@ -1004,6 +1483,18 @@ def jessi_s2r_rl_rollout(
         "domain_randomization_fraction": [],
         "visibility": [], "social_macro_success": [], "navigation_macro_success": [],
         "social_evaluations": [], "robust_evaluations": [],
+        "stage_evaluations": [], "nominal_evaluations": [], "audit_evaluations": [],
+        "curriculum_level": [], "curriculum_transitions": [],
+        "social_sampling_budget": [],
+        "actor_losses_social": [], "actor_losses_navigation": [],
+        "mean_reward_social": [], "mean_reward_navigation": [],
+        "min_clearance_social": [], "ttc_violation_social": [],
+        "yielding_violation_social": [], "min_clearance_navigation": [],
+        "ttc_violation_navigation": [], "yielding_violation_navigation": [],
+        "episodes_social": [], "episodes_navigation": [],
+        "human_collisions_social": [], "human_collisions_navigation": [],
+        "obstacle_collisions_social": [], "obstacle_collisions_navigation": [],
+        "warm_start": None,
     }
     init_beta_entropy = beta_entropy
     scenarios_labels = {}
@@ -1016,13 +1507,45 @@ def jessi_s2r_rl_rollout(
     ema_success = None
     start_update = 0
     if resume_from is None:
-        params = initial_actor_parameters
-        critic_params = initial_critic_parameters
+        warm_start_report = None
+        if warm_start_from is not None:
+            params, critic_params, warm_level, warm_start_report = select_warm_start_candidate(
+                warm_start_from,
+                policy,
+                env,
+                scenario_keys,
+                robot_nominal,
+                robot_lower,
+                robot_upper,
+                env_nominal,
+                env_lower,
+                env_upper,
+                episodes_per_scenario=evaluation_episodes,
+            )
+            curriculum = initial_v4_curriculum(warm_level)
+            visibility = curriculum["visibility"]
+            domain_fraction = curriculum["domain_fraction"]
+            print(
+                f"Warm-start selected {warm_start_report['selected']} at "
+                f"curriculum level {warm_level}: domain={domain_fraction:.1f}, "
+                f"visibility={visibility:.1f}."
+            )
+            logs["warm_start"] = warm_start_report
+        else:
+            params = initial_actor_parameters
+            critic_params = initial_critic_parameters
         # These snapshots must own their host memory: the working device arrays
         # are donated to the compiled PPO update.
-        best_params = _host_tree(initial_actor_parameters)
-        best_critic_params = _host_tree(initial_critic_parameters)
+        best_params = _host_tree(params)
+        best_critic_params = _host_tree(critic_params)
         best_score = (-jnp.inf, -jnp.inf, -jnp.inf)
+        best_curriculum_level = curriculum["level"]
+        nominal_best_params = _host_tree(params)
+        nominal_best_critic_params = _host_tree(critic_params)
+        nominal_best_score = (-jnp.inf, -jnp.inf)
+        robust_best_params = _host_tree(params)
+        robust_best_critic_params = _host_tree(critic_params)
+        robust_best_score = (-jnp.inf, -jnp.inf, -jnp.inf, -jnp.inf)
         opt_state = actor_network_optimizer.init(params)
         critic_opt_state = critic_network_optimizer.init(critic_params)
         params = device_put(params, sharding_replicated)
@@ -1041,6 +1564,15 @@ def jessi_s2r_rl_rollout(
         best_params = restored["best_params"]
         best_critic_params = restored["best_critic_params"]
         best_score = tuple(restored["best_score"])
+        best_curriculum_level = int(
+            restored.get("best_curriculum_level", restored["curriculum"]["level"])
+        )
+        nominal_best_params = restored.get("nominal_best_params", restored["best_params"])
+        nominal_best_critic_params = restored.get("nominal_best_critic_params", restored["best_critic_params"])
+        nominal_best_score = tuple(restored.get("nominal_best_score", (-jnp.inf, -jnp.inf)))
+        robust_best_params = restored.get("robust_best_params", restored["best_params"])
+        robust_best_critic_params = restored.get("robust_best_critic_params", restored["best_critic_params"])
+        robust_best_score = tuple(restored.get("robust_best_score", (-jnp.inf,) * 4))
         key = device_put(restored["key"])
         policy_keys = device_put(restored["policy_keys"], sharding_env)
         reset_keys = device_put(restored["reset_keys"], sharding_env)
@@ -1050,12 +1582,31 @@ def jessi_s2r_rl_rollout(
         ema_success = restored["ema_success"]
         scenario_ema_success = restored["scenario_ema_success"]
         scenarios_prob = jnp.asarray(restored["scenarios_prob"])
-        visibility = float(restored["visibility"])
-        domain_fraction = float(restored["domain_fraction"])
-        promotion_streak = int(restored["promotion_streak"])
-        visibility_streak = int(restored["visibility_streak"])
+        curriculum = restored["curriculum"]
+        curriculum.setdefault("phase", curriculum_phase(curriculum["level"]))
+        visibility = float(curriculum["visibility"])
+        domain_fraction = float(curriculum["domain_fraction"])
         start_update = int(checkpoint["next_update"])
         print(f"Resuming from {resume_from} at update {start_update}.")
+    if resume_from is None and curriculum["level"] > 0:
+        stage_robot_bounds = interpolated_bounds(
+            robot_nominal, robot_lower, robot_upper, domain_fraction
+        )
+        stage_env_bounds = interpolated_bounds(
+            env_nominal, env_lower, env_upper, domain_fraction
+        )
+        stage_env_bounds["robot_visibility_probability"] = (visibility, visibility)
+        states, reset_keys, obses, infos, _, _, init_outcomes = env.batch_reset_with_params(
+            reset_keys,
+            robot_param_bounds=stage_robot_bounds,
+            env_param_bounds=stage_env_bounds,
+            scenarios_prob=scenarios_prob,
+        )
+        reset_keys = device_put(reset_keys, sharding_env)
+        env_state = tuple(
+            tree_map(lambda x: device_put(x, sharding_env), value)
+            for value in (states, obses, infos, init_outcomes)
+        )
     train_one_epoch_sharded = None
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
@@ -1142,7 +1693,9 @@ def jessi_s2r_rl_rollout(
             )
             abstract_train_out = eval_shape(
                 train_pure,
-                key, params, opt_state, critic_params, critic_opt_state, dummy_buffer_struct, beta_entropy=beta_entropy, 
+                key, params, opt_state, critic_params, critic_opt_state,
+                dummy_buffer_struct, beta_entropy=beta_entropy,
+                social_weight=0.9,
             )
             out_shardings_train = tree_map(lambda x: sharding_replicated, abstract_train_out)
             train_one_epoch_sharded = jit(
@@ -1151,7 +1704,7 @@ def jessi_s2r_rl_rollout(
                 out_shardings=out_shardings_train
             )
         epoch_metrics_acc = {
-            "loss": [], "perc": [], "safety": [], "actor": [], "critic": [], "entropy": [], "weight_entropy": [], "max_weight": [], "approx_kl": [], "grad_norm": [], "clip_frac": [], "explained_var": []
+            "loss": [], "perc": [], "safety": [], "actor": [], "critic": [], "entropy": [], "weight_entropy": [], "max_weight": [], "approx_kl": [], "grad_norm": [], "clip_frac": [], "explained_var": [], "actor_social": [], "actor_navigation": []
         }
         # E. UPDATE LOOP
         for epoch in range(n_epochs):
@@ -1169,6 +1722,7 @@ def jessi_s2r_rl_rollout(
                 critic_opt_state,
                 batched_buffer_gpu, 
                 beta_entropy=beta_entropy,
+                social_weight=(0.8 if curriculum["social_mastered"] else 0.9),
                 debugging=(epoch==0) & (debugging),
             )
             metrics_one_epoch["loss"].block_until_ready() # SYNC
@@ -1189,6 +1743,8 @@ def jessi_s2r_rl_rollout(
         logs["perception_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["perc"]))))
         logs["safety_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["safety"]))))
         logs["actor_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["actor"]))))
+        logs["actor_losses_social"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["actor_social"]))))
+        logs["actor_losses_navigation"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["actor_navigation"]))))
         logs["critic_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["critic"]))))
         logs["entropy_losses"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["entropy"]))))
         logs["weight_entropies"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["weight_entropy"]))))
@@ -1203,6 +1759,83 @@ def jessi_s2r_rl_rollout(
         logs["episodes"].append(int(ep_count))
         logs["domain_randomization_fraction"].append(domain_fraction)
         logs["visibility"].append(visibility)
+        logs["curriculum_level"].append(curriculum["level"])
+        logs["social_sampling_budget"].append(
+            0.8 if curriculum["social_mastered"] else 0.9
+        )
+        flat_scenarios = history_raw["scenario"].reshape(-1)
+        flat_rewards = history_raw["rewards"].reshape(-1)
+        social_step_mask = social_mask_from_scenarios(flat_scenarios)
+        logs["mean_reward_social"].append(float(group_weighted_mean(
+            flat_rewards, flat_scenarios, 1.0
+        )))
+        logs["mean_reward_navigation"].append(float(group_weighted_mean(
+            flat_rewards, flat_scenarios, 0.0
+        )))
+        logs["min_clearance_social"].append(float(jnp.where(
+            jnp.any(social_step_mask),
+            jnp.min(jnp.where(
+                social_step_mask,
+                history_raw["min_human_clearance"].reshape(-1),
+                jnp.inf,
+            )),
+            0.0,
+        )))
+        logs["min_clearance_navigation"].append(float(jnp.where(
+            jnp.any(~social_step_mask),
+            jnp.min(jnp.where(
+                ~social_step_mask,
+                history_raw["min_human_clearance"].reshape(-1),
+                jnp.inf,
+            )),
+            0.0,
+        )))
+        logs["ttc_violation_social"].append(float(group_weighted_mean(
+            history_raw["ttc_violation"].reshape(-1).astype(jnp.float32),
+            flat_scenarios,
+            1.0,
+        )))
+        logs["yielding_violation_social"].append(float(group_weighted_mean(
+            history_raw["yielding_violation"].reshape(-1).astype(jnp.float32),
+            flat_scenarios,
+            1.0,
+        )))
+        logs["ttc_violation_navigation"].append(float(group_weighted_mean(
+            history_raw["ttc_violation"].reshape(-1).astype(jnp.float32),
+            flat_scenarios,
+            0.0,
+        )))
+        logs["yielding_violation_navigation"].append(float(group_weighted_mean(
+            history_raw["yielding_violation"].reshape(-1).astype(jnp.float32),
+            flat_scenarios,
+            0.0,
+        )))
+        completed = history_raw["completed_episode"].reshape(-1).astype(jnp.float32)
+        human_collision = history_raw["collision_with_human"].reshape(-1).astype(jnp.float32)
+        obstacle_collision = history_raw["collision_with_obstacle"].reshape(-1).astype(jnp.float32)
+
+        def episode_group_diagnostics(group_mask):
+            group_completed = completed * group_mask.astype(jnp.float32)
+            episode_count = jnp.sum(group_completed)
+            denominator = jnp.maximum(episode_count, 1.0)
+            return (
+                episode_count,
+                jnp.sum(human_collision * group_mask) / denominator,
+                jnp.sum(obstacle_collision * group_mask) / denominator,
+            )
+
+        social_episode_count, social_human_rate, social_obstacle_rate = (
+            episode_group_diagnostics(social_step_mask)
+        )
+        navigation_episode_count, navigation_human_rate, navigation_obstacle_rate = (
+            episode_group_diagnostics(~social_step_mask)
+        )
+        logs["episodes_social"].append(int(social_episode_count))
+        logs["episodes_navigation"].append(int(navigation_episode_count))
+        logs["human_collisions_social"].append(float(social_human_rate))
+        logs["human_collisions_navigation"].append(float(navigation_human_rate))
+        logs["obstacle_collisions_social"].append(float(social_obstacle_rate))
+        logs["obstacle_collisions_navigation"].append(float(navigation_obstacle_rate))
         logs["stds"].append(avg_action_std)
         logs["grad_norm"].append(grad_norm)
         logs["approx_kl"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["approx_kl"]))))
@@ -1262,102 +1895,154 @@ def jessi_s2r_rl_rollout(
             f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
             f"| Macro SR: social {social_macro_success:.3f}, navigation {navigation_macro_success:.3f}\n",
             f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
+            f"| Episodes x scenario - " + ", ".join([f"{scenarios_labels[k]}: {episodes_per_scenario[k]}" for k in logs['episodes_per_scenario']]) + "\n",
             f"| EMA-SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {scenario_ema_success[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n" if scenario_ema_success is not None else "",
             f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
             f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} | Safety Loss: {logs['safety_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
-            f"| Weights entropy: {logs['weight_entropies'][-1]:.4f} | Max weights: {logs['max_weights'][-1]:.4f} | Visibility: {visibility:.2f} | Domain rand: {domain_fraction:.2f} \n",
+            f"| Weights entropy: {logs['weight_entropies'][-1]:.4f} | Max weights: {logs['max_weights'][-1]:.4f} | Level: {curriculum['level']} ({curriculum['phase']}) | Visibility: {visibility:.2f} | Domain rand: {domain_fraction:.2f} | Social budget: {logs['social_sampling_budget'][-1]:.2f} \n",
+            f"| Social diagnostics: reward {logs['mean_reward_social'][-1]:.4f}, min clearance {logs['min_clearance_social'][-1]:.3f}, TTC/yield {logs['ttc_violation_social'][-1]:.3f}/{logs['yielding_violation_social'][-1]:.3f}, episodes {logs['episodes_social'][-1]}, human/obstacle collisions {logs['human_collisions_social'][-1]:.3f}/{logs['obstacle_collisions_social'][-1]:.3f}\n",
+            f"| Navigation diagnostics: reward {logs['mean_reward_navigation'][-1]:.4f}, min clearance {logs['min_clearance_navigation'][-1]:.3f}, episodes {logs['episodes_navigation'][-1]}, human/obstacle collisions {logs['human_collisions_navigation'][-1]:.3f}/{logs['obstacle_collisions_navigation'][-1]:.3f}\n",
             f"| Loss: {logs['losses'][-1]:.4f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f} | Clip frac: {logs['clip_frac'][-1]:.4f} | Explained Var: {logs['explained_var'][-1]:.4f} \n",
         )
-        # I. CURRICULUM (each 10, 20 or more updates, slows down the dynamics)
-        if (
-            (update % 10 == 0)
-            and (update > 0)
-            and (scenario_ema_success is not None)
-        ):
-            scenarios_prob = get_social_curriculum_probabilities(
-                scenario_keys, scenario_ema_success, update
-            )
+        # I. V4 CURRENT-STAGE CURRICULUM
         if evaluation_every > 0 and (
             (update + 1) % evaluation_every == 0
             or (update + 1 == train_updates)
         ):
-            evaluated_social_keys = tuple(
-                scenario for scenario in scenario_keys if scenario in SOCIAL_SCENARIOS
-            )
-            social_evaluation = evaluate_jessi_s2r_policy(
+            evaluated_level = curriculum["level"]
+            stage_evaluation = evaluate_at_curriculum_stage(
                 params,
                 policy,
                 env,
-                evaluated_social_keys,
+                scenario_keys,
+                CURRICULUM_STAGES[evaluated_level],
+                robot_nominal,
+                robot_lower,
+                robot_upper,
+                env_nominal,
+                env_lower,
+                env_upper,
                 episodes_per_scenario=evaluation_episodes,
                 seed=10_000,
-                visibility=1.0,
             )
-            social_evaluation["update"] = update + 1
-            logs["social_evaluations"].append(social_evaluation)
-            evaluation_score = (
-                social_evaluation["macro_success"],
-                -social_evaluation["human_collision_rate"],
-                -social_evaluation["timeout_rate"],
+            stage_evaluation.update({
+                "update": update + 1,
+                "curriculum_level": evaluated_level,
+            })
+            logs["stage_evaluations"].append(stage_evaluation)
+            logs["social_evaluations"].append(stage_evaluation)
+            if best_curriculum_level != evaluated_level:
+                best_curriculum_level = evaluated_level
+                best_score = (-jnp.inf, -jnp.inf, -jnp.inf)
+            current_score = (
+                stage_evaluation["social_macro_success"],
+                -stage_evaluation["social_human_collision_rate"],
+                stage_evaluation["navigation_macro_success"],
             )
-            if evaluation_score > best_score:
-                best_score = evaluation_score
+            if current_score > best_score:
+                best_score = current_score
                 best_params = _host_tree(params)
                 best_critic_params = _host_tree(critic_params)
-            evaluated_rates = jnp.asarray([
-                social_evaluation["per_scenario"].get(scenario, {"success": 0.0})["success"]
-                if scenario in SOCIAL_SCENARIOS
-                else float(scenario_ema_success[i])
-                for i, scenario in enumerate(scenario_keys)
-            ])
-            domain_fraction, visibility, promotion_streak, visibility_streak = (
-                update_difficulty_curriculum(
-                    domain_fraction,
-                    visibility,
-                    scenario_keys,
-                    evaluated_rates,
-                    social_evaluation["human_collision_rate"],
-                    promotion_streak,
-                    visibility_streak,
-                )
+            previous_level = curriculum["level"]
+            curriculum = update_v4_curriculum(
+                curriculum, stage_evaluation, update + 1
+            )
+            domain_fraction = curriculum["domain_fraction"]
+            visibility = curriculum["visibility"]
+            scenarios_prob = get_v4_scenario_probabilities(
+                scenario_keys,
+                stage_evaluation,
+                curriculum["social_mastered"],
+            )
+            if curriculum["level"] != previous_level:
+                transition = {
+                    "update": update + 1,
+                    "from_level": previous_level,
+                    "to_level": curriculum["level"],
+                    "reason": curriculum["transition_reason"],
+                }
+                logs["curriculum_transitions"].append(transition)
+                # A current-stage snapshot must be scored at the current stage.
+                # Start the new level from the transition parameters and replace
+                # it after the first deterministic evaluation at that level.
+                best_curriculum_level = curriculum["level"]
+                best_score = (-jnp.inf, -jnp.inf, -jnp.inf)
+                best_params = _host_tree(params)
+                best_critic_params = _host_tree(critic_params)
+            print(
+                "Current-stage deterministic evaluation: "
+                f"level={evaluated_level}, "
+                f"social={stage_evaluation['social_macro_success']:.3f} "
+                f"(worst={stage_evaluation['social_worst_success']:.3f}, "
+                f"human collisions={stage_evaluation['social_human_collision_rate']:.3f}), "
+                f"navigation={stage_evaluation['navigation_macro_success']:.3f} "
+                f"(worst={stage_evaluation['navigation_worst_success']:.3f}), "
+                f"promotion={curriculum['promotion_streak']}/3, "
+                f"regression={curriculum['regression_streak']}/2; "
+                f"{curriculum['transition_reason']}"
             )
             print(
-                "Deterministic social evaluation: "
-                f"SR={social_evaluation['macro_success']:.3f}, "
-                f"human collisions={social_evaluation['human_collision_rate']:.3f}, "
-                f"timeouts={social_evaluation['timeout_rate']:.3f}"
+                "Evaluation SR x scenario - "
+                + ", ".join(
+                    f"{scenarios_labels[key]}: {stage_evaluation['per_scenario'][key]['success']:.2f}"
+                    for key in scenario_keys
+                )
             )
-            if (update + 1) % 100 == 0:
-                robust_evaluation = evaluate_jessi_s2r_policy(
+
+            if audit_every > 0 and (update + 1) % audit_every == 0:
+                nominal_evaluation = evaluate_at_curriculum_stage(
+                    params, policy, env, scenario_keys, (0.0, 1.0),
+                    robot_nominal, robot_lower, robot_upper,
+                    env_nominal, env_lower, env_upper,
+                    episodes_per_scenario=audit_episodes,
+                    seed=20_000,
+                )
+                nominal_evaluation["update"] = update + 1
+                logs["nominal_evaluations"].append(nominal_evaluation)
+                nominal_score = (
+                    nominal_evaluation["social_macro_success"],
+                    -nominal_evaluation["social_human_collision_rate"],
+                )
+                if nominal_score > nominal_best_score:
+                    nominal_best_score = nominal_score
+                    nominal_best_params = _host_tree(params)
+                    nominal_best_critic_params = _host_tree(critic_params)
+
+                audit_evaluation = evaluate_at_curriculum_stage(
                     params,
                     policy,
                     env,
                     scenario_keys,
-                    episodes_per_scenario=evaluation_episodes,
-                    seed=20_000,
-                    robot_param_bounds=robot_param_bounds,
-                    env_param_bounds=env_param_bounds,
-                    visibility=0.5,
+                    CURRICULUM_STAGES[-1],
+                    robot_nominal,
+                    robot_lower,
+                    robot_upper,
+                    env_nominal,
+                    env_lower,
+                    env_upper,
+                    episodes_per_scenario=audit_episodes,
+                    seed=50_000,
                 )
-                robust_evaluation["update"] = update + 1
-                logs["robust_evaluations"].append(robust_evaluation)
-
-        if evaluation_every <= 0 and (
-            (update % 25 == 0)
-            and (update > 0)
-            and (scenario_ema_success is not None)
-        ):
-            domain_fraction, visibility, promotion_streak, visibility_streak = (
-                update_difficulty_curriculum(
-                    domain_fraction,
-                    visibility,
-                    scenario_keys,
-                    scenario_ema_success,
-                    human_collision_rate,
-                    promotion_streak,
-                    visibility_streak,
+                audit_evaluation["update"] = update + 1
+                logs["audit_evaluations"].append(audit_evaluation)
+                logs["robust_evaluations"].append(audit_evaluation)
+                audit_score = (
+                    audit_evaluation["social_macro_success"],
+                    -audit_evaluation["social_human_collision_rate"],
+                    audit_evaluation["navigation_macro_success"],
+                    -audit_evaluation["timeout_rate"],
                 )
-            )
+                if audit_score > robust_best_score:
+                    robust_best_score = audit_score
+                    robust_best_params = _host_tree(params)
+                    robust_best_critic_params = _host_tree(critic_params)
+                print(
+                    "Audit: "
+                    f"nominal social={nominal_evaluation['social_macro_success']:.3f}; "
+                    f"target social={audit_evaluation['social_macro_success']:.3f}, "
+                    f"navigation={audit_evaluation['navigation_macro_success']:.3f}, "
+                    f"human collisions={audit_evaluation['social_human_collision_rate']:.3f}"
+                )
 
         if checkpoint_dir is not None and (
             ((update + 1) % max(int(checkpoint_every), 1) == 0)
@@ -1371,6 +2056,13 @@ def jessi_s2r_rl_rollout(
                 "best_params": best_params,
                 "best_critic_params": best_critic_params,
                 "best_score": best_score,
+                "best_curriculum_level": best_curriculum_level,
+                "nominal_best_params": nominal_best_params,
+                "nominal_best_critic_params": nominal_best_critic_params,
+                "nominal_best_score": nominal_best_score,
+                "robust_best_params": robust_best_params,
+                "robust_best_critic_params": robust_best_critic_params,
+                "robust_best_score": robust_best_score,
                 "key": key,
                 "policy_keys": policy_keys,
                 "reset_keys": reset_keys,
@@ -1380,10 +2072,7 @@ def jessi_s2r_rl_rollout(
                 "ema_success": ema_success,
                 "scenario_ema_success": scenario_ema_success,
                 "scenarios_prob": scenarios_prob,
-                "visibility": visibility,
-                "domain_fraction": domain_fraction,
-                "promotion_streak": promotion_streak,
-                "visibility_streak": visibility_streak,
+                "curriculum": curriculum,
             }
             saved_path = save_training_checkpoint(
                 checkpoint_dir,
@@ -1395,4 +2084,17 @@ def jessi_s2r_rl_rollout(
             print(f"Saved checkpoint: {saved_path}")
 
 
+    if checkpoint_dir is not None:
+        atomic_pickle(os.path.join(checkpoint_dir, "best_current_stage.pkl"), {
+            "params": best_params, "critic_params": best_critic_params,
+            "score": best_score,
+        })
+        atomic_pickle(os.path.join(checkpoint_dir, "best_nominal.pkl"), {
+            "params": nominal_best_params, "critic_params": nominal_best_critic_params,
+            "score": nominal_best_score,
+        })
+        atomic_pickle(os.path.join(checkpoint_dir, "best_target_robust.pkl"), {
+            "params": robust_best_params, "critic_params": robust_best_critic_params,
+            "score": robust_best_score,
+        })
     return best_params, device_get(params), best_critic_params, device_get(critic_params), logs
