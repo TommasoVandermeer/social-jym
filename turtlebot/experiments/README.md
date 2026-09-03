@@ -1,6 +1,6 @@
-# TurtleBot4 Corridor Experiment: JESSI vs DWA
+# TurtleBot4 Corridor Experiment: JESSI-S2R vs DWA
 
-This directory contains the reproducible workflow for comparing JESSI and DWA
+This directory contains the reproducible workflow for comparing JESSI-S2R v4 and DWA
 over 10 real-world trials per policy. The primary metrics are time to goal,
 average translational jerk, path length, and pedestrian-space compliance.
 
@@ -20,7 +20,7 @@ container unless stated otherwise.
 - Use the same nominal five-pedestrian opposite-flow instruction in every run.
   Record the actual count and any deviations in the post-run prompts.
 - Disable the optional engineering filters for this comparison. Their current
-  JESSI path includes policy-specific geometric blending and would not be a
+  JESSI-S2R path includes policy-specific geometric blending and would not be a
   controlled comparison with DWA.
 - Do not use `--patrol`, diagnostics, automatic corridor alignment, or pure
   pursuit unless those options are deliberately enabled in the campaign JSON
@@ -72,9 +72,10 @@ The following fields must be correct before initialization:
 - `campaign_name`: directory-safe name for this campaign.
 - `goal`: `[x, y]` in metres in the reset robot odometry frame; positive X is
   forward and positive Y is left.
-- `jessi_network`: path relative to the JSON file or an absolute path.
+- `jessi_network`: path to the JESSI-S2R v4 rollout pickle, relative to the JSON file or absolute.
+- `network_selection`: `best` (recommended) or `final` for a rollout pickle.
 
-The template fixes the agreed protocol defaults: 4 Hz, 300 LiDAR rays, 0.8 m
+The template fixes the agreed protocol defaults: 4 Hz, 200 LiDAR rays (matching the trained v4 network), 0.8 m
 goal threshold, 120 s timeout, 10 trials per policy, 0.50 m personal-space
 clearance, 0.30 m robot and human radii, 15-frame tracking checkpoints, and a
 21-frame looping labeling preview. Set `label_preview_window_frames` to another
@@ -90,9 +91,13 @@ python3 turtlebot/experiments/run_experiment.py status \
   --config turtlebot/experiments/corridor_campaign.json
 ```
 
-Initialization records the Git commit, effective configuration, JESSI network
+Initialization records the Git commit, effective configuration, JESSI-S2R network
 SHA-256, and random schedule. It fails rather than overwrite an existing
 campaign.
+
+Create a new campaign name for JESSI-S2R. Do not reuse a directory containing
+legacy `JESSI` trials, because the policy labels and network hash are part of
+the experimental protocol.
 
 Generated data live under:
 
@@ -101,7 +106,7 @@ turtlebot/experiments/data/CAMPAIGN_NAME/
   campaign_config.json
   campaign_manifest.json
   schedule.json
-  run_001_jessi_trial_01/
+  run_001_jessi-s2r_trial_01/
     manifest.json
     controller.log
     controller.pkl
@@ -300,7 +305,7 @@ Outputs are:
 - `campaign_metrics.csv`: one row per run.
 - `policy_summary.csv`: count, mean, standard deviation, median, IQR, and 95%
   bootstrap confidence interval by policy and cohort.
-- `policy_comparison.json`: seeded JESSI-minus-DWA mean differences and 95%
+- `policy_comparison.json`: seeded JESSI-S2R-minus-DWA mean differences and 95%
   bootstrap intervals.
 - `policy_comparison.png`: time, path, jerk, and compliance plots.
 

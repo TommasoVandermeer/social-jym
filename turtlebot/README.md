@@ -82,17 +82,17 @@ WARNING: Always make sure to be connected to the same WiFi of the turtlebot befo
 
 The action inference will be run on the remote device used to run the scripts and sent to the Turtlebot4 through a ROS2 interface.
 
-## JESSI (JAX-based E2E Safe Social Interpretable navigation)
+## JESSI-S2R (sim-to-real JAX social navigation)
 
-Instructions to deploy JESSI on the Turtlebot:
+Instructions to deploy the v4 JESSI-S2R policy on the TurtleBot:
 
 - Save your trained policy in the ```turtlebot``` folder.
 - Turn on the Turtlebot4 and wait for it to become fully operative (all the LEDs over the display should be green).
 - Launch the following script ```turtlebot_controller.py``` on your remote device using the following command on terminal. 
 ```
-python3 turtlebot_controller.py --planner JESSI -g REPLACE_WITH_GOALS_X_AND_Y -n REPLACE_WITH_NETWORK_NAME -s REPLACE_WITH_EXPERIMENT_NAME
+python3 turtlebot_controller.py --planner JESSI-S2R -g REPLACE_WITH_GOALS_X_AND_Y -n jessi_s2r_v4_multitask_rl_out_32.pkl -s REPLACE_WITH_EXPERIMENT_NAME
 ```
-The ```g``` flag indicate the position of the goals in the robot frame (<b>positive x axis is on the front of the robot, positive y axis is on the left of the robot</b>). Goals Xs and Ys must be indicated consecutively. The trained network used for control will be the one indicated after the ```n``` flag (include .pkl at the end). The trajectory data will be saved in the ```turtlebot``` folder under the name indicated after the ```s``` flag (include .pkl at the end). For other interesting options, checkout the ```--help```.
+The ```g``` flag indicates the position of the goals in the robot frame (<b>positive x axis is on the front of the robot, positive y axis is on the left of the robot</b>). Goals Xs and Ys must be indicated consecutively. The trained network used for control will be the one indicated after the ```n``` flag (include .pkl at the end). By default the controller extracts the best parameters from the five-element v4 rollout; pass `--network-selection final` only when the final snapshot is intentionally required. JESSI-S2R v4 was trained with 200 LiDAR rays, which is now the controller default. The trajectory data will be saved in the ```turtlebot``` folder under the name indicated after the ```s``` flag (include .pkl at the end).
 
 Note that, to sync the timestamps of each topic (for debugging purposes), it is necessary to run ```sudo chronyc makestep``` on the turtlebot raspberrypi (connect with ssh).
 
@@ -103,7 +103,7 @@ python3 turtlebot_jessi_animate_recorded_trajectory.py -s REPLACE_WITH_EXPERIMEN
 
 # SYSTEM IDENTIFICATION ON TURTLEBOT4
 
-# REAL-WORLD JESSI VS DWA EXPERIMENTS
+# REAL-WORLD JESSI-S2R VS DWA EXPERIMENTS
 
 The reproducible 20-run corridor protocol, ROS bag capture workflow, pedestrian
 tracking instructions, and metric tools are documented in

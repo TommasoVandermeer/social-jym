@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
 from socialjym.policies.jessi import JESSI
+from socialjym.policies.jessi_s2r import JESSI_S2R
 
 def main(args=None):
     parser = argparse.ArgumentParser(description='JESSI Animate Experiment')
@@ -17,8 +18,13 @@ def main(args=None):
 
     save_file_name = parsed_args.save_file
 
-    n_stack = 5
-    lidar_num_rays = 100
+    file_path = os.path.join(os.path.dirname(__file__), save_file_name)
+    with open(file_path, 'rb') as f:
+        experiment_data = pickle.load(f)
+    recorded_params = experiment_data['params']
+
+    n_stack = recorded_params['n_stack']
+    lidar_num_rays = recorded_params['lidar_num_rays']
     lidar_min_angle = -jnp.pi
     lidar_max_angle = jnp.pi
     lidar_angular_range = lidar_max_angle - lidar_min_angle
@@ -32,7 +38,7 @@ def main(args=None):
         'n_humans': 3,
         'n_obstacles': 5,
         'robot_radius': 0.3,
-        'robot_dt': 0.25,
+        'robot_dt': 1.0 / recorded_params.get('frequency', 4.0),
         'humans_dt': 0.01,      
         'robot_visible': True,
         'scenario': 'perpendicular_traffic', 
@@ -44,11 +50,8 @@ def main(args=None):
     }
     env = LaserNav(**env_params)
 
-    file_path = os.path.join(os.path.dirname(__file__), save_file_name)
-    with open(file_path, 'rb') as f:
-        experiment_data = pickle.load(f)
-
-    jessi = JESSI(
+    policy_class = JESSI_S2R if recorded_params.get('planner') == 'JESSI-S2R' else JESSI
+    policy_kwargs = dict(
         v_max=experiment_data['params']['v_max'],
         wheels_distance=experiment_data['params']['wheels_distance'],
         robot_radius=experiment_data['params']['robot_radius'],
@@ -56,10 +59,17 @@ def main(args=None):
         lidar_num_rays=experiment_data['params']['lidar_num_rays'],
         lidar_angular_range=experiment_data['params']['lidar_angular_range'],
         lidar_max_dist=experiment_data['params']['lidar_max_dist'],
-        n_stack_for_action_space_bounding=experiment_data['params']['n_stack_for_action_space_bounding']
+        n_stack_for_action_space_bounding=experiment_data['params']['n_stack_for_action_space_bounding'],
     )
+    if policy_class is JESSI_S2R:
+        policy_kwargs.update(
+            n_actions_history=recorded_params.get('n_actions_history', n_stack),
+            embedding_dim=recorded_params.get('embedding_dim', 32),
+            n_sectors=recorded_params.get('n_sectors', 60),
+        )
+    jessi = policy_class(**policy_kwargs)
 
-    if os.path.join(os.path.dirname(__file__), f"lists_{save_file_name}"):
+    if os.path.isfile(os.path.join(os.path.dirname(__file__), f"lists_{save_file_name}")):
         print(f"Found lists_{save_file_name} - Loading recorded scan, odom and cmd lists for visualization.")
         lists_file_path = os.path.join(os.path.dirname(__file__), f"lists_{save_file_name}")
         with open(lists_file_path, 'rb') as f:

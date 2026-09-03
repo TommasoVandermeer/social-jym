@@ -49,7 +49,7 @@ class ScheduleTests(unittest.TestCase):
     def test_balanced_schedule(self):
         schedule = balanced_schedule(10, 42)
         labels = [entry["policy"] for entry in schedule]
-        self.assertEqual(labels.count("JESSI"), 10)
+        self.assertEqual(labels.count("JESSI-S2R"), 10)
         self.assertEqual(labels.count("DWA"), 10)
         self.assertFalse(
             any(labels[index] == labels[index - 1] == labels[index - 2] for index in range(2, 20))
@@ -65,6 +65,8 @@ class ScheduleTests(unittest.TestCase):
             path.write_text(json.dumps({"campaign_name": "test", "goal": [2, 0], "jessi_network": "net.pkl"}))
             config = load_config(path)
             self.assertEqual(config["timeout_s"], 120.0)
+            self.assertEqual(config["lidar_rays"], 200)
+            self.assertEqual(config["network_selection"], "best")
             self.assertFalse(config["engineering_filters"])
 
     def test_controller_outcome(self):

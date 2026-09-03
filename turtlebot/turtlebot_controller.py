@@ -22,17 +22,33 @@ from pathlib import Path
 from matplotlib import pyplot as plt
 
 from socialjym.policies.jessi import JESSI
+from socialjym.policies.jessi_s2r import JESSI_S2R
 from socialjym.policies.dwa import DWA
 from socialjym.policies.mppi import MPPI
 from socialjym.policies.vanilla_e2e import VanillaE2E
 
+try:
+    from turtlebot.jessi_s2r_runtime import (
+        load_jessi_s2r_parameters,
+        relative_sensor_timing,
+        validate_parameter_shapes,
+    )
+except ModuleNotFoundError:  # Direct execution from inside turtlebot/.
+    from jessi_s2r_runtime import (
+        load_jessi_s2r_parameters,
+        relative_sensor_timing,
+        validate_parameter_shapes,
+    )
+
 PLANNERS = [
     'JESSI',
+    'JESSI-S2R',
     'DWA',
     'MPPI',
     'VANILLA-E2E',
     'BOUNDED-VANILLA-E2E',
 ]
+JESSI_S2R_LIDAR_RAYS = 200
 
 class TB4Controller(Node):
     def __init__(
@@ -44,6 +60,7 @@ class TB4Controller(Node):
             patrol_mode, 
             interp_mode, 
             network_name, 
+            network_selection,
             save_file_name, 
             save_lists, 
             align, 
@@ -107,6 +124,7 @@ class TB4Controller(Node):
 
         self.frequency = frequency
         self.planner = planner
+        self.network_selection = network_selection
         self.diagnostics = diagnostics
         self.engineering_filters = engineering_filters
         self.experiment_dir = Path(experiment_dir).resolve() if experiment_dir else None
@@ -178,6 +196,11 @@ class TB4Controller(Node):
         self.interp_mode = interp_mode
 
         self.lidar_num_rays = lidar_num_rays
+        if planner == 'JESSI-S2R' and self.lidar_num_rays != JESSI_S2R_LIDAR_RAYS:
+            raise ValueError(
+                f"JESSI-S2R v4 requires {JESSI_S2R_LIDAR_RAYS} LiDAR rays; "
+                f"received {self.lidar_num_rays}."
+            )
         self.lidar_min_angle = -jnp.pi
         self.lidar_max_angle = jnp.pi
         self.lidar_max_dist = 10
@@ -195,6 +218,24 @@ class TB4Controller(Node):
                 lidar_max_dist=self.lidar_max_dist,
                 n_stack_for_action_space_bounding=1,
                 # ablation_mode = 6,
+            )
+        elif planner == 'JESSI-S2R':
+            self.policy = JESSI_S2R(
+                v_max=self.v_max,
+                wheels_distance=2*self.v_max/self.w_max,
+                dt=self.dt,
+                n_stack=self.n_stack,
+                n_actions_history=self.n_stack,
+                robot_radius=self.radius,
+                lidar_num_rays=self.lidar_num_rays,
+                lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
+                lidar_max_dist=self.lidar_max_dist,
+                n_detectable_humans=10,
+                embedding_dim=32,
+                n_sectors=60,
+                n_stack_for_action_space_bounding=1,
+                beam_dropout_rate=0.2,
+                humans_trajectory_noise_std=0.0,
             )
         elif planner == 'DWA':
             self.policy = DWA(
@@ -244,10 +285,27 @@ class TB4Controller(Node):
             )
         self.rng_key = random.PRNGKey(0)
         self.network_params = None
-        if planner in ('JESSI', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E'):
+        if planner in ('JESSI', 'JESSI-S2R', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E'):
             network_path = network_name if os.path.isabs(network_name) else os.path.join(os.path.dirname(__file__), network_name)
-            with open(network_path, 'rb') as f:
-                self.network_params, _, _ = pickle.load(f)
+            if planner == 'JESSI-S2R':
+                self.network_params, parameter_source = load_jessi_s2r_parameters(
+                    network_path, selection=self.network_selection
+                )
+                expected_params = self.policy.init_nns(random.PRNGKey(0))[3]
+                validate_parameter_shapes(self.network_params, expected_params)
+                self.get_logger().info(
+                    f"Loaded JESSI-S2R parameters from {parameter_source}: {network_path}"
+                )
+            else:
+                with open(network_path, 'rb') as f:
+                    self.network_params, _, _ = pickle.load(f)
+        self.robot_params = {
+            "v_max": jnp.asarray(self.v_max, dtype=jnp.float32),
+            "radius": jnp.asarray(self.radius, dtype=jnp.float32),
+            "wheels_distance": jnp.asarray(
+                2*self.v_max/self.w_max, dtype=jnp.float32
+            ),
+        }
         
         # Reset turtlebot odometry
         self.odom_reset_confirmed = False
@@ -548,7 +606,7 @@ class TB4Controller(Node):
             'goal_distance': float(goal_distance) if goal_distance is not None else None,
         }
         self.goal_reached = reason == 'goal_reached'
-        if self.stop_on_goal or reason == 'timeout':
+        if self.stop_on_goal or reason in ('timeout', 'controller_error'):
             self.finished = True
         stop = Twist()
         self.pub_cmd.publish(stop)
@@ -559,6 +617,8 @@ class TB4Controller(Node):
         self.get_logger().info(f"Experiment finished: {reason}")
 
     def control_loop(self):
+        if self.finished:
+            return
         if self.latest_scan is None or self.latest_odom is None or not self.odom_reset_confirmed:
             self.get_logger().warn("Waiting data from sensors...")
             return
@@ -597,7 +657,13 @@ class TB4Controller(Node):
         self.obs_stack.appendleft(current_step_obs)
         while len(self.obs_stack) < self.n_stack:
             self.obs_stack.appendleft(current_step_obs) 
-        obs_matrix = jnp.array(self.obs_stack) # Shape: (n_stack, n_rays + 11)
+        observation_stack = np.asarray(self.obs_stack, dtype=np.float64)
+        # ROS epoch timestamps lose their sub-second differences if converted
+        # directly to JAX float32. JESSI-S2R receives a separately rebased copy.
+        sensor_timing = relative_sensor_timing(
+            observation_stack, control_time_sec
+        )
+        obs_matrix = jnp.asarray(observation_stack) # Shape: (n_stack, n_rays + 11)
 
         # Goal (with or without pure pursuit)
         if self.pure_pursuit and len(self.robot_goal_list) > 1:
@@ -684,6 +750,34 @@ class TB4Controller(Node):
                         'scan_timestamp': scan_time_sec,
                         'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
                     }
+                elif self.planner == 'JESSI-S2R':
+                    s2r_info = dict(info_dict)
+                    s2r_info["_sensor_timing"] = jnp.asarray(sensor_timing)
+                    action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, spat_attn, temp_attn, human_attn = self.policy.act_with_params(
+                        key=self.rng_key,
+                        obs=obs_matrix,
+                        info=s2r_info,
+                        robot_params=self.robot_params,
+                        e2e_network_params=self.network_params,
+                        sample=False,
+                    )
+                    v_cmd, w_cmd = float(action[0]), float(action[1])
+                    step_record = {
+                        'observation': np.array(obs_matrix),
+                        'sensor_timing_relative': np.array(sensor_timing),
+                        'robot_goal': np.array(self.robot_goal),
+                        'robot_params': {
+                            key: float(value) for key, value in self.robot_params.items()
+                        },
+                        'action': np.array([v_cmd, w_cmd]),
+                        'perception_distr': perception_output,
+                        'actor_distr': actor_distr,
+                        'spatial_attention': spat_attn[0],
+                        'temporal_attention': temp_attn[0],
+                        'human_attention': human_attn[0],
+                        'scan_timestamp': scan_time_sec,
+                        'odom_timestamp': odom_time_sec if not self.interp_mode else scan_time_sec,
+                    }
                 elif self.planner == 'DWA':
                     action, actions_costs = self.policy.act(
                         obs=obs_matrix,
@@ -735,9 +829,13 @@ class TB4Controller(Node):
                 ### ==========================================================
                 ### SIM-TO-REAL ENGINEERING FILTERS
                 ### ==========================================================
+                if not np.isfinite([v_cmd, w_cmd]).all():
+                    raise FloatingPointError(
+                        f"{self.planner} produced a non-finite action"
+                    )
                 policy_action = np.array([v_cmd, w_cmd], dtype=float)
                 if self.engineering_filters:
-                    if self.planner in ['JESSI', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E']:
+                    if self.planner in ['JESSI', 'JESSI-S2R', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E']:
                         ## 1. Geometric auxiliary controller (P-Controller)
                         dx = float(self.robot_goal[0]) - rx
                         dy = float(self.robot_goal[1]) - ry
@@ -807,6 +905,10 @@ class TB4Controller(Node):
                 self.previous_action = jnp.array([v_cmd, w_cmd])
             except Exception as e:
                 self.get_logger().error(f"Error during {self.planner} inference: {e}")
+                self.finish_experiment(
+                    'controller_error', control_time_sec,
+                    (rx, ry, r_theta), dist,
+                )
         
         ## Diagnostics plotting
         if self.diagnostics:
@@ -859,8 +961,13 @@ class TB4Controller(Node):
                     'scan_to_host': self.odom_scan_time_offset,
                 },
             }
-            if self.planner == 'JESSI' or self.planner == 'BOUNDED-VANILLA-E2E':
+            if self.planner in ('JESSI', 'JESSI-S2R', 'BOUNDED-VANILLA-E2E'):
                 out['params']['n_stack_for_action_space_bounding'] = self.policy.n_stack_for_action_space_bounding
+            if self.planner == 'JESSI-S2R':
+                out['params']['network_selection'] = self.network_selection
+                out['params']['n_actions_history'] = self.policy.n_actions_history
+                out['params']['embedding_dim'] = self.policy.embedding_dim
+                out['params']['n_sectors'] = self.policy.n_sectors
             temporary = save_path.with_suffix(save_path.suffix + '.tmp')
             with open(temporary, 'wb') as f:
                 pickle.dump(out, f)
@@ -885,16 +992,17 @@ class TB4Controller(Node):
 
 def main(args=None):
     parser = argparse.ArgumentParser(description='TB4 Robot Controller - Local Planner')
-    parser.add_argument('--planner', type=str, default='JESSI', help='Network weights pickle file name')
+    parser.add_argument('--planner', type=str, default='JESSI-S2R', help='Local planner')
     parser.add_argument('-g', '--goals', nargs='+', type=float, default=[2.0, 0.0], help='Sequence of Goal X Y pairs (in meters). Example: -g 2.0 0.0 3.0 1.0 4.0 -0.5')
     parser.add_argument('-p', '--patrol', action='store_true', help='Activate Patrol Mode (back and forth continuously)')
     parser.add_argument('-i', '--interp', action='store_true', help='Activate Interpolation Mode for pose with respect to LiDAR timestamp (instead of using the latest odometry)')
-    parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out_turtlebot.pkl', help='Network weights pickle file name')
+    parser.add_argument('-n', '--network', type=str, default='jessi_s2r_v4_multitask_rl_out_32.pkl', help='Network weights pickle file name')
+    parser.add_argument('--network-selection', choices=('best', 'final'), default='best', help='Parameter set to extract from a JESSI-S2R rollout pickle')
     parser.add_argument('-s', '--save_file', type=str, default='jessi_recorded_obs.pkl', help='Output pickle file name for recorded data')
     parser.add_argument('-d', '--diagnostics', action='store_true', help='Activate diagnostic during control to debug')
     parser.add_argument('-a', '--align', action='store_true', help='Activate alignement of waypoints with Hough Transform of LiDAR scan')
     parser.add_argument('-f', '--frequency', type=float, default=4.0, help='Control frequency in Hz')
-    parser.add_argument('-l', '--lidar_rays', type=int, default=300, help='Number of rays used to infer the policy action')
+    parser.add_argument('-l', '--lidar_rays', type=int, default=200, help='Number of rays used to infer the policy action')
     parser.add_argument('-sn', '--san_niccolo', action='store_true', help='Activare mode San Niccolò experiment with hardcoded waypoints')
     parser.add_argument('-e', '--engineering_filters', action='store_true', help='Activate Engineering Filters for enhanced sim-to-real performance')
     parser.add_argument('-pp', '--pure_pursuit', action='store_true', help='Activate Pure Pursuit for intermediate goal generation')
@@ -922,6 +1030,7 @@ def main(args=None):
         patrol_mode=parsed_args.patrol,
         interp_mode=parsed_args.interp,
         network_name=parsed_args.network,
+        network_selection=parsed_args.network_selection,
         save_file_name=parsed_args.save_file,
         save_lists=True,
         align=parsed_args.align,

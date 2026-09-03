@@ -14,7 +14,7 @@ from typing import Any
 
 DEFAULTS = {
     "control_frequency_hz": 4.0,
-    "lidar_rays": 300,
+    "lidar_rays": 200,
     "goal_tolerance_m": 0.8,
     "timeout_s": 120.0,
     "trials_per_policy": 10,
@@ -34,9 +34,10 @@ DEFAULTS = {
     "schedule_seed": 20260831,
     "bootstrap_seed": 20260831,
     "bootstrap_samples": 10000,
+    "network_selection": "best",
 }
 
-POLICIES = ("JESSI", "DWA")
+POLICIES = ("JESSI-S2R", "DWA")
 ROS_TOPICS = (
     "/turtlebot1/scan",
     "/turtlebot1/odom",
@@ -129,6 +130,8 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError(
             "This comparison protocol requires engineering_filters=false for both policies"
         )
+    if config["network_selection"] not in ("best", "final"):
+        raise ValueError("network_selection must be 'best' or 'final'")
     return config
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate completed JESSI and DWA run metrics for one campaign."""
+"""Aggregate completed JESSI-S2R and DWA run metrics for one campaign."""
 
 from __future__ import annotations
 
@@ -16,9 +16,12 @@ import numpy as np
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from common import atomic_write_json, read_json, utc_now  # type: ignore
+    from common import POLICIES, atomic_write_json, read_json, utc_now  # type: ignore
 else:
-    from .common import atomic_write_json, read_json, utc_now
+    from .common import POLICIES, atomic_write_json, read_json, utc_now
+
+
+LEGACY_POLICIES = ("JESSI", "DWA")
 
 
 METRIC_COHORTS = (
@@ -89,6 +92,9 @@ def aggregate(campaign_dir: Path) -> dict:
     rows = [read_json(path) for path in sorted(campaign_dir.glob("run_*/metrics.json"))]
     if not rows:
         raise ValueError("No run metrics found")
+    observed_policies = {row["policy"] for row in rows}
+    policies = POLICIES if POLICIES[0] in observed_policies else LEGACY_POLICIES
+    learned_policy, baseline_policy = policies
 
     all_fields = sorted({key for row in rows for key in row if not isinstance(row[key], dict)})
     with (campaign_dir / "campaign_metrics.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -101,7 +107,7 @@ def aggregate(campaign_dir: Path) -> dict:
     for metric, cohort in METRIC_COHORTS:
         comparison_key = f"{metric}:{cohort}"
         policy_values = {}
-        for policy in ("JESSI", "DWA"):
+        for policy in policies:
             values = finite_values(rows, policy, metric, cohort)
             policy_values[policy] = values
             summaries.append(
@@ -114,10 +120,10 @@ def aggregate(campaign_dir: Path) -> dict:
                 }
             )
         comparisons[comparison_key] = bootstrap_difference(
-            policy_values["JESSI"], policy_values["DWA"], rng, bootstrap_samples
+            policy_values[learned_policy], policy_values[baseline_policy], rng, bootstrap_samples
         )
 
-    for policy in ("JESSI", "DWA"):
+    for policy in policies:
         policy_rows = [row for row in rows if row["policy"] == policy]
         for metric, predicate in (
             ("success_rate", lambda row: row["success"]),
@@ -147,14 +153,18 @@ def aggregate(campaign_dir: Path) -> dict:
         "runs_found": len(rows),
         "bootstrap_seed": bootstrap_seed,
         "bootstrap_samples": bootstrap_samples,
-        "jessi_minus_dwa": comparisons,
+        (
+            "jessi_s2r_minus_dwa"
+            if learned_policy == "JESSI-S2R"
+            else "jessi_minus_dwa"
+        ): comparisons,
     }
     atomic_write_json(campaign_dir / "policy_comparison.json", result)
-    plot_results(rows, campaign_dir / "policy_comparison.png")
+    plot_results(rows, campaign_dir / "policy_comparison.png", policies)
     return result
 
 
-def plot_results(rows, output_path):
+def plot_results(rows, output_path, policies=POLICIES):
     plots = (
         ("time_to_goal_s", "Time to goal [s]", "successful"),
         ("path_length_m", "Path length [m]", "successful"),
@@ -163,9 +173,9 @@ def plot_results(rows, output_path):
     )
     figure, axes = plt.subplots(2, 2, figsize=(11, 8))
     for axis, (metric, label, cohort) in zip(axes.flat, plots):
-        data = [finite_values(rows, policy, metric, cohort) for policy in ("JESSI", "DWA")]
+        data = [finite_values(rows, policy, metric, cohort) for policy in policies]
         if all(len(values) for values in data):
-            axis.boxplot(data, tick_labels=("JESSI", "DWA"), showmeans=True)
+            axis.boxplot(data, tick_labels=policies, showmeans=True)
         axis.set_title(label)
         axis.grid(True, axis="y", linestyle="--", alpha=0.5)
     figure.suptitle("TurtleBot4 corridor experiment")

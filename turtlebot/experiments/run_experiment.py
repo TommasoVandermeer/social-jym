@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Initialize and execute reproducible JESSI-vs-DWA TurtleBot trials."""
+"""Initialize and execute reproducible JESSI-S2R-vs-DWA TurtleBot trials."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def resolve_network(config_path: Path, configured: str) -> Path:
         path = config_path.parent / path
     path = path.resolve()
     if not path.is_file():
-        raise FileNotFoundError(f"JESSI network not found: {path}")
+        raise FileNotFoundError(f"JESSI-S2R network not found: {path}")
     return path
 
 
@@ -83,6 +83,7 @@ def init_campaign(config_path: Path) -> Path:
             "git_commit": git_commit(REPO_ROOT),
             "jessi_network": str(network),
             "jessi_network_sha256": file_sha256(network),
+            "jessi_s2r_parameter_selection": config["network_selection"],
             "configuration": config,
         },
     )
@@ -173,6 +174,7 @@ def run_next(config_path: Path) -> Path:
         "notes": "",
         "git_commit": git_commit(REPO_ROOT),
         "jessi_network_sha256": file_sha256(network),
+        "jessi_s2r_parameter_selection": config["network_selection"],
         "configuration": config,
         "ros_topics": list(ROS_TOPICS),
     }
@@ -194,6 +196,8 @@ def run_next(config_path: Path) -> Path:
         str(config["lidar_rays"]),
         "--network",
         str(network),
+        "--network-selection",
+        config["network_selection"],
         "--experiment-dir",
         str(run_dir),
         "--timeout",
