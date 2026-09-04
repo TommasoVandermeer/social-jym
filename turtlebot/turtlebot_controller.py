@@ -73,6 +73,8 @@ class TB4Controller(Node):
                 [-6.873, 19.245],   # 4
                 [-6.873, 8.458],    # 5
                 [-6.584, 0.597],    # 6
+                [-6.6, -4.7],       # 6.33
+                [-6.3, -5.8],       # 6.66
                 [-5.107, -6.143],   # 7
                 [4.02, -8.118],     # 8
                 [11.00, -8.134],    # 9
@@ -91,6 +93,8 @@ class TB4Controller(Node):
                 [-5.107, -6.143],   # 22
                 [4.02, -8.118],     # 23
                 [11.00, -8.134],    # 24
+                [15.7, -6.7],       # 24.33
+                [17.5, -5.0],       # 24.66
                 [17.511, -2.1],     # 25
                 [17.593, 4.008],    # 26
                 [17.593, 12.719],   # 27
@@ -167,8 +171,8 @@ class TB4Controller(Node):
         self.latest_scan_aligned_time = None
         self.latest_scan_odom_aligned_time = None
         if san_niccolo:
-            self.robot_goal_list = waypoints
-            self.robot_goal_index = 0
+            self.robot_goal_list = jnp.append(jnp.array([[0., 0.]]), waypoints, axis=0)
+            self.robot_goal_index = 1
         else:
             self.robot_goal_list = jnp.array([[0., 0.]] + rc_goal_list)
             self.robot_goal_index = 1
@@ -194,7 +198,7 @@ class TB4Controller(Node):
                 lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
                 lidar_max_dist=self.lidar_max_dist,
                 n_stack_for_action_space_bounding=1,
-                # ablation_mode = 6,
+                ablation_mode = 6,
             )
         elif planner == 'DWA':
             self.policy = DWA(
@@ -206,6 +210,10 @@ class TB4Controller(Node):
                 lidar_num_rays=self.lidar_num_rays,
                 lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
                 lidar_max_dist=self.lidar_max_dist,
+                use_box_action_space=True,
+                predict_time_horizon=1.,
+                heading_cost_coeff=0.2,
+                clearance_cost_coeff=0.2,
             )
         elif planner == 'MPPI':
             self.policy = MPPI(
