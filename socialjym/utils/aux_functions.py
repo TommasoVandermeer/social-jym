@@ -1112,7 +1112,7 @@ def animate_trajectory(
             else:
                 axes[1].clear()
                 axes[1].set_xlabel("$v$ (m/s)")
-                axes[1].set_ylabel("$\omega$ (rad/s)")
+                axes[1].set_ylabel(r"$\omega$ (rad/s)")
                 axes[1].set_xlim(-0.1, vmax + 0.1)
                 axes[1].set_ylim(-2*vmax/wheels_distance - 0.3, 2*vmax/wheels_distance + 0.3)
                 axes[1].set_xticks(jnp.arange(0, vmax+0.2, 0.2))

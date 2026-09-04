@@ -244,6 +244,38 @@ def laser_env_parameters(*, lidar_noise):
         'noisy_walls': True,
         'obstacles_noise': 0.15,
     }
+
+
+def social_adapter_parameters():
+    """Return the shared structural subset accepted by the SocialNav adapter.
+
+    SocialNav is used only to format DIR-SAFE observations; LaserNav remains
+    the sole simulator.  LaserNav-only dynamics and wall-noise options must not
+    be forwarded to this constructor.
+    """
+    accepted_keys = {
+        "robot_radius",
+        "n_humans",
+        "n_obstacles",
+        "robot_dt",
+        "humans_dt",
+        "scenario",
+        "hybrid_scenario_subset",
+        "circle_radius",
+        "kinematics",
+        "lidar_angular_range",
+        "lidar_max_dist",
+        "lidar_num_rays",
+        "lidar_noise",
+        "thick_default_obstacle",
+    }
+    parameters = {
+        key: value
+        for key, value in laser_env_parameters(lidar_noise=False).items()
+        if key in accepted_keys
+    }
+    parameters["robot_visible"] = True
+    return parameters
 # JESSI policy
 jessi = JESSI_S2R(
     v_max=robot_vmax, 
@@ -275,25 +307,7 @@ assert int(n_steps * data_split[2]) % perception_batch_size == 0, "Test set size
 
 ### GENERATE PRE-TRAINING DATASET
 if not artifact_store.is_valid(PERCEPTION_DATA, dependencies=(ROBOT_CENTRIC_DATA,)):
-    social_env_params = {
-        'robot_radius': 0.3,
-        'n_humans': n_humans,
-        'n_obstacles': n_obstacles,
-        'robot_dt': robot_dt,
-        'robot_radius': robot_radius, 
-        'humans_dt': 0.01,
-        'robot_visible': True,
-        'scenario': scenario,
-        'hybrid_scenario_subset': hybrid_scenario_subset,
-        'kinematics': kinematics,
-        'lidar_angular_range':lidar_angular_range,
-        'lidar_max_dist':lidar_max_dist,
-        'lidar_num_rays':lidar_num_rays,
-        'lidar_noise': False, # Noise is introduced during training as data augmentation
-        'thick_default_obstacle': True,
-        'noisy_walls': True,
-        'obstacles_noise': 0.15,
-        }
+    social_env_params = social_adapter_parameters()
     env = SocialNav(**social_env_params, humans_policy=humans_policy, reward_function=SocialNavDummyReward(kinematics=kinematics, v_max=robot_vmax))
     laser_env = LaserNav(**laser_env_parameters(lidar_noise=False), reward_function=make_reward())
     # DIR-SAFE policy

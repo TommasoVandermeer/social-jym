@@ -2092,7 +2092,7 @@ class JESSI(BasePolicy):
             )
             # AX :,2: Feasible and bounded action space + action space distribution and action taken
             axs[4].set_xlabel("$v$ (m/s)")
-            axs[4].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
+            axs[4].set_ylabel(r"$\omega$ (rad/s)", labelpad=-15)
             axs[4].set_xlim(-0.1, self.v_max + 0.1)
             axs[4].set_ylim(-2*self.v_max/self.wheels_distance - 0.3, 2*self.v_max/self.wheels_distance + 0.3)
             if self.v_max % 0.2 == 0:
