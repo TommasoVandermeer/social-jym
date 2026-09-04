@@ -75,9 +75,10 @@ for i in range(n_episodes):
     policy_key, reset_key, env_key = vmap(random.PRNGKey)(jnp.zeros(3, dtype=int) + random_seed + i) # We don't care if we generate two identical keys, they operate differently
     state, reset_key, obs, info, outcome = env.reset(reset_key)
 
-    noised_trajectories, trajectories = vmap(policy.predict_humans_trajectory, in_axes=(0,None,None,None,None))(
+    noised_trajectories, trajectories = vmap(policy.predict_humans_trajectory, in_axes=(0,None,None,None,None,None))(
         random.split(policy_key, n_noised_trajectories),
         state[:-1],
+        info["visibility"][:-1, :-1],
         info["humans_goal"],
         info["humans_parameters"],
         info["static_obstacles"][:-1]
@@ -98,6 +99,7 @@ for i in range(n_episodes):
         obs[:policy.n_actions_history,6:8],
         {
             "humans_goal": info["humans_goal"],
+            "humans_visibility": info["visibility"][:-1, :-1],
             "humans_parameters": info["humans_parameters"],
             "static_obstacles": info["static_obstacles"],
         }, # env_params

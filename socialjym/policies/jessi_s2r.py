@@ -12,6 +12,18 @@ from jhsfm.hsfm import step as humans_step
 from jhsfm.utils import get_standard_humans_parameters as get_standard_humans_parameters
 from jhsfm.hsfm import get_linear_velocity
 
+
+def pack_humans_trajectory(humans_trajectory:jnp.ndarray) -> jnp.ndarray:
+    """Flatten a time-major trajectory without mixing different humans."""
+    return jnp.transpose(humans_trajectory, (1, 0, 2)).reshape(
+        (humans_trajectory.shape[1], -1)
+    )
+
+
+def wrap_relative_angles(angles:jnp.ndarray, reference:jnp.ndarray) -> jnp.ndarray:
+    """Express angles relative to a reference in the canonical [-pi, pi] range."""
+    return (angles - reference + jnp.pi) % (2 * jnp.pi) - jnp.pi
+
 class Actor(hk.Module):
     def __init__(
             self,
@@ -38,7 +50,8 @@ class Actor(hk.Module):
         self.initial_concentration = initial_concentration
         # Dimensions
         self.n_sectors = n_sectors
-        self.n_outputs = 3 # Logistic-normal (3 alphas, 1 per vertex)
+        # A triangle has only two identifiable simplex degrees of freedom.
+        self.n_outputs = 2
         self.mlp_params = mlp_params
         # Scan embedding reducer
         self.scan_reducer = hk.Linear(1, name="scan_reducer")
@@ -128,7 +141,7 @@ class Actor(hk.Module):
         vertices = jnp.stack([v1, v2, v3], axis=1)  # Shape: (batch_size, 3, 2)
         distributions = {"vertices": vertices}
         locs = self.actor_head(context)
-        raw_logscales_param = hk.get_parameter("raw_logscales", shape=[3], init=hk.initializers.Constant(jnp.arctanh(9/11)))
+        raw_logscales_param = hk.get_parameter("raw_logscales", shape=[self.n_outputs], init=hk.initializers.Constant(jnp.arctanh(9/11)))
         logscales_bounded = jnp.tanh(raw_logscales_param) * 11 - 9 # Bound logscales between [-20,2]
         logscales = jnp.broadcast_to(logscales_bounded, locs.shape)
         distributions["locs"] = locs
@@ -356,6 +369,7 @@ class JESSI_S2R(JESSI):
         self,
         key,
         humans_state,
+        humans_visibility,
         humans_goal,
         humans_parameters,
         obstacles,
@@ -375,7 +389,7 @@ class JESSI_S2R(JESSI):
         - new_humans_state: shape is (n_humans, 6) where each row is (px, py, bvx, bvy, theta, omega)
         """
         def scan_step(state, _):
-            new_state = humans_step(state, humans_goal, humans_parameters, obstacles, self.humans_dt)
+            new_state = humans_step(state, humans_visibility, humans_goal, humans_parameters, obstacles, self.humans_dt)
             return new_state, new_state
         new_humans_state, _ = lax.scan(
             f=scan_step,
@@ -388,8 +402,8 @@ class JESSI_S2R(JESSI):
         noised_new_humans_state = new_humans_state.at[:,2:4].set(
             new_humans_state[:,2:4] + random.normal(subkey1, (humans_state.shape[0],2)) * self.humans_trajectory_noise_std
         )
-        noised_new_humans_state = noised_new_humans_state.at[:,4].set(
-            noised_new_humans_state[:,4] + random.normal(subkey2, (humans_state.shape[0],)) * self.humans_trajectory_noise_std
+        noised_new_humans_state = noised_new_humans_state.at[:,5].set(
+            noised_new_humans_state[:,5] + random.normal(subkey2, (humans_state.shape[0],)) * self.humans_trajectory_noise_std
         )
         # Inject noise to the whole state
         # noised_new_humans_state = new_humans_state + random.normal(subkey1, (humans_state.shape[0],6)) * self.humans_trajectory_noise_std
@@ -408,6 +422,7 @@ class JESSI_S2R(JESSI):
         self,
         key,
         humans_state,
+        humans_visibility,
         humans_goal,
         humans_parameters,
         obstacles,
@@ -429,7 +444,7 @@ class JESSI_S2R(JESSI):
         """
         def scan_step(carry, _):
             state, key = carry
-            new_state, denoised_state, new_key = self.next_humans_state(key, state, humans_goal, humans_parameters, obstacles)
+            new_state, denoised_state, new_key = self.next_humans_state(key, state, humans_visibility, humans_goal, humans_parameters, obstacles)
             return (new_state, new_key), (new_state, denoised_state)
         _, (humans_trajectory, denoised_humans_trajectory) = lax.scan(
             f=scan_step,
@@ -480,6 +495,7 @@ class JESSI_S2R(JESSI):
         humans_trajectory, _ = self.predict_humans_trajectory(
             random_key,
             state[:-1],
+            env_params["humans_visibility"],
             env_params["humans_goal"],
             env_params["humans_parameters"],
             env_params["static_obstacles"][:-1]
@@ -496,11 +512,11 @@ class JESSI_S2R(JESSI):
         humans_state = state[:-1] # Shape: (n_humans, 6) where each row is (px, py, bvx, bvy, theta, omega)
         humans_state = humans_state.at[:, :2].set((humans_state[:, :2] - robot_position) @ rotation_matrix) # Transform humans' positions to robot-centric coordinates
         humans_state = humans_state.at[:, 2:4].set(vmap(get_linear_velocity)(humans_state[:, 4],humans_state[:, 2:4]) @ rotation_matrix) # Transform humans' velocities to robot-centric coordinates
-        humans_state = humans_state.at[:, 4].set(humans_state[:, 4] - robot_orientation) # Transform humans' orientations to robot-centric coordinates
+        humans_state = humans_state.at[:, 4].set(wrap_relative_angles(humans_state[:, 4], robot_orientation)) # Transform humans' orientations to robot-centric coordinates
         humans_goal = (env_params["humans_goal"] - robot_position) @ rotation_matrix # Transform humans' goals to robot-centric coordinates
         humans_trajectory = humans_trajectory.at[:, :, :2].set((humans_trajectory[:, :, :2] - robot_position) @ rotation_matrix) # Transform humans' trajectories to robot-centric coordinates
         humans_trajectory = humans_trajectory.at[:, :, 2:4].set((vmap(vmap(get_linear_velocity))(humans_trajectory[:, :, 4],humans_trajectory[:, :, 2:4]) @ rotation_matrix)) # Transform humans' velocities to robot-centric coordinates
-        humans_trajectory = humans_trajectory.at[:, :, 4].set(humans_trajectory[:, :, 4] - robot_orientation) # Transform humans' orientations to robot-centric coordinates
+        humans_trajectory = humans_trajectory.at[:, :, 4].set(wrap_relative_angles(humans_trajectory[:, :, 4], robot_orientation)) # Transform humans' orientations to robot-centric coordinates
         static_obstacles = (env_params["static_obstacles"][-1] - robot_position) @ rotation_matrix # Transform static obstacles to robot-centric coordinates
         ### Build Critic inputs: robot_data, humans_data, static_obstacles_data       
         # Build robot_data input. (robot_velocity + robot_goal + robot_params + action_space_params + actions_history)
@@ -514,7 +530,7 @@ class JESSI_S2R(JESSI):
         # Build humans_data input. (humans_state + humans_trajectory + humans_goal + humans_parameters)
         humans_data = jnp.concatenate((
             humans_state, # humans_state
-            jnp.reshape(humans_trajectory, (humans_state.shape[0], -1)), # humans_trajectory
+            pack_humans_trajectory(humans_trajectory), # humans_trajectory
             humans_goal, # humans_goal
             env_params["humans_parameters"][:,:3] # humans_parameters (radius, mass, v_max)
         ), axis=-1) # Shape: (n_humans, 6 + horizon_length*6 + 2 + 3) --> e.g., n_humans=5, horizon_length=20 --> (5, 6 + 120 + 2 + 3) = (5, 131)
@@ -584,7 +600,10 @@ class JESSI_S2R(JESSI):
                     )                    
                     ## Compute actor loss (MSE between expert action and predicted mean action)
                     predicted_action = self.action_distribution.mean(predicted_distr)
-                    mse_loss = jnp.mean(jnp.square(predicted_action - expert_action))
+                    feasible_expert_action = self.action_distribution.project_to_support(
+                        predicted_distr, expert_action
+                    )
+                    mse_loss = jnp.mean(jnp.square(predicted_action - feasible_expert_action))
                     ## L2 Penalty on latent locs
                     locs = predicted_distr["locs"]
                     l2_penalty = 1e-3 * jnp.mean(jnp.square(locs)) 
@@ -632,6 +651,7 @@ class JESSI_S2R(JESSI):
                     experiences["actions_history"],
                     {
                         "humans_goal": experiences["humans_goal"],
+                        "humans_visibility": experiences["humans_visibility"],
                         "humans_parameters": experiences["humans_parameters"],
                         "static_obstacles": experiences["static_obstacles"]
                     },

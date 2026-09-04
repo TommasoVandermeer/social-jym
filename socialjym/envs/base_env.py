@@ -394,9 +394,12 @@ class BaseEnv(ABC):
             [ # Parallel traffic
                 [[[-self.traffic_length/2-1, self.traffic_height/2 + 0.3],[self.traffic_length/2-0.5, self.traffic_height/2 + 0.3]]],
                 [[[-self.traffic_length/2-1, -(self.traffic_height/2 + 0.3)],[self.traffic_length/2-0.5, -(self.traffic_height/2 + 0.3)]]],
-                [[[-1.,0],[1.,0.]]],
-                [[[-self.traffic_length/4-0.5,self.traffic_height/4],[-self.traffic_length/4+0.5,self.traffic_height/4]]],
-                [[[self.traffic_length/4-0.5,self.traffic_height/4],[self.traffic_length/4+0.5,self.traffic_height/4]]],
+                # [[[-1.,0],[1.,0.]]],
+                # [[[-self.traffic_length/4-0.5,self.traffic_height/4],[-self.traffic_length/4+0.5,self.traffic_height/4]]],
+                # [[[self.traffic_length/4-0.5,self.traffic_height/4],[self.traffic_length/4+0.5,self.traffic_height/4]]],
+                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
+                [[[jnp.nan,jnp.nan],[jnp.nan,jnp.nan]]],
             ], 
             [ # Perpendicular traffic
                 [[[-self.traffic_length/8, self.traffic_length/2 +1],[-self.traffic_length/8, self.traffic_height/2+0.5]]],

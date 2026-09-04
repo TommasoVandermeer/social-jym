@@ -10,6 +10,7 @@ from socialjym.utils.terminations.robot_human_collision import InstantRobotHuman
 from socialjym.utils.terminations.robot_obstacle_collision import InstantRobotObstacleCollision
 from socialjym.utils.terminations.robot_reached_goal import RobotReachedGoal
 from socialjym.utils.terminations.timeout import Timeout
+from socialjym.utils.terminations.base_termination import point_to_line_distance
 from jhsfm.hsfm import get_linear_velocity
 
 class Reward1(BaseReward):
@@ -25,6 +26,7 @@ class Reward1(BaseReward):
         discomfort_penalty_reward: bool=True,
         progress_to_goal_reward: bool=True,
         high_rotation_penalty_reward: bool=True,
+        timeout_penalty_reward: bool=False,
         goal_reward: float=1., 
         collision_with_humans_penalty: float=-0.25, 
         collision_with_obstacles_penalty: float=-0.05,
@@ -32,6 +34,7 @@ class Reward1(BaseReward):
         progress_to_goal_weight: float=0.03,
         angular_speed_bound: float=1.,
         angular_speed_penalty_weight: float=0.0075,
+        timeout_penalty: float=-0.25,
     ) -> None:
         super().__init__(gamma)
         # Check input parameters
@@ -43,6 +46,7 @@ class Reward1(BaseReward):
         assert progress_to_goal_weight > 0, "progress_to_goal_weight must be positive"
         assert angular_speed_bound > 0, "angular_speed_bound must be positive"
         assert angular_speed_penalty_weight > 0, "angular_speed_penalty_weight must be positive"
+        assert timeout_penalty < 0, "timeout_penalty must be negative"
         # Define reward type
         self.target_reached_reward = target_reached_reward
         self.collision_with_humans_penalty_reward = collision_with_humans_penalty_reward
@@ -50,6 +54,7 @@ class Reward1(BaseReward):
         self.discomfort_distance_penalty_reward = discomfort_penalty_reward
         self.progress_to_goal_reward = progress_to_goal_reward
         self.high_rotation_penalty_reward = high_rotation_penalty_reward
+        self.timeout_penalty_reward = timeout_penalty_reward
         self.binary_reward = jnp.array(
             [
                 high_rotation_penalty_reward,
@@ -57,6 +62,7 @@ class Reward1(BaseReward):
                 discomfort_penalty_reward,
                 collision_with_humans_penalty_reward,
                 collision_with_obstacles_penalty_reward,
+                timeout_penalty_reward,
                 target_reached_reward
             ], 
             dtype=int
@@ -69,6 +75,7 @@ class Reward1(BaseReward):
                 "\n- Discomfort" if self.discomfort_distance_penalty_reward else "",
                 "\n- Collision w/ humans" if self.collision_with_humans_penalty_reward else "",
                 "\n- Collision w/ obstacles" if self.collision_with_obstacles_penalty_reward else "",
+                "\n- Timeout" if self.timeout_penalty_reward else "",
                 "\n- Target reached" if self.target_reached_reward else "",
             )
             self.multi_gamma = True
@@ -79,12 +86,14 @@ class Reward1(BaseReward):
             idx += 1 if self.high_rotation_penalty_reward else 0
             self.g_prog = gamma_list[idx] if self.progress_to_goal_reward else None
             idx += 1 if self.progress_to_goal_reward else 0
-            self.g_disc = gamma_list[idx] if self.collision_with_obstacles_penalty_reward else None
-            idx += 1 if self.collision_with_obstacles_penalty_reward else 0
+            self.g_disc = gamma_list[idx] if self.discomfort_distance_penalty_reward else None
+            idx += 1 if self.discomfort_distance_penalty_reward else 0
             self.g_coll_hum = gamma_list[idx] if self.collision_with_humans_penalty_reward else None
             idx += 1 if self.collision_with_humans_penalty_reward else 0
             self.g_coll_obs = gamma_list[idx] if self.collision_with_obstacles_penalty_reward else None
             idx += 1 if self.collision_with_obstacles_penalty_reward else 0
+            self.g_timeout = gamma_list[idx] if self.timeout_penalty_reward else None
+            idx += 1 if self.timeout_penalty_reward else 0
             self.g_goal = gamma_list[idx] if self.target_reached_reward else None
             idx += 1 if self.target_reached_reward else 0
             self.unique_gammas = tuple(set(gamma_list))
@@ -103,6 +112,7 @@ class Reward1(BaseReward):
         self.progress_to_goal_weight = progress_to_goal_weight
         self.angular_speed_bound = angular_speed_bound
         self.angular_speed_penalty_weight = angular_speed_penalty_weight
+        self.timeout_penalty = timeout_penalty
         self.kinematics = ROBOT_KINEMATICS.index('unicycle')
         self.robot_radius = robot_radius
         self.humans_policy = HUMAN_POLICIES.index('hsfm')
@@ -188,14 +198,43 @@ class Reward1(BaseReward):
         )
         # Timeout
         timeout, _ =  self.timeout(time) # Compute outcome 
+        return self._compute_reward(
+            robot_pos,
+            next_robot_pos,
+            robot_goal,
+            min_distance,
+            collision_with_human,
+            collision_with_obstacle,
+            reached_goal,
+            timeout,
+            action,
+            dt,
+        )
+
+    @partial(jit, static_argnames=("self"))
+    def _compute_reward(
+        self,
+        robot_pos,
+        next_robot_pos,
+        robot_goal,
+        min_distance,
+        collision_with_human,
+        collision_with_obstacle,
+        reached_goal,
+        timeout,
+        action,
+        dt,
+    ):
         ### COMPUTE OUTCOME ###
         failure = collision_with_human | collision_with_obstacle
+        success = (~failure) & reached_goal
+        timeout = timeout & (~failure) & (~reached_goal)
         outcome = {
-            "nothing": ~((failure) | (reached_goal) | (timeout)),
-            "success": (~(failure)) & (reached_goal),
+            "nothing": ~(failure | success | timeout),
+            "success": success,
             "collision_with_human": collision_with_human,
             "collision_with_obstacle": collision_with_obstacle,
-            "timeout": timeout & (~(failure)) & (~(reached_goal))
+            "timeout": timeout,
         }
         ### COMPUTE REWARD ###
         # Reward for reaching the goal
@@ -254,7 +293,11 @@ class Reward1(BaseReward):
             )
         else:
             rotation_reward = 0.
-        reward = goal_reward + collision_human_reward + collision_obstacle_reward + discomfort_reward + progress_reward + rotation_reward
+        if self.timeout_penalty_reward:
+            timeout_reward = lax.cond(timeout, lambda: self.timeout_penalty, lambda: 0.)
+        else:
+            timeout_reward = 0.
+        reward = goal_reward + collision_human_reward + collision_obstacle_reward + discomfort_reward + progress_reward + rotation_reward + timeout_reward
         if self.multi_gamma:
             reward_terms = {g: 0.0 for g in self.unique_gammas}
             if self.target_reached_reward:
@@ -263,6 +306,8 @@ class Reward1(BaseReward):
                 reward_terms[self.g_coll_hum] += collision_human_reward
             if self.collision_with_obstacles_penalty_reward:
                 reward_terms[self.g_coll_obs] += collision_obstacle_reward
+            if self.timeout_penalty_reward:
+                reward_terms[self.g_timeout] += timeout_reward
             if self.discomfort_distance_penalty_reward:
                 reward_terms[self.g_disc] += discomfort_reward
             if self.progress_to_goal_reward:
@@ -272,3 +317,74 @@ class Reward1(BaseReward):
         else:
             reward_terms = {self.gamma: reward}
         return reward, outcome, reward_terms
+
+    @partial(jit, static_argnames=("self"))
+    def transition(self, old_state, new_state, intermediate_states, action, info, dt):
+        """Reward the trajectory that was actually executed by LaserNav."""
+        trajectory = jnp.concatenate((old_state[None, ...], intermediate_states), axis=0)
+        starts = trajectory[:-1]
+        ends = trajectory[1:]
+
+        human_collisions, human_collision_info = vmap(
+            self.interval_human_collision_termination,
+            in_axes=(0, 0, None, 0, 0, None),
+        )(
+            starts[:, -1, :2],
+            ends[:, -1, :2],
+            self.robot_radius,
+            starts[:, :-1, :2],
+            ends[:, :-1, :2],
+            info["humans_parameters"][:, 0],
+        )
+        collision_with_human = jnp.any(human_collisions)
+        min_human_distance = jnp.min(human_collision_info["min_distance"])
+
+        obstacle_segments = info["static_obstacles"][-1].reshape((-1, 2, 2))
+        valid_obstacles = jnp.all(jnp.isfinite(obstacle_segments), axis=(1, 2))
+
+        def segment_distance(robot_start, robot_end, obstacle):
+            obstacle_start, obstacle_end = obstacle[0], obstacle[1]
+            robot_delta = robot_end - robot_start
+            obstacle_delta = obstacle_end - obstacle_start
+            offset = obstacle_start - robot_start
+            denominator = robot_delta[0] * obstacle_delta[1] - robot_delta[1] * obstacle_delta[0]
+            safe_denominator = jnp.where(jnp.abs(denominator) > 1e-9, denominator, 1.0)
+            t = (offset[0] * obstacle_delta[1] - offset[1] * obstacle_delta[0]) / safe_denominator
+            u = (offset[0] * robot_delta[1] - offset[1] * robot_delta[0]) / safe_denominator
+            intersects = (
+                (jnp.abs(denominator) > 1e-9)
+                & (t >= 0.0) & (t <= 1.0)
+                & (u >= 0.0) & (u <= 1.0)
+            )
+            distances = jnp.array([
+                point_to_line_distance(robot_start, obstacle_start, obstacle_end),
+                point_to_line_distance(robot_end, obstacle_start, obstacle_end),
+                point_to_line_distance(obstacle_start, robot_start, robot_end),
+                point_to_line_distance(obstacle_end, robot_start, robot_end),
+            ])
+            return jnp.where(intersects, 0.0, jnp.min(distances))
+
+        distances_to_obstacles = vmap(
+            lambda robot_start, robot_end: vmap(segment_distance, in_axes=(None, None, 0))(
+                robot_start, robot_end, obstacle_segments
+            )
+        )(starts[:, -1, :2], ends[:, -1, :2])
+        distances_to_obstacles = jnp.where(valid_obstacles[None, :], distances_to_obstacles, jnp.inf)
+        collision_with_obstacle = jnp.any(distances_to_obstacles < self.robot_radius)
+
+        goal_distances = jnp.linalg.norm(ends[:, -1, :2] - info["robot_goal"], axis=-1)
+        reached_goal = jnp.any(goal_distances < self.robot_radius)
+        timeout, _ = self.timeout(info["time"] + dt)
+
+        return self._compute_reward(
+            old_state[-1, :2],
+            new_state[-1, :2],
+            info["robot_goal"],
+            min_human_distance,
+            collision_with_human,
+            collision_with_obstacle,
+            reached_goal,
+            timeout,
+            action,
+            dt,
+        )

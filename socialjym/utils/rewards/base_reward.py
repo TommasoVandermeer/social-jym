@@ -12,6 +12,14 @@ class BaseReward(ABC):
     def __call__(self, state, action) -> tuple:
         pass
 
+    def transition(self, old_state, new_state, intermediate_states, action, info, dt):
+        """Evaluate an executed transition.
+
+        Reward implementations that do not yet provide transition-aware
+        semantics retain their historical predictive behavior.
+        """
+        return self(old_state, action, info, dt)
+
     # --- Public methods ---
 
     def get_parameters(self) -> tuple:

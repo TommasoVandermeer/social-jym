@@ -18,6 +18,11 @@ from socialjym.policies.jessi_s2r import JESSI_S2R
 
 TRAINING_TYPES = ["multitask", "modular", "policy"]
 
+
+def entropy_coefficient(initial_beta, update, train_updates):
+    """Exponential entropy schedule with a training-length time constant."""
+    return initial_beta * jnp.exp(-update / (0.6 * train_updates))
+
 @partial(jit, static_argnames=("policy", "env", "n_steps"))
 def collect_rollout_step(
     network_params, 
@@ -44,6 +49,7 @@ def collect_rollout_step(
         # Critic
         env_params = {
             "humans_goal": infos["humans_goal"],
+            "humans_visibility": infos["visibility"][:, :-1, :-1],
             "humans_parameters": infos["humans_parameters"],
             "static_obstacles": infos["static_obstacles"],
         }
@@ -97,16 +103,22 @@ def collect_rollout_step(
             "stds": policy.action_distribution.batch_std(actor_distrs)
         }
         new_times = times + (new_outcomes["success"]) * (infos['time'] + policy.dt)
-        new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(env.reward_function.gamma, (infos['step']+1) * policy.dt * policy.v_max) * rewards)
+        new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(env.reward_function.gamma, infos['step'] * policy.dt * policy.v_max) * rewards)
         new_success_per_scenario = {k: success_per_scenario[k] + (new_outcomes["success"]) * (infos["current_scenario"] == k) for k in success_per_scenario}
         new_episodes_per_scenario = {k: episodes_per_scenario[k] + (~new_outcomes["nothing"]) * (infos["current_scenario"] == k) for k in episodes_per_scenario}
         new_outcomes_acc = {k: outcomes_acc[k] + new_outcomes[k] for k in new_outcomes}
+        new_outcomes_acc["terminal"] = outcomes_acc["terminal"] + (~new_outcomes["nothing"])
+        new_outcomes_acc["failure"] = outcomes_acc["failure"] + (
+            new_outcomes["collision_with_human"] | new_outcomes["collision_with_obstacle"]
+        )
         return (new_states, new_obses, new_infos, new_outcomes, new_returns, new_times, new_success_per_scenario, new_episodes_per_scenario, new_p_keys, new_r_keys, new_e_keys, new_outcomes_acc), step_data
     
     init_outcomes_acc = {
         k: jnp.zeros_like(template_outcomes[k], dtype=jnp.int32) 
         for k in template_outcomes
     }
+    init_outcomes_acc["terminal"] = jnp.zeros_like(template_outcomes["nothing"], dtype=jnp.int32)
+    init_outcomes_acc["failure"] = jnp.zeros_like(template_outcomes["nothing"], dtype=jnp.int32)
     init_carry = (
         env_state[0], 
         env_state[1], 
@@ -159,6 +171,7 @@ def process_buffer_and_gae(
         last_obs[:, :policy.n_actions_history,6:8],
         {
             "humans_goal": last_info["humans_goal"],
+            "humans_visibility": last_info["visibility"][:, :-1, :-1],
             "humans_parameters": last_info["humans_parameters"],
             "static_obstacles": last_info["static_obstacles"],
         }, # env_params
@@ -249,26 +262,14 @@ def train_one_epoch(
         micro_batches["advantages"] = micro_batches["advantages"].at[:].set(jnp.clip(norm_advantages, -5, 5))
 
         def micro_batch_loss_fn(p, u_mb, micro_batch_key):
-            inputs0, inputs1 = u_mb["inputs0"], u_mb["inputs1"]
-            # Lowe input precision to save memory
-            if multitask_training or modular_training:
-                inputs0_f16 = inputs0.astype(jnp.bfloat16)
-                inputs1_f16 = inputs1.astype(jnp.bfloat16)
-                # Actor forward pass 
-                (safety_perc_dist, _, _, actor_dist, _, __build_class__, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training)
-                )
-            else:
-                # Actor forward pass
-                (safety_perc_dist, _, _, actor_dist, _, _, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training)
-                )               
-            # Cast back to higher precision for loss computation
-            if multitask_training or modular_training:
-                def dist_to_f32(dist):
-                    return tree_map(lambda x: x.astype(jnp.float32), dist)
-                actor_dist = dist_to_f32(actor_dist)  
-                safety_perc_dist = dist_to_f32(safety_perc_dist)
+            inputs0 = u_mb["inputs0"].astype(jnp.float32)
+            inputs1 = u_mb["inputs1"].astype(jnp.float32)
+            # PPO collection and update must evaluate the exact same float32 policy.
+            (safety_perc_dist, _, _, actor_dist, _, _, _, _, _) = policy.e2e.apply(
+                p, None, inputs0, inputs1, stop_perception_gradient=not multitask_training
+            )
+            def dist_to_f32(dist):
+                return tree_map(lambda x: x.astype(jnp.float32), dist)
             # Actor
             new_neglogp = policy.action_distribution.batch_neglogp(actor_dist, u_mb["actions"])
             log_ratio = u_mb["neglogpdfs"] - new_neglogp
@@ -288,7 +289,7 @@ def train_one_epoch(
             locs_entropy = jnp.mean(policy.action_distribution.batch_entropy(actor_dist))
             weight_entropy = jnp.mean(policy.action_distribution.batch_weight_entropy(actor_dist))
             entropy_loss = -beta_entropy * (locs_entropy + 10 * weight_entropy)
-            max_weight = jnp.mean(jnp.max(nn.softmax(actor_dist["locs"]), axis=-1)) # Diagnostic measure
+            max_weight = jnp.mean(jnp.max(policy.action_distribution.mean_weights(actor_dist), axis=-1))
             policy_loss = actor_loss + entropy_loss
             # Perception
             if multitask_training or modular_training:
@@ -464,17 +465,30 @@ def update_ema(
     batch_success,
     scenario_ema_success,
     scenario_batch_success,
+    batch_valid=True,
+    scenario_batch_valid=None,
     alpha=0.08,
 ):
-    # Success
+    """Update only metrics backed by completed episodes."""
+    batch_success = jnp.asarray(batch_success, dtype=jnp.float32)
     if ema_success is None:
-        return batch_success
-    new_ema_success = (1.0 - alpha) * ema_success + alpha * batch_success
-    # Scenario success
+        ema_success = jnp.asarray(0.5, dtype=jnp.float32)
+    safe_batch_success = jnp.where(batch_valid, batch_success, ema_success)
+    new_ema_success = jnp.where(
+        batch_valid,
+        (1.0 - alpha) * ema_success + alpha * safe_batch_success,
+        ema_success,
+    )
     scenario_batch_success = jnp.asarray(scenario_batch_success, dtype=jnp.float32)
     if scenario_ema_success is None:
-        return scenario_batch_success.copy()
-    new_scenario_ema_success = (1.0 - alpha) * scenario_ema_success + alpha * scenario_batch_success
+        scenario_ema_success = jnp.full_like(scenario_batch_success, 0.5)
+    if scenario_batch_valid is None:
+        scenario_batch_valid = jnp.ones_like(scenario_batch_success, dtype=jnp.bool_)
+    safe_scenario_success = jnp.where(scenario_batch_valid, scenario_batch_success, scenario_ema_success)
+    candidate_scenario_ema = (1.0 - alpha) * scenario_ema_success + alpha * safe_scenario_success
+    new_scenario_ema_success = jnp.where(
+        scenario_batch_valid, candidate_scenario_ema, scenario_ema_success
+    )
     return new_ema_success, new_scenario_ema_success
 
 def jessi_s2r_rl_rollout(
@@ -494,6 +508,7 @@ def jessi_s2r_rl_rollout(
     n_epochs,
     beta_entropy,
     lambda_gae,
+    initial_visibility:float = 0.5,
     training_type:str = "multitask",
     target_kl:float = None,
     safety_loss:bool = False,
@@ -517,7 +532,11 @@ def jessi_s2r_rl_rollout(
     reset_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
     key, subkey = random.split(key)
     env_keys = device_put(random.split(subkey, n_parallel_envs), sharding_env)
-    states, reset_keys, obses, infos, init_outcomes = env.batch_reset(reset_keys)
+    scenarios_prob = jnp.array([1.0 / len(env.hybrid_scenario_subset)] * len(env.hybrid_scenario_subset))
+    visibility = float(initial_visibility)
+    states, reset_keys, obses, infos, init_outcomes = env.batch_reset(
+        reset_keys, scenarios_prob=scenarios_prob, visibility_chance=visibility
+    )
     states = tree_map(lambda x: device_put(x, sharding_env), states)
     obses = tree_map(lambda x: device_put(x, sharding_env), obses)
     infos = tree_map(lambda x: device_put(x, sharding_env), infos)
@@ -541,8 +560,10 @@ def jessi_s2r_rl_rollout(
         "collisions_humans": [], "collisions_obstacles": [], "times_to_goal": [], "episodes": [], 
         "perception_losses": [], "safety_losses": [], "actor_losses": [], "critic_losses": [], "entropy_losses": [],
         "weight_entropies": [], "max_weights": [],
-        "stds": [], "grad_norm": [], "approx_kl": [], "clip_frac": [], "explained_var": [],
+        "stds": [], "grad_norm": [], "approx_kl": [], "clip_frac": [], "explained_var": [], "beta_entropies": [],
+        "visibilities": [], "scenario_probabilities": [],
         "successes_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
+        "success_rates_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
         "episodes_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
     }
     init_beta_entropy = beta_entropy
@@ -552,35 +573,32 @@ def jessi_s2r_rl_rollout(
         prefix = words[0][:2].capitalize()
         suffix = "".join([w[0] for w in words[1:]]) 
         scenarios_labels[i] = prefix + suffix
-    scenarios_prob = jnp.array([1.0 / (len(env.hybrid_scenario_subset))] * len(env.hybrid_scenario_subset))
-    visibility = 1.
-    scenario_ema_success = None
-    ema_success = None
+    scenario_ema_success = jnp.full((len(env.hybrid_scenario_subset),), 0.5, dtype=jnp.float32)
+    scenario_ema_valid = jnp.zeros((len(env.hybrid_scenario_subset),), dtype=jnp.bool_)
+    ema_success = jnp.asarray(0.5, dtype=jnp.float32)
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
     for update in tqdm(range(train_updates)):
-        # Entropy linear decay to zero
-        # beta_entropy = init_beta_entropy - ((init_beta_entropy / train_updates) * update) # linear
-        beta_entropy = init_beta_entropy * jnp.exp(-update/0.6*train_updates) # exponential
+        beta_entropy = entropy_coefficient(init_beta_entropy, update, train_updates)
         # A. COLLECT ROLLOUT STEP (Parallel)
         env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum, returns, times, success_per_scenario, episodes_per_scenario = collect_rollout_step(
             params, critic_params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps, scenarios_prob, visibility
         )
         current_states, current_obs, current_infos, current_dones = env_state[0], env_state[1], env_state[2], ~(env_state[3]['nothing'])
-        n_succ = jnp.sum(outcomes_sum["success"])
-        n_coll_hum = jnp.sum(outcomes_sum["collision_with_human"])
-        n_coll_obs = jnp.sum(outcomes_sum["collision_with_obstacle"])
-        n_timeout = jnp.sum(outcomes_sum["timeout"])
-        ep_count = n_succ + n_coll_hum + n_coll_obs + n_timeout
-        n_fail = n_coll_hum + n_coll_obs
+        n_succ = int(device_get(jnp.sum(outcomes_sum["success"])))
+        n_coll_hum = int(device_get(jnp.sum(outcomes_sum["collision_with_human"])))
+        n_coll_obs = int(device_get(jnp.sum(outcomes_sum["collision_with_obstacle"])))
+        n_timeout = int(device_get(jnp.sum(outcomes_sum["timeout"])))
+        ep_count = int(device_get(jnp.sum(outcomes_sum["terminal"])))
+        n_fail = int(device_get(jnp.sum(outcomes_sum["failure"])))
         batch_mean_return = float(jnp.sum(returns)/ep_count) if ep_count > 0 else 0.0
         batch_mean_time = float(jnp.sum(times)/n_succ) if n_succ > 0 else 0.0
         avg_action_std = device_get(jnp.mean(history_raw["stds"], axis=(0,1)))
         success_per_scenario = {k: int(jnp.sum(success_per_scenario[k])) for k in success_per_scenario}
         episodes_per_scenario = {k: int(jnp.sum(episodes_per_scenario[k])) for k in episodes_per_scenario}
-        success_rate_per_scenario = {k: (success_per_scenario[k] / episodes_per_scenario[k]) if episodes_per_scenario[k] > 0 else 0.0 for k in logs["successes_per_scenario"]}
+        success_rate_per_scenario = {k: (success_per_scenario[k] / episodes_per_scenario[k]) if episodes_per_scenario[k] > 0 else float("nan") for k in logs["successes_per_scenario"]}
         # A.5 SAVE BEST PARAMS
-        if batch_mean_return > best_return:
+        if ep_count > 0 and batch_mean_return > best_return:
             best_return = batch_mean_return
             best_params = device_get(params)
             best_critic_params = device_get(critic_params)
@@ -662,27 +680,52 @@ def jessi_s2r_rl_rollout(
         logs["collisions_obstacles"].append(int(n_coll_obs))
         logs["episodes"].append(int(ep_count))
         logs["stds"].append(avg_action_std)
+        logs["beta_entropies"].append(float(beta_entropy))
+        logs["visibilities"].append(float(visibility))
+        logs["scenario_probabilities"].append(device_get(scenarios_prob))
         logs["grad_norm"].append(grad_norm)
         logs["approx_kl"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["approx_kl"]))))
         logs["explained_var"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["explained_var"]))))
         logs["clip_frac"].append(float(jnp.mean(jnp.stack(epoch_metrics_acc["clip_frac"]))))
         logs["successes_per_scenario"] = {k: logs["successes_per_scenario"][k] + [success_per_scenario[k]] for k in logs["successes_per_scenario"]}
+        logs["success_rates_per_scenario"] = {k: logs["success_rates_per_scenario"][k] + [success_rate_per_scenario[k]] for k in logs["success_rates_per_scenario"]}
         logs["episodes_per_scenario"] = {k: logs["episodes_per_scenario"][k] + [episodes_per_scenario[k]] for k in logs["episodes_per_scenario"]}
         # G. EMA UPDATE and CURRICULUM UTILS
         batch_scenario_success_rate = jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)])
-        batch_success_rate = logs['successes'][-1]/logs['episodes'][-1]
-        ema_success, scenario_ema_success = update_ema(ema_success, batch_success_rate, scenario_ema_success, batch_scenario_success_rate)
-        worst_3_scenarios_success_rate = jnp.mean(jnp.sort(batch_scenario_success_rate)[:3])
+        scenario_batch_valid = jnp.array([episodes_per_scenario[k] > 0 for k in sorted(success_rate_per_scenario)])
+        batch_success_rate = (n_succ / ep_count) if ep_count > 0 else float("nan")
+        ema_success, scenario_ema_success = update_ema(
+            ema_success,
+            batch_success_rate,
+            scenario_ema_success,
+            batch_scenario_success_rate,
+            batch_valid=ep_count > 0,
+            scenario_batch_valid=scenario_batch_valid,
+        )
+        scenario_ema_valid = jnp.logical_or(scenario_ema_valid, scenario_batch_valid)
+        valid_scenario_count = int(device_get(jnp.sum(scenario_ema_valid)))
+        if valid_scenario_count > 0:
+            valid_scenario_emas = scenario_ema_success[scenario_ema_valid]
+            worst_count = min(3, valid_scenario_count)
+            worst_3_scenarios_success_rate = jnp.mean(
+                jnp.sort(valid_scenario_emas)[:worst_count]
+            )
+        else:
+            worst_3_scenarios_success_rate = jnp.asarray(0.5, dtype=jnp.float32)
+        batch_failure_rate = (n_fail / ep_count) if ep_count > 0 else float("nan")
+        batch_human_collision_rate = (n_coll_hum / ep_count) if ep_count > 0 else float("nan")
+        batch_obstacle_collision_rate = (n_coll_obs / ep_count) if ep_count > 0 else float("nan")
+        batch_timeout_rate = (n_timeout / ep_count) if ep_count > 0 else float("nan")
         # H. PRINT LOGS
         print(
             f"\nUpd {update}:\n",
-            f"| Ret: {logs['returns'][-1]:.3f} | EMA Succ: {ema_success:.3f} | Succ: {batch_success_rate:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
+            f"| Ret: {logs['returns'][-1]:.3f} | EMA Succ: {ema_success:.3f} | Succ: {batch_success_rate:.3f} | Fail: {batch_failure_rate:.3f} (hum {batch_human_collision_rate:.2f}, obs {batch_obstacle_collision_rate:.2f}) | Timeouts: {batch_timeout_rate:.3f}\n",
             f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
             f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
             f"| EMA-SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {scenario_ema_success[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n" if scenario_ema_success is not None else "",
             f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
             f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} | Safety Loss: {logs['safety_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
-            f"| Weights entropy: {logs['weight_entropies'][-1]:.4f} | Max weights: {logs['max_weights'][-1]:.4f} | Visibility: {visibility:.2f} \n",
+            f"| Weights entropy: {logs['weight_entropies'][-1]:.4f} | Max weights: {logs['max_weights'][-1]:.4f} | Beta: {float(beta_entropy):.6f} | Visibility: {visibility:.2f} \n",
             f"| Loss: {logs['losses'][-1]:.4f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f} | Clip frac: {logs['clip_frac'][-1]:.4f} | Explained Var: {logs['explained_var'][-1]:.4f} \n",
         )
         # I. CURRICULUM (each 10, 20 or more updates, slows down the dynamics)
@@ -698,5 +741,10 @@ def jessi_s2r_rl_rollout(
             visibility = min(max(visibility, 0.), 1.)
         
         
-    return best_params, device_get(params), best_critic_params, device_get(critic_params), logs 
-             
+    return {
+        "best_actor_params": best_params,
+        "final_actor_params": device_get(params),
+        "best_critic_params": best_critic_params,
+        "final_critic_params": device_get(critic_params),
+        "metrics": logs,
+    }

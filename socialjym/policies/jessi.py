@@ -149,12 +149,23 @@ class AngularLocalCrossAttention(hk.Module):
 
     def __call__(self, x_emb, beam_sectors, key=None):
         # x_emb: [B*T, Beams, D], beam_sectors: [B*T, Beams]
-        B_T = x_emb.shape[0]
+        B_T, L = x_emb.shape[:2]
         # 1. Latent Queries
         q = jnp.broadcast_to(self.spatial_latents[None, ...], (B_T, self.n_sectors, self.embed_dim))
         # 2. Cross Attention (mask shape # [B*T, 1, Target_Beams, Beams])
         match_matrix = (beam_sectors[:, None, :, :] == self.target_indices[None, :, None, None])
         mask_bool = jnp.any(match_matrix, axis=-1)
+        if key is not None and self.beam_dropout_rate > 0.0:
+            keep_beams = random.bernoulli(
+                key,
+                p=1.0 - self.beam_dropout_rate,
+                shape=(B_T, L),
+            )
+            dropped_mask = mask_bool & keep_beams[:, None, :]
+            # Attention over an entirely masked sector is undefined. Restore
+            # that sector's original beams when dropout removed all of them.
+            has_kept_beam = jnp.any(dropped_mask, axis=-1, keepdims=True)
+            mask_bool = jnp.where(has_kept_beam, dropped_mask, mask_bool)
         mask = mask_bool[:, None, :, :]
         attn_out, attn_mtrx = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
         q = self.norm1(q + attn_out)
@@ -1277,7 +1288,10 @@ class JESSI(BasePolicy):
             robot_state_input,
             random_key=subkey
         )
-        if self.ablation_mode == 6:
+        # LogisticNormal samples live in latent space; only the transformed
+        # convex combination is a valid environment action.  JESSI-S2R uses
+        # this distribution directly (without ablation mode 6).
+        if self.action_distribution.name == "logistic_normal":
             action = lax.cond(
                 sample, 
                 lambda _: self.action_distribution.to_env_action(actor_distr, sampled_action), 

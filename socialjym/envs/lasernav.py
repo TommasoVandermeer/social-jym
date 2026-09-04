@@ -353,40 +353,14 @@ class LaserNav(BaseEnv):
                 lambda x: x,
                 (info["robot_goal"], info["robot_goal_index"])
             )
-        ### Compute reward and outcome
-        reward, outcome, reward_terms = self.reward_function(state, action, info, self.robot_dt)
         ### Compute robot delay
         info["robot_delay"] = jnp.clip(random.normal(delay_key) * self.control_delay_sigma + self.control_delay_mean, 0., self.actions_history_length * self.robot_dt) # Delay must be positive and lower than maximum history length * robot_dt
         ### Update state and info
         new_state, new_info, (state_history, humans_leg_state_history) = self._step(state, info, action) 
-        ### Test outcome computation (during tests we check for actual collision or reaching goal)
-        @jit
-        def _test_outcome(val:tuple):
-            state, info, outcome = val
-            success, _ = self.reward_function.goal_reached_termination(
-                state[-1,:2],
-                self.robot_radius,
-                info["robot_goal"],
-            )
-            collision_with_human, _ = self.reward_function.instant_human_collision_termination(
-                state[-1,:2],
-                self.robot_radius,
-                state[:-1,:2],
-                info["humans_parameters"][:,0]
-            )
-            collision_with_obstacle, _ = self.reward_function.instant_obstacle_collision_termination(
-                state[-1,:2],
-                self.robot_radius,
-                info['static_obstacles'][-1],
-            )
-            failure = collision_with_human | collision_with_obstacle
-            outcome["success"] = success
-            outcome["collision_with_human"] = (collision_with_human) & (~success)
-            outcome["collision_with_obstacle"] = (collision_with_obstacle) & (~success)
-            outcome["timeout"] = jnp.all(jnp.array([outcome["timeout"], ~failure, jnp.logical_not(outcome["success"])]))
-            outcome["nothing"] = jnp.logical_not(jnp.any(jnp.array([outcome["success"], failure, outcome["timeout"]])))
-            return outcome
-        outcome = lax.cond(test, lambda x: _test_outcome(x), lambda x: x[2], (new_state, info, outcome))
+        ### Reward the transition that was actually executed, including delay and acceleration.
+        reward, outcome, reward_terms = self.reward_function.transition(
+            state, new_state, state_history, action, info, self.robot_dt
+        )
         ### Update time, step, return, previous observation
         new_info["time"] += self.robot_dt
         new_info["step"] += 1
@@ -449,8 +423,10 @@ class LaserNav(BaseEnv):
             {"success": False, "collision_with_human": False, "collision_with_obstacle": False, "timeout": False, "nothing": True}
     
     @partial(jit, static_argnames=("self"))
-    def batch_reset(self, keys):
-        return vmap(LaserNav.reset, in_axes=(None,0))(self, keys)
+    def batch_reset(self, keys, scenarios_prob=None, visibility_chance:float=0.):
+        return vmap(LaserNav.reset, in_axes=(None, 0, None, None))(
+            self, keys, scenarios_prob, visibility_chance
+        )
 
     @partial(jit, static_argnames=("self"))
     def reset_custom_episode(self, key:random.PRNGKey, custom_episode:dict) -> tuple:
