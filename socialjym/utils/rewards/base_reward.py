@@ -12,7 +12,20 @@ class BaseReward(ABC):
     def __call__(self, state, action) -> tuple:
         pass
 
-    def transition(self, old_state, new_state, intermediate_states, action, info, dt):
+    def transition(
+        self,
+        old_state,
+        new_state,
+        intermediate_states,
+        action,
+        info,
+        dt,
+        intermediate_leg_states=None,
+        intermediate_human_end_positions=None,
+        intermediate_leg_end_states=None,
+        intermediate_human_respawns=None,
+        leg_dynamics=False,
+    ):
         """Evaluate an executed transition.
 
         Reward implementations that do not yet provide transition-aware

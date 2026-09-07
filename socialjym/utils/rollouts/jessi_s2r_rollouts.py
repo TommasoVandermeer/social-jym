@@ -1,9 +1,8 @@
 import optax
 from jax import jit, lax, random, vmap, device_put, device_get, device_count, eval_shape, ShapeDtypeStruct, debug
-from jax.tree_util import tree_map
+from jax.tree_util import tree_map, tree_leaves
 import jax.numpy as jnp
 from jax import nn
-import numpy as np
 from tqdm import tqdm
 from functools import partial
 from jax import value_and_grad
@@ -19,9 +18,34 @@ from socialjym.policies.jessi_s2r import JESSI_S2R
 TRAINING_TYPES = ["multitask", "modular", "policy"]
 
 
+def _tree_all_finite(tree):
+    leaves = tree_leaves(tree)
+    return jnp.all(jnp.stack([jnp.all(jnp.isfinite(x)) for x in leaves]))
+
+
+def _require_finite(tree, *, update, stage, epoch=None):
+    """Synchronously reject non-finite training state with useful context."""
+    if bool(device_get(_tree_all_finite(tree))):
+        return
+    location = f"update={update}"
+    if epoch is not None:
+        location += f", epoch={epoch}"
+    raise FloatingPointError(
+        f"Non-finite S2R value at {location}, stage={stage}"
+    )
+
+
 def entropy_coefficient(initial_beta, update, train_updates):
     """Exponential entropy schedule with a training-length time constant."""
     return initial_beta * jnp.exp(-update / (0.6 * train_updates))
+
+
+def update_visibility(visibility, ema_success, worst_scenario_success, maximum=0.5):
+    """Success-gated curriculum step that can only reduce visibility."""
+    candidate = visibility - 0.1 if (
+        float(ema_success) > 0.5 and float(worst_scenario_success) > 0.3
+    ) else visibility
+    return min(max(float(candidate), 0.0), min(float(visibility), float(maximum)))
 
 @partial(jit, static_argnames=("policy", "env", "n_steps"))
 def collect_rollout_step(
@@ -39,7 +63,9 @@ def collect_rollout_step(
     visibility,
 ):
     def _scan_step(carry, _):
-        (states, obses, infos, outcomes, returns, times, success_per_scenario, episodes_per_scenario, p_keys, r_keys, e_keys, outcomes_acc) = carry
+        (states, obses, infos, outcomes, returns, times, success_per_scenario, episodes_per_scenario,
+         human_collisions_per_scenario, obstacle_collisions_per_scenario, timeouts_per_scenario,
+         p_keys, r_keys, e_keys, outcomes_acc) = carry
         keys = vmap(random.split)(p_keys)
         p_keys, c_keys = keys[:,0], keys[:,1]
         # Actor
@@ -98,7 +124,8 @@ def collect_rollout_step(
             "values": values,
             "actions": sampled_actions,
             "rewards": rewards,
-            "dones": ~(outcomes["nothing"]),
+            # This flag belongs to the transition just executed.
+            "dones": ~(new_outcomes["nothing"]),
             "neglogpdfs": policy.action_distribution.batch_neglogp(actor_distrs, sampled_actions),
             "stds": policy.action_distribution.batch_std(actor_distrs)
         }
@@ -106,12 +133,19 @@ def collect_rollout_step(
         new_returns = returns + (~new_outcomes["nothing"]) * (infos['return'] + jnp.power(env.reward_function.gamma, infos['step'] * policy.dt * policy.v_max) * rewards)
         new_success_per_scenario = {k: success_per_scenario[k] + (new_outcomes["success"]) * (infos["current_scenario"] == k) for k in success_per_scenario}
         new_episodes_per_scenario = {k: episodes_per_scenario[k] + (~new_outcomes["nothing"]) * (infos["current_scenario"] == k) for k in episodes_per_scenario}
+        new_human_collisions_per_scenario = {k: human_collisions_per_scenario[k] + new_outcomes["collision_with_human"] * (infos["current_scenario"] == k) for k in human_collisions_per_scenario}
+        new_obstacle_collisions_per_scenario = {k: obstacle_collisions_per_scenario[k] + new_outcomes["collision_with_obstacle"] * (infos["current_scenario"] == k) for k in obstacle_collisions_per_scenario}
+        new_timeouts_per_scenario = {k: timeouts_per_scenario[k] + new_outcomes["timeout"] * (infos["current_scenario"] == k) for k in timeouts_per_scenario}
         new_outcomes_acc = {k: outcomes_acc[k] + new_outcomes[k] for k in new_outcomes}
         new_outcomes_acc["terminal"] = outcomes_acc["terminal"] + (~new_outcomes["nothing"])
         new_outcomes_acc["failure"] = outcomes_acc["failure"] + (
             new_outcomes["collision_with_human"] | new_outcomes["collision_with_obstacle"]
         )
-        return (new_states, new_obses, new_infos, new_outcomes, new_returns, new_times, new_success_per_scenario, new_episodes_per_scenario, new_p_keys, new_r_keys, new_e_keys, new_outcomes_acc), step_data
+        return (new_states, new_obses, new_infos, new_outcomes, new_returns, new_times,
+                new_success_per_scenario, new_episodes_per_scenario,
+                new_human_collisions_per_scenario, new_obstacle_collisions_per_scenario,
+                new_timeouts_per_scenario, new_p_keys, new_r_keys, new_e_keys,
+                new_outcomes_acc), step_data
     
     init_outcomes_acc = {
         k: jnp.zeros_like(template_outcomes[k], dtype=jnp.int32) 
@@ -128,15 +162,25 @@ def collect_rollout_step(
         jnp.zeros_like(env_state[2]['time']),
         {k: jnp.zeros_like(env_state[2]['return'], dtype=jnp.int32) for k in range(len(SCENARIOS[:-1]))},
         {k: jnp.zeros_like(env_state[2]['return'], dtype=jnp.int32) for k in range(len(SCENARIOS[:-1]))},
+        {k: jnp.zeros_like(env_state[2]['return'], dtype=jnp.int32) for k in range(len(SCENARIOS[:-1]))},
+        {k: jnp.zeros_like(env_state[2]['return'], dtype=jnp.int32) for k in range(len(SCENARIOS[:-1]))},
+        {k: jnp.zeros_like(env_state[2]['return'], dtype=jnp.int32) for k in range(len(SCENARIOS[:-1]))},
         policy_keys, 
         reset_keys, 
         env_keys, 
         init_outcomes_acc
     )
     final_carry, history = lax.scan(_scan_step, init_carry, None, length=n_steps)
-    (final_states, final_obses, final_infos, final_outcomes, final_returns, final_times, final_success_per_scenario, final_episodes_per_scenario, final_p_keys, final_r_keys, final_e_keys, sum_outcomes) = final_carry
+    (final_states, final_obses, final_infos, final_outcomes, final_returns, final_times,
+     final_success_per_scenario, final_episodes_per_scenario,
+     final_human_collisions_per_scenario, final_obstacle_collisions_per_scenario,
+     final_timeouts_per_scenario, final_p_keys, final_r_keys, final_e_keys,
+     sum_outcomes) = final_carry
     next_env_state = (final_states, final_obses, final_infos, final_outcomes)
-    return next_env_state, final_p_keys, final_r_keys, final_e_keys, history, sum_outcomes, final_returns, final_times, final_success_per_scenario, final_episodes_per_scenario
+    return (next_env_state, final_p_keys, final_r_keys, final_e_keys, history,
+            sum_outcomes, final_returns, final_times, final_success_per_scenario,
+            final_episodes_per_scenario, final_human_collisions_per_scenario,
+            final_obstacle_collisions_per_scenario, final_timeouts_per_scenario)
 
 @partial(jit, static_argnames=("policy","env"))
 def process_buffer_and_gae(
@@ -189,11 +233,10 @@ def process_buffer_and_gae(
     values = history["values"]
     dones = history["dones"]
     values_ext = jnp.concatenate([values, last_values[None, :]], axis=0)
-    dones_ext = jnp.concatenate([dones, last_dones[None, :]], axis=0)
     gamma_step = gamma ** (dt * vmax)
     def _gae_step(gae_carry, i):
         adv_next = gae_carry
-        mask = 1.0 - dones_ext[i+1].astype(jnp.float32)
+        mask = 1.0 - dones[i].astype(jnp.float32)
         delta = rewards[i] + gamma_step * values_ext[i+1] * mask - values_ext[i]
         advantage = delta + gamma_step * lambda_gae * adv_next * mask
         return advantage, advantage # Carry, Output
@@ -272,8 +315,7 @@ def train_one_epoch(
                 return tree_map(lambda x: x.astype(jnp.float32), dist)
             # Actor
             new_neglogp = policy.action_distribution.batch_neglogp(actor_dist, u_mb["actions"])
-            log_ratio = u_mb["neglogpdfs"] - new_neglogp
-            # log_ratio = jnp.clip(log_ratio, -10, 10) # MORE STABLE
+            log_ratio = jnp.clip(u_mb["neglogpdfs"] - new_neglogp, -20.0, 20.0)
             ratio = jnp.exp(log_ratio)
             lax.cond(
                 debugging & (batch_idx == 0),
@@ -416,9 +458,36 @@ def train_one_epoch(
         )
         updates, new_opt_st_inner = optimizer.update(grads_avg, opt_st_inner)
         critic_updates, new_critic_opt_st_inner = critic_optimizer.update(critic_grads_avg, critic_opt_st_inner)
-        new_params_inner = optax.apply_updates(params_inner, updates)
-        new_critic_params_inner = optax.apply_updates(critic_params_inner, critic_updates)
-        return (new_params_inner, new_critic_params_inner, new_opt_st_inner, new_critic_opt_st_inner, batch_idx + 1, batch_key), aux_avg
+        candidate_params = optax.apply_updates(params_inner, updates)
+        candidate_critic_params = optax.apply_updates(critic_params_inner, critic_updates)
+        finite_batch = _tree_all_finite({
+            key: micro_batches[key] for key in (
+                "inputs0", "inputs1", "states", "actions_history", "gt_poses",
+                "gt_vels", "actions", "values", "neglogpdfs", "critic_targets",
+                "advantages"
+            )
+        }) & _tree_all_finite({
+            "humans_goal": micro_batches["env_params"]["humans_goal"],
+            "humans_visibility": micro_batches["env_params"]["humans_visibility"],
+            "humans_parameters": micro_batches["env_params"]["humans_parameters"],
+            "robot_params": micro_batches["robot_params"],
+        })
+        finite = (
+            finite_batch
+            & _tree_all_finite(grads_avg)
+            & _tree_all_finite(critic_grads_avg)
+            & _tree_all_finite(candidate_params)
+            & _tree_all_finite(candidate_critic_params)
+            & _tree_all_finite(new_opt_st_inner)
+            & _tree_all_finite(new_critic_opt_st_inner)
+            & _tree_all_finite(aux_avg)
+        )
+        select = lambda new, old: tree_map(lambda n, o: jnp.where(finite, n, o), new, old)
+        new_params_inner = select(candidate_params, params_inner)
+        new_critic_params_inner = select(candidate_critic_params, critic_params_inner)
+        new_opt_st_inner = select(new_opt_st_inner, opt_st_inner)
+        new_critic_opt_st_inner = select(new_critic_opt_st_inner, critic_opt_st_inner)
+        return (new_params_inner, new_critic_params_inner, new_opt_st_inner, new_critic_opt_st_inner, batch_idx + 1, batch_key), (*aux_avg, finite)
 
     (new_params, new_critic_params, new_opt_st, new_critic_opt_st, _, _), batch_aux = lax.scan(
         _batch_step, (network_params, critic_network_params, opt_state, critic_opt_state, 0, key), batched_buffer
@@ -436,6 +505,7 @@ def train_one_epoch(
         "clip_frac": jnp.mean(batch_aux[9]),
         "explained_var": jnp.mean(batch_aux[10]),
         "grad_norm": jnp.mean(batch_aux[11]),
+        "finite": jnp.all(batch_aux[12]),
     }
     return (new_params, new_critic_params, new_opt_st, new_critic_opt_st), epoch_metrics
 
@@ -513,6 +583,9 @@ def jessi_s2r_rl_rollout(
     target_kl:float = None,
     safety_loss:bool = False,
     debugging:bool = False,
+    resume_state=None,
+    checkpoint_every:int = 50,
+    checkpoint_callback=None,
 ):
     assert training_type in TRAINING_TYPES, "Invalid training type. Must be one of: " + ", ".join(TRAINING_TYPES)
     assert total_batch_size % n_parallel_envs == 0, "Total batch size must be divisible by number of parallel envs."
@@ -565,6 +638,9 @@ def jessi_s2r_rl_rollout(
         "successes_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
         "success_rates_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
         "episodes_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
+        "human_collisions_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
+        "obstacle_collisions_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
+        "timeouts_per_scenario": {int(s): [] for s in env.hybrid_scenario_subset},
     }
     init_beta_entropy = beta_entropy
     scenarios_labels = {}
@@ -576,15 +652,66 @@ def jessi_s2r_rl_rollout(
     scenario_ema_success = jnp.full((len(env.hybrid_scenario_subset),), 0.5, dtype=jnp.float32)
     scenario_ema_valid = jnp.zeros((len(env.hybrid_scenario_subset),), dtype=jnp.bool_)
     ema_success = jnp.asarray(0.5, dtype=jnp.float32)
+    start_update = 0
+    if resume_state is not None:
+        if resume_state.get("schema_version") != 1:
+            raise ValueError("Incompatible S2R RL checkpoint schema")
+        start_update = int(resume_state["next_update"])
+        params = device_put(resume_state["actor_params"], sharding_replicated)
+        critic_params = device_put(resume_state["critic_params"], sharding_replicated)
+        opt_state = device_put(resume_state["actor_optimizer_state"], sharding_replicated)
+        critic_opt_state = device_put(resume_state["critic_optimizer_state"], sharding_replicated)
+        key = device_put(resume_state["global_key"], sharding_replicated)
+        policy_keys = device_put(resume_state["policy_keys"], sharding_env)
+        reset_keys = device_put(resume_state["reset_keys"], sharding_env)
+        env_keys = device_put(resume_state["env_keys"], sharding_env)
+        env_state = tree_map(lambda x: device_put(x, sharding_env), resume_state["env_state"])
+        visibility = float(resume_state["visibility"])
+        scenarios_prob = jnp.asarray(resume_state["scenario_probabilities"])
+        ema_success = jnp.asarray(resume_state["ema_success"])
+        scenario_ema_success = jnp.asarray(resume_state["scenario_ema_success"])
+        scenario_ema_valid = jnp.asarray(resume_state["scenario_ema_valid"])
+        best_params = resume_state["best_actor_params"]
+        best_critic_params = resume_state["best_critic_params"]
+        best_return = float(resume_state["best_return"])
+        logs = resume_state["metrics"]
+        print(f"Resuming S2R RL from update {start_update}.")
     print(f"Starting optimized training loop for {train_updates} updates.")
     print(f"Rollout distributed across {len(devices)} devices.")
-    for update in tqdm(range(train_updates)):
+    train_one_epoch_sharded = None
+    for update in tqdm(range(start_update, train_updates)):
         beta_entropy = entropy_coefficient(init_beta_entropy, update, train_updates)
         # A. COLLECT ROLLOUT STEP (Parallel)
-        env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum, returns, times, success_per_scenario, episodes_per_scenario = collect_rollout_step(
+        (env_state, policy_keys, reset_keys, env_keys, history_raw, outcomes_sum,
+         returns, times, success_per_scenario, episodes_per_scenario,
+         human_collisions_per_scenario, obstacle_collisions_per_scenario,
+         timeouts_per_scenario) = collect_rollout_step(
             params, critic_params, env_state, policy_keys, reset_keys, env_keys, init_outcomes, policy, env, n_steps, scenarios_prob, visibility
         )
+        _require_finite(
+            {k: history_raw[k] for k in (
+                "inputs0", "inputs1", "states", "actions_history", "gt_poses",
+                "gt_vels", "values", "actions", "rewards", "neglogpdfs", "stds"
+            )},
+            update=update,
+            stage="rollout",
+        )
         current_states, current_obs, current_infos, current_dones = env_state[0], env_state[1], env_state[2], ~(env_state[3]['nothing'])
+        _require_finite(
+            {
+                "states": current_states,
+                "observations": current_obs,
+                "returns": returns,
+                "times": times,
+                "info_return": current_infos["return"],
+                "info_time": current_infos["time"],
+                "humans_goal": current_infos["humans_goal"],
+                "humans_parameters": current_infos["humans_parameters"],
+                "robot_goal": current_infos["robot_goal"],
+            },
+            update=update,
+            stage="environment",
+        )
         n_succ = int(device_get(jnp.sum(outcomes_sum["success"])))
         n_coll_hum = int(device_get(jnp.sum(outcomes_sum["collision_with_human"])))
         n_coll_obs = int(device_get(jnp.sum(outcomes_sum["collision_with_obstacle"])))
@@ -596,6 +723,9 @@ def jessi_s2r_rl_rollout(
         avg_action_std = device_get(jnp.mean(history_raw["stds"], axis=(0,1)))
         success_per_scenario = {k: int(jnp.sum(success_per_scenario[k])) for k in success_per_scenario}
         episodes_per_scenario = {k: int(jnp.sum(episodes_per_scenario[k])) for k in episodes_per_scenario}
+        human_collisions_per_scenario = {k: int(jnp.sum(human_collisions_per_scenario[k])) for k in human_collisions_per_scenario}
+        obstacle_collisions_per_scenario = {k: int(jnp.sum(obstacle_collisions_per_scenario[k])) for k in obstacle_collisions_per_scenario}
+        timeouts_per_scenario = {k: int(jnp.sum(timeouts_per_scenario[k])) for k in timeouts_per_scenario}
         success_rate_per_scenario = {k: (success_per_scenario[k] / episodes_per_scenario[k]) if episodes_per_scenario[k] > 0 else float("nan") for k in logs["successes_per_scenario"]}
         # A.5 SAVE BEST PARAMS
         if ep_count > 0 and batch_mean_return > best_return:
@@ -608,11 +738,20 @@ def jessi_s2r_rl_rollout(
         buffer_gpu = process_buffer_and_gae(
             critic_params, critic_keys, current_states, current_obs, current_infos, current_dones, history_raw, policy, env, env.reward_function.gamma, policy.dt, policy.v_max, lambda_gae
         )
+        _require_finite(
+            {k: buffer_gpu[k] for k in (
+                "inputs0", "inputs1", "states", "actions_history", "gt_poses",
+                "gt_vels", "actions", "values", "neglogpdfs", "critic_targets",
+                "advantages"
+            )},
+            update=update,
+            stage="GAE/buffer",
+        )
         # C. PREPARE TRAINING DATA
         def get_batched_shape_struct(x):
             target_shape = (n_minibatches, n_micro_splits, micro_batch_size, *x.shape[1:])
             return ShapeDtypeStruct(target_shape, x.dtype)
-        if update == 0:
+        if train_one_epoch_sharded is None:
             dummy_buffer_struct = tree_map(get_batched_shape_struct, buffer_gpu)
             train_pure = partial(
                 train_one_epoch, 
@@ -655,6 +794,10 @@ def jessi_s2r_rl_rollout(
                 debugging=(epoch==0) & (debugging),
             )
             metrics_one_epoch["loss"].block_until_ready() # SYNC
+            if not bool(device_get(metrics_one_epoch["finite"])):
+                raise FloatingPointError(
+                    f"Non-finite S2R update rejected at update={update}, epoch={epoch}, stage=PPO"
+                )
             for k in epoch_metrics_acc:
                 if k not in metrics_one_epoch: continue
                 epoch_metrics_acc[k].append(metrics_one_epoch[k])
@@ -690,6 +833,9 @@ def jessi_s2r_rl_rollout(
         logs["successes_per_scenario"] = {k: logs["successes_per_scenario"][k] + [success_per_scenario[k]] for k in logs["successes_per_scenario"]}
         logs["success_rates_per_scenario"] = {k: logs["success_rates_per_scenario"][k] + [success_rate_per_scenario[k]] for k in logs["success_rates_per_scenario"]}
         logs["episodes_per_scenario"] = {k: logs["episodes_per_scenario"][k] + [episodes_per_scenario[k]] for k in logs["episodes_per_scenario"]}
+        logs["human_collisions_per_scenario"] = {k: logs["human_collisions_per_scenario"][k] + [human_collisions_per_scenario[k]] for k in logs["human_collisions_per_scenario"]}
+        logs["obstacle_collisions_per_scenario"] = {k: logs["obstacle_collisions_per_scenario"][k] + [obstacle_collisions_per_scenario[k]] for k in logs["obstacle_collisions_per_scenario"]}
+        logs["timeouts_per_scenario"] = {k: logs["timeouts_per_scenario"][k] + [timeouts_per_scenario[k]] for k in logs["timeouts_per_scenario"]}
         # G. EMA UPDATE and CURRICULUM UTILS
         batch_scenario_success_rate = jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)])
         scenario_batch_valid = jnp.array([episodes_per_scenario[k] > 0 for k in sorted(success_rate_per_scenario)])
@@ -722,6 +868,10 @@ def jessi_s2r_rl_rollout(
             f"| Ret: {logs['returns'][-1]:.3f} | EMA Succ: {ema_success:.3f} | Succ: {batch_success_rate:.3f} | Fail: {batch_failure_rate:.3f} (hum {batch_human_collision_rate:.2f}, obs {batch_obstacle_collision_rate:.2f}) | Timeouts: {batch_timeout_rate:.3f}\n",
             f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
             f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
+            f"| Outcomes x scenario - " + ", ".join([
+                f"{scenarios_labels[k]}: n={episodes_per_scenario[k]}, h={human_collisions_per_scenario[k]}, o={obstacle_collisions_per_scenario[k]}, t={timeouts_per_scenario[k]}"
+                for k in logs['episodes_per_scenario']
+            ]) + "\n",
             f"| EMA-SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {scenario_ema_success[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n" if scenario_ema_success is not None else "",
             f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
             f"| Actor Loss: {logs['actor_losses'][-1]:.4f} | Critic Loss: {logs['critic_losses'][-1]:.4f} | Perc Loss: {logs['perception_losses'][-1]:.4f} | Safety Loss: {logs['safety_losses'][-1]:.4f} |  Entropy Loss: {logs['entropy_losses'][-1]:.4f}\n",
@@ -734,11 +884,34 @@ def jessi_s2r_rl_rollout(
             scenarios_prob = get_dynamic_probabilities(scenario_ema_success)
         if (update % 20 == 0) and (update > 0):
             # Visibility
-            if ema_success > 0.5 and worst_3_scenarios_success_rate > 0.3:
-                visibility -= 0.1
-            elif ema_success < 0.4:
-                visibility += 0.05
-            visibility = min(max(visibility, 0.), 1.)
+            visibility = update_visibility(
+                visibility, ema_success, worst_3_scenarios_success_rate,
+                maximum=initial_visibility,
+            )
+
+        if checkpoint_callback is not None and checkpoint_every > 0 and (update + 1) % checkpoint_every == 0:
+            checkpoint_callback(device_get({
+                "schema_version": 1,
+                "next_update": update + 1,
+                "actor_params": params,
+                "critic_params": critic_params,
+                "actor_optimizer_state": opt_state,
+                "critic_optimizer_state": critic_opt_state,
+                "global_key": key,
+                "policy_keys": policy_keys,
+                "reset_keys": reset_keys,
+                "env_keys": env_keys,
+                "env_state": env_state,
+                "visibility": visibility,
+                "scenario_probabilities": scenarios_prob,
+                "ema_success": ema_success,
+                "scenario_ema_success": scenario_ema_success,
+                "scenario_ema_valid": scenario_ema_valid,
+                "best_actor_params": best_params,
+                "best_critic_params": best_critic_params,
+                "best_return": best_return,
+                "metrics": logs,
+            }))
         
         
     return {

@@ -51,6 +51,21 @@ ENVIRONMENTS = [
     "lasernav",
 ]
 EPSILON = 1e-5 # Small value to avoid math overflow
+MAX_PLACEMENT_ATTEMPTS = 128
+
+
+def _bounded_rejection_loop(cond_fun, body_fun, init_val):
+    """Run scenario rejection sampling for a bounded number of attempts."""
+    def bounded_cond(carry):
+        attempts, value = carry
+        return (attempts < MAX_PLACEMENT_ATTEMPTS) & cond_fun(value)
+
+    def bounded_body(carry):
+        attempts, value = carry
+        return attempts + 1, body_fun(value)
+
+    _, value = lax.while_loop(bounded_cond, bounded_body, (0, init_val))
+    return value
 
 @jit
 def wrap_angle(theta:float) -> float:
@@ -755,6 +770,14 @@ class BaseEnv(ABC):
             "humans_leg_parameters": leg_parameters,
             "humans_leg_state": leg_state,
             "intermediate_leg_states": jnp.repeat(leg_state[None], int(self.robot_dt/self.humans_dt), axis=0), # Used to store the intermediate leg states between two robot steps
+            # Physical endpoints are captured before cyclic scenario respawns.
+            # They prevent collision checks from treating a teleport as motion.
+            "pre_respawn_humans_positions": full_state[:-1, :2],
+            "pre_respawn_leg_state": leg_state,
+            "humans_respawned": jnp.zeros((self.n_humans,), dtype=jnp.bool_),
+            "intermediate_human_respawns": jnp.zeros(
+                (int(self.robot_dt/self.humans_dt), self.n_humans), dtype=jnp.bool_
+            ),
         }
         return info
 
@@ -815,7 +838,7 @@ class BaseEnv(ABC):
                     operand=None)
                 return (disturbed_points, key, valid)
             disturbed_points, key = for_val
-            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            disturbed_points, key, _ = _bounded_rejection_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
             return (disturbed_points, key)
     
         disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
@@ -886,7 +909,7 @@ class BaseEnv(ABC):
                     operand=None)
                 return (disturbed_points, key, valid)
             disturbed_points, key = for_val
-            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            disturbed_points, key, _ = _bounded_rejection_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
             return disturbed_points, key
     
         disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
@@ -950,7 +973,7 @@ class BaseEnv(ABC):
                     operand=None)
                 return (disturbed_points, key, valid)
             disturbed_points, key = for_val
-            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            disturbed_points, key, _ = _bounded_rejection_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
             return disturbed_points, key
     
         disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
@@ -1015,7 +1038,7 @@ class BaseEnv(ABC):
                     operand=None)
                 return (disturbed_points, key, valid)
             disturbed_points, key = for_val
-            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            disturbed_points, key, _ = _bounded_rejection_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
             return disturbed_points, key
     
         disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
@@ -1127,7 +1150,7 @@ class BaseEnv(ABC):
                 )
                 return (disturbed_points, key, valid, inner_circle_radius)
             disturbed_points, key, inner_circle_radius = for_val
-            disturbed_points, key, _, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False, inner_circle_radius))
+            disturbed_points, key, _, _ = _bounded_rejection_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False, inner_circle_radius))
             return (disturbed_points, key, inner_circle_radius)
     
         disturbed_points, key, _ = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key, inner_circle_radius))
@@ -1204,7 +1227,7 @@ class BaseEnv(ABC):
                     operand=None)
                 return (points, key, valid)
             points, key = for_val
-            points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (points, key, False))
+            points, key, _ = _bounded_rejection_loop(lambda val: jnp.logical_not(val[2]), _while_body, (points, key, False))
             return (points, key)
         positions, key = lax.fori_loop(0, self.n_humans, _fori_body, (positions, key))
         
@@ -1277,7 +1300,7 @@ class BaseEnv(ABC):
                     operand=None)
                 return (disturbed_points, key, valid)
             disturbed_points, key = for_val
-            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            disturbed_points, key, _ = _bounded_rejection_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
             return disturbed_points, key
     
         disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
@@ -1350,7 +1373,7 @@ class BaseEnv(ABC):
                 ]))
                 return (disturbed_points, humans_goal, key, valid)
             disturbed_points, humans_goal, key = for_val
-            disturbed_points, humans_goal, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[3]), _while_body, (disturbed_points, humans_goal, key, False))
+            disturbed_points, humans_goal, key, _ = _bounded_rejection_loop(lambda val: jnp.logical_not(val[3]), _while_body, (disturbed_points, humans_goal, key, False))
             return disturbed_points, humans_goal, key
     
         disturbed_points, humans_goal, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, jnp.empty((self.n_humans,2)), key))
@@ -1411,7 +1434,7 @@ class BaseEnv(ABC):
                     operand=None)
                 return (disturbed_points, key, valid)
             disturbed_points, key = for_val
-            disturbed_points, key, _ = lax.while_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
+            disturbed_points, key, _ = _bounded_rejection_loop(lambda val: jnp.logical_not(val[2]), _while_body, (disturbed_points, key, False))
             return disturbed_points, key
     
         disturbed_points, key = lax.fori_loop(0, self.n_humans, _fori_body, (disturbed_points, key))
@@ -1742,6 +1765,9 @@ class BaseEnv(ABC):
     @partial(jit, static_argnames=("self"))
     def _scenario_based_state_post_update(self, state:jnp.ndarray, info:dict):
 
+        # Scenario handlers set entries to True only when a cyclic respawn occurs.
+        info["humans_respawned"] = jnp.zeros((self.n_humans,), dtype=jnp.bool_)
+
         @jit
         def _update_circular_crossing(val:tuple):
             @jit
@@ -1796,9 +1822,11 @@ class BaseEnv(ABC):
                     legs_state[4] + transition[1], 
                     legs_state[5],
                 ])
-                return new_position, new_goal, new_legs_state
+                respawned = jnp.linalg.norm(new_position - position) > 1.0
+                return new_position, new_goal, new_legs_state, respawned
             @jit
             def _update_human_state_and_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray, is_x_flipped:bool) -> tuple:
+                original_position = position
                 flip_x = lax.cond(is_x_flipped,lambda _: -1.,lambda _: 1.,None)
                 position, goal = lax.cond(
                     jnp.linalg.norm(position - goal) <= 3, # Compliant with Social-Navigation-PyEnvs
@@ -1812,10 +1840,11 @@ class BaseEnv(ABC):
                     ),
                     lambda x: x,
                     (position, goal))
-                return position, goal
+                respawned = jnp.linalg.norm(position - original_position) > 1.0
+                return position, goal, respawned
             info, state = val
             if self.leg_dynamics:
-                new_positions, new_goals, info["humans_leg_state"] = vmap(_update_human_state_and_goal_leg_dynamics, in_axes=(0,0,0,0,None,None,None, None))(
+                new_positions, new_goals, info["humans_leg_state"], respawned = vmap(_update_human_state_and_goal_leg_dynamics, in_axes=(0,0,0,0,None,None,None, None))(
                     state[:-1,0:2], 
                     info["humans_goal"], 
                     info["humans_parameters"][:,0], 
@@ -1826,7 +1855,7 @@ class BaseEnv(ABC):
                     info['is_x_flipped'],
                 )
             else:
-                new_positions, new_goals = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None, None))(
+                new_positions, new_goals, respawned = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None, None))(
                     state[:-1,0:2], 
                     info["humans_goal"], 
                     info["humans_parameters"][:,0], 
@@ -1837,6 +1866,7 @@ class BaseEnv(ABC):
                 )
             state = state.at[:-1,0:2].set(new_positions)
             info["humans_goal"] = info["humans_goal"].at[:].set(new_goals)
+            info["humans_respawned"] = respawned
             return info, state
         
         @jit
@@ -1958,9 +1988,9 @@ class BaseEnv(ABC):
         @jit
         def _update_crowd_chasing(val:tuple):
             @jit
-            def _update_human_state_and_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray, is_x_flipped:bool) -> tuple:
+            def _update_human_state_and_goal(position:jnp.ndarray, goal:jnp.ndarray, radius:float, legs_state:jnp.ndarray, positions:jnp.ndarray, radiuses:jnp.ndarray, safety_spaces:jnp.ndarray, is_x_flipped:bool) -> tuple:
                 flip_x = lax.cond(is_x_flipped,lambda _: -1.,lambda _: 1.,None)
-                position, goal = lax.cond(
+                new_position, new_goal = lax.cond(
                     # jnp.linalg.norm(position - goal) <= radius + 2,
                     jnp.linalg.norm(position - goal) <= 3,
                     lambda _: (
@@ -1972,12 +2002,20 @@ class BaseEnv(ABC):
                     ),
                     lambda x: x,
                     (position, goal))
-                return position, goal
+                transition = new_position - position
+                new_legs_state = legs_state.at[jnp.array([0, 3])].add(transition[0])
+                new_legs_state = new_legs_state.at[jnp.array([1, 4])].add(transition[1])
+                respawned = jnp.linalg.norm(transition) > 1.0
+                return new_position, new_goal, new_legs_state, respawned
             info, state = val
-            new_positions, new_goals = vmap(_update_human_state_and_goal, in_axes=(0,0,0,None,None,None, None))(
+            new_positions, new_goals, new_legs_state, respawned = vmap(
+                _update_human_state_and_goal,
+                in_axes=(0,0,0,0,None,None,None,None),
+            )(
                 state[:-1,0:2], 
                 info["humans_goal"], 
                 info["humans_parameters"][:,0], 
+                info["humans_leg_state"],
                 state[:,0:2], 
                 info["humans_parameters"][:,0], 
                 info["humans_parameters"][:,-1],
@@ -1985,6 +2023,12 @@ class BaseEnv(ABC):
             )
             state = state.at[:-1,0:2].set(new_positions)
             info["humans_goal"] = info["humans_goal"].at[:].set(new_goals)
+            info["humans_respawned"] = respawned
+            info["humans_leg_state"] = lax.cond(
+                self.leg_dynamics,
+                lambda: new_legs_state,
+                lambda: info["humans_leg_state"],
+            )
             return info, state
 
         if self.scenario != -1:  # If not custom scenario
@@ -2120,6 +2164,10 @@ class BaseEnv(ABC):
                 info["humans_leg_parameters"],
                 self.humans_policy,
             )
+        # Preserve the endpoint reached by physical dynamics. Scenario-specific
+        # cyclic respawns happen below and must not become swept collision edges.
+        info["pre_respawn_humans_positions"] = new_state[:-1, :2]
+        info["pre_respawn_leg_state"] = info["humans_leg_state"]
         ## Post update stuff
         new_info, new_state = self._scenario_based_state_post_update(new_state, info)
         new_info["robot_delay"] = jnp.max(jnp.array([0., info["robot_delay"] - self.humans_dt]))
@@ -2135,14 +2183,20 @@ class BaseEnv(ABC):
         def scan_step(carry, _):
             curr_state, curr_info = carry
             new_state, new_info = self._update_state_info(curr_state, curr_info, action)
-            return (new_state, new_info), (new_state, new_info["humans_leg_state"])
-        (new_state, new_info), (state_history, humans_leg_state_history) = lax.scan(
+            return (new_state, new_info), (
+                new_state,
+                new_info["humans_leg_state"],
+                new_info["pre_respawn_humans_positions"],
+                new_info["pre_respawn_leg_state"],
+                new_info["humans_respawned"],
+            )
+        (new_state, new_info), history = lax.scan(
             f=scan_step,
             init=(state, info),
             xs=None,
             length=int(self.robot_dt/self.humans_dt)
         )
-        return new_state, new_info, (state_history, humans_leg_state_history)
+        return new_state, new_info, history
 
     @partial(jit, static_argnames=("self"))
     def _update_state_info_imitation_learning(
@@ -2168,6 +2222,8 @@ class BaseEnv(ABC):
         parameters = jnp.vstack((info["humans_parameters"], jnp.array([self.robot_radius, second_parameter, *self.get_standard_humans_parameters(1)[0,2:-1], 0.1]))) # Add safety space of 0.1 to robot
         static_obstacles = info["static_obstacles"]
         new_state = self.humans_step(state, info["visibility"], goals, parameters, static_obstacles, self.humans_dt)
+        info["pre_respawn_humans_positions"] = new_state[:-1, :2]
+        info["pre_respawn_leg_state"] = info["humans_leg_state"]
         new_info, new_state = self._scenario_based_state_post_update(new_state, info)
         return (new_state, new_info)
 

@@ -21,6 +21,10 @@ class JessiS2RRolloutSmokeTests(unittest.TestCase):
             v_max=0.45,
             timeout_penalty_reward=True,
             timeout_penalty=-0.5,
+            use_leg_collisions=True,
+            effective_foot_radius=0.2,
+            anticipatory_avoidance_reward=True,
+            local_minimum_escape_reward=True,
         )
         environment = LaserNav(
             robot_radius=0.3,
@@ -35,6 +39,7 @@ class JessiS2RRolloutSmokeTests(unittest.TestCase):
             wheels_distance=0.4736842105,
             wheels_max_linear_acceleration=0.87,
             lidar_num_rays=12,
+            leg_dynamics=True,
         )
         policy = JESSI_S2R(
             robot_radius=0.3,

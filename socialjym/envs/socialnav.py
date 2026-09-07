@@ -243,7 +243,7 @@ class SocialNav(BaseEnv):
         state_obs = state.at[-1,2:4].set(action)
         reward, outcome, reward_terms = self.reward_function(self._get_obs(state_obs, info), info, self.robot_dt)
         ### Update state and info
-        new_state, new_info, (state_history, humans_leg_state_history) = self._step(state, info, action) 
+        new_state, new_info, (state_history, humans_leg_state_history, _, _, humans_respawned) = self._step(state, info, action)
         ### Test outcome computation (during tests we check for INSTANT collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):
@@ -271,6 +271,7 @@ class SocialNav(BaseEnv):
         new_info["action_history"] = jnp.concatenate((action[None,:], new_info["action_history"][:-1]), axis=0)
         new_info["intermediate_states"] = state_history
         new_info["intermediate_leg_states"] = humans_leg_state_history
+        new_info["intermediate_human_respawns"] = humans_respawned
         gammas = jnp.array(list(reward_terms.keys()))
         rewards = jnp.array(list(reward_terms.values()))
         exponent = info["step"] * self.robot_dt * self.reward_function.v_max
@@ -410,4 +411,3 @@ class SocialNav(BaseEnv):
             humans_delay=jnp.zeros((self.n_humans,)),
         )
         return full_state, key, self._get_obs(full_state, info), info, {"success": False, "failure": False, "timeout": False, "nothing": True}
-        

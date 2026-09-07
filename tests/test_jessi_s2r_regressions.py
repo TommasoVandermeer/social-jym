@@ -12,7 +12,11 @@ from socialjym.policies.jessi_s2r import (
     wrap_relative_angles,
 )
 from socialjym.utils.distributions.logistic_normal import LogisticNormal
-from socialjym.utils.rollouts.jessi_s2r_rollouts import entropy_coefficient, update_ema
+from socialjym.utils.rollouts.jessi_s2r_rollouts import (
+    entropy_coefficient,
+    update_ema,
+    update_visibility,
+)
 
 
 class LogisticNormalTests(unittest.TestCase):
@@ -65,8 +69,31 @@ class ScheduleAndEmaTests(unittest.TestCase):
         self.assertAlmostEqual(float(scenario_ema[0]), 0.54)
         self.assertAlmostEqual(float(scenario_ema[1]), 0.5)
 
+    def test_visibility_never_increases(self):
+        self.assertEqual(update_visibility(0.5, 0.2, 0.1), 0.5)
+        self.assertAlmostEqual(update_visibility(0.5, 0.8, 0.6), 0.4)
+        self.assertEqual(update_visibility(0.0, 0.8, 0.6), 0.0)
+
 
 class PolicyArchitectureTests(unittest.TestCase):
+    def test_action_bounds_are_finite_and_clamped(self):
+        policy = JESSI_S2R(
+            v_max=0.45,
+            wheels_distance=0.47,
+            lidar_num_rays=10,
+            n_stack=2,
+            n_actions_history=2,
+        )
+        for cloud in (
+            jnp.full((10, 2), jnp.nan),
+            jnp.vstack((jnp.array([[jnp.inf, 0.0], [-jnp.inf, 0.0], [0.0, 0.0], [1e-12, 1e-12]]), jnp.zeros((6, 2)))),
+            jnp.zeros((10, 2)),
+        ):
+            bounds = policy.bound_action_space(cloud)
+            self.assertTrue(bool(jnp.all(jnp.isfinite(bounds))))
+            self.assertTrue(bool(jnp.all(bounds >= 1e-5)))
+            self.assertTrue(bool(jnp.all(bounds <= 1.0)))
+
     def test_time_major_trajectories_are_packed_per_human(self):
         trajectory = jnp.array(
             [

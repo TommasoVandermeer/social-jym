@@ -1029,6 +1029,9 @@ class JESSI(BasePolicy):
         Compute the bounds of the action space based on the control parameters alpha, beta, gamma.
         WARNING: Assumes LiDAR orientation is align with robot frame.
         """
+        lidar_point_cloud = jnp.nan_to_num(
+            lidar_point_cloud, nan=jnp.inf, posinf=jnp.inf, neginf=-jnp.inf
+        )
         # Lower ALPHA
         is_inside_frontal_rect = (
             (lidar_point_cloud[:,0] >=  0 + eps) & # xmin
@@ -1048,6 +1051,7 @@ class JESSI(BasePolicy):
             lambda _: 1.,
             None,
         )
+        new_alpha = jnp.clip(jnp.nan_to_num(new_alpha, nan=1.0, posinf=1.0, neginf=EPSILON), EPSILON, 1.0)
         @jit
         def _lower_beta_and_gamma(tup:tuple):
             lidar_point_cloud, new_alpha, vmax, wheels_distance, dt = tup
@@ -1066,7 +1070,7 @@ class JESSI(BasePolicy):
             min_y = jnp.nanmin(intersection_points[:,1])
             new_beta = lax.cond(
                 ~jnp.isnan(min_y),
-                lambda _: (min_y - self.robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
+                lambda _: (min_y - self.robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * jnp.maximum(new_alpha, EPSILON)),
                 lambda _: 1.,
                 None,
             )
@@ -1085,21 +1089,21 @@ class JESSI(BasePolicy):
             max_y = jnp.nanmax(intersection_points[:,1])
             new_gamma = lax.cond(
                 ~jnp.isnan(max_y),
-                lambda _: (-max_y - self.robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * new_alpha),
+                lambda _: (-max_y - self.robot_radius) * 4 * wheels_distance / (vmax**2 * dt**2 * jnp.maximum(new_alpha, EPSILON)),
                 lambda _: 1.,
                 None,
             )
             return new_beta, new_gamma
         new_beta, new_gamma = lax.cond(
-            new_alpha == 0.,
+            new_alpha <= EPSILON,
             lambda _: (1., 1.),
             _lower_beta_and_gamma,
             (lidar_point_cloud, new_alpha, self.v_max, self.wheels_distance, self.dt)
         )
         # Apply lower bound to new_alpha, new_beta, new_gamma
-        new_alpha = jnp.max(jnp.array([EPSILON, new_alpha]))
-        new_beta = jnp.max(jnp.array([EPSILON, new_beta]))
-        new_gamma = jnp.max(jnp.array([EPSILON, new_gamma]))
+        new_alpha = jnp.clip(jnp.nan_to_num(new_alpha, nan=1.0, posinf=1.0, neginf=EPSILON), EPSILON, 1.0)
+        new_beta = jnp.clip(jnp.nan_to_num(new_beta, nan=1.0, posinf=1.0, neginf=EPSILON), EPSILON, 1.0)
+        new_gamma = jnp.clip(jnp.nan_to_num(new_gamma, nan=1.0, posinf=1.0, neginf=EPSILON), EPSILON, 1.0)
         return jnp.array([new_alpha, new_beta, new_gamma])
 
     @partial(jit, static_argnames=("self"))

@@ -35,6 +35,21 @@ class Reward1(BaseReward):
         angular_speed_bound: float=1.,
         angular_speed_penalty_weight: float=0.0075,
         timeout_penalty: float=-0.25,
+        use_leg_collisions: bool=True,
+        effective_foot_radius: float=0.20,
+        anticipatory_avoidance_reward: bool=False,
+        avoidance_distance: float=1.0,
+        avoidance_horizon: float=1.5,
+        avoidance_penalty_weight: float=0.15,
+        avoidance_improvement_weight: float=0.20,
+        head_on_risk_multiplier: float=1.0,
+        local_minimum_escape_reward: bool=False,
+        escape_clearance_distance: float=2.0,
+        escape_clearance_weight: float=0.05,
+        stalled_rotation_penalty_weight: float=0.01,
+        escape_forward_bonus_weight: float=0.02,
+        turn_in_place_linear_threshold: float=0.05,
+        turn_in_place_angular_threshold: float=0.20,
     ) -> None:
         super().__init__(gamma)
         # Check input parameters
@@ -47,6 +62,16 @@ class Reward1(BaseReward):
         assert angular_speed_bound > 0, "angular_speed_bound must be positive"
         assert angular_speed_penalty_weight > 0, "angular_speed_penalty_weight must be positive"
         assert timeout_penalty < 0, "timeout_penalty must be negative"
+        assert effective_foot_radius > 0, "effective_foot_radius must be positive"
+        assert avoidance_distance > 0, "avoidance_distance must be positive"
+        assert avoidance_horizon > 0, "avoidance_horizon must be positive"
+        assert avoidance_penalty_weight >= 0, "avoidance_penalty_weight must be non-negative"
+        assert avoidance_improvement_weight >= 0, "avoidance_improvement_weight must be non-negative"
+        assert head_on_risk_multiplier >= 0, "head_on_risk_multiplier must be non-negative"
+        assert escape_clearance_distance > 0, "escape_clearance_distance must be positive"
+        assert escape_clearance_weight >= 0, "escape_clearance_weight must be non-negative"
+        assert stalled_rotation_penalty_weight >= 0, "stalled_rotation_penalty_weight must be non-negative"
+        assert escape_forward_bonus_weight >= 0, "escape_forward_bonus_weight must be non-negative"
         # Define reward type
         self.target_reached_reward = target_reached_reward
         self.collision_with_humans_penalty_reward = collision_with_humans_penalty_reward
@@ -113,6 +138,21 @@ class Reward1(BaseReward):
         self.angular_speed_bound = angular_speed_bound
         self.angular_speed_penalty_weight = angular_speed_penalty_weight
         self.timeout_penalty = timeout_penalty
+        self.use_leg_collisions = use_leg_collisions
+        self.effective_foot_radius = effective_foot_radius
+        self.anticipatory_avoidance_reward = anticipatory_avoidance_reward
+        self.avoidance_distance = avoidance_distance
+        self.avoidance_horizon = avoidance_horizon
+        self.avoidance_penalty_weight = avoidance_penalty_weight
+        self.avoidance_improvement_weight = avoidance_improvement_weight
+        self.head_on_risk_multiplier = head_on_risk_multiplier
+        self.local_minimum_escape_reward = local_minimum_escape_reward
+        self.escape_clearance_distance = escape_clearance_distance
+        self.escape_clearance_weight = escape_clearance_weight
+        self.stalled_rotation_penalty_weight = stalled_rotation_penalty_weight
+        self.escape_forward_bonus_weight = escape_forward_bonus_weight
+        self.turn_in_place_linear_threshold = turn_in_place_linear_threshold
+        self.turn_in_place_angular_threshold = turn_in_place_angular_threshold
         self.kinematics = ROBOT_KINEMATICS.index('unicycle')
         self.robot_radius = robot_radius
         self.humans_policy = HUMAN_POLICIES.index('hsfm')
@@ -224,6 +264,8 @@ class Reward1(BaseReward):
         timeout,
         action,
         dt,
+        avoidance_reward=0.0,
+        escape_reward=0.0,
     ):
         ### COMPUTE OUTCOME ###
         failure = collision_with_human | collision_with_obstacle
@@ -274,6 +316,8 @@ class Reward1(BaseReward):
             )
         else:
             discomfort_reward = 0.
+        if self.anticipatory_avoidance_reward:
+            discomfort_reward += avoidance_reward
         # Progress to goal reward
         if self.progress_to_goal_reward:
             progress_to_goal = jnp.linalg.norm(robot_pos - robot_goal) - jnp.linalg.norm(next_robot_pos - robot_goal)
@@ -284,6 +328,8 @@ class Reward1(BaseReward):
             )
         else:
             progress_reward = 0.
+        if self.local_minimum_escape_reward:
+            progress_reward += escape_reward
         # High rotation penalty
         if self.high_rotation_penalty_reward:
             rotation_reward = lax.cond(
@@ -318,26 +364,151 @@ class Reward1(BaseReward):
             reward_terms = {self.gamma: reward}
         return reward, outcome, reward_terms
 
-    @partial(jit, static_argnames=("self"))
-    def transition(self, old_state, new_state, intermediate_states, action, info, dt):
+    def _collision_segments(self, robot_starts, robot_ends, entity_starts, entity_ends, radii):
+        collisions, collision_info = vmap(
+            self.interval_human_collision_termination,
+            in_axes=(0, 0, None, 0, 0, None),
+        )(
+            robot_starts,
+            robot_ends,
+            self.robot_radius,
+            entity_starts,
+            entity_ends,
+            radii,
+        )
+        return jnp.any(collisions), jnp.min(collision_info["min_distance"])
+
+    def _human_risk(self, state, human_radii, valid_mask=None):
+        """Bounded closest-approach risk, with extra weight for head-on motion."""
+        robot_pos = state[-1, :2]
+        robot_heading = state[-1, 4]
+        robot_velocity = state[-1, 2] * jnp.array(
+            [jnp.cos(robot_heading), jnp.sin(robot_heading)]
+        )
+        human_velocity = vmap(get_linear_velocity)(state[:-1, 4], state[:-1, 2:4])
+        relative_position = state[:-1, :2] - robot_pos
+        relative_velocity = human_velocity - robot_velocity
+        velocity_squared = jnp.sum(relative_velocity ** 2, axis=-1)
+        closest_time = jnp.clip(
+            -jnp.sum(relative_position * relative_velocity, axis=-1)
+            / jnp.maximum(velocity_squared, 1e-8),
+            0.0,
+            self.avoidance_horizon,
+        )
+        closest_offset = relative_position + closest_time[:, None] * relative_velocity
+        clearance = jnp.linalg.norm(closest_offset, axis=-1) - (
+            self.robot_radius + human_radii
+        )
+        proximity = jnp.clip(
+            (self.avoidance_distance - clearance) / self.avoidance_distance,
+            0.0,
+            1.0,
+        )
+        robot_speed = jnp.linalg.norm(robot_velocity)
+        human_speed = jnp.linalg.norm(human_velocity, axis=-1)
+        opposing = jnp.clip(
+            -jnp.sum(human_velocity * robot_velocity, axis=-1)
+            / jnp.maximum(human_speed * robot_speed, 1e-8),
+            0.0,
+            1.0,
+        )
+        risks = proximity * (1.0 + self.head_on_risk_multiplier * opposing)
+        if valid_mask is not None:
+            risks = jnp.where(valid_mask, risks, 0.0)
+        return jnp.max(risks)
+
+    def _forward_clearance(self, state, human_positions, human_radii, obstacles):
+        """Approximate body-width clearance in front of the robot."""
+        robot_pos = state[-1, :2]
+        heading = state[-1, 4]
+        forward = jnp.array([jnp.cos(heading), jnp.sin(heading)])
+        lateral = jnp.array([-forward[1], forward[0]])
+
+        obstacle_segments = obstacles.reshape((-1, 2, 2))
+        samples = jnp.linspace(0.0, 1.0, 9)
+        obstacle_points = (
+            obstacle_segments[:, None, 0]
+            + samples[None, :, None]
+            * (obstacle_segments[:, None, 1] - obstacle_segments[:, None, 0])
+        ).reshape((-1, 2))
+        valid_obstacles = jnp.all(jnp.isfinite(obstacle_points), axis=-1)
+        obstacle_offset = obstacle_points - robot_pos
+        obstacle_forward = obstacle_offset @ forward
+        obstacle_lateral = jnp.abs(obstacle_offset @ lateral)
+        obstacle_clearance = jnp.where(
+            valid_obstacles
+            & (obstacle_forward > 0.0)
+            & (obstacle_lateral < self.robot_radius + 0.15),
+            obstacle_forward - self.robot_radius,
+            jnp.inf,
+        )
+
+        human_offset = human_positions - robot_pos
+        human_forward = human_offset @ forward
+        human_lateral = jnp.abs(human_offset @ lateral)
+        human_clearance = jnp.where(
+            (human_forward > 0.0)
+            & (human_lateral < self.robot_radius + human_radii),
+            human_forward - self.robot_radius - human_radii,
+            jnp.inf,
+        )
+        clearance = jnp.minimum(jnp.min(obstacle_clearance), jnp.min(human_clearance))
+        return jnp.clip(clearance, 0.0, self.escape_clearance_distance)
+
+    @partial(jit, static_argnames=("self", "leg_dynamics"))
+    def transition(
+        self,
+        old_state,
+        new_state,
+        intermediate_states,
+        action,
+        info,
+        dt,
+        intermediate_leg_states=None,
+        intermediate_human_end_positions=None,
+        intermediate_leg_end_states=None,
+        intermediate_human_respawns=None,
+        leg_dynamics=False,
+    ):
         """Reward the trajectory that was actually executed by LaserNav."""
         trajectory = jnp.concatenate((old_state[None, ...], intermediate_states), axis=0)
         starts = trajectory[:-1]
         ends = trajectory[1:]
 
-        human_collisions, human_collision_info = vmap(
-            self.interval_human_collision_termination,
-            in_axes=(0, 0, None, 0, 0, None),
-        )(
-            starts[:, -1, :2],
-            ends[:, -1, :2],
-            self.robot_radius,
-            starts[:, :-1, :2],
-            ends[:, :-1, :2],
-            info["humans_parameters"][:, 0],
+        human_radii = info["humans_parameters"][:, 0]
+        human_starts = trajectory[:-1, :-1, :2]
+        human_ends = (
+            intermediate_states[:, :-1, :2]
+            if intermediate_human_end_positions is None
+            else intermediate_human_end_positions
         )
-        collision_with_human = jnp.any(human_collisions)
-        min_human_distance = jnp.min(human_collision_info["min_distance"])
+        collision_with_human, min_human_distance = self._collision_segments(
+            starts[:, -1, :2], ends[:, -1, :2], human_starts, human_ends, human_radii
+        )
+        if self.use_leg_collisions and leg_dynamics and intermediate_leg_states is not None:
+            old_feet = jnp.stack(
+                (info["humans_leg_state"][:, 0:2], info["humans_leg_state"][:, 3:5]),
+                axis=1,
+            ).reshape((-1, 2))
+            feet_history = jnp.stack(
+                (intermediate_leg_states[:, :, 0:2], intermediate_leg_states[:, :, 3:5]),
+                axis=2,
+            ).reshape((intermediate_leg_states.shape[0], -1, 2))
+            foot_starts = jnp.concatenate((old_feet[None, ...], feet_history[:-1]), axis=0)
+            if intermediate_leg_end_states is None:
+                foot_ends = feet_history
+            else:
+                foot_ends = jnp.stack(
+                    (intermediate_leg_end_states[:, :, 0:2], intermediate_leg_end_states[:, :, 3:5]),
+                    axis=2,
+                ).reshape((intermediate_leg_end_states.shape[0], -1, 2))
+            collision_with_human, min_human_distance = self._collision_segments(
+                starts[:, -1, :2],
+                ends[:, -1, :2],
+                foot_starts,
+                foot_ends,
+                jnp.full((foot_starts.shape[1],), self.effective_foot_radius),
+            )
 
         obstacle_segments = info["static_obstacles"][-1].reshape((-1, 2, 2))
         valid_obstacles = jnp.all(jnp.isfinite(obstacle_segments), axis=(1, 2))
@@ -376,6 +547,81 @@ class Reward1(BaseReward):
         reached_goal = jnp.any(goal_distances < self.robot_radius)
         timeout, _ = self.timeout(info["time"] + dt)
 
+        avoidance_reward = 0.0
+        non_respawned = (
+            jnp.ones((old_state.shape[0] - 1,), dtype=jnp.bool_)
+            if intermediate_human_respawns is None
+            else ~jnp.any(intermediate_human_respawns, axis=0)
+        )
+        if self.anticipatory_avoidance_reward:
+            old_risk = self._human_risk(old_state, human_radii, non_respawned)
+            new_risk = self._human_risk(new_state, human_radii, non_respawned)
+            avoidance_reward = (
+                self.avoidance_improvement_weight * (old_risk - new_risk)
+                - self.avoidance_penalty_weight * dt * new_risk
+            )
+
+        escape_reward = 0.0
+        if self.local_minimum_escape_reward:
+            old_human_positions = old_state[:-1, :2]
+            new_human_positions = new_state[:-1, :2]
+            clearance_radii = human_radii
+            if self.use_leg_collisions and leg_dynamics and intermediate_leg_states is not None:
+                old_human_positions = old_feet
+                new_human_positions = feet_history[-1]
+                clearance_radii = jnp.full(
+                    (old_human_positions.shape[0],), self.effective_foot_radius
+                )
+                clearance_mask = jnp.repeat(non_respawned, 2)
+            else:
+                clearance_mask = non_respawned
+            old_human_positions = jnp.where(
+                clearance_mask[:, None], old_human_positions, jnp.inf
+            )
+            new_human_positions = jnp.where(
+                clearance_mask[:, None], new_human_positions, jnp.inf
+            )
+            old_clearance = self._forward_clearance(
+                old_state, old_human_positions, clearance_radii, info["static_obstacles"][-1]
+            )
+            new_clearance = self._forward_clearance(
+                new_state, new_human_positions, clearance_radii, info["static_obstacles"][-1]
+            )
+            translation = jnp.linalg.norm(new_state[-1, :2] - old_state[-1, :2])
+            heading_delta = jnp.abs(jnp.arctan2(
+                jnp.sin(new_state[-1, 4] - old_state[-1, 4]),
+                jnp.cos(new_state[-1, 4] - old_state[-1, 4]),
+            ))
+            turning_in_place = (
+                (translation < self.turn_in_place_linear_threshold * dt)
+                & (heading_delta > self.turn_in_place_angular_threshold * dt)
+            )
+            previous_actions = info["action_history"]
+            repeatedly_turning = jnp.all(
+                (jnp.abs(previous_actions[:, 0]) < self.turn_in_place_linear_threshold)
+                & (jnp.abs(previous_actions[:, 1]) > self.turn_in_place_angular_threshold)
+            )
+            clearance_gain = new_clearance - old_clearance
+            escape_reward = jnp.where(
+                turning_in_place,
+                self.escape_clearance_weight * jnp.clip(clearance_gain, -0.5, 0.5),
+                0.0,
+            )
+            escape_reward -= jnp.where(
+                turning_in_place & repeatedly_turning & (clearance_gain <= 1e-3),
+                self.stalled_rotation_penalty_weight * dt,
+                0.0,
+            )
+            resumed_forward = repeatedly_turning & (
+                translation > self.turn_in_place_linear_threshold * dt
+            )
+            escape_reward += jnp.where(
+                resumed_forward,
+                self.escape_forward_bonus_weight
+                * jnp.clip(translation / jnp.maximum(self.v_max * dt, 1e-8), 0.0, 1.0),
+                0.0,
+            )
+
         return self._compute_reward(
             old_state[-1, :2],
             new_state[-1, :2],
@@ -387,4 +633,6 @@ class Reward1(BaseReward):
             timeout,
             action,
             dt,
+            avoidance_reward,
+            escape_reward,
         )

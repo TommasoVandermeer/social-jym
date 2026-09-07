@@ -53,6 +53,7 @@ class JessiS2RTrainingSmokeTests(unittest.TestCase):
             humans_trajectory_noise_std=0.0,
         )
         perception, actor, critic, _ = policy.init_nns(jax.random.PRNGKey(0))
+        checkpoints = []
         result = jessi_s2r_rl_rollout(
             initial_actor_parameters=policy.merge_nns_params(perception, actor),
             initial_critic_parameters=critic,
@@ -72,6 +73,8 @@ class JessiS2RTrainingSmokeTests(unittest.TestCase):
             lambda_gae=0.95,
             initial_visibility=0.5,
             training_type="policy",
+            checkpoint_every=1,
+            checkpoint_callback=checkpoints.append,
         )
         self.assertEqual(
             set(result),
@@ -86,6 +89,10 @@ class JessiS2RTrainingSmokeTests(unittest.TestCase):
         self.assertTrue(bool(jnp.isfinite(result["metrics"]["losses"][0])))
         self.assertGreater(result["metrics"]["weight_entropies"][0], 0.0)
         self.assertEqual(result["metrics"]["visibilities"], [0.5])
+        self.assertEqual(len(checkpoints), 1)
+        self.assertEqual(checkpoints[0]["next_update"], 1)
+        self.assertEqual(checkpoints[0]["schema_version"], 1)
+        self.assertEqual(float(checkpoints[0]["visibility"]), 0.5)
 
         with tempfile.TemporaryDirectory() as directory:
             store = ArtifactStore(directory, "jessi_s2r", {"smoke": True})
@@ -94,6 +101,9 @@ class JessiS2RTrainingSmokeTests(unittest.TestCase):
             store.save("actor", actor, dependencies=("dataset", "perception"))
             store.save("critic", critic, dependencies=("dataset",))
             dependencies = ("perception", "actor", "critic")
+            store.save("checkpoint", checkpoints[0], dependencies=dependencies)
+            checkpoint_reloaded = store.load("checkpoint", dependencies=dependencies)
+            self.assertEqual(checkpoint_reloaded["next_update"], 1)
             store.save("rl", result, dependencies=dependencies)
             reloaded = store.load("rl", dependencies=dependencies)
             self.assertEqual(set(reloaded), set(result))

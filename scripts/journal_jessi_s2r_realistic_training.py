@@ -97,6 +97,7 @@ training_hyperparams = {
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
     'safety_loss': False,  # Whether to include safety loss in the RL training
     'target_kl': 0.015,  # Target KL divergence for early stopping in each update
+    'checkpoint_every': 50,
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 
@@ -107,10 +108,30 @@ reward_config = {
     "timeout_penalty": -0.5,
     "progress_to_goal_weight": 0.3,
     "high_rotation_penalty_reward": False,
+    # With leg dynamics enabled, contacts occur at the feet.  The effective
+    # radius includes the foot extension beyond the simulated leg disc.
+    "use_leg_collisions": True,
+    "effective_foot_radius": 0.20,
+    # Reward reducing predicted closest-approach risk, especially head-on.
+    "anticipatory_avoidance_reward": True,
+    "avoidance_distance": 1.0,
+    "avoidance_horizon": 1.5,
+    "avoidance_penalty_weight": 0.15,
+    "avoidance_improvement_weight": 0.20,
+    "head_on_risk_multiplier": 1.0,
+    # Reward turns that open forward clearance and penalize repeated spins
+    # which fail to do so.  Forward motion after such a turn gets a small bonus.
+    "local_minimum_escape_reward": True,
+    "escape_clearance_distance": 2.0,
+    "escape_clearance_weight": 0.05,
+    "stalled_rotation_penalty_weight": 0.01,
+    "escape_forward_bonus_weight": 0.02,
+    "turn_in_place_linear_threshold": 0.05,
+    "turn_in_place_angular_threshold": 0.20,
 }
 
 experiment_config = {
-    "pipeline_schema": 2,
+    "pipeline_schema": 3,
     "random_seed": random_seed,
     "environment": {
         "scenario": scenario,
@@ -203,6 +224,7 @@ CONTROLLER_DATA = "actor_critic_dataset"
 ACTOR_MODEL = "actor_network"
 CRITIC_MODEL = "critic_network"
 RL_RESULT = "multitask_rl_result"
+RL_CHECKPOINTS = ("multitask_rl_checkpoint_0", "multitask_rl_checkpoint_1")
 
 def make_reward():
     if training_hyperparams['reward_function'] == 'lasernav_reward1':
@@ -1241,9 +1263,62 @@ if not artifact_store.is_valid(RL_RESULT, dependencies=rl_dependencies):
         label_params(il_network_params)
     )
     critic_network_optimizer = optax.chain(
-        # optax.clip_by_global_norm(training_hyperparams['gradient_norm_scale']),
+        optax.clip_by_global_norm(1.0),
         optax.sgd(learning_rate=training_hyperparams['rl_critic_learning_rate'], momentum=0.9)
     )
+    resume_state = None
+    valid_checkpoints = []
+    required_checkpoint_keys = {
+        "schema_version", "next_update", "actor_params", "critic_params",
+        "actor_optimizer_state", "critic_optimizer_state", "global_key",
+        "policy_keys", "reset_keys", "env_keys", "env_state", "visibility",
+        "scenario_probabilities", "ema_success", "scenario_ema_success",
+        "scenario_ema_valid", "best_actor_params", "best_critic_params",
+        "best_return", "metrics",
+    }
+    expected_actor_opt_structure = tree_structure(network_optimizer.init(il_network_params))
+    expected_critic_opt_structure = tree_structure(critic_network_optimizer.init(il_critic_params))
+    def same_tree_shapes(candidate, reference):
+        return tree_structure(candidate) == tree_structure(reference) and all(
+            getattr(candidate_leaf, "shape", None) == getattr(reference_leaf, "shape", None)
+            for candidate_leaf, reference_leaf in zip(tree_leaves(candidate), tree_leaves(reference))
+        )
+    for checkpoint_name in RL_CHECKPOINTS:
+        try:
+            checkpoint = artifact_store.load(checkpoint_name, dependencies=rl_dependencies)
+            if not isinstance(checkpoint, dict):
+                raise ValueError("checkpoint payload is not a dictionary")
+            if checkpoint.get("schema_version") != 1:
+                raise ValueError("checkpoint payload schema mismatch")
+            missing_keys = required_checkpoint_keys - set(checkpoint)
+            if missing_keys:
+                raise ValueError(f"checkpoint is missing keys: {sorted(missing_keys)}")
+            if not 0 <= int(checkpoint["next_update"]) <= training_hyperparams['rl_training_updates']:
+                raise ValueError("checkpoint next_update is out of range")
+            if not same_tree_shapes(checkpoint["actor_params"], il_network_params):
+                raise ValueError("checkpoint actor structure mismatch")
+            if not same_tree_shapes(checkpoint["critic_params"], il_critic_params):
+                raise ValueError("checkpoint critic structure mismatch")
+            if tree_structure(checkpoint["actor_optimizer_state"]) != expected_actor_opt_structure:
+                raise ValueError("checkpoint actor optimizer structure mismatch")
+            if tree_structure(checkpoint["critic_optimizer_state"]) != expected_critic_opt_structure:
+                raise ValueError("checkpoint critic optimizer structure mismatch")
+            valid_checkpoints.append(checkpoint)
+        except (FileNotFoundError, OSError, pickle.PickleError, EOFError, ValueError, RuntimeError, TypeError, KeyError) as error:
+            if artifact_store.path(checkpoint_name).exists():
+                print(f"Ignoring invalid RL checkpoint {artifact_store.path(checkpoint_name)}: {error}")
+    if valid_checkpoints:
+        resume_state = max(valid_checkpoints, key=lambda checkpoint: int(checkpoint["next_update"]))
+        print(f"Selected RL checkpoint at next_update={resume_state['next_update']}")
+    del valid_checkpoints
+    checkpoint = None
+
+    def save_rl_checkpoint(checkpoint):
+        slot = (int(checkpoint["next_update"]) // training_hyperparams['checkpoint_every']) % len(RL_CHECKPOINTS)
+        path = artifact_store.save(
+            RL_CHECKPOINTS[slot], checkpoint, dependencies=rl_dependencies
+        )
+        print(f"Saved resumable RL checkpoint: {path}")
     # Initialize RL rollout params
     rl_rollout_params = {
         'initial_actor_parameters': il_network_params,
@@ -1267,6 +1342,9 @@ if not artifact_store.is_valid(RL_RESULT, dependencies=rl_dependencies):
         'training_type': "multitask",
         'target_kl': training_hyperparams['target_kl'],
         'debugging': False,
+        'resume_state': resume_state,
+        'checkpoint_every': training_hyperparams['checkpoint_every'],
+        'checkpoint_callback': save_rl_checkpoint,
     }
     # REINFORCEMENT LEARNING ROLLOUT
     rl_out = jessi_s2r_rl_rollout(**rl_rollout_params)

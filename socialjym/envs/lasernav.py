@@ -356,10 +356,26 @@ class LaserNav(BaseEnv):
         ### Compute robot delay
         info["robot_delay"] = jnp.clip(random.normal(delay_key) * self.control_delay_sigma + self.control_delay_mean, 0., self.actions_history_length * self.robot_dt) # Delay must be positive and lower than maximum history length * robot_dt
         ### Update state and info
-        new_state, new_info, (state_history, humans_leg_state_history) = self._step(state, info, action) 
+        new_state, new_info, (
+            state_history,
+            humans_leg_state_history,
+            pre_respawn_humans_positions,
+            pre_respawn_leg_states,
+            humans_respawned,
+        ) = self._step(state, info, action)
         ### Reward the transition that was actually executed, including delay and acceleration.
         reward, outcome, reward_terms = self.reward_function.transition(
-            state, new_state, state_history, action, info, self.robot_dt
+            state,
+            new_state,
+            state_history,
+            action,
+            info,
+            self.robot_dt,
+            intermediate_leg_states=humans_leg_state_history,
+            intermediate_human_end_positions=pre_respawn_humans_positions,
+            intermediate_leg_end_states=pre_respawn_leg_states,
+            intermediate_human_respawns=humans_respawned,
+            leg_dynamics=self.leg_dynamics,
         )
         ### Update time, step, return, previous observation
         new_info["time"] += self.robot_dt
@@ -367,6 +383,7 @@ class LaserNav(BaseEnv):
         new_info["action_history"] = jnp.concatenate((action[None,:], new_info["action_history"][:-1]), axis=0)
         new_info["intermediate_states"] = state_history
         new_info["intermediate_leg_states"] = humans_leg_state_history
+        new_info["intermediate_human_respawns"] = humans_respawned
         new_info["substeps_from_last_scan"] = (new_info["substeps_from_last_scan"] + self.control_substeps) % self.lidar_substeps
         new_info["substeps_from_last_odom_ref_scan"] = ((new_info["substeps_from_last_odom_ref_scan"] + self.control_substeps - new_info["substeps_from_last_scan"]) % self.odometry_substeps) + new_info["substeps_from_last_scan"]
         gammas = jnp.array(tuple(reward_terms.keys()))
