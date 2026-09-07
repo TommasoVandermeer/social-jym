@@ -664,6 +664,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__),"jessi_benchmark_te
             lidar_angular_range=jnp.pi * 2,
             lidar_max_dist=10.0,
             n_stack=5,
+            use_box_action_space=True,
+            heading_cost_coeff=0.2,
         )
         for i, n_obstacle in enumerate(tests_n_obstacles):
             for j, n_human in enumerate(tests_n_humans):

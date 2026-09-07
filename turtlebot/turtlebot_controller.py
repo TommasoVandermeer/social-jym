@@ -211,9 +211,8 @@ class TB4Controller(Node):
                 lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
                 lidar_max_dist=self.lidar_max_dist,
                 use_box_action_space=True,
-                predict_time_horizon=1.,
+                # predict_time_horizon=1.,
                 heading_cost_coeff=0.2,
-                clearance_cost_coeff=0.2,
             )
         elif planner == 'MPPI':
             self.policy = MPPI(
