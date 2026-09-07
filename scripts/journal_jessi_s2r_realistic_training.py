@@ -1,4 +1,5 @@
-from jax import random, jit, vmap, lax, debug
+import jax
+from jax import random, jit, vmap, lax, debug, device_get
 import jax.numpy as jnp
 from jax.tree_util import tree_map, tree_leaves, tree_structure
 from jax_tqdm import loop_tqdm
@@ -6,6 +7,7 @@ import matplotlib.pyplot as plt
 import os
 import pickle
 import optax
+from contextlib import nullcontext
 from pathlib import Path
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
@@ -25,6 +27,11 @@ from socialjym.utils.training_artifacts import ArtifactStore
 
 no_imitation_learning = False
 use_legacy_perception_bootstrap = True
+# Import compatible model weights from this older experiment and skip dataset,
+# perception, actor, and critic pretraining. The imported models are copied into
+# the current schema namespace; the source directory is never modified.
+reuse_pretrained_models = True
+pretrained_artifact_directory = "40ef85d857573126"
 ### Sim-to-real parameters
 lidar_dt = 0.13
 odometry_dt = 0.05
@@ -173,6 +180,8 @@ experiment_config = {
         "data_split": data_split,
         "initial_visibility_chance": initial_visibility_chance,
         "legacy_perception_bootstrap": use_legacy_perception_bootstrap,
+        "reuse_pretrained_models": reuse_pretrained_models,
+        "pretrained_artifact_directory": pretrained_artifact_directory,
     },
     "reinforcement_learning": training_hyperparams,
     "reward": reward_config,
@@ -326,6 +335,135 @@ assert n_steps % perception_batch_size == 0, "n_steps must be divisible by batch
 assert int(n_steps * data_split[0]) % perception_batch_size == 0, "Training set size must be divisible by batch_size"
 assert int(n_steps * data_split[1]) % perception_batch_size == 0, "Validation set size must be divisible by batch_size"
 assert int(n_steps * data_split[2]) % perception_batch_size == 0, "Test set size must be divisible by batch_size"
+
+
+def import_pretrained_models():
+    """Copy shape-compatible legacy models into the current artifact namespace.
+
+    Small provenance placeholders intentionally satisfy the dataset dependency
+    chain, allowing all pretraining stages to be skipped. They are valid only
+    inside the experiment hash that names this explicit source directory.
+    """
+    if not reuse_pretrained_models:
+        return
+
+    controller_dependencies = (RAW_DATA, ROBOT_CENTRIC_DATA, PERCEPTION_DATA)
+    already_imported = (
+        artifact_store.is_valid(PERCEPTION_DATA, dependencies=(ROBOT_CENTRIC_DATA,))
+        and artifact_store.is_valid(CONTROLLER_DATA, dependencies=controller_dependencies)
+        and artifact_store.is_valid(PERCEPTION_MODEL, dependencies=(PERCEPTION_DATA,))
+        and artifact_store.is_valid(
+            ACTOR_MODEL, dependencies=(CONTROLLER_DATA, PERCEPTION_MODEL)
+        )
+        and artifact_store.is_valid(CRITIC_MODEL, dependencies=(CONTROLLER_DATA,))
+    )
+    if already_imported:
+        print("Previously imported pretrained models are valid; skipping pretraining.")
+        return
+
+    source_directory = (
+        Path(__file__).resolve().parent
+        / "artifacts"
+        / "jessi_s2r"
+        / pretrained_artifact_directory
+    )
+    if not source_directory.is_dir():
+        raise FileNotFoundError(
+            f"Pretrained artifact directory does not exist: {source_directory}"
+        )
+
+    cpu_devices = [device for device in jax.devices() if device.platform == "cpu"]
+
+    def cpu_context():
+        return jax.default_device(cpu_devices[0]) if cpu_devices else nullcontext()
+
+    def load_source_payload(artifact_type):
+        candidates = sorted(source_directory.glob(f"{artifact_type}-*.pkl"))
+        if not candidates:
+            # Also accept older, unhashed filenames.
+            plain_path = source_directory / f"{artifact_type}.pkl"
+            candidates = [plain_path] if plain_path.is_file() else []
+        if len(candidates) != 1:
+            raise FileNotFoundError(
+                f"Expected exactly one {artifact_type} pickle in "
+                f"{source_directory}, found {len(candidates)}"
+            )
+        with cpu_context(), candidates[0].open("rb") as artifact_file:
+            loaded = pickle.load(artifact_file)
+        payload = loaded["payload"] if isinstance(loaded, dict) and "payload" in loaded else loaded
+        print(f"Loaded pretrained {artifact_type} from {candidates[0]}")
+        return payload
+
+    with cpu_context():
+        reference_perception, reference_actor, reference_critic, _ = jessi.init_nns(
+            random.PRNGKey(random_seed)
+        )
+    imported = {
+        PERCEPTION_MODEL: load_source_payload(PERCEPTION_MODEL),
+        ACTOR_MODEL: load_source_payload(ACTOR_MODEL),
+        CRITIC_MODEL: load_source_payload(CRITIC_MODEL),
+    }
+    references = {
+        PERCEPTION_MODEL: reference_perception,
+        ACTOR_MODEL: reference_actor,
+        CRITIC_MODEL: reference_critic,
+    }
+    for artifact_type, candidate in imported.items():
+        reference = references[artifact_type]
+        compatible = tree_structure(candidate) == tree_structure(reference) and all(
+            getattr(old, "shape", None) == getattr(new, "shape", None)
+            for old, new in zip(tree_leaves(candidate), tree_leaves(reference))
+        )
+        if not compatible:
+            raise ValueError(
+                f"Pretrained {artifact_type} from {source_directory} is not "
+                "compatible with the current JESSI-S2R architecture"
+            )
+        imported[artifact_type] = tree_map(lambda value: device_get(value), candidate)
+
+    provenance = {
+        "kind": "pretrained_model_import",
+        "source_directory": str(source_directory),
+        "pipeline_schema": experiment_config["pipeline_schema"],
+    }
+    if not artifact_store.is_valid(RAW_DATA):
+        artifact_store.save(RAW_DATA, provenance)
+    if not artifact_store.is_valid(ROBOT_CENTRIC_DATA, dependencies=(RAW_DATA,)):
+        artifact_store.save(ROBOT_CENTRIC_DATA, provenance, dependencies=(RAW_DATA,))
+    if not artifact_store.is_valid(PERCEPTION_DATA, dependencies=(ROBOT_CENTRIC_DATA,)):
+        artifact_store.save(PERCEPTION_DATA, provenance, dependencies=(ROBOT_CENTRIC_DATA,))
+    if not artifact_store.is_valid(CONTROLLER_DATA, dependencies=controller_dependencies):
+        artifact_store.save(
+            CONTROLLER_DATA, provenance, dependencies=controller_dependencies
+        )
+    if not artifact_store.is_valid(PERCEPTION_MODEL, dependencies=(PERCEPTION_DATA,)):
+        artifact_store.save(
+            PERCEPTION_MODEL,
+            imported[PERCEPTION_MODEL],
+            dependencies=(PERCEPTION_DATA,),
+        )
+    if not artifact_store.is_valid(
+        ACTOR_MODEL, dependencies=(CONTROLLER_DATA, PERCEPTION_MODEL)
+    ):
+        artifact_store.save(
+            ACTOR_MODEL,
+            imported[ACTOR_MODEL],
+            dependencies=(CONTROLLER_DATA, PERCEPTION_MODEL),
+        )
+    if not artifact_store.is_valid(CRITIC_MODEL, dependencies=(CONTROLLER_DATA,)):
+        artifact_store.save(
+            CRITIC_MODEL,
+            imported[CRITIC_MODEL],
+            dependencies=(CONTROLLER_DATA,),
+        )
+    print(
+        "Imported compatible perception, actor, and critic weights; "
+        "skipping all pretraining data and model stages."
+    )
+
+
+if reuse_pretrained_models:
+    import_pretrained_models()
 
 ### GENERATE PRE-TRAINING DATASET
 if not artifact_store.is_valid(PERCEPTION_DATA, dependencies=(ROBOT_CENTRIC_DATA,)):
