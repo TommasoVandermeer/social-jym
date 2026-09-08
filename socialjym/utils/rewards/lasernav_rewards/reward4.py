@@ -417,5 +417,6 @@ class Reward4(BaseReward):
         risks = jnp.clip((self.risk_avoidance_distance - clearance_distances) / self.risk_avoidance_distance, 0., 1.)
         # Top k risks
         k_eff = min(self.risk_avoidance_top_k, risks.shape[0])
-        top_k_risks = jax.lax.top_k(risks, k_eff)[0]
+        sorted_risks = jnp.sort(risks)
+        top_k_risks = sorted_risks[-k_eff:]
         return jnp.max(top_k_risks), jnp.mean(top_k_risks)

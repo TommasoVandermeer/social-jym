@@ -22,7 +22,7 @@ from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
 
-state_augmented = True
+state_augmented = False
 ### Sim-to-real parameters
 lidar_dt = 0.13
 odometry_dt = 0.05
@@ -34,7 +34,7 @@ leg_dynamics = True  # Whether to include leg dynamics in the simulation (introd
 save_videos = False  # Whether to save videos of the debug inspections
 perception_nn_name = 'realistic_pre_perception_network_32.pkl'
 policy_nn_name = 'realistic_pre_controller_network_32.pkl'
-multitask_network_name = 'realistic_jessi_multitask_rl_out_32.pkl'
+multitask_network_name = 'LATEST_realistic_jessi_multitask_rl_out_32.pkl'
 if state_augmented:
     policy_nn_name = "SA_" + policy_nn_name
     multitask_network_name = "SA_" + multitask_network_name
@@ -50,8 +50,8 @@ lidar_max_dist = 10.
 lidar_num_rays = 200
 scenario = "hybrid_scenario"
 hybrid_scenario_subset = jnp.array([0,1,2,3,4,6])  # Exclude circular_crossing_with_static_obstacles and corner_traffic
-n_humans = 5
-n_obstacles = 3
+n_humans = 4
+n_obstacles = 4
 humans_policy = 'hsfm'
 ### PRE-TRAIN Hyperparameters
 random_seed = 0
