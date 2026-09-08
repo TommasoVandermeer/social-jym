@@ -11,28 +11,77 @@ from irobot_create_msgs.srv import ResetPose
 import numpy as np
 import os
 import pickle
+import jax
 from jax import random
+from jax.tree_util import tree_leaves
 from collections import deque
 import math
 import jax.numpy as jnp
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from matplotlib import pyplot as plt
 
 from socialjym.policies.jessi import JESSI
+from socialjym.policies.jessi_s2r import JESSI_S2R
 from socialjym.policies.dwa import DWA
 from socialjym.policies.mppi import MPPI
 from socialjym.policies.vanilla_e2e import VanillaE2E
 
 PLANNERS = [
     'JESSI',
+    'JESSI-S2R',
     'DWA',
     'MPPI',
     'VANILLA-E2E',
     'BOUNDED-VANILLA-E2E',
 ]
+
+
+def load_network_parameters(path, weights_variant="best"):
+    """Load historical exports, artifact envelopes, RL results, or checkpoints."""
+    if weights_variant not in ("best", "final"):
+        raise ValueError("weights_variant must be either 'best' or 'final'")
+    cpu_devices = [device for device in jax.devices() if device.platform == "cpu"]
+    context = jax.default_device(cpu_devices[0]) if cpu_devices else nullcontext()
+    with context, Path(path).open("rb") as network_file:
+        loaded = pickle.load(network_file)
+
+    metadata = {}
+    payload = loaded
+    if isinstance(loaded, dict) and "payload" in loaded:
+        metadata = {key: value for key, value in loaded.items() if key != "payload"}
+        payload = loaded["payload"]
+
+    if isinstance(payload, (tuple, list)):
+        if not payload:
+            raise ValueError(f"Empty network payload in {path}")
+        parameters = payload[0]
+    elif isinstance(payload, dict) and (
+        "best_actor_params" in payload or "final_actor_params" in payload
+    ):
+        preferred_key = f"{weights_variant}_actor_params"
+        fallback_key = "actor_params" if weights_variant == "final" else "best_actor_params"
+        if preferred_key in payload:
+            parameters = payload[preferred_key]
+        elif fallback_key in payload:
+            parameters = payload[fallback_key]
+        else:
+            raise ValueError(
+                f"The {weights_variant!r} actor weights are unavailable in {path}"
+            )
+    elif isinstance(payload, dict) and "actor_params" in payload:
+        parameters = payload["actor_params"]
+    else:
+        parameters = payload
+
+    if not isinstance(parameters, dict) or not tree_leaves(parameters):
+        raise ValueError(f"Unsupported network payload in {path}")
+    if not all(np.all(np.isfinite(np.asarray(value))) for value in tree_leaves(parameters)):
+        raise ValueError(f"Network parameters contain NaN or Inf: {path}")
+    return parameters, metadata
 
 class TB4Controller(Node):
     def __init__(
@@ -55,6 +104,7 @@ class TB4Controller(Node):
             timeout=None,
             goal_tolerance=None,
             stop_on_goal=False,
+            weights_variant="best",
         ):
         super().__init__('TB4_controller')
 
@@ -107,6 +157,8 @@ class TB4Controller(Node):
 
         self.frequency = frequency
         self.planner = planner
+        self.weights_variant = weights_variant
+        self.network_name = network_name
         self.diagnostics = diagnostics
         self.engineering_filters = engineering_filters
         self.experiment_dir = Path(experiment_dir).resolve() if experiment_dir else None
@@ -184,6 +236,69 @@ class TB4Controller(Node):
         self.angular_res = (float(self.lidar_max_angle) - float(self.lidar_min_angle)) / self.lidar_num_rays
         self.previous_scan_time = 0.
 
+        self.network_params = None
+        self.network_metadata = {}
+        neural_planners = ('JESSI', 'JESSI-S2R', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E')
+        if planner in neural_planners:
+            network_path = (
+                Path(network_name)
+                if os.path.isabs(network_name)
+                else Path(__file__).resolve().parent / network_name
+            )
+            self.network_params, self.network_metadata = load_network_parameters(
+                network_path, weights_variant=weights_variant
+            )
+
+        s2r_model_config = {}
+        if planner == 'JESSI-S2R':
+            experiment_config = self.network_metadata.get("experiment_config", {})
+            s2r_model_config = experiment_config.get("model", {})
+            s2r_environment_config = experiment_config.get("environment", {})
+            trained_latent_dim = int(
+                s2r_model_config.get("logistic_normal_latent_dim", 2)
+            )
+            if trained_latent_dim != 2:
+                raise ValueError(
+                    "This controller requires the two-dimensional JESSI-S2R "
+                    f"latent action, but the artifact reports {trained_latent_dim}."
+                )
+            trained_dt = float(s2r_environment_config.get("robot_dt", self.dt))
+            if not np.isclose(trained_dt, self.dt, atol=1e-6):
+                raise ValueError(
+                    f"JESSI-S2R was trained with dt={trained_dt}, but --frequency "
+                    f"implies dt={self.dt}. Use --frequency {1.0 / trained_dt:g}."
+                )
+            trained_hardware = {
+                "robot radius": float(s2r_environment_config.get("robot_radius", self.radius)),
+                "maximum speed": float(s2r_environment_config.get("robot_vmax", self.v_max)),
+                "wheel distance": float(s2r_environment_config.get(
+                    "robot_wheel_distance", 2*self.v_max/self.w_max
+                )),
+            }
+            controller_hardware = {
+                "robot radius": self.radius,
+                "maximum speed": self.v_max,
+                "wheel distance": 2*self.v_max/self.w_max,
+            }
+            for label, trained_value in trained_hardware.items():
+                if not np.isclose(trained_value, controller_hardware[label], atol=1e-5):
+                    raise ValueError(
+                        f"JESSI-S2R {label} mismatch: artifact={trained_value}, "
+                        f"controller={controller_hardware[label]}"
+                    )
+            trained_rays = int(s2r_model_config.get("lidar_num_rays", self.lidar_num_rays))
+            if trained_rays != self.lidar_num_rays:
+                self.get_logger().warn(
+                    f"Overriding --lidar-rays {self.lidar_num_rays} with the "
+                    f"trained JESSI-S2R value {trained_rays}."
+                )
+                self.lidar_num_rays = trained_rays
+                self.angular_res = (
+                    float(self.lidar_max_angle) - float(self.lidar_min_angle)
+                ) / self.lidar_num_rays
+            self.n_stack = int(s2r_model_config.get("n_stack", self.n_stack))
+            self.obs_stack = deque(maxlen=self.n_stack)
+
         if planner == 'JESSI':
             self.policy = JESSI(
                 v_max=self.v_max,
@@ -195,6 +310,24 @@ class TB4Controller(Node):
                 lidar_max_dist=self.lidar_max_dist,
                 n_stack_for_action_space_bounding=1,
                 # ablation_mode = 6,
+            )
+        elif planner == 'JESSI-S2R':
+            self.policy = JESSI_S2R(
+                v_max=self.v_max,
+                wheels_distance=2*self.v_max/self.w_max,
+                dt=self.dt,
+                n_stack=self.n_stack,
+                n_actions_history=self.n_stack,
+                robot_radius=self.radius,
+                lidar_num_rays=self.lidar_num_rays,
+                lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
+                lidar_max_dist=self.lidar_max_dist,
+                n_detectable_humans=int(s2r_model_config.get("n_detectable_humans", 10)),
+                max_humans_velocity=float(s2r_model_config.get("max_humans_velocity", 1.5)),
+                embedding_dim=int(s2r_model_config.get("embedding_dim", 32)),
+                humans_trajectory_noise_std=0.0,
+                n_stack_for_action_space_bounding=1,
+                beam_dropout_rate=0.0,
             )
         elif planner == 'DWA':
             self.policy = DWA(
@@ -243,11 +376,28 @@ class TB4Controller(Node):
                 action_space_bounding=True,
             )
         self.rng_key = random.PRNGKey(0)
-        self.network_params = None
-        if planner in ('JESSI', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E'):
-            network_path = network_name if os.path.isabs(network_name) else os.path.join(os.path.dirname(__file__), network_name)
-            with open(network_path, 'rb') as f:
-                self.network_params, _, _ = pickle.load(f)
+        if planner == 'JESSI-S2R':
+            self.get_logger().info("Compiling and validating JESSI-S2R inference...")
+            dummy_obs = jnp.zeros((self.n_stack, self.lidar_num_rays + 11))
+            dummy_obs = dummy_obs.at[:, 11:].set(self.lidar_max_dist)
+            try:
+                action = self.policy.act(
+                    self.rng_key,
+                    dummy_obs,
+                    {"robot_goal": jnp.array([1.0, 0.0])},
+                    self.network_params,
+                    sample=False,
+                )[0]
+                action.block_until_ready()
+            except Exception as error:
+                raise ValueError(
+                    "JESSI-S2R network validation failed. --network must point "
+                    "to a multitask_rl_result artifact (or an RL checkpoint), "
+                    "not the standalone actor_network pretraining artifact."
+                ) from error
+            if not bool(jnp.all(jnp.isfinite(action))):
+                raise ValueError("JESSI-S2R warm-up produced a non-finite action")
+            self.get_logger().info("JESSI-S2R inference is ready.")
         
         # Reset turtlebot odometry
         self.odom_reset_confirmed = False
@@ -663,7 +813,7 @@ class TB4Controller(Node):
         else:
             # ACTION INFERENCE
             try:
-                if self.planner == 'JESSI':
+                if self.planner in ('JESSI', 'JESSI-S2R'):
                     action, self.rng_key, _, _, _, _, perception_output, actor_distr, _, spat_attn, temp_attn, human_attn = self.policy.act(
                         key=self.rng_key,
                         obs=obs_matrix,
@@ -737,7 +887,7 @@ class TB4Controller(Node):
                 ### ==========================================================
                 policy_action = np.array([v_cmd, w_cmd], dtype=float)
                 if self.engineering_filters:
-                    if self.planner in ['JESSI', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E']:
+                    if self.planner in ['JESSI', 'JESSI-S2R', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E']:
                         ## 1. Geometric auxiliary controller (P-Controller)
                         dx = float(self.robot_goal[0]) - rx
                         dy = float(self.robot_goal[1]) - ry
@@ -773,6 +923,15 @@ class TB4Controller(Node):
                     v_cmd = beta * float(self.previous_action[0]) + (1.0 - beta) * v_cmd
                     w_cmd = beta * float(self.previous_action[1]) + (1.0 - beta) * w_cmd
                 ### ==========================================================
+                if not np.all(np.isfinite([v_cmd, w_cmd])):
+                    raise FloatingPointError(
+                        f"{self.planner} produced a non-finite command: "
+                        f"v={v_cmd}, w={w_cmd}"
+                    )
+                if self.planner == 'JESSI-S2R':
+                    # Enforce the action support again at the hardware boundary.
+                    v_cmd = float(np.clip(v_cmd, 0.0, self.v_max))
+                    w_cmd = float(np.clip(w_cmd, -self.w_max, self.w_max))
                 cmd_msg = Twist()
                 cmd_msg.linear.x = v_cmd
                 cmd_msg.angular.z = w_cmd
@@ -801,12 +960,21 @@ class TB4Controller(Node):
                     'measured_twist': np.array([vx, wz], dtype=float),
                     'goal_distance': float(dist),
                     'planner': self.planner,
+                    'network': self.network_name,
+                    'weights_variant': self.weights_variant,
                     'inference_ok': True,
                 })
                 self.recorded_data.append(step_record)
                 self.previous_action = jnp.array([v_cmd, w_cmd])
             except Exception as e:
                 self.get_logger().error(f"Error during {self.planner} inference: {e}")
+                stop = Twist()
+                self.pub_cmd.publish(stop)
+                stop_stamped = TwistStamped()
+                stop_stamped.header.stamp = self.get_clock().now().to_msg()
+                stop_stamped.twist = stop
+                self.pub_cmd_stamped.publish(stop_stamped)
+                self.previous_action = jnp.zeros((2,))
         
         ## Diagnostics plotting
         if self.diagnostics:
@@ -859,7 +1027,7 @@ class TB4Controller(Node):
                     'scan_to_host': self.odom_scan_time_offset,
                 },
             }
-            if self.planner == 'JESSI' or self.planner == 'BOUNDED-VANILLA-E2E':
+            if self.planner in ('JESSI', 'JESSI-S2R', 'BOUNDED-VANILLA-E2E'):
                 out['params']['n_stack_for_action_space_bounding'] = self.policy.n_stack_for_action_space_bounding
             temporary = save_path.with_suffix(save_path.suffix + '.tmp')
             with open(temporary, 'wb') as f:
@@ -885,11 +1053,12 @@ class TB4Controller(Node):
 
 def main(args=None):
     parser = argparse.ArgumentParser(description='TB4 Robot Controller - Local Planner')
-    parser.add_argument('--planner', type=str, default='JESSI', help='Network weights pickle file name')
+    parser.add_argument('--planner', type=str, default='JESSI', help=f'Local planner. Choices: {PLANNERS}')
     parser.add_argument('-g', '--goals', nargs='+', type=float, default=[2.0, 0.0], help='Sequence of Goal X Y pairs (in meters). Example: -g 2.0 0.0 3.0 1.0 4.0 -0.5')
     parser.add_argument('-p', '--patrol', action='store_true', help='Activate Patrol Mode (back and forth continuously)')
     parser.add_argument('-i', '--interp', action='store_true', help='Activate Interpolation Mode for pose with respect to LiDAR timestamp (instead of using the latest odometry)')
     parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out_turtlebot.pkl', help='Network weights pickle file name')
+    parser.add_argument('--weights', choices=('best', 'final'), default='best', help='Select best or final actor parameters from an S2R RL artifact/checkpoint')
     parser.add_argument('-s', '--save_file', type=str, default='jessi_recorded_obs.pkl', help='Output pickle file name for recorded data')
     parser.add_argument('-d', '--diagnostics', action='store_true', help='Activate diagnostic during control to debug')
     parser.add_argument('-a', '--align', action='store_true', help='Activate alignement of waypoints with Hough Transform of LiDAR scan')
@@ -922,6 +1091,7 @@ def main(args=None):
         patrol_mode=parsed_args.patrol,
         interp_mode=parsed_args.interp,
         network_name=parsed_args.network,
+        weights_variant=parsed_args.weights,
         save_file_name=parsed_args.save_file,
         save_lists=True,
         align=parsed_args.align,

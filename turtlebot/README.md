@@ -96,6 +96,26 @@ The ```g``` flag indicate the position of the goals in the robot frame (<b>posit
 
 Note that, to sync the timestamps of each topic (for debugging purposes), it is necessary to run ```sudo chronyc makestep``` on the turtlebot raspberrypi (connect with ssh).
 
+## JESSI-S2R
+
+JESSI-S2R can load the versioned `multitask_rl_result-*.pkl` artifact produced
+by `journal_jessi_s2r_realistic_training.py` directly. By default the controller
+uses `best_actor_params`; pass `--weights final` to use the final update instead.
+The trained LiDAR ray count is read from artifact metadata automatically.
+
+```bash
+python3 turtlebot_controller.py \
+  --planner JESSI-S2R \
+  --network ../scripts/artifacts/jessi_s2r/EXPERIMENT_HASH/multitask_rl_result-ARTIFACT_HASH.pkl \
+  --weights best \
+  --goals 2.0 0.0 \
+  --save_file jessi_s2r_real_test.pkl
+```
+
+The controller compiles one dummy inference before enabling its control timer.
+It refuses incompatible or non-finite weights, clamps every published command
+to the TurtleBot limits, and publishes a stop command if inference fails.
+
 To animate the recorded trajectory run:
 ```
 python3 turtlebot_jessi_animate_recorded_trajectory.py -s REPLACE_WITH_EXPERIMENT_NAME
