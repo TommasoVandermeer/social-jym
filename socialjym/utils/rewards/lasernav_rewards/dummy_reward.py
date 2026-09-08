@@ -36,6 +36,7 @@ class DummyReward(BaseReward):
     def __call__(
         self, 
         state:jnp.ndarray, 
+        new_states:jnp.ndarray,
         action:jnp.ndarray,
         info:dict, 
         dt:float
@@ -49,6 +50,7 @@ class DummyReward(BaseReward):
 
         args:
         - state: current state of the environment
+        - new_states: next states of the environment evaluated at the humans_dt integration step (not used in this reward)
         - info: dictionary containing additional information about the environment
         - dt: time step of the simulation
 

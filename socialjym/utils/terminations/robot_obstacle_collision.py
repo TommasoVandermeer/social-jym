@@ -35,6 +35,12 @@ class InstantRobotObstacleCollision(BaseTermination):
         """
         closest_points = vectorized_compute_obstacle_closest_point(robot_pos, obstacles)
         distances = jnp.linalg.norm(closest_points - robot_pos, axis=-1) - robot_radius
-        min_distance = jnp.nanmax(jnp.array([jnp.nanmin(distances),0]))
-        collision = jnp.any(distances < 0)
+        valid_distances = jnp.where(
+            jnp.isnan(distances),
+            jnp.inf,
+            distances,
+        )
+        raw_min_distance = jnp.min(valid_distances,initial=jnp.inf)
+        min_distance = jnp.maximum(raw_min_distance, 0.0)
+        collision = jnp.any(valid_distances < 0.0)
         return collision, {'min_distance': min_distance}

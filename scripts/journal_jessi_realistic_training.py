@@ -91,7 +91,7 @@ training_hyperparams = {
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': hybrid_scenario_subset,
-    'reward_function': 'lasernav_reward1',
+    'reward_function': 'lasernav_reward4',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
     'safety_loss': False,  # Whether to include safety loss in the RL training
     'target_kl': None,  # Target KL divergence for early stopping in each update
@@ -181,6 +181,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         reward_function = Reward4(
             robot_radius=0.3,
             v_max=robot_vmax,
+            wheels_distance=robot_wheel_distance,
+            dt=robot_dt,
         )
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
@@ -947,6 +949,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         reward_function = Reward4(
             robot_radius=0.3,
             v_max=robot_vmax,
+            wheels_distance=robot_wheel_distance,
+            dt=robot_dt,
         )
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")

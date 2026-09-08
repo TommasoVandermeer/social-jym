@@ -79,8 +79,8 @@ class Reward1(BaseReward):
             idx += 1 if self.high_rotation_penalty_reward else 0
             self.g_prog = gamma_list[idx] if self.progress_to_goal_reward else None
             idx += 1 if self.progress_to_goal_reward else 0
-            self.g_disc = gamma_list[idx] if self.collision_with_obstacles_penalty_reward else None
-            idx += 1 if self.collision_with_obstacles_penalty_reward else 0
+            self.g_disc = gamma_list[idx] if self.discomfort_distance_penalty_reward else None
+            idx += 1 if self.discomfort_distance_penalty_reward else 0
             self.g_coll_hum = gamma_list[idx] if self.collision_with_humans_penalty_reward else None
             idx += 1 if self.collision_with_humans_penalty_reward else 0
             self.g_coll_obs = gamma_list[idx] if self.collision_with_obstacles_penalty_reward else None
@@ -92,7 +92,7 @@ class Reward1(BaseReward):
             self.multi_gamma = False
             self.unique_gammas = (float(gamma),)
         self.decimal_reward = binary_to_decimal(self.binary_reward)
-        self.type = f"lasernav_reward2_{self.decimal_reward}"
+        self.type = f"lasernav_reward1_{self.decimal_reward}"
         # Initialize reward parameters
         self.v_max = v_max
         self.time_limit = time_limit
@@ -116,7 +116,8 @@ class Reward1(BaseReward):
     @partial(jit, static_argnames=("self"))
     def __call__(
         self, 
-        state:jnp.ndarray, 
+        state:jnp.ndarray,
+        new_states:jnp.ndarray, 
         action:jnp.ndarray,
         info:dict, 
         dt:float
@@ -130,6 +131,7 @@ class Reward1(BaseReward):
 
         args:
         - state: current state of the environment
+        - new_states: next states of the environment evaluated at the humans_dt integration step (not used in this reward)
         - info: dictionary containing additional information about the environment
         - dt: time step of the simulation
 

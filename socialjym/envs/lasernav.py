@@ -353,12 +353,12 @@ class LaserNav(BaseEnv):
                 lambda x: x,
                 (info["robot_goal"], info["robot_goal_index"])
             )
-        ### Compute reward and outcome
-        reward, outcome, reward_terms = self.reward_function(state, action, info, self.robot_dt)
         ### Compute robot delay
         info["robot_delay"] = jnp.clip(random.normal(delay_key) * self.control_delay_sigma + self.control_delay_mean, 0., self.actions_history_length * self.robot_dt) # Delay must be positive and lower than maximum history length * robot_dt
         ### Update state and info
         new_state, new_info, (state_history, humans_leg_state_history) = self._step(state, info, action) 
+        ### Compute reward and outcome
+        reward, outcome, reward_terms = self.reward_function(state, state_history, action, info, self.robot_dt)
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):
