@@ -40,7 +40,7 @@ class Reward4(BaseReward):
         angular_speed_bound: float=1.,
         angular_speed_penalty_weight: float=0.0075,
         risk_avoidance_horizon: float=3.0,
-        risk_avoidance_distance: float=0.5,
+        risk_avoidance_distance: float=0.2,
         risk_avoidance_top_k: int=3,
         risk_max_weight: float=0.1,
         risk_mean_weight: float=0.05,
@@ -301,8 +301,8 @@ class Reward4(BaseReward):
             rotation_reward = 0.
         # Risk reward
         if self.risk_reward:
-            current_max_risk, current_mean_risk = self._risk(state, info, dt)
-            next_max_risk, next_mean_risk = self._risk(new_states[-1], info, dt)
+            current_max_risk, current_mean_risk = self._risk(state, info)
+            next_max_risk, next_mean_risk = self._risk(new_states[-1], info)
             risk_reward = lax.cond(
                 ~(failure),
                 lambda: self.w_max_risk * (current_max_risk - next_max_risk) + self.w_mean_risk * (current_mean_risk - next_mean_risk),
@@ -368,7 +368,7 @@ class Reward4(BaseReward):
         return reward, outcome, reward_terms
 
     @partial(jit, static_argnames=("self"))
-    def _risk(self, state, info, dt):
+    def _risk(self, state, info):
         """
         Given a state and a dictionary containing additional information about the environment,
         this function computes the risk of the current state with respect to nearby humans.
@@ -376,7 +376,6 @@ class Reward4(BaseReward):
         args:
         - state: current state of the environment
         - info: dictionary containing additional information about the environment
-        - dt: time step of the simulation
 
         output:
         - max_risk: scalar between 0 and 1 indicating the risk of the current state with respect to the riskiest interacting human.
@@ -391,15 +390,15 @@ class Reward4(BaseReward):
         next_robot_pos = lax.cond(
             jnp.abs(robot_velocity_unicycle[1]) > 1e-3,
             lambda x: x.at[:].set(jnp.array([
-                x[0] + (robot_velocity_unicycle[0]/robot_velocity_unicycle[1]) * (jnp.sin(robot_yaw + robot_velocity_unicycle[1] * dt) - jnp.sin(robot_yaw)),
-                x[1] + (robot_velocity_unicycle[0]/robot_velocity_unicycle[1]) * (jnp.cos(robot_yaw) - jnp.cos(robot_yaw + robot_velocity_unicycle[1] * dt))
+                x[0] + (robot_velocity_unicycle[0]/robot_velocity_unicycle[1]) * (jnp.sin(robot_yaw + robot_velocity_unicycle[1] * self.risk_avoidance_horizon) - jnp.sin(robot_yaw)),
+                x[1] + (robot_velocity_unicycle[0]/robot_velocity_unicycle[1]) * (jnp.cos(robot_yaw) - jnp.cos(robot_yaw + robot_velocity_unicycle[1] * self.risk_avoidance_horizon))
             ])),
             lambda x: x.at[:].set(jnp.array([
-                x[0] + robot_velocity_unicycle[0] * dt * jnp.cos(robot_yaw),
-                x[1] + robot_velocity_unicycle[0] * dt * jnp.sin(robot_yaw)
+                x[0] + robot_velocity_unicycle[0] * self.risk_avoidance_horizon * jnp.cos(robot_yaw),
+                x[1] + robot_velocity_unicycle[0] * self.risk_avoidance_horizon * jnp.sin(robot_yaw)
             ])),
             robot_pos)
-        robot_velocity = (next_robot_pos - robot_pos) / dt
+        robot_velocity = (next_robot_pos - robot_pos) / self.risk_avoidance_horizon
         # Humans
         humans_pos = state[:-1,:2]
         humans_radiuses = info["humans_parameters"][:,0]
