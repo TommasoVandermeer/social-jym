@@ -6,12 +6,12 @@ from typing import Union
 
 from socialjym.utils.aux_functions import binary_to_decimal
 from socialjym.utils.rewards.base_reward import BaseReward
-from socialjym.envs.base_env import ROBOT_KINEMATICS, HUMAN_POLICIES
+from socialjym.envs.base_env import ROBOT_KINEMATICS, HUMAN_POLICIES, is_multiple, wrap_angle
 from socialjym.utils.terminations.robot_human_collision import InstantRobotHumanCollision, IntervalRobotHumanCollision
 from socialjym.utils.terminations.robot_obstacle_collision import InstantRobotObstacleCollision
 from socialjym.utils.terminations.robot_reached_goal import RobotReachedGoal
 from socialjym.utils.terminations.timeout import Timeout
-from jhsfm.hsfm import get_linear_velocity
+from jhsfm.hsfm import step, get_linear_velocity
 from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
 
@@ -39,8 +39,9 @@ class Reward4(BaseReward):
         progress_to_goal_weight: float=0.03,
         angular_speed_bound: float=1.,
         angular_speed_penalty_weight: float=0.0075,
-        risk_avoidance_horizon: float=3.0,
-        risk_avoidance_distance: float=0.2,
+        risk_avoidance_horizon: float=1.0,
+        risk_avoidance_distance: float=0.5,
+        risk_avoidance_evaluation_dt: float=0.1,
         risk_avoidance_top_k: int=3,
         risk_max_weight: float=0.1,
         risk_mean_weight: float=0.05,
@@ -68,6 +69,7 @@ class Reward4(BaseReward):
         assert angular_speed_bound > 0, "angular_speed_bound must be positive"
         assert angular_speed_penalty_weight > 0, "angular_speed_penalty_weight must be positive"
         assert risk_avoidance_horizon > 0, "risk_avoidance_horizon must be positive"
+        assert (risk_avoidance_evaluation_dt > 0) and (is_multiple(risk_avoidance_horizon, risk_avoidance_evaluation_dt)), "risk_avoidance_evaluation_dt must be positive and a dividend of risk_avoidance_horizon"
         assert risk_avoidance_distance > 0, "risk_avoidance_distance must be positive"
         assert (risk_avoidance_top_k > 0) and (type(risk_avoidance_top_k) == int), "risk_avoidance_top_k must be a positive integer"
         assert (risk_max_weight >= 0) and (risk_mean_weight >= 0), "risk_max_weight and risk_mean_weight must be non-negative"
@@ -146,6 +148,8 @@ class Reward4(BaseReward):
         self.robot_radius = robot_radius
         self.humans_policy = HUMAN_POLICIES.index('hsfm')
         self.risk_avoidance_horizon = risk_avoidance_horizon
+        self.risk_avoidance_evaluation_dt = risk_avoidance_evaluation_dt
+        self.risk_avoidance_steps = int(risk_avoidance_horizon / risk_avoidance_evaluation_dt)
         self.risk_avoidance_distance = risk_avoidance_distance
         self.risk_avoidance_top_k = risk_avoidance_top_k
         self.w_max_risk = risk_max_weight
@@ -301,14 +305,18 @@ class Reward4(BaseReward):
             rotation_reward = 0.
         # Risk reward
         if self.risk_reward:
-            current_max_risk, current_mean_risk = self._risk(state, info)
-            next_max_risk, next_mean_risk = self._risk(new_states[-1], info)
+            current_max_risk, current_mean_risk, current_evaluation_states, current_min_clearance_distance = self._risk(state, info)
+            next_max_risk, next_mean_risk, next_evaluation_states, next_min_clearance_distance = self._risk(new_states[-1], info)
             risk_reward = lax.cond(
                 ~(failure),
                 lambda: self.w_max_risk * (current_max_risk - next_max_risk) + self.w_mean_risk * (current_mean_risk - next_mean_risk),
                 lambda: 0.0,
             )
         else:
+            current_evaluation_states = None
+            next_evaluation_states = None
+            current_min_clearance_distance = None
+            next_min_clearance_distance = None
             risk_reward = 0.
         # Escape reward
         if self.escape_reward:
@@ -365,7 +373,12 @@ class Reward4(BaseReward):
                 reward_terms[self.g_escape] += escape_reward
         else:
             reward_terms = {self.gamma: reward}
-        return reward, outcome, reward_terms
+        return reward, outcome, reward_terms, {
+            "evaluation_states": current_evaluation_states, 
+            "next_evaluation_states": next_evaluation_states,
+            "clearance_distance": current_min_clearance_distance,
+            "next_clearance_distance": next_min_clearance_distance
+        }
 
     @partial(jit, static_argnames=("self"))
     def _risk(self, state, info):
@@ -381,41 +394,54 @@ class Reward4(BaseReward):
         - max_risk: scalar between 0 and 1 indicating the risk of the current state with respect to the riskiest interacting human.
         - mean_risk: scalar between 0 and 1 indicating the average risk of the current state with respect to the k riskiest interacting humans.
         """
-        # TODO: Query HSFM to propagate humans' states over the risk_avoidance_horizon in the future and compute risk based on that.
+        n_humans = state.shape[0] - 1
+        humans_visibility = jnp.fill_diagonal(
+            jnp.ones((n_humans,n_humans), dtype=jnp.bool), 
+            jnp.zeros((n_humans,), dtype=jnp.bool), 
+            inplace=False
+        )
         # Robot
-        robot_pos = state[-1,:2]
-        robot_yaw = state[-1,4]
-        robot_velocity_unicycle = state[-1,2:4]
-        robot_radius = self.robot_radius
-        next_robot_pos = lax.cond(
-            jnp.abs(robot_velocity_unicycle[1]) > 1e-3,
-            lambda x: x.at[:].set(jnp.array([
-                x[0] + (robot_velocity_unicycle[0]/robot_velocity_unicycle[1]) * (jnp.sin(robot_yaw + robot_velocity_unicycle[1] * self.risk_avoidance_horizon) - jnp.sin(robot_yaw)),
-                x[1] + (robot_velocity_unicycle[0]/robot_velocity_unicycle[1]) * (jnp.cos(robot_yaw) - jnp.cos(robot_yaw + robot_velocity_unicycle[1] * self.risk_avoidance_horizon))
-            ])),
-            lambda x: x.at[:].set(jnp.array([
-                x[0] + robot_velocity_unicycle[0] * self.risk_avoidance_horizon * jnp.cos(robot_yaw),
-                x[1] + robot_velocity_unicycle[0] * self.risk_avoidance_horizon * jnp.sin(robot_yaw)
-            ])),
-            robot_pos)
-        robot_velocity = (next_robot_pos - robot_pos) / self.risk_avoidance_horizon
-        # Humans
-        humans_pos = state[:-1,:2]
-        humans_radiuses = info["humans_parameters"][:,0]
-        humans_orientations = state[:-1,4]
-        humans_velocities = vmap(get_linear_velocity)(humans_orientations, state[:-1,2:4])
-        # Relative
-        humans_rel_pos = humans_pos - robot_pos
-        humans_rel_vel = humans_velocities - robot_velocity
-        # Risk
-        humans_rel_vel_squared = jnp.sum(humans_rel_vel**2, axis=1)
-        closest_times = -jnp.sum(humans_rel_pos * humans_rel_vel, axis=-1) / jnp.maximum(humans_rel_vel_squared, 1e-8)
-        closest_times = jnp.clip(closest_times, 0., self.risk_avoidance_horizon)
-        closest_offsets = humans_rel_pos + closest_times[:,None] * humans_rel_vel
-        clearance_distances = jnp.linalg.norm(closest_offsets, axis=-1) - (humans_radiuses + robot_radius)
+        def _scan_body(carry, x):
+            state, info = carry
+            new_state = state
+            robot_pos = state[-1,:2]
+            robot_yaw = state[-1,4]
+            robot_velocity_unicycle = state[-1,2:4]
+            next_robot_pos = lax.cond(
+                jnp.abs(robot_velocity_unicycle[1]) > 1e-3,
+                lambda x: x.at[:].set(jnp.array([
+                    x[0] + (robot_velocity_unicycle[0]/robot_velocity_unicycle[1]) * (jnp.sin(robot_yaw + robot_velocity_unicycle[1] * self.risk_avoidance_evaluation_dt) - jnp.sin(robot_yaw)),
+                    x[1] + (robot_velocity_unicycle[0]/robot_velocity_unicycle[1]) * (jnp.cos(robot_yaw) - jnp.cos(robot_yaw + robot_velocity_unicycle[1] * self.risk_avoidance_evaluation_dt))
+                ])),
+                lambda x: x.at[:].set(jnp.array([
+                    x[0] + robot_velocity_unicycle[0] * self.risk_avoidance_evaluation_dt * jnp.cos(robot_yaw),
+                    x[1] + robot_velocity_unicycle[0] * self.risk_avoidance_evaluation_dt * jnp.sin(robot_yaw)
+                ])),
+                robot_pos)
+            new_state = new_state.at[-1,:2].set(next_robot_pos)
+            new_state = new_state.at[-1,4].set(wrap_angle(robot_yaw + robot_velocity_unicycle[1] * self.risk_avoidance_evaluation_dt))
+            next_humans_state = step(
+                state[:-1],
+                humans_visibility,
+                info["humans_goal"],
+                info["humans_parameters"],
+                info["static_obstacles"][:-1],
+                self.risk_avoidance_evaluation_dt,
+            )
+            new_state = new_state.at[:-1,:].set(next_humans_state)
+            return (new_state, info), new_state
+        _, next_states = lax.scan(
+            _scan_body,
+            (state, info),
+            jnp.arange(self.risk_avoidance_steps),
+        )
+        offsets = next_states[:,:-1,:2] - next_states[:,-1,:2][:,None,:]
+        dists = jnp.linalg.norm(offsets, axis=-1)
+        closest_dists = jnp.min(dists, axis=0)
+        clearance_distances = closest_dists - (info["humans_parameters"][:,0] + self.robot_radius)
         risks = jnp.clip((self.risk_avoidance_distance - clearance_distances) / self.risk_avoidance_distance, 0., 1.)
         # Top k risks
         k_eff = min(self.risk_avoidance_top_k, risks.shape[0])
         sorted_risks = jnp.sort(risks)
         top_k_risks = sorted_risks[-k_eff:]
-        return jnp.max(top_k_risks), jnp.mean(top_k_risks)
+        return jnp.max(top_k_risks), jnp.mean(top_k_risks), next_states, jnp.min(clearance_distances)

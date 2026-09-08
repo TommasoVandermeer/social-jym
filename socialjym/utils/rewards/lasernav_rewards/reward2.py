@@ -314,4 +314,4 @@ class Reward2(BaseReward):
                 reward_terms[self.g_acc] += accountability_reward
         else:
             reward_terms = {self.gamma: reward}
-        return reward, outcome, reward_terms
+        return reward, outcome, reward_terms, {}

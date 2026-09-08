@@ -358,7 +358,7 @@ class LaserNav(BaseEnv):
         ### Update state and info
         new_state, new_info, (state_history, humans_leg_state_history) = self._step(state, info, action) 
         ### Compute reward and outcome
-        reward, outcome, reward_terms = self.reward_function(state, state_history, action, info, self.robot_dt)
+        reward, outcome, reward_terms, _ = self.reward_function(state, state_history, action, info, self.robot_dt)
         ### Test outcome computation (during tests we check for actual collision or reaching goal)
         @jit
         def _test_outcome(val:tuple):

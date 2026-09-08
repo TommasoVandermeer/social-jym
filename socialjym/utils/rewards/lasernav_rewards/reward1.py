@@ -273,4 +273,4 @@ class Reward1(BaseReward):
                 reward_terms[self.g_rot] += rotation_reward
         else:
             reward_terms = {self.gamma: reward}
-        return reward, outcome, reward_terms
+        return reward, outcome, reward_terms, {}

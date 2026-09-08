@@ -138,7 +138,7 @@ for i in range(n_episodes):
         old_state = state
         state, obs, info, (reward, _), outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)
         # Reward detail
-        reward, _, reward_terms =env.reward_function(old_state, info['intermediate_states'], action, info, env.robot_dt)
+        reward, _, reward_terms, reward_info = env.reward_function(old_state, info['intermediate_states'], action, info, env.robot_dt)
         # Debug prints
         print(
             # "Dirichlet distribution parameters: ", actor_distr['alphas'],"\n",
@@ -150,7 +150,8 @@ for i in range(n_episodes):
             # "Sensors-sensors delay: ", f"{(info['substeps_from_last_odom_ref_scan'] - info['substeps_from_last_scan']) * env.humans_dt:.2f} s","\n",
             # f"Lasers dt (stack): {obs[0,10] - obs[:,8]}","\n",
             # f"Action: {action}",
-            f"Step: {step} - Reward: {reward:.2f} - Risk reward: {reward_terms[0.99]}"
+            f"Step: {step} - Reward: {reward:.2f} - Risk reward: {reward_terms[0.99]} \
+            \nClearance distance: {reward_info['clearance_distance']} - Next clearance distance: {reward_info['next_clearance_distance']}"
         )
         # Plot state
         plot_state = (jnp.abs(reward_terms[0.99]) > 0.0) | (random.bernoulli(random.PRNGKey(info["step"]), 0.1))
@@ -168,75 +169,13 @@ for i in range(n_episodes):
                 ax.add_patch(head)
                 circle = plt.Circle((humans_poses[h,0], humans_poses[h,1]), info["humans_parameters"][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
                 ax.add_patch(circle)
-            # Plot human velocities
-            for h in range(len(humans_poses)):
-                ax.arrow(
-                    humans_poses[h,0],
-                    humans_poses[h,1],
-                    humans_velocities[h,0] * env.reward_function.risk_avoidance_horizon,
-                    humans_velocities[h,1] * env.reward_function.risk_avoidance_horizon,
-                    head_width=0.15,
-                    head_length=0.15,
-                    fc=color,
-                    ec=color,
-                    alpha=alpha,
-                    zorder=30,
-                )
             # Plot robot
             robot_position = old_state[-1,:2]
             robot_yaw = old_state[-1,4]
-            robot_velocity = lax.cond(
-                jnp.abs(old_state[-1,3]) > 1e-3,
-                lambda: jnp.array([
-                    (old_state[-1,2]/old_state[-1,3]) * (jnp.sin(robot_yaw + old_state[-1,3] * env.reward_function.risk_avoidance_horizon) - jnp.sin(robot_yaw)),
-                    (old_state[-1,2]/old_state[-1,3]) * (jnp.cos(robot_yaw) - jnp.cos(robot_yaw + old_state[-1,3] * env.reward_function.risk_avoidance_horizon))
-                ]) / env.reward_function.risk_avoidance_horizon,
-                lambda: jnp.array([
-                    old_state[-1,2] * env.reward_function.risk_avoidance_horizon * jnp.cos(robot_yaw),
-                    old_state[-1,2] * env.reward_function.risk_avoidance_horizon * jnp.sin(robot_yaw)
-                ]) / env.reward_function.risk_avoidance_horizon
-            )
-            head = plt.Circle((robot_position[0] + env.robot_radius * jnp.cos(old_state[-1,4]), robot_position[1] + env.robot_radius * jnp.sin(old_state[-1,4])), 0.1, color='black', zorder=1)
+            head = plt.Circle((robot_position[0] + env.robot_radius * jnp.cos(old_state[-1,4]), robot_position[1] + env.robot_radius * jnp.sin(old_state[-1,4])), 0.1, color='black', zorder=3)
             ax.add_patch(head)
-            circle = plt.Circle((robot_position[0], robot_position[1]), env.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+            circle = plt.Circle((robot_position[0], robot_position[1]), env.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=4)
             ax.add_patch(circle)
-            ax.arrow(
-                robot_position[0],
-                robot_position[1],
-                robot_velocity[0] * env.reward_function.risk_avoidance_horizon,
-                robot_velocity[1] * env.reward_function.risk_avoidance_horizon,
-                head_width=0.15,
-                head_length=0.15,
-                fc="green",
-                ec="green",
-                alpha=alpha,
-                zorder=30,
-            )
-            robot_position = state[-1,:2]
-            robot_yaw = state[-1,4]
-            robot_velocity = lax.cond(
-                jnp.abs(state[-1,3]) > 1e-3,
-                lambda: jnp.array([
-                    (state[-1,2]/state[-1,3]) * (jnp.sin(robot_yaw + state[-1,3] * env.reward_function.risk_avoidance_horizon) - jnp.sin(robot_yaw)),
-                    (state[-1,2]/state[-1,3]) * (jnp.cos(robot_yaw) - jnp.cos(robot_yaw + state[-1,3] * env.reward_function.risk_avoidance_horizon))
-                ]) / env.reward_function.risk_avoidance_horizon,
-                lambda: jnp.array([
-                    state[-1,2] * env.reward_function.risk_avoidance_horizon * jnp.cos(robot_yaw),
-                    state[-1,2] * env.reward_function.risk_avoidance_horizon * jnp.sin(robot_yaw)
-                ]) / env.reward_function.risk_avoidance_horizon
-            )
-            ax.arrow(
-                robot_position[0],
-                robot_position[1],
-                robot_velocity[0] * env.reward_function.risk_avoidance_horizon,
-                robot_velocity[1] * env.reward_function.risk_avoidance_horizon,
-                head_width=0.15,
-                head_length=0.15,
-                fc="blue",
-                ec="blue",
-                alpha=alpha,
-                zorder=30,
-            )
             # Plot robot goal
             ax.plot(
                 info['robot_goal'][0],
@@ -251,6 +190,23 @@ for i in range(n_episodes):
                 for o in info["static_obstacles"][-1]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
             else: # One segment obstacles
                 for o in info["static_obstacles"][-1]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+            # Plot risk horizon evaluation states
+            if reward_info["evaluation_states"] is not None:
+                for s in reward_info["evaluation_states"]:
+                    circle = plt.Circle((s[-1,0], s[-1,1]), env.robot_radius, edgecolor="green", fill=False, zorder=2, alpha=0.3)
+                    ax.add_patch(circle)
+                    head = plt.Circle((s[-1,0] + env.robot_radius * jnp.cos(s[-1,4]), s[-1,1] + env.robot_radius * jnp.sin(s[-1,4])), 0.1, color='darkgreen', zorder=2, alpha=0.3)
+                    ax.add_patch(head)
+                    for h in range(s.shape[0]-1):
+                        circle = plt.Circle((s[h,0], s[h,1]), info["humans_parameters"][h,0], edgecolor="blue", fill=False, zorder=2, alpha=0.3)
+                        ax.add_patch(circle)
+                        head = plt.Circle((s[h,0] + jnp.cos(s[h,4]) * info["humans_parameters"][h,0], s[h,1] + jnp.sin(s[h,4]) * info["humans_parameters"][h,0]), 0.1, color='black', zorder=2, alpha=0.3)
+                        ax.add_patch(head)
+                for s in reward_info["next_evaluation_states"]:
+                    circle = plt.Circle((s[-1,0], s[-1,1]), env.robot_radius, edgecolor="red", fill=False, zorder=2, alpha=0.3)
+                    ax.add_patch(circle)
+                    head = plt.Circle((s[-1,0] + env.robot_radius * jnp.cos(s[-1,4]), s[-1,1] + env.robot_radius * jnp.sin(s[-1,4])), 0.1, color='darkred', zorder=2, alpha=0.3)
+                    ax.add_patch(head)
             plt.show()
         # Save data for animation
         all_actions = all_actions.at[step].set(action)

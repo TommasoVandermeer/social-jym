@@ -114,4 +114,4 @@ class DummyReward(BaseReward):
             "collision_with_obstacle": collision_with_obstacle,
             "timeout": timeout & (~(failure)) & (~(reached_goal))
         }
-        return 0., outcome, {self.gamma: 0.}
+        return 0., outcome, {self.gamma: 0.}, {}
