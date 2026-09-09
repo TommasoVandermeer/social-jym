@@ -43,12 +43,12 @@ class Reward4(BaseReward):
         risk_avoidance_distance: float=0.5,
         risk_avoidance_evaluation_dt: float=0.1,
         risk_avoidance_top_k: int=3,
-        risk_max_weight: float=0.1,
-        risk_mean_weight: float=0.05,
+        risk_max_weight: float=0.2,
+        risk_mean_weight: float=0.1,
         escape_alpha_threshold: float=0.5,
-        escape_rotation_reward_weight: float=0.01,
-        escape_rotation_stall_penalty_weight: float=0.01,
-        escape_rotation_switch_penalty_weight: float=0.02,
+        escape_rotation_reward_weight: float=0.1,
+        escape_rotation_stall_penalty_weight: float=0.1,
+        escape_rotation_switch_penalty_weight: float=0.2,
         escape_rotation_deadband: float=0.05,
     ) -> None:
         super().__init__(gamma)
@@ -222,13 +222,13 @@ class Reward4(BaseReward):
         # Escape detection (based on DIR-SAFE action space bounding)
         obstacles = info["static_obstacles"][-1] # Obstacles are repeated for each agent, we take the last one, corresponding to the robot agent
         obstacle_segments = obstacles.reshape((obstacles.shape[0] * obstacles.shape[1], 2, 2)) # Concatenate all segments regardless of the obstacle they belong to
-        alpha = self.dir_safe.bound_action_space(
+        action_space_parameters = self.dir_safe.bound_action_space(
             obstacle_segments,
             robot_pos,
             robot_orientation,
             robot_radius,
-        )[0]
-        escape = alpha < self.escape_alpha_threshold
+        )
+        escape = action_space_parameters[0] < self.escape_alpha_threshold
         # Check if the robot reached its goal
         reached_goal, _ = self.goal_reached_termination(
             next_robot_pos,
@@ -305,8 +305,12 @@ class Reward4(BaseReward):
             rotation_reward = 0.
         # Risk reward
         if self.risk_reward:
-            current_max_risk, current_mean_risk, current_evaluation_states, current_min_clearance_distance = self._risk(state, info)
-            next_max_risk, next_mean_risk, next_evaluation_states, next_min_clearance_distance = self._risk(new_states[-1], info)
+            # Current risk
+            current_max_risk, current_mean_risk, current_evaluation_states, current_min_clearance_distance, current_closest_dist_time_idx = self._risk(state, info)
+            # Next risk (evaluated at robot's current state with next velocity and humans' current states)
+            # Isolate the effect of the commanded action
+            next_state = state.at[-1,2:4].set(new_states[-1,-1,2:4]) # Keep robot's current position and orientation, only update its velocity
+            next_max_risk, next_mean_risk, next_evaluation_states, next_min_clearance_distance, next_closest_dist_time_idx = self._risk(next_state, info)
             risk_reward = lax.cond(
                 ~(failure),
                 lambda: self.w_max_risk * (current_max_risk - next_max_risk) + self.w_mean_risk * (current_mean_risk - next_mean_risk),
@@ -317,31 +321,47 @@ class Reward4(BaseReward):
             next_evaluation_states = None
             current_min_clearance_distance = None
             next_min_clearance_distance = None
+            current_closest_dist_time_idx = None
+            next_closest_dist_time_idx = None
             risk_reward = 0.
         # Escape reward
         if self.escape_reward:
-            angular_speed = jnp.abs(action[1])
-            turn_fraction = jnp.clip(
-                angular_speed / self.escape_angular_speed,
+            initial_angular_speed = state[-1, 3]
+            final_angular_speed = new_states[-1, -1, 3]
+            initial_turn_fraction = jnp.clip(
+                jnp.abs(initial_angular_speed) / self.escape_angular_speed,
                 0.0,
                 1.0,
             )
+            final_turn_fraction = jnp.clip(
+                jnp.abs(final_angular_speed) / self.escape_angular_speed,
+                0.0,
+                1.0,
+            )
+            # Positive when the selected action increases the effective rotation,
+            # negative when it slows the robot down.
+            turn_improvement = (final_turn_fraction - initial_turn_fraction)
+            # Maintaining rotation remains rewarding.
+            # Accelerating the rotation receives an additional reward.
+            # Decelerating reduces the reward and can make it negative.
+            turn_score = final_turn_fraction + turn_improvement
             escape_turn_reward = lax.cond(
                 escape,
-                lambda: self.escape_rotation_reward_weight * dt * turn_fraction,
+                lambda: self.escape_rotation_reward_weight * dt * turn_score,
                 lambda: 0.0,
             )
+            # Explicitly penalize a final state with insufficient rotation.
             escape_stall_penalty = lax.cond(
                 escape,
-                lambda: -self.escape_rotation_stall_penalty_weight * dt * (1.0 - turn_fraction),
+                lambda: -self.escape_rotation_stall_penalty_weight * dt * (1.0 - final_turn_fraction),
                 lambda: 0.0,
             )
-            previous_angular_speed = state[-1, 3]
+            # Compare the initial and final effective angular velocities.
             direction_switch = (
                 escape
-                & (jnp.abs(previous_angular_speed) > self.escape_rotation_deadband)
-                & (angular_speed > self.escape_rotation_deadband)
-                & (previous_angular_speed * action[1] < 0.0)
+                & (jnp.abs(initial_angular_speed) > self.escape_rotation_deadband)
+                & (jnp.abs(final_angular_speed) > self.escape_rotation_deadband)
+                & (initial_angular_speed * final_angular_speed < 0.0)
             )
             escape_switch_penalty = lax.cond(
                 direction_switch,
@@ -350,7 +370,10 @@ class Reward4(BaseReward):
             )
             escape_reward = escape_turn_reward + escape_stall_penalty + escape_switch_penalty
         else:
-            escape_reward = 0.
+            escape_reward = 0.0
+            escape_turn_reward = 0.0
+            escape_stall_penalty = 0.0
+            escape_switch_penalty = 0.0
         ### TOTAL REWARD ###
         reward = goal_reward + collision_human_reward + collision_obstacle_reward + discomfort_reward + progress_reward + rotation_reward + risk_reward + escape_reward
         if self.multi_gamma:
@@ -377,7 +400,17 @@ class Reward4(BaseReward):
             "evaluation_states": current_evaluation_states, 
             "next_evaluation_states": next_evaluation_states,
             "clearance_distance": current_min_clearance_distance,
-            "next_clearance_distance": next_min_clearance_distance
+            "next_clearance_distance": next_min_clearance_distance,
+            "closest_distance_time_index": current_closest_dist_time_idx,
+            "next_closest_distance_time_index": next_closest_dist_time_idx,
+            "current_max_risk": current_max_risk,
+            "next_max_risk": next_max_risk,
+            "current_mean_risk": current_mean_risk,
+            "next_mean_risk": next_mean_risk,
+            "action_space_parameters": action_space_parameters,
+            "escape_turn_reward": escape_turn_reward,
+            "escape_stall_penalty": escape_stall_penalty,
+            "escape_switch_penalty": escape_switch_penalty,
         }
 
     @partial(jit, static_argnames=("self"))
@@ -437,11 +470,11 @@ class Reward4(BaseReward):
         )
         offsets = next_states[:,:-1,:2] - next_states[:,-1,:2][:,None,:]
         dists = jnp.linalg.norm(offsets, axis=-1)
-        closest_dists = jnp.min(dists, axis=0)
+        closest_dists = jnp.nanmin(dists, axis=0)
         clearance_distances = closest_dists - (info["humans_parameters"][:,0] + self.robot_radius)
         risks = jnp.clip((self.risk_avoidance_distance - clearance_distances) / self.risk_avoidance_distance, 0., 1.)
         # Top k risks
         k_eff = min(self.risk_avoidance_top_k, risks.shape[0])
         sorted_risks = jnp.sort(risks)
         top_k_risks = sorted_risks[-k_eff:]
-        return jnp.max(top_k_risks), jnp.mean(top_k_risks), next_states, jnp.min(clearance_distances)
+        return jnp.max(top_k_risks), jnp.mean(top_k_risks), next_states, jnp.nanmin(clearance_distances), jnp.nanargmin(dists, axis=0)
