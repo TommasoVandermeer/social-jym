@@ -30,11 +30,12 @@ control_delay_mean = 0.1
 control_delay_sigma = 0.01
 wheels_max_linear_acceleration = 0.87
 leg_dynamics = True  # Whether to include leg dynamics in the simulation (introduces more realistic trajectories but also more noise in the data)
+rl_scenario_subset = jnp.array([0,1,2,3,4,6,9,10,11,12,13,14,15,16])
 ### Script parameters
 save_videos = False  # Whether to save videos of the debug inspections
-perception_nn_name = 'realistic_pre_perception_network_32.pkl'
-policy_nn_name = 'realistic_pre_controller_network_32.pkl'
-multitask_network_name = 'LATEST_realistic_jessi_multitask_rl_out_32.pkl'
+perception_nn_name = 'pre_perception_network_32.pkl'
+policy_nn_name = 'LATEST_pre_controller_network_32.pkl'
+multitask_network_name = 'LATEST1_jessi_multitask_rl_out_32.pkl'
 if state_augmented:
     policy_nn_name = "SA_" + policy_nn_name
     multitask_network_name = "SA_" + multitask_network_name
@@ -42,8 +43,9 @@ if state_augmented:
 robot_radius = 0.3
 robot_dt = 0.25
 robot_vmax = 0.45
-robot_wmax = 1.9
+robot_wmax = 3.8
 robot_wheel_distance = 2 * robot_vmax / robot_wmax
+ablation_mode = None
 kinematics = "unicycle"
 lidar_angular_range = 2*jnp.pi
 lidar_max_dist = 10.
@@ -110,7 +112,7 @@ if state_augmented:
         n_detectable_humans=n_detectable_humans, 
         max_humans_velocity=max_humans_velocity,
         embedding_dim=embeddings_dim,
-        ablation_mode=6,
+        ablation_mode=ablation_mode,
     )
 else:
     jessi = JESSI(
@@ -124,7 +126,7 @@ else:
         n_detectable_humans=n_detectable_humans, 
         max_humans_velocity=max_humans_velocity,
         embedding_dim=embeddings_dim,
-        ablation_mode=6,
+        ablation_mode=ablation_mode,
     )
 # Plotting settings
 ax_visibility = 2
@@ -957,14 +959,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     # Environment parameters
     env_params = {
         'robot_radius': 0.3,
-        'n_humans': 4,
-        'n_obstacles': 5,
-        'robot_dt': 0.25,
+        'n_humans': n_humans,
+        'n_obstacles': n_obstacles,
+        'robot_dt': robot_dt,
         'wheels_distance': robot_wheel_distance,
         'humans_dt': 0.01,
         'robot_visible': False,
         'scenario': training_hyperparams['scenario'],
-        'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,9,10,11,12,13,14,15,16]),
+        'hybrid_scenario_subset': rl_scenario_subset,
         'circle_radius': 7,
         'reward_function': reward_function,
         'kinematics': 'unicycle',
@@ -998,7 +1000,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
             n_stack=n_stack,
             beam_dropout_rate=0.2,
             embedding_dim=embeddings_dim,
-            ablation_mode=6,
+            ablation_mode=ablation_mode,
         )
     else:
         policy = JESSI(
@@ -1012,7 +1014,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
             n_stack=n_stack,
             beam_dropout_rate=0.2,
             embedding_dim=embeddings_dim,
-            ablation_mode=6,
+            ablation_mode=ablation_mode,
         )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:

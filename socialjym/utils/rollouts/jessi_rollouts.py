@@ -208,7 +208,7 @@ def train_one_epoch(
             # Actor
             new_neglogp = policy.action_distribution.batch_neglogp(actor_dist, u_mb["actions"])
             log_ratio = u_mb["neglogpdfs"] - new_neglogp
-            # log_ratio = jnp.clip(log_ratio, -10, 10) # MORE STABLE
+            log_ratio = jnp.clip(log_ratio, -10, 10) # MORE STABLE
             ratio = jnp.exp(log_ratio)
             lax.cond(
                 debugging & (batch_idx == 0),
@@ -218,7 +218,7 @@ def train_one_epoch(
             surr1 = ratio * u_mb["advantages"]
             surr2 = jnp.clip(ratio, 1.0 - clip_range, 1.0 + clip_range) * u_mb["advantages"]
             actor_loss = -jnp.mean(jnp.minimum(surr1, surr2))
-            approx_kl = jnp.mean((ratio - 1) - log_ratio)
+            approx_kl = jnp.mean(jnp.expm1(log_ratio) - log_ratio)
             clip_frac = jnp.mean(jnp.abs(ratio - 1.0) > clip_range)
             # Critic
             v_loss = jnp.square(pred_val - u_mb["critic_targets"])

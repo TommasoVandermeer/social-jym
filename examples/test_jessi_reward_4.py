@@ -12,12 +12,12 @@ from socialjym.policies.jessi import JESSI
 from socialjym.utils.aux_functions import animate_trajectory
 from jhsfm.hsfm import get_linear_velocity
 
-plot = {"risk":False, "escape":True}
+plot = {"risk":True, "escape":True}
 # Hyperparameters
 random_seed = 3
 visibility_chance=0.1
-robot_vmax = 1
-robot_wheel_distance = 0.7
+robot_vmax = 0.48
+robot_wheel_distance = 2 * robot_vmax / 1.9
 time_limit = 50
 n_episodes = 100
 kinematics = 'unicycle'
@@ -31,14 +31,14 @@ env_params = {
     'odometry_dt': 0.05,
     'control_delay_mean': 0.1, 
     'control_delay_sigma': 0.01,
-    'wheels_max_linear_acceleration': 1.8, #0.87,
+    'wheels_max_linear_acceleration': 0.87,
     'wheels_distance': robot_wheel_distance,
     'n_humans': 10,
     'n_obstacles': 5,
     'robot_radius': 0.3,
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
-    'robot_visible': None,
+    'robot_visible': True,
     'scenario': 'parallel_traffic', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
     'ccso_n_static_humans': 10,
