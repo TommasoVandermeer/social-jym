@@ -141,18 +141,20 @@ class TB4Controller(Node):
         self.align=align
         self.first_scan_received = False
         # Pure pursuit parameters
-        self.pure_pursuit = pure_pursuit
+        if planner != 'DWA':
+            self.pure_pursuit = pure_pursuit
+        else:
+            self.pure_pursuit = False
+            if pure_pursuit:
+                self.get_logger().info("Pure pursuit DEACTIVATED for DWA")
         self.lookahead_distance = 1.0
         self.initial_pos = None # Set on first iteration
 
-        self.init_time = time.time()
-        self.previous_control_time = time.time()
-
         self.v_max = 0.45 # m/s
-        self.w_max = 1.9 # rad/s
+        self.w_max = 3.8 # rad/s
         self.n_stack = 5 
         self.dt = 1.0 / self.frequency  # Control frequency
-        self.radius = 0.3
+        self.radius = 0.38
         if san_niccolo:
             self.patrol = False
         else:
@@ -188,6 +190,13 @@ class TB4Controller(Node):
         self.angular_res = (float(self.lidar_max_angle) - float(self.lidar_min_angle)) / self.lidar_num_rays
         self.previous_scan_time = 0.
 
+        self.rng_key = random.PRNGKey(0)
+        self.network_params = None
+        if planner in ('JESSI', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E'):
+            network_path = network_name if os.path.isabs(network_name) else os.path.join(os.path.dirname(__file__), network_name)
+            with open(network_path, 'rb') as f:
+                self.network_params, _, _ = pickle.load(f)
+
         if planner == 'JESSI':
             self.policy = JESSI(
                 v_max=self.v_max,
@@ -198,8 +207,17 @@ class TB4Controller(Node):
                 lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
                 lidar_max_dist=self.lidar_max_dist,
                 n_stack_for_action_space_bounding=1,
-                ablation_mode = 6,
             )
+            # Dummy act call to pre-compile JAX jitted functions
+            init_time = time.time()
+            _ = self.policy.act(
+                key=self.rng_key,
+                obs=jnp.zeros((self.n_stack, self.lidar_num_rays + 11)),
+                info={"robot_goal": jnp.array([0.0, 0.0])},
+                e2e_network_params=self.network_params,
+                sample=False 
+            )
+            self.get_logger().info(f"JESSI act compilation ended in: {time.time() - init_time:.2f}s")
         elif planner == 'DWA':
             self.policy = DWA(
                 v_max=self.v_max,
@@ -211,9 +229,16 @@ class TB4Controller(Node):
                 lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
                 lidar_max_dist=self.lidar_max_dist,
                 use_box_action_space=True,
-                # predict_time_horizon=1.,
-                heading_cost_coeff=0.2,
+                predict_time_horizon=1.,
+                # heading_cost_coeff=0.2,
             )
+            # Dummy act call to pre-compile JAX jitted functions
+            init_time = time.time()
+            _ = self.policy.act(
+                obs=jnp.zeros((self.n_stack, self.lidar_num_rays + 11)),
+                info={"robot_goal": jnp.array([0.0, 0.0])},
+            )
+            self.get_logger().info(f"DWA act compilation ended in: {time.time() - init_time:.2f}s")
         elif planner == 'MPPI':
             self.policy = MPPI(
                 v_max=self.v_max,
@@ -226,6 +251,14 @@ class TB4Controller(Node):
                 lidar_max_dist=self.lidar_max_dist,
             )
             self.u_mean = self.policy.init_u_mean()
+            # Dummy act call to pre-compile JAX jitted functions
+            init_time = time.time()
+            _ = self.policy.act(
+                obs=jnp.zeros((self.n_stack, self.lidar_num_rays + 11)),
+                info={"robot_goal": jnp.array([0.0, 0.0])},
+                u_mean=self.u_mean,
+            )
+            self.get_logger().info(f"MPPI act compilation ended in: {time.time() - init_time:.2f}s")
         elif planner == 'VANILLA-E2E':
             self.policy = VanillaE2E(
                 v_max=self.v_max,
@@ -237,6 +270,16 @@ class TB4Controller(Node):
                 lidar_max_dist=self.lidar_max_dist,
                 n_stack_for_action_space_bounding=1
             )
+            # Dummy act call to pre-compile JAX jitted functions
+            init_time = time.time()
+            _ = self.policy.act(
+                key=self.rng_key,
+                obs=jnp.zeros((self.n_stack, self.lidar_num_rays + 11)),
+                info={"robot_goal": jnp.array([0.0, 0.0])},
+                network_params=self.network_params,
+                sample=False 
+            )
+            self.get_logger().info(f"VANILLA-E2E act compilation ended in: {time.time() - init_time:.2f}s")
         elif planner == 'BOUNDED-VANILLA-E2E':
             self.policy = VanillaE2E(
                 v_max=self.v_max,
@@ -249,13 +292,16 @@ class TB4Controller(Node):
                 n_stack_for_action_space_bounding=1,
                 action_space_bounding=True,
             )
-        self.rng_key = random.PRNGKey(0)
-        self.network_params = None
-        if planner in ('JESSI', 'VANILLA-E2E', 'BOUNDED-VANILLA-E2E'):
-            network_path = network_name if os.path.isabs(network_name) else os.path.join(os.path.dirname(__file__), network_name)
-            with open(network_path, 'rb') as f:
-                self.network_params, _, _ = pickle.load(f)
-        
+            # Dummy act call to pre-compile JAX jitted functions
+            init_time = time.time()
+            _ = self.policy.act(
+                key=self.rng_key,
+                obs=jnp.zeros((self.n_stack, self.lidar_num_rays + 11)),
+                info={"robot_goal": jnp.array([0.0, 0.0])},
+                network_params=self.network_params,
+                sample=False 
+            )
+            self.get_logger().info(f"BOUNDED-VANILLA-E2E act compilation ended in: {time.time() - init_time:.2f}s")
         # Reset turtlebot odometry
         self.odom_reset_confirmed = False
         self.reset_odom_client = self.create_client(ResetPose, '/turtlebot1/reset_pose')
@@ -306,6 +352,9 @@ class TB4Controller(Node):
         self.cmd_list = []
 
         self.get_logger().info(f"{planner} Controller initialized at {self.frequency:.1f}Hz!")
+
+        self.init_time = time.time()
+        # self.previous_control_time = time.time() # Moved to sensors callback for more accurate dt estimation
 
     def get_lookahead_point(self, rx, ry, A, B):
         """
@@ -427,6 +476,7 @@ class TB4Controller(Node):
             response = future.result()
             self.get_logger().info("OK: Odometry reset on turtlebot4")
             self.odom_reset_confirmed = True
+            self.previous_control_time = time.time()
         except Exception as e:
             self.get_logger().error(f"Error during odometry reset: {e}\nControl loop will not start...")
 
@@ -439,6 +489,7 @@ class TB4Controller(Node):
             # mutating the original ROS message header.
             self.odom_scan_time_offset = self.latest_odom_aligned_time - raw_scan_t
             self.get_logger().info(f"🕒 Software Time-Sync: Applied offset {self.odom_scan_time_offset:+.3f}s to Scan w.r.t. host control time!")
+            self.previous_control_time = time.time()
         corrected_t = raw_scan_t + self.odom_scan_time_offset
         self.latest_scan = msg
         self.latest_scan_aligned_time = corrected_t
@@ -494,6 +545,7 @@ class TB4Controller(Node):
             local_t = self.get_clock().now().nanoseconds * 1e-9
             self.odom_cmd_time_offset = local_t - raw_odom_t
             self.get_logger().info(f"🕒 Software Time-Sync: Applied offset {self.odom_cmd_time_offset:+.3f}s to Odometry w.r.t. Commands!")
+            self.previous_control_time = time.time()
         corrected_t = raw_odom_t + self.odom_cmd_time_offset
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
