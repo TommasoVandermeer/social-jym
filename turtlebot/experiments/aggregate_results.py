@@ -24,8 +24,12 @@ else:
 METRIC_COHORTS = (
     ("time_to_goal_s", "successful"),
     ("path_length_m", "successful"),
-    ("average_jerk_m_s3", "all"),
-    ("average_jerk_m_s3", "successful"),
+    ("average_translational_jerk_m_s3", "all"),
+    ("average_translational_jerk_m_s3", "successful"),
+    ("average_longitudinal_jerk_m_s3", "all"),
+    ("average_longitudinal_jerk_m_s3", "successful"),
+    ("average_angular_jerk_rad_s3", "all"),
+    ("average_angular_jerk_rad_s3", "successful"),
     ("space_compliance", "all"),
     ("space_compliance", "successful"),
     ("minimum_human_clearance_m", "all"),
@@ -158,10 +162,12 @@ def plot_results(rows, output_path):
     plots = (
         ("time_to_goal_s", "Time to goal [s]", "successful"),
         ("path_length_m", "Path length [m]", "successful"),
-        ("average_jerk_m_s3", "Average jerk [m/s³]", "all"),
+        ("average_translational_jerk_m_s3", "Translational jerk [m/s³]", "all"),
+        ("average_longitudinal_jerk_m_s3", "Longitudinal jerk [m/s³]", "all"),
+        ("average_angular_jerk_rad_s3", "Angular jerk [rad/s³]", "all"),
         ("space_compliance", "Space compliance", "all"),
     )
-    figure, axes = plt.subplots(2, 2, figsize=(11, 8))
+    figure, axes = plt.subplots(2, 3, figsize=(15, 8))
     for axis, (metric, label, cohort) in zip(axes.flat, plots):
         data = [finite_values(rows, policy, metric, cohort) for policy in ("JESSI", "DWA")]
         if all(len(values) for values in data):

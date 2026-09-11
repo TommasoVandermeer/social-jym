@@ -2,7 +2,8 @@
 
 This directory contains the reproducible workflow for comparing JESSI and DWA
 over 10 real-world trials per policy. The primary metrics are time to goal,
-average translational jerk, path length, and pedestrian-space compliance.
+average translational, longitudinal, and angular jerk, path length, and
+pedestrian-space compliance.
 
 All commands below are run from `/opt/social-jym` inside the project Docker
 container unless stated otherwise.
@@ -268,10 +269,18 @@ Interpolation never extrapolates and rejects source gaps over 0.5 s.
 - **Path length:** sum of odometry position increments at control timestamps.
   The primary comparison is success-only; distance until termination is also
   retained for every run.
-- **Average jerk:** odometry body speed is transformed into global velocity.
-  A timestamp-aware quadratic fit over seven control samples provides
-  acceleration and jerk. The reported value is the time-weighted mean jerk
-  magnitude in m/s³.
+- **Average translational jerk:** odometry body speed is transformed into
+  global velocity. A timestamp-aware quadratic fit over seven control samples
+  provides acceleration and jerk. The reported value is the time-weighted mean
+  magnitude of the global jerk vector in m/s³, so it includes changes in both
+  speed and direction.
+- **Average longitudinal jerk:** the same timestamp-aware fit is applied to
+  measured odometry `linear.x`. The reported value is the time-weighted mean
+  absolute jerk in m/s³ and measures forward-speed smoothness independently of
+  changes in heading.
+- **Average angular jerk:** the same timestamp-aware fit is applied to measured
+  odometry `angular.z`. The reported value is the time-weighted mean absolute
+  jerk in rad/s³.
 - **Space compliance:** for each currently valid pedestrian track, clearance is
   `center distance - 0.30 m robot radius - 0.30 m human radius`. A sample is
   compliant above 0.50 m clearance, equivalent to a 1.10 m center distance.
@@ -295,6 +304,23 @@ python3 turtlebot/experiments/aggregate_results.py \
   turtlebot/experiments/data/CAMPAIGN_NAME
 ```
 
+After changing a metric definition, rebuild every run before aggregating. For
+the `official` campaign, the following reuses the existing pedestrian tracks
+while rebuilding aligned sensor data, per-run metrics, and manifest summaries:
+
+```bash
+set -e
+for run_dir in turtlebot/experiments/data/official/run_*; do
+  python3 turtlebot/experiments/process_run.py "$run_dir" --skip-tracking
+done
+
+python3 turtlebot/experiments/aggregate_results.py \
+  turtlebot/experiments/data/official
+```
+
+Do not run only the aggregation command after a metric change: aggregation
+reads the already-generated `metrics.json` from each run.
+
 Outputs are:
 
 - `campaign_metrics.csv`: one row per run.
@@ -302,7 +328,8 @@ Outputs are:
   bootstrap confidence interval by policy and cohort.
 - `policy_comparison.json`: seeded JESSI-minus-DWA mean differences and 95%
   bootstrap intervals.
-- `policy_comparison.png`: time, path, jerk, and compliance plots.
+- `policy_comparison.png`: time, path, all three jerk metrics, and compliance
+  plots.
 
 Time to goal and primary path length use successful runs only. Jerk and space
 compliance are summarized over both all analyzable runs and successful runs.
