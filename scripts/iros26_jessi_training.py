@@ -578,11 +578,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name
         data['targets']['gt_vels'] = data['targets']['gt_vels'] @ rot_mat.T
         # Re-compute attendance sectors
         beam_dirs = data['inputs'][..., 4:6]                  # (B, T, L, 2)
-        sector_dirs = policy.sectors_latent_vecs       # (S, 2), [sin, cos]
+        sector_dirs = jessi.sectors_latent_vecs       # (S, 2), [sin, cos]
         cos_diffs = beam_dirs @ sector_dirs.T         # (B, T, L, S)
         k = data['inputs'].shape[-1] - 7
         top_cos, top_indices = lax.top_k(cos_diffs, k)
-        attended_sectors = jnp.where(top_cos >= policy.sectors_threshold,top_indices,-1)
+        attended_sectors = jnp.where(top_cos >= jessi.sectors_threshold,top_indices,-1)
         data['inputs'] = data['inputs'].at[..., 7:].set(attended_sectors.astype(data['inputs'].dtype))
         return data
     @jit 
