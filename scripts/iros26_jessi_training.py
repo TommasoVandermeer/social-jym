@@ -95,6 +95,7 @@ jessi = JESSI(
     n_detectable_humans=n_detectable_humans, 
     max_humans_velocity=max_humans_velocity,
     embedding_dim=embeddings_dim,
+    beam_dropout_rate=0.1,
 )
 # Plotting settings
 ax_visibility = 2
