@@ -814,12 +814,17 @@ class JESSI(BasePolicy):
         # Extract dimensions
         B, K, _ = human_distrs['pos_distrs']['means'].shape
         _, M, _ = human_positions.shape
+        if M > K:
+            raise ValueError(f"Matching requires M (humans) <= K (detections), but got M={M}, K={K}")
         ### Bipartite matching
         ## Cost matrix
-        diff = jnp.expand_dims(human_distrs['pos_distrs']['means'], 2) - jnp.expand_dims(human_positions, 1) # (B, K, 1, 2) - (B, 1, M, 2)
-        dist = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1) + 1e-6) # Shape (B, K, M)
-        prob_cost = -jnp.log(jnp.expand_dims(human_distrs['weights'], 2) + 1e-6) # (B, K, 1)
-        cost_matrix = lambda_pos_reg * dist + lambda_cls * prob_cost # (B, K, M)
+        diff = human_distrs["pos_distrs"]["means"][:, :, None, :] - human_positions[:, None, :, :]
+        dist = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1) + 1e-6)
+        prob_cost = -jnp.log(human_distrs["weights"][:, :, None] + 1e-6)
+        cost_matrix = (lambda_pos_reg * dist + lambda_cls * prob_cost)
+        # Invisible/padded targets must have no query preference.
+        valid_targets = human_mask[:, None, :].astype(bool)
+        cost_matrix = jnp.where(valid_targets, cost_matrix, 0.0)
         ## Matching
         assigned_query_idx, assigned_gt_idx = vmap(optax.assignment.hungarian_algorithm)(cost_matrix) # Shapes: (B, M), (B, M)
         sort_perm = jnp.argsort(assigned_gt_idx, axis=1) # Shape (B, M)
@@ -827,7 +832,7 @@ class JESSI(BasePolicy):
         # One-hot mask - shape: (B, K, M) -> 1 if k matches m, 0 otherwise
         matched_mask = nn.one_hot(best_pred_idx, K, axis=1) # Shape: (B, K, M)
         # Filter with GT mask
-        valid_matches = matched_mask * jnp.expand_dims(human_mask, 1) # (B, K, M)
+        valid_matches = matched_mask * human_mask[:, None, :] # (B, K, M)
         matched_pos_means = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['pos_distrs']['means']) # (B, M, 2)
         matched_pos_logsigmas = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['pos_distrs']['logsigmas']) # (B, M, 2)
         matched_pos_correlations = jnp.einsum('bkm,bk->bm', valid_matches, human_distrs['pos_distrs']['correlation']) # (B, M)
@@ -1177,7 +1182,9 @@ class JESSI(BasePolicy):
         - last LiDAR point cloud (lidar_num_rays, 2): in robot frame of the most recent observation.
         """
         # Limit readings to self.lidar_max_dist
+        raw_ranges = obs[:, 11:]  # (T, L)
         clipped_obs = obs.at[:, 11:].set(jnp.clip(obs[:, 11:], a_min=0.0, a_max=self.lidar_max_dist))
+        hit_mask = raw_ranges < self.lidar_max_dist
         # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.
         aligned_lidar_scans = self.align_lidar(clipped_obs)[0]  # Shape: (n_stack, lidar_num_rays, 2)
         point_cloud_for_bounding = aligned_lidar_scans[:self.n_stack_for_action_space_bounding,:, :]  # Shape: (n_stack_for_action_space_bounding, lidar_num_rays, 2)
@@ -1188,8 +1195,9 @@ class JESSI(BasePolicy):
         # Compute LiDAR tokens
         @jit
         def compute_beam_token(
-            scan_index:int,
-            point:jnp.ndarray,
+            scan_index,
+            point,
+            is_hit,
         ) -> jnp.ndarray:
             # Extract point coordinates
             x, y = point
@@ -1198,7 +1206,7 @@ class JESSI(BasePolicy):
             current_theta = jnp.arctan2(y, x)
             sin_current_theta = jnp.sin(current_theta)
             cos_current_theta = jnp.cos(current_theta)
-            hit = jnp.where(distance < self.lidar_max_dist, 1.0, 0.0)
+            hit = is_hit.astype(point.dtype)
             # Compute stack index features
             delta_t = obs[0, 10] - obs[scan_index, 8] # Time difference from the control sampling time
             # Sector attendance
@@ -1218,9 +1226,10 @@ class JESSI(BasePolicy):
                 # Additional input (not processed by the NN, only used to compute the attendance mask in AngularLocalCrossAttention layer)
                 *attended_sectors,
             ])
-        encoder_input = vmap(vmap(compute_beam_token, in_axes=(None, 0)), in_axes=(0, 0))(
+        encoder_input = vmap(vmap(compute_beam_token, in_axes=(None, 0, 0)), in_axes=(0, 0, 0))(
             jnp.arange(self.n_stack),
             aligned_lidar_scans,
+            hit_mask,
         )  # Shape: (n_stack, lidar_num_rays, 7)
         # Optionally select TOP K beams for each stack here to reduce computation
         # First stack is the most recent one!!!

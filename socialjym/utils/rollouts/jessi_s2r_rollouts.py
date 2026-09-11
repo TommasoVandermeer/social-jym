@@ -256,12 +256,12 @@ def train_one_epoch(
                 inputs1_f16 = inputs1.astype(jnp.bfloat16)
                 # Actor forward pass 
                 (safety_perc_dist, _, _, actor_dist, _, __build_class__, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training)
+                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=modular_training
                 )
             else:
                 # Actor forward pass
                 (safety_perc_dist, _, _, actor_dist, _, _, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training)
+                    p, None, inputs0, inputs1, stop_perception_gradient=modular_training
                 )               
             # Cast back to higher precision for loss computation
             if multitask_training or modular_training:
