@@ -81,13 +81,20 @@ class MultiHeadAttention(hk.MultiHeadAttention):
     attn_logits = jnp.einsum("...thd,...Thd->...htT", query_heads, key_heads)
     attn_logits = attn_logits / jnp.sqrt(self.key_size).astype(key.dtype)
     if mask is not None:
-      if mask.ndim != attn_logits.ndim:
-        raise ValueError(
-            f"Mask dimensionality {mask.ndim} must match logits dimensionality "
-            f"{attn_logits.ndim}."
-        )
-      attn_logits = jnp.where(mask, attn_logits, -1e30)
-    attn_weights = nn.softmax(attn_logits)  # [H, T', T]
+        if mask.ndim != attn_logits.ndim:
+            raise ValueError(
+                f"Mask dimensionality {mask.ndim} must match "
+                f"logits dimensionality {attn_logits.ndim}."
+            )
+
+        mask = mask.astype(jnp.bool_)
+        has_keys = jnp.any(mask, axis=-1, keepdims=True)
+        masked_logits = jnp.where(mask, attn_logits, -jnp.inf)
+        safe_logits = jnp.where(has_keys, masked_logits, 0.0)
+        attn_weights = nn.softmax(safe_logits, axis=-1)
+        attn_weights = jnp.where(mask, attn_weights, 0.0)  # [H, T', T]
+    else:
+        attn_weights = nn.softmax(attn_logits, axis=-1)  # [H, T', T]
     attn = jnp.einsum("...htT,...Thd->...thd", attn_weights, value_heads)
     attn = jnp.reshape(attn, (*leading_dims, sequence_length, -1))  # [T', H*V]
     final_projection = hk.Linear(self.model_size, w_init=self.w_init,
