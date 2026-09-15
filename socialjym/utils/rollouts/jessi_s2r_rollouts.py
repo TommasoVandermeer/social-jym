@@ -307,6 +307,15 @@ def train_one_epoch(
                     inputs0 = inputs0.at[..., 2:4].set(xy_rotated)
                     inputs0 = inputs0.at[..., 4].set(s_new) 
                     inputs0 = inputs0.at[..., 5].set(c_new) 
+                    # Re-compute attendance sectors
+                    beam_dirs = inputs0[..., 4:6]                  # (B, T, L, 2)
+                    sector_dirs = policy.sectors_latent_vecs       # (S, 2), [sin, cos]
+                    cos_diffs = beam_dirs @ sector_dirs.T         # (B, T, L, S)
+                    k = inputs0.shape[-1] - 7
+                    top_cos, top_indices = lax.top_k(cos_diffs, k)
+                    attended_sectors = jnp.where(top_cos >= policy.sectors_threshold,top_indices,-1)
+                    inputs0 = inputs0.at[..., 7:].set(attended_sectors.astype(inputs0.dtype))
+                    # Rotate GT
                     gt_dict['gt_poses'] = gt_dict['gt_poses'] @ rot_mat.T
                     gt_dict['gt_vels'] = gt_dict['gt_vels'] @ rot_mat.T
                     return inputs0, gt_dict
