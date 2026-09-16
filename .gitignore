@@ -1,7 +1,10 @@
 # Pickle, eps and mp4 files
 *.pkl
 *.eps
+*.pdf
+*.svg
 *.mp4
+*.csv
 
 # Real-world experiment recordings and derived results
 turtlebot/experiments/data/*

@@ -652,11 +652,27 @@ class TB4Controller(Node):
         lidar_scan = np.clip(lidar_scan, 0, self.lidar_max_dist)
 
         # Observation
-        current_step_obs = np.concatenate(([rx, ry, r_theta, self.radius, vx, wz, self.previous_action[0], self.previous_action[1]], [scan_time_sec], [odom_time_sec], [self.get_clock().now().nanoseconds * 1e-9], lidar_scan))
+        current_step_obs = np.concatenate((
+            np.asarray([
+                rx, ry, r_theta, self.radius,
+                vx, wz,
+                float(self.previous_action[0]),
+                float(self.previous_action[1]),
+            ], dtype=np.float64),
+            np.asarray([
+                scan_time_sec,
+                odom_time_sec,
+                control_time_sec,
+            ], dtype=np.float64),
+            np.asarray(lidar_scan, dtype=np.float64),
+        ))
         self.obs_stack.appendleft(current_step_obs)
         while len(self.obs_stack) < self.n_stack:
             self.obs_stack.appendleft(current_step_obs) 
-        obs_matrix = jnp.array(self.obs_stack) # Shape: (n_stack, n_rays + 11)
+        obs_host = np.stack(self.obs_stack, axis=0).astype(np.float64)
+        observation_time_origin = float(obs_host[0, 10])
+        obs_host[:, 8:11] -= observation_time_origin
+        obs_matrix = jnp.asarray(obs_host, dtype=jnp.float32)
 
         # Goal (with or without pure pursuit)
         if self.pure_pursuit and len(self.robot_goal_list) > 1:
@@ -733,6 +749,7 @@ class TB4Controller(Node):
                     v_cmd, w_cmd = float(action[0]), float(action[1])
                     step_record = {
                         'observation': np.array(obs_matrix),
+                        'observation_time_origin': observation_time_origin,
                         'robot_goal': np.array(self.robot_goal),
                         'action': np.array([v_cmd, w_cmd]),
                         'perception_distr': perception_output,
@@ -751,6 +768,7 @@ class TB4Controller(Node):
                     v_cmd, w_cmd = float(action[0]), float(action[1])
                     step_record = {
                         'observation': np.array(obs_matrix),
+                        'observation_time_origin': observation_time_origin,
                         'robot_goal': np.array(self.robot_goal),
                         'action': np.array([v_cmd, w_cmd]),
                         'action_costs': actions_costs,
@@ -767,6 +785,7 @@ class TB4Controller(Node):
                     v_cmd, w_cmd = float(action[0]), float(action[1])
                     step_record = {
                         'observation': np.array(obs_matrix),
+                        'observation_time_origin': observation_time_origin,
                         'robot_goal': np.array(self.robot_goal),
                         'action': np.array([v_cmd, w_cmd]),
                         'trajectories': trajectories,
@@ -785,6 +804,7 @@ class TB4Controller(Node):
                     v_cmd, w_cmd = float(action[0]), float(action[1])
                     step_record = {
                         'observation': np.array(obs_matrix),
+                        'observation_time_origin': observation_time_origin,
                         'robot_goal': np.array(self.robot_goal),
                         'action': np.array([v_cmd, w_cmd]),
                         'actor_distr': actor_distr,

@@ -4,13 +4,15 @@ import matplotlib.pyplot as plt
 import os
 from scipy.spatial import ConvexHull
 from matplotlib import rc, rcParams
-font = {
-    'weight' : 'regular',
-    'size'   : 23
-}
-rc('font', **font)
-rcParams['pdf.fonttype'] = 42
-rcParams['ps.fonttype'] = 42
+rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman"],
+    "font.weight": "regular",
+    "font.size": 23,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})
 from matplotlib.patches import Ellipse
 import pickle
 
@@ -23,7 +25,7 @@ from jhsfm.hsfm import get_linear_velocity
 ### PARAMETERS
 L = 0.7 # Distance between the wheels of the robot
 v_max = 1. # Maximum linear velocity of the robot
-dt = 0.25
+dt = 0.75
 radius = 0.3
 n_actions_per_dim = 50 # Number of actions per dimension to plot the action space boundaries
 n_points_per_per_circle = 50 # Number of points to plot the circles around the envelope points
@@ -67,8 +69,8 @@ env_params = {
 }
 env = LaserNav(**env_params)
 
-### FIG1: action_space.eps
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space.eps')):
+### FIG1: action_space.pdf
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space.pdf')):
     figure, ax = plt.subplots(1,1, figsize=(10, 3))
     figure.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.25)
     ax.add_patch(
@@ -103,11 +105,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space.eps'
     # ax.text(2.5 , L, r"$\omega \leq \overline{\omega} - \frac{\overline{\omega}}{\overline{v}}v$", zorder=5, verticalalignment='center', horizontalalignment='right')
     ax.text(2.5 , L, r"$\omega \leq \frac{2(\overline{v}-v)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='right')
     ax.grid()
-    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space.eps'), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space.pdf'), format='pdf')
     plt.close()
 
-### FIG2: action_space_2.eps
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_2.eps')):
+### FIG2: action_space_2.pdf
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_2.pdf')):
     temp_wmax = 1.
     temp_vmax  = 5.71
     figure, ax = plt.subplots(1,1, figsize=(10, 3))
@@ -138,16 +140,16 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_2.ep
     ax.text(temp_vmax/2, -temp_wmax/2-0.2, r"$\omega \geq \frac{2(v-\bar{\eta} \rho)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
     ax.text(temp_vmax/2, +temp_wmax/2+0.2, r"$\omega \leq \frac{2(\bar{\eta} \rho-v)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
     ax.grid()
-    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_2.eps'), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_2.pdf'), format='pdf')
 plt.close()
 
-### FIG3: action_space_bounding_1.eps & action_space_bounding_2.eps & action_space_bounding_3.eps & action_space_bounding_4.eps
-if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_1.eps'))) or \
-   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_2.eps'))) or \
-   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_3.eps'))) or \
-   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_4.eps'))) or \
-   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_summary.eps'))) or \
-   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_proof.eps'))):
+### FIG3: action_space_bounding_1.pdf & action_space_bounding_2.pdf & action_space_bounding_3.pdf & action_space_bounding_4.pdf
+if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_1.pdf'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_2.pdf'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_3.pdf'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_4.pdf'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_summary.pdf'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_proof.pdf'))):
     vs = jnp.concatenate([
         jnp.zeros(n_actions_per_dim),
         jnp.linspace(0, v_max, n_actions_per_dim),
@@ -191,7 +193,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax.set_xlabel("$\Delta x$ (m)")
     ax.set_ylabel("$\Delta y$ (m)", labelpad=-5)
     ax.grid()
-    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_1.eps'), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_1.pdf'), format='pdf')
     plt.close()
     figure, ax = plt.subplots(1,1,figsize=(4, 8))
     figure.subplots_adjust(left=0.18, right=0.97, top=0.98, bottom=0.10, wspace=0.1)
@@ -220,7 +222,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"])
     ax.set_yticks(jnp.arange(-2,3,1).tolist() + [w_max,-w_max])
     ax.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
-    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_2.eps'), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_2.pdf'), format='pdf')
     plt.close()
     alpha, beta, gamma = policy.bound_action_space(collision_points)
     vs = jnp.concatenate([
@@ -256,7 +258,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax.set_xlabel("$\Delta x$ (m)")
     ax.set_ylabel("$\Delta y$ (m)", labelpad=-5)
     ax.grid()
-    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_3.eps'), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_3.pdf'), format='pdf')
     plt.close()
     figure, ax = plt.subplots(1,1,figsize=(4, 8))
     figure.subplots_adjust(left=0.18, right=0.97, top=0.98, bottom=0.10, wspace=0.1)
@@ -302,12 +304,12 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax.set_yticks(jnp.arange(-2,3,1).tolist() + [w_max,-w_max])
     ax.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
     ax.legend(fontsize=16.5, loc='upper right')
-    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_4.eps'), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_4.pdf'), format='pdf')
     plt.close()
 
 ### FIG4: action_space_bounding_summary.eps
-    figure = plt.figure(figsize=(13, 8.25))
-    figure.subplots_adjust(left=0.12, right=0.98, top=0.98, bottom=0.1)
+    figure = plt.figure(figsize=(11.93, 8))
+    figure.subplots_adjust(left=0.07, right=0.98, top=0.98, bottom=0.1)
     gs = figure.add_gridspec(2, 3, width_ratios=[1, 1, 0.55], wspace=0., hspace=0.)
     ax00 = figure.add_subplot(gs[0, 0])
     ax01 = figure.add_subplot(gs[0, 1])
@@ -317,6 +319,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     pos = ax_right.get_position()
     ax_right.set_position([pos.x0 + 0.07, pos.y0, pos.width - 0.07, pos.height])
     for ax in (ax00, ax01, ax10, ax11):
+        ax.tick_params(axis="both", which="both", labelsize=18)
         ax.set_aspect('equal')
         ax.set_xlim(-radius - 0.05, v_max * dt + radius + 0.05)
         ax.set_ylim(-0.55, 0.65)
@@ -324,24 +327,24 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
         ax.add_artist(plt.Circle((0, 0), radius, color='black', fill=False, zorder=100, linewidth=2, linestyle='--'))
         ax.scatter(collision_points[:,0], collision_points[:,1], color='blue', s=150, zorder=101, marker='x')
     for ax in (ax00, ax10):
-        ax.set_ylabel("$\Delta y$ (m)", labelpad=-5)
+        ax.set_ylabel("$\Delta y$ (m)", labelpad=-5, fontsize=18)
     for ax in (ax10, ax11):
-        ax.set_xlabel("$\Delta x$ (m)")
+        ax.set_xlabel("$\Delta x$ (m)", fontsize=18)
     for ax in (ax00, ax01):
         ax.set_xticklabels([])
     for ax in (ax01, ax11):
         ax.set_yticklabels([])
     ax_right.set_xlim(-0.1, v_max + 0.1)
     ax_right.set_ylim(-w_max - 0.1, w_max + 0.1)
-    ax_right.set_xlabel("$v$ (m/s)")
-    ax_right.set_ylabel("$\omega$ (rad/s)", labelpad=-25)
+    ax_right.set_xlabel("$v$ (m/s)", fontsize=18)
+    ax_right.set_ylabel("$\omega$ (rad/s)", labelpad=-5, fontsize=18)
     ax_right.grid()
     ax_right.set_xticks(jnp.arange(0, v_max+0.5, 0.5))
-    ax_right.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"])
+    ax_right.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"], fontsize=18)
     ax_right.set_yticks(jnp.arange(-2,3,1).tolist() + [w_max,-w_max])
-    ax_right.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+    ax_right.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"], fontsize=18)
     ## AX (0,0)
-    ax00.text(-0.3, 0.58, "Unbounded displacements", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
+    ax00.text(-0.3, 0.58, r"{\bfseries\boldmath Unbounded displacements}", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
     policy = JESSI(
         radius, 
         v_max, 
@@ -403,7 +406,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     for i in range(lidar_num_rays):
         ax00.plot([0, collision_points[i, 0]], [0, collision_points[i, 1]], color='blue', linewidth=1, zorder=5)
     ## AX (0,1)
-    ax01.text(-0.3, 0.58, "Bounded displacements", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
+    ax01.text(-0.3, 0.58, r"{\bfseries\boldmath  Bounded displacements}", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
     alpha, beta, gamma = policy.bound_action_space(collision_points)
     vs = jnp.concatenate([
         jnp.zeros(n_actions_per_dim),
@@ -464,7 +467,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     )
     # ax_right.legend(fontsize=16.5, loc='upper right')
     ## AX (1,0)
-    ax10.text(-0.3, 0.58, r"Stage 1: Reduce $\alpha$", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
+    ax10.text(-0.3, 0.58, r"{\bfseries\boldmath Stage 1: Reduce $\alpha$}", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
     ax10.add_artist(
         plt.Rectangle(
             (-radius, -dt**2*v_max**2/(4*L) - radius), 
@@ -529,7 +532,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax10.text(-radius/2, radius+(dt**2*v_max/(4*L))/2+0.02, r'$\mathcal{B}_{\beta}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
     ax10.text((radius + v_max * dt)/2, -0.05, r'$\mathcal{B}_{\alpha}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
     ## AX (1,1)
-    ax11.text(-0.3, 0.58, r"Stage 2: Reduce $\beta$ and $\gamma$", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
+    ax11.text(-0.3, 0.58,r"{\bfseries\boldmath Stage 2: Reduce $\beta$ and $\gamma$}", verticalalignment="center", horizontalalignment="left", fontsize=18)
     ax11.add_artist(
         plt.Rectangle(
             (-radius, -alpha*dt**2*v_max**2/(4*L) - radius), 
@@ -589,10 +592,11 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     )
     ax11.text(-radius + 0.05, -radius-(gamma*alpha*dt**2*v_max/(4*L))/2 , r'$\mathcal{B}_{\overline{\gamma}}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
     ax11.text(-radius + 0.05, radius+(beta*alpha*dt**2*v_max/(4*L))/2 , r'$\mathcal{B}_{\overline{\beta}}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
-    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_summary.eps'), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_summary.pdf'), format='pdf')
+    # plt.show()
     plt.close()
 
-### FIG5: action_space_bounding_proof.eps
+### FIG5: action_space_bounding_proof.pdf
     figure, ax = plt.subplots(1,2,figsize=(12, 6))
     policy = JESSI(
         radius, 
@@ -714,11 +718,11 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     hull = ConvexHull(envelope_points)
     closed_vertices = jnp.append(hull.vertices, hull.vertices[0])
     ax[1].plot(envelope_points[closed_vertices, 0], envelope_points[closed_vertices, 1], color='black', linewidth=2, zorder=3, linestyle='--')
-    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_proof.eps'), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_proof.pdf'), format='pdf')
     plt.close()
 
-### FIG6: scenarios.eps
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'scenarios.eps')):
+### FIG6: scenarios.pdf
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'scenarios.pdf')):
     def plot_initial_state(env, scenario, ax, state, humans_velocities, info, flip_axis=False):
         if flip_axis:
             state = state.at[:,:2].set(state[:, [1, 0]])
@@ -868,13 +872,17 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'scenarios.eps')):
             flip_axis = True if scenario in ["perpendicular_traffic", "crowd_navigation"] else False
             plot_initial_state(env, scenario, current_ax, init_state, humans_velocity, info, flip_axis)
             title = scenario_labels.get(scenario, scenario.replace('_', ' ').title())
-            current_ax.set_title(title, fontsize=18, fontweight='bold')
+            current_ax.set_title(r'{\bfseries\boldmath ' + title + r'}', fontsize=18)
             current_ax.tick_params(axis='both', which='major', labelsize=18)
-    figure.savefig(os.path.join(os.path.dirname(__file__), "scenarios.eps"), format='eps')
+    figure.savefig(os.path.join(os.path.dirname(__file__), "scenarios.pdf"), format='pdf')
     plt.close()
 
-### FIG7: teaser.eps
-if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.eps')):
+### FIG7: teaser.pdf
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or \
+    not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser1.svg')) or \
+    not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser2.svg')) or \
+    not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser3.svg')):
+    dt = 0.25
     font = {
         'weight' : 'regular',
         'size'   : 15
@@ -936,8 +944,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.eps')):
     state, env_key, obs, info, _ = env.reset_custom_episode(random.PRNGKey(0), custom_episode)
     for i in range (policy.n_stack):
         state, obs, info, _, _, (_, env_key) = env.step(state, info, jnp.array([0.,0.]), env_key=env_key)
-    action, _, perc_input, _, _, _, human_distr, actor_distr, _, _, _, _  = policy.act(random.PRNGKey(0),obs,info,network_params)
-    ### Plot
+    action, _, perc_input, _, _, _, human_distr, actor_distr, _, _, _, human_attns  = policy.act(random.PRNGKey(0),obs,info,network_params)
+    ### PLOT: teaser.pdf
     fig, ax = plt.subplots(2,1,figsize=(5,6.5))
     fig.subplots_adjust(left=0.09, right=0.98, top=0.98, bottom=0.07, hspace=0.)
     # Plot humans
@@ -977,21 +985,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.eps')):
             color=rgba_color, 
             linewidth=0.5, 
             zorder=0
-        )
-    # Pointcloud
-    point_cloud = policy.align_lidar(obs)[1]
-    for i, cloud in enumerate(point_cloud):
-        # color/alpha fade with i (smaller i -> less faded)
-        t = (1 - i / (policy.n_stack - 1))  # in [0,1]
-        ax[0].scatter(
-            cloud[:,0],
-            cloud[:,1],
-            c=0.3 + 0.7 * jnp.ones((policy.lidar_num_rays,)) * t,
-            cmap='Reds',
-            vmin=0.0,
-            vmax=1.0,
-            alpha=0.3 + 0.7 * t,
-            zorder=20 + policy.n_stack - i,
         )
     # Robot action
     action_linear = lax.cond(
@@ -1123,10 +1116,346 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.eps')):
                 ec='red',
                 zorder=100,
             )
-    fig.savefig(os.path.join(os.path.dirname(__file__), "teaser.eps"), format='eps')
+    fig.savefig(os.path.join(os.path.dirname(__file__), "teaser.pdf"), format='pdf')
     plt.close()
+    ### PLOT: teaser1.pdf teaser2.pdf teaser3.pdf
+    fig1, ax1 = plt.subplots(1,1,figsize=(4.2,3))
+    fig2, ax2 = plt.subplots(1,1,figsize=(4.2,3))
+    fig3, ax3 = plt.subplots(1,1,figsize=(4.2,3))
+    fig1.subplots_adjust(left=0.05, right=0.98, top=0.98, bottom=0.03, hspace=0., wspace=0.)
+    fig2.subplots_adjust(left=0.05, right=0.98, top=0.98, bottom=0.03, hspace=0., wspace=0.)
+    fig3.subplots_adjust(left=0.05, right=0.98, top=0.98, bottom=0.03, hspace=0., wspace=0.)
+    # All axes
+    for a in (ax1,ax2,ax3):
+            a.set_axis_off()
+            a.set_aspect('equal', adjustable='datalim')
+            a.set(xlim=[jnp.min(obstacles[:,:,:,0])-0.01,jnp.max(obstacles[:,:,:,0])+0.01],ylim=[jnp.min(obstacles[:,:,:,1])-0.05,jnp.max(obstacles[:,:,:,1])+0.05])
+            # Plot robot
+            robot_position = state[-1,:2]
+            head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+            a.add_patch(head)
+            circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+            a.add_patch(circle)
+            # Plot robot goal
+            a.plot(
+                robot_goal[0],
+                robot_goal[1],
+                marker='*',
+                markersize=10,
+                color='red',
+                zorder=5,
+            )
+            # Plot static obstacles
+            for o in obstacles: a.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+    # Plot humans
+    for h in range(len(state[:-1])):
+        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.6, zorder=1)
+        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+        ax1.add_patch(head)
+        ax1.add_patch(circle)
+        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.3, zorder=1)
+        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.2, fill=True, zorder=1)
+        ax2.add_patch(head)
+        ax2.add_patch(circle)
+        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.3, zorder=1)
+        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.2, fill=True, zorder=1)
+        ax3.add_patch(head)
+        ax3.add_patch(circle)
+    # Plot human velocities
+    humans_velocities = lax.cond(
+        env.humans_policy == HUMAN_POLICIES.index('hsfm'),
+        lambda: vmap(get_linear_velocity, in_axes=(0,0))(
+                state[:-1,4],
+                state[:-1,2:4],
+            ),
+        lambda: state[:-1,2:4],
+    )
+    for h in range(len(state[:-1])):
+        ax1.arrow(
+            state[h,0],
+            state[h,1],
+            humans_velocities[h,0],
+            humans_velocities[h,1],
+            head_width=0.1,
+            head_length=0.1,
+            fc='blue',
+            ec='blue',
+            alpha=0.6,
+            zorder=30,
+        )
+        ax2.arrow(
+            state[h,0],
+            state[h,1],
+            humans_velocities[h,0],
+            humans_velocities[h,1],
+            head_width=0.1,
+            head_length=0.1,
+            fc='blue',
+            ec='blue',
+            alpha=0.2,
+            zorder=30,
+        )
+        ax3.arrow(
+            state[h,0],
+            state[h,1],
+            humans_velocities[h,0],
+            humans_velocities[h,1],
+            head_width=0.1,
+            head_length=0.1,
+            fc='blue',
+            ec='blue',
+            alpha=0.2,
+            zorder=30,
+        )
+    lidar_scan = obs[0,11:]
+    for ray in range(len(lidar_scan)):
+        rgba_color = 'black'
+        ax1.plot(
+            [state[-1,0], state[-1,0] + lidar_scan[ray] * jnp.cos(state[-1,4] + policy.lidar_angles_robot_frame[ray])],
+            [state[-1,1], state[-1,1] + lidar_scan[ray] * jnp.sin(state[-1,4] + policy.lidar_angles_robot_frame[ray])],
+            color=rgba_color, 
+            linewidth=0.5, 
+            zorder=0
+        )
+    # Human-centric Gaussians (HCGs) positions and velocities
+    # Human attentions
+    pos_distrs = human_distr["pos_distrs"]
+    vel_distrs = human_distr["vel_distrs"]
+    probs = human_distr["weights"]
+    robot_pose = state[-1,[0,1,4]]
+    for h in range(policy.n_detectable_humans):
+        human_pos_distr = tree_map(lambda x: x[h], pos_distrs)
+        human_vel_distr = tree_map(lambda x: x[h], vel_distrs)
+        human_pos_distr = policy.bivariate_gaussian.roto_translate(
+            human_pos_distr, 
+            robot_pose
+        )
+        human_vel_distr = policy.bivariate_gaussian.roto_translate(
+            human_vel_distr, 
+            jnp.array([0, 0, robot_pose[2]]) # Velocities are not affected by translation, only rotation
+        )
+        pos = human_pos_distr["means"]
+        vel = human_vel_distr["means"] + pos
+        if probs[h] > 0.5:
+            # Position HCG
+            cov_matrix = policy.bivariate_gaussian.covariance(human_pos_distr)
+            eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+            angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+            width, height = 2 * jnp.sqrt(eigenvalues)
+            ellipse = Ellipse(
+                xy=pos,
+                width=width,
+                height=height,
+                angle=jnp.degrees(angle),
+                edgecolor='blue',
+                facecolor='lightblue',
+                alpha=0.8,
+                zorder=15,
+            )
+            ax2.add_patch(ellipse)
+            ax2.scatter(pos[0], pos[1], c='red', s=30, marker='x', zorder=100)
+            # Score
+            text_dir = jnp.arctan2(-(vel[1] - pos[1]), -(vel[0] - pos[0]))
+            text = (
+                r"{\bfseries score}"
+                "\n"
+                rf"{{\bfseries {probs[h]:.2f}}}"
+            )
+            ax2.text(
+                pos[0] + jnp.cos(text_dir), 
+                pos[1] - jnp.sin(text_dir), 
+                text, 
+                fontsize=18, 
+                color="red", 
+                fontweight="bold", 
+                zorder=101,
+                horizontalalignment='center',
+                verticalalignment='center',
+                bbox=dict(
+                    boxstyle='round,pad=0.2', 
+                    facecolor='white', 
+                    alpha=0.5, 
+                )
+            )
+            # Attention
+            text_dir = jnp.arctan2(-(vel[1] - pos[1]), -(vel[0] - pos[0]))
+            text = (
+                r"{\bfseries attn.}"
+                "\n"
+                rf"{{\bfseries {human_attns[0,h]:.2f}}}"
+            )
+            ax3.text(
+                pos[0] + jnp.cos(text_dir), 
+                pos[1] - jnp.sin(text_dir), 
+                text, 
+                fontsize=18, 
+                color="black", 
+                fontweight="bold", 
+                zorder=101,
+                horizontalalignment='center',
+                verticalalignment='center',
+                bbox=dict(
+                    boxstyle='round,pad=0.2', 
+                    facecolor='white', 
+                    alpha=0.5, 
+                )
+            )
+            # Velocity HCG
+            cov_matrix = policy.bivariate_gaussian.covariance(human_vel_distr)
+            eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+            angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+            width, height = 2 * jnp.sqrt(eigenvalues)
+            ellipse = Ellipse(
+                xy=vel,
+                width=width,
+                height=height,
+                angle=jnp.degrees(angle),
+                edgecolor='blue',
+                facecolor='lightblue',
+                alpha=0.8,
+                zorder=15,
+            )
+            ax2.add_patch(ellipse)
+            ax2.arrow(
+                pos[0],
+                pos[1],
+                vel[0] - pos[0],
+                vel[1] - pos[1],
+                head_width=0.1,
+                head_length=0.1,
+                fc='red',
+                ec='red',
+                zorder=100,
+            )
+    # Robot action
+    action_linear = lax.cond(
+        jnp.abs(action[1]) > 1e-3,
+        lambda: jnp.array([
+            (action[0]/action[1])*(jnp.sin(state[-1,4]+action[1]*0.5)-jnp.sin(state[-1,4])),
+            (action[0]/action[1])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+action[1]*0.5)),
+        ]),
+        lambda: jnp.array([
+            action[0]*dt*jnp.cos(state[-1,4]),
+            action[0]*dt*jnp.sin(state[-1,4]),
+        ]),
+    )
+    ax3.arrow(
+        state[-1,0],
+        state[-1,1],
+        action_linear[0],
+        action_linear[1]+0.15,
+        head_width=0.1,
+        head_length=0.1,
+        fc='green',
+        ec='green',
+        alpha=1.,
+        zorder=30,
+    )
+    # Robot goal label
+    text = (
+        r"{\bfseries robot}"
+        "\n"
+        r"{\bfseries goal}"
+    )
+    ax3.text(
+        robot_goal[0],
+        robot_goal[1]+0.7, 
+        text, 
+        fontsize=18, 
+        color="red", 
+        fontweight="bold", 
+        zorder=101,
+        horizontalalignment='center',
+        verticalalignment='center',
+        bbox=dict(
+            boxstyle='round,pad=0.2', 
+            facecolor='white', 
+            alpha=0.5, 
+        )
+    )
+    fig1.savefig(os.path.join(os.path.dirname(__file__), "teaser1.svg"), format='svg')
+    fig2.savefig(os.path.join(os.path.dirname(__file__), "teaser2.svg"), format='svg')
+    fig3.savefig(os.path.join(os.path.dirname(__file__), "teaser3.svg"), format='svg')
+    plt.show()
+    plt.close()
+    ### Re-set default params
     font = {
         'weight' : 'regular',
         'size'   : 23
     }
     rc('font', **font)
+    dt = 0.75
+
+### FIG8: campaign_metrics.pdf
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'campaign_metrics.pdf')):
+    import csv
+    import numpy as np
+    from matplotlib.ticker import MaxNLocator
+
+    campaign_path = os.path.join(os.path.dirname(__file__), 'campaign_metrics.csv')
+    with open(campaign_path, newline='', encoding='utf-8') as f:
+        campaign_rows = list(csv.DictReader(f))
+
+    campaign_policies = ('DWA', 'JESSI')
+    campaign_colors = ('lightcoral', 'lightgreen')
+    campaign_metrics = (
+        ('time_to_goal_s', 'Time to goal (s)', ''),
+        ('average_translational_jerk_m_s3', r'Linear jerk (m/$s^3$)', ''),
+        ('average_angular_jerk_rad_s3', r'Angular jerk (rad/$s^3$)', ''),
+        ('space_compliance', r'Space compliance (\%)', ''),
+    )
+
+    # Inherit the script's LaTeX/Computer Modern and PDF font settings.
+    figure, axes = plt.subplots(2, 2, figsize=(8, 5.8), layout='constrained')
+    figure.subplots_adjust(right=0.95)
+    campaign_rng = np.random.default_rng(0)  # Reproducible horizontal jitter only.
+    for ax, (metric, title, unit) in zip(axes.flat, campaign_metrics):
+        data = []
+        for campaign_policy in campaign_policies:
+            values = []
+            for row in campaign_rows:
+                if row['policy'] != campaign_policy or row['synchronization_valid'].lower() != 'true':
+                    continue
+                # Time to goal is defined only for successful runs. Use qualified
+                # space compliance, never the unqualified tracking estimate.
+                if metric == 'time_to_goal_s' and row['success'].lower() != 'true':
+                    continue
+                if metric == 'space_compliance' and row['tracking_valid_for_comparison'].lower() != 'true':
+                    continue
+                value = float(row[metric]) if row[metric].strip() else np.nan
+                if np.isfinite(value):
+                    values.append(100. * value if metric == 'space_compliance' else value)
+            if not values:
+                raise ValueError(f'No valid {metric} values for {campaign_policy} in {campaign_path}')
+            data.append(np.asarray(values))
+
+        # Boxes: Q1--Q3; black line: median; whiskers: 1.5 IQR.
+        # Every run is shown as a dot, including outliers (not drawn twice).
+        boxes = ax.boxplot(
+            data, widths=0.5, patch_artist=True, showfliers=False,
+            medianprops={'color': 'black', 'linewidth': 1.8},
+            boxprops={'linewidth': 1.2},
+            whiskerprops={'linewidth': 1.2},
+            capprops={'linewidth': 1.2},
+        )
+        for position, (box, values, color) in enumerate(zip(boxes['boxes'], data, campaign_colors), start=1):
+            box.set_facecolor(color)
+            ax.scatter(
+                position + campaign_rng.uniform(-0.09, 0.09, len(values)), values,
+                s=18, color='black', alpha=0.6, linewidths=0, zorder=3,
+            )
+        ax.set_title(title, fontsize=20, pad=6)
+        ax.set_ylabel(unit, fontsize=20, labelpad=5)
+        ax.set_xticks([1, 2], campaign_policies)
+        ax.tick_params(axis='both', labelsize=18)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax.set_axisbelow(True)
+        ax.grid(axis='y', linestyle=':', alpha=0.4)
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.margins(y=0.15)
+        if metric == 'space_compliance':
+            lower, upper = ax.get_ylim()
+            ax.set_ylim(max(0., lower), min(100., upper))
+
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'campaign_metrics.pdf'), bbox_inches='tight', pad_inches=0.04)
+    plt.close(figure)
