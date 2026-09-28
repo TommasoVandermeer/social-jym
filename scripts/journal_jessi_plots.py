@@ -1440,10 +1440,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'campaign_metrics.
         )
         for position, (box, values, color) in enumerate(zip(boxes['boxes'], data, campaign_colors), start=1):
             box.set_facecolor(color)
-            ax.scatter(
-                position + campaign_rng.uniform(-0.09, 0.09, len(values)), values,
-                s=18, color='black', alpha=0.6, linewidths=0, zorder=3,
-            )
         ax.set_title(title, fontsize=20, pad=6)
         ax.set_ylabel(unit, fontsize=20, labelpad=5)
         ax.set_xticks([1, 2], campaign_policies)

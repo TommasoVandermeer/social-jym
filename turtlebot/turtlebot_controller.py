@@ -154,7 +154,7 @@ class TB4Controller(Node):
         self.w_max = 3.8 # rad/s
         self.n_stack = 5 
         self.dt = 1.0 / self.frequency  # Control frequency
-        self.radius = 0.38
+        self.radius = 0.33
         if san_niccolo:
             self.patrol = False
         else:
@@ -167,8 +167,9 @@ class TB4Controller(Node):
         self.latest_scan = None
         self.latest_odom = None
         self.odom_buffer = deque(maxlen=200)
-        self.odom_cmd_time_offset = None
-        self.odom_scan_time_offset = None
+        self.max_odom_gap = 0.15  
+        self.max_odom_age = 0.20 
+        self.max_scan_age = 0.40
         self.latest_odom_aligned_time = None
         self.latest_scan_aligned_time = None
         self.latest_scan_odom_aligned_time = None
@@ -187,6 +188,7 @@ class TB4Controller(Node):
         self.lidar_min_angle = -jnp.pi
         self.lidar_max_angle = jnp.pi
         self.lidar_max_dist = 10
+        self.lidar_position_robot_frame = (-0.04, 0.0)
         self.angular_res = (float(self.lidar_max_angle) - float(self.lidar_min_angle)) / self.lidar_num_rays
         self.previous_scan_time = 0.
 
@@ -206,6 +208,7 @@ class TB4Controller(Node):
                 lidar_num_rays=self.lidar_num_rays,
                 lidar_angular_range=self.lidar_max_angle-self.lidar_min_angle,
                 lidar_max_dist=self.lidar_max_dist,
+                lidar_position_robot_frame=self.lidar_position_robot_frame,
                 n_stack_for_action_space_bounding=1,
             )
             # Dummy act call to pre-compile JAX jitted functions
@@ -474,6 +477,14 @@ class TB4Controller(Node):
     def odom_reset_callback(self, future):
         try:
             response = future.result()
+            self.odom_buffer.clear()
+            self.obs_stack.clear()
+            self.latest_scan = None
+            self.latest_odom = None
+            self.latest_scan_odom = None
+            self.latest_scan_aligned_time = None
+            self.latest_odom_aligned_time = None
+            self.latest_scan_odom_aligned_time = None
             self.get_logger().info("OK: Odometry reset on turtlebot4")
             self.odom_reset_confirmed = True
             self.previous_control_time = time.time()
@@ -482,18 +493,14 @@ class TB4Controller(Node):
 
     def scan_callback(self, msg):
         raw_scan_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        if self.latest_odom is None or self.latest_odom_aligned_time is None:
+        if not np.isfinite(raw_scan_t):
             return
-        if self.odom_scan_time_offset is None:
-            # Map the scan device clock into the host/control clock without
-            # mutating the original ROS message header.
-            self.odom_scan_time_offset = self.latest_odom_aligned_time - raw_scan_t
-            self.get_logger().info(f"🕒 Software Time-Sync: Applied offset {self.odom_scan_time_offset:+.3f}s to Scan w.r.t. host control time!")
-            self.previous_control_time = time.time()
-        corrected_t = raw_scan_t + self.odom_scan_time_offset
+        if self.latest_odom is None:
+            return
+        if self.latest_scan_aligned_time is not None and raw_scan_t <= self.latest_scan_aligned_time:
+            return
         self.latest_scan = msg
-        self.latest_scan_aligned_time = corrected_t
-        # Since odomoetry runs at higher freq. we save the latest odometry at the moment of receiving the scan, to have them synchronized for the control loop
+        self.latest_scan_aligned_time = raw_scan_t
         self.latest_scan_odom = self.latest_odom
         self.latest_scan_odom_aligned_time = self.latest_odom_aligned_time
         ### Diagnostics
@@ -528,8 +535,8 @@ class TB4Controller(Node):
             saved_msg = msg
             if self.experiment_dir is None:
                 saved_msg = copy.deepcopy(msg)
-                saved_msg.header.stamp.sec = int(corrected_t)
-                saved_msg.header.stamp.nanosec = int((corrected_t - int(corrected_t)) * 1e9)
+                saved_msg.header.stamp.sec = int(raw_scan_t)
+                saved_msg.header.stamp.nanosec = int((raw_scan_t - int(raw_scan_t)) * 1e9)
             self.scan_list.append(saved_msg)
         ### DEBUG
         # t_scan = self.latest_scan.header.stamp
@@ -540,28 +547,23 @@ class TB4Controller(Node):
         # self.previous_scan_time = scan_time_sec
 
     def odom_callback(self, msg):
-        raw_odom_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        if self.odom_cmd_time_offset is None:
-            local_t = self.get_clock().now().nanoseconds * 1e-9
-            self.odom_cmd_time_offset = local_t - raw_odom_t
-            self.get_logger().info(f"🕒 Software Time-Sync: Applied offset {self.odom_cmd_time_offset:+.3f}s to Odometry w.r.t. Commands!")
-            self.previous_control_time = time.time()
-        corrected_t = raw_odom_t + self.odom_cmd_time_offset
-        x = msg.pose.pose.position.x
-        y = msg.pose.pose.position.y
-        theta = self.get_yaw_from_quaternion(msg.pose.pose.orientation)
-        vx = msg.twist.twist.linear.x
-        wz = msg.twist.twist.angular.z
-        self.odom_buffer.append((corrected_t, x, y, theta, vx, wz))
+        timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        pose = (
+            msg.pose.pose.position.x,
+            msg.pose.pose.position.y,
+            self.get_yaw_from_quaternion(msg.pose.pose.orientation),
+            msg.twist.twist.linear.x,
+            msg.twist.twist.angular.z,
+        )
+        if not np.all(np.isfinite((timestamp, *pose))):
+            return
+        if self.odom_buffer and timestamp <= self.odom_buffer[-1][0]:
+            return
+        self.odom_buffer.append((timestamp, *pose))
         self.latest_odom = msg
-        self.latest_odom_aligned_time = corrected_t
+        self.latest_odom_aligned_time = timestamp
         if self.save_lists:
-            saved_msg = msg
-            if self.experiment_dir is None:
-                saved_msg = copy.deepcopy(msg)
-                saved_msg.header.stamp.sec = int(corrected_t)
-                saved_msg.header.stamp.nanosec = int((corrected_t - int(corrected_t)) * 1e9)
-            self.odom_list.append(saved_msg)
+            self.odom_list.append(msg)
 
     def cmd_callback(self, msg):
         if self.save_lists:
@@ -572,30 +574,49 @@ class TB4Controller(Node):
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
-    def interpolate_pose(self, t_target):
-        if len(self.odom_buffer) < 2:
+    def interpolate_poses(self, target_times):
+        """Return rows [x, y, yaw, vx, wz], or None without coverage."""
+        if len(self.odom_buffer) < 2: return None
+        data = np.asarray(self.odom_buffer, dtype=np.float64)
+        times = data[:, 0]
+        targets = np.atleast_1d(np.asarray(target_times, dtype=np.float64))
+        if not np.all(np.isfinite(targets)):
             return None
-        buffer_list = list(self.odom_buffer)
-        if t_target < buffer_list[0][0]:
-            self.get_logger().warn("Huge latency! The scan is older than the oldest odometry in memory.\nSsh into the turtlebot's Raspberry Pi and run 'sudo chronyc makestep'")
-            return buffer_list[0][1:]
-        if t_target > buffer_list[-1][0]: # Scan time is newer than the latest odometry, we return the latest pose (no extrapolation)
-            return buffer_list[-1][1:]
+        if np.any(np.diff(times) <= 0.0):
+            return None
+        if np.any(targets < times[0]) or np.any(targets > times[-1]):
+            return None
+        right = np.searchsorted(times, targets, side="right")
+        right = np.clip(right, 1, len(times) - 1)
+        exact_sample = np.isin(targets, times)
+        gaps = times[right] - times[right - 1]
+        if np.any((gaps > self.max_odom_gap) & ~exact_sample):
+            return None
+        relative_times = times - times[0]
+        relative_targets = targets - times[0]
+        result = np.empty((len(targets), 5), dtype=np.float64)
+        for output_column, source_column in (
+            (0, 1),  # x
+            (1, 2),  # y
+            (3, 4),  # vx
+            (4, 5),  # wz
+        ):
+            result[:, output_column] = np.interp(
+                relative_targets,
+                relative_times,
+                data[:, source_column],
+            )
+        continuous_yaw = np.unwrap(data[:, 3])
+        result[:, 2] = np.interp(
+            relative_targets,
+            relative_times,
+            continuous_yaw,
+        )
+        return result
 
-        for i in range(len(buffer_list) - 1):
-            t0, x0, y0, theta0, vx0, wz0 = buffer_list[i]
-            t1, x1, y1, theta1, vx1, wz1 = buffer_list[i+1]
-            if t0 <= t_target <= t1:
-                ratio = (t_target - t0) / (t1 - t0)
-                x_interp = x0 + ratio * (x1 - x0)
-                y_interp = y0 + ratio * (y1 - y0)
-                diff_theta = math.atan2(math.sin(theta1 - theta0), math.cos(theta1 - theta0))
-                theta_interp = theta0 + ratio * diff_theta
-                theta_interp = math.atan2(math.sin(theta_interp), math.cos(theta_interp))
-                vx_interp = vx0 + ratio * (vx1 - vx0)
-                wz_interp = wz0 + ratio * (wz1 - wz0)
-                return x_interp, y_interp, theta_interp, vx_interp, wz_interp 
-        return None
+    def interpolate_pose(self, t_target):
+        poses = self.interpolate_poses([t_target])
+        return None if poses is None else tuple(poses[0])
 
     def finish_experiment(self, reason, timestamp, pose=None, goal_distance=None):
         if self.final_event is not None:
@@ -617,31 +638,41 @@ class TB4Controller(Node):
         self.pub_cmd_stamped.publish(stop_stamped)
         self.get_logger().info(f"Experiment finished: {reason}")
 
+    def publish_stop(self):
+        command = Twist()
+        self.pub_cmd.publish(command)
+
+        stamped = TwistStamped()
+        stamped.header.stamp = self.get_clock().now().to_msg()
+        stamped.twist = command
+        self.pub_cmd_stamped.publish(stamped)
+
+        self.previous_action = jnp.zeros((2,), dtype=jnp.float32)
+
     def control_loop(self):
         if self.latest_scan is None or self.latest_odom is None or not self.odom_reset_confirmed:
-            self.get_logger().warn("Waiting data from sensors...")
+            self.publish_stop()
             return
-        # Timestamp extraction
-        raw_scan_time_sec = self.latest_scan.header.stamp.sec + self.latest_scan.header.stamp.nanosec * 1e-9
-        raw_odom_time_sec = self.latest_scan_odom.header.stamp.sec + self.latest_scan_odom.header.stamp.nanosec * 1e-9
-        scan_time_sec = self.latest_scan_aligned_time
-        odom_time_sec = self.latest_scan_odom_aligned_time
         control_time_sec = self.get_clock().now().nanoseconds * 1e-9
-        # print(f"Scan time: {scan_time_sec}\nOdom time: {odom_time_sec}\nCmd time: {self.get_clock().now().nanoseconds * 1e-9}")
-        # Odometry
+        raw_scan_time_sec = self.latest_scan.header.stamp.sec + self.latest_scan.header.stamp.nanosec * 1e-9
+        scan_time_sec = raw_scan_time_sec
+        raw_odom_time_sec = self.latest_odom.header.stamp.sec + self.latest_odom.header.stamp.nanosec * 1e-9
+        scan_age = control_time_sec - scan_time_sec
+        odom_age = control_time_sec - raw_odom_time_sec
+        if not 0.0 <= scan_age <= self.max_scan_age or not 0.0 <= odom_age <= self.max_odom_age:
+            self.get_logger().info(f"SENSORS READINGS ARE TOO OLD")
+            self.publish_stop()
+            return
         if self.interp_mode:
             pose_interp = self.interpolate_pose(scan_time_sec)
             if pose_interp is None:
-                self.get_logger().warn("Impossible to interpolate pose at scan timestamp, skipping this control step...")
+                self.publish_stop()
                 return
-            rx, ry, r_theta, vx , wz = pose_interp
+            rx, ry, r_theta, vx, wz = pose_interp
         else:
-            rx = self.latest_scan_odom.pose.pose.position.x
-            ry = self.latest_scan_odom.pose.pose.position.y
-            r_theta = self.get_yaw_from_quaternion(self.latest_scan_odom.pose.pose.orientation)
-            vx = self.latest_scan_odom.twist.twist.linear.x
-            wz = self.latest_scan_odom.twist.twist.angular.z
-        print(f"Current pose - x: {rx:.2f}, y: {ry:.2f}, theta: {r_theta:.2f}, delta t: {time.time() - self.previous_control_time:.2f} s")
+            _, rx, ry, r_theta, vx, wz = self.odom_buffer[-1]
+        self.get_logger().info(f"Time: {control_time_sec} - Pose: {rx}, {ry}")
+        odom_time_sec = scan_time_sec
         self.previous_control_time = time.time()
         # Ranges cleaning and shifting (TB4 ranges start on the right)
         ranges = np.array(self.latest_scan.ranges)
@@ -885,7 +916,10 @@ class TB4Controller(Node):
                 self.recorded_data.append(step_record)
                 self.previous_action = jnp.array([v_cmd, w_cmd])
             except Exception as e:
-                self.get_logger().error(f"Error during {self.planner} inference: {e}")
+             self.publish_stop()
+             self.get_logger().error(
+                 f"Error during {self.planner} inference: {e}"
+             )
         
         ## Diagnostics plotting
         if self.diagnostics:
@@ -934,9 +968,10 @@ class TB4Controller(Node):
                     'engineering_filters': self.engineering_filters,
                 },
                 'clock_offsets': {
-                    'odom_to_host': self.odom_cmd_time_offset,
-                    'scan_to_host': self.odom_scan_time_offset,
+                    'odom_to_host': 0.,
+                    'scan_to_host': 0.,
                 },
+                'timestamp_convention': 'shared_clock_acquisition_time',
             }
             if self.planner == 'JESSI' or self.planner == 'BOUNDED-VANILLA-E2E':
                 out['params']['n_stack_for_action_space_bounding'] = self.policy.n_stack_for_action_space_bounding
@@ -967,7 +1002,6 @@ def main(args=None):
     parser.add_argument('--planner', type=str, default='JESSI', help='Network weights pickle file name')
     parser.add_argument('-g', '--goals', nargs='+', type=float, default=[2.0, 0.0], help='Sequence of Goal X Y pairs (in meters). Example: -g 2.0 0.0 3.0 1.0 4.0 -0.5')
     parser.add_argument('-p', '--patrol', action='store_true', help='Activate Patrol Mode (back and forth continuously)')
-    parser.add_argument('-i', '--interp', action='store_true', help='Activate Interpolation Mode for pose with respect to LiDAR timestamp (instead of using the latest odometry)')
     parser.add_argument('-n', '--network', type=str, default='jessi_finetuned_rl_out_turtlebot.pkl', help='Network weights pickle file name')
     parser.add_argument('-s', '--save_file', type=str, default='jessi_recorded_obs.pkl', help='Output pickle file name for recorded data')
     parser.add_argument('-d', '--diagnostics', action='store_true', help='Activate diagnostic during control to debug')
@@ -999,7 +1033,7 @@ def main(args=None):
         planner=parsed_args.planner,
         rc_goal_list=rc_goals_list, 
         patrol_mode=parsed_args.patrol,
-        interp_mode=parsed_args.interp,
+        interp_mode=True,
         network_name=parsed_args.network,
         save_file_name=parsed_args.save_file,
         save_lists=True,

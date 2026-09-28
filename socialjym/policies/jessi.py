@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.patches import Ellipse
 from typing import Optional
+import math
 
 from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, HUMAN_POLICIES
 from socialjym.utils.distributions.dirichlet import Dirichlet
@@ -656,6 +657,7 @@ class JESSI(BasePolicy):
         lidar_max_dist=10.,
         lidar_num_rays=100,
         lidar_angles_robot_frame=None, # If not specified, rays are evenly distributed in the angular range
+        lidar_position_robot_frame:tuple[float, float]=(0.0, 0.0),
         n_detectable_humans:int=10,
         max_humans_velocity:float=1.5,
         max_beam_range:float=10.0, # This is only used to normalize the LiDAR readings before feeding them to the encoder
@@ -683,6 +685,9 @@ class JESSI(BasePolicy):
         assert n_stack_for_action_space_bounding <= n_stack, "n_stack_for_action_space_bounding must be less than or equal to n_stack"
         assert ablation_mode is None or ablation_mode in ABLATIONS, f"ablation_mode must be either None or one of {ABLATIONS}"
         assert embedding_dim % 4 == 0, "Embedding dimension must be a multiple of 4"
+        if len(lidar_position_robot_frame) != 2: raise ValueError("lidar_position_robot_frame must contain (x, y) in metres")
+        lidar_position_robot_frame = tuple(float(value) for value in lidar_position_robot_frame)
+        if not all(math.isfinite(value) for value in lidar_position_robot_frame): raise ValueError("LiDAR position must contain finite values")
         # Configurable attributes
         self.robot_radius = robot_radius
         self.v_max = v_max
@@ -698,6 +703,7 @@ class JESSI(BasePolicy):
         else:
             assert len(lidar_angles_robot_frame) == lidar_num_rays, "Length of lidar_angles_robot_frame must be equal to lidar_num_rays"
             self.lidar_angles_robot_frame = lidar_angles_robot_frame
+        self.lidar_position_robot_frame = lidar_position_robot_frame
         self.n_detectable_humans = n_detectable_humans
         self.max_humans_velocity = max_humans_velocity
         self.max_beam_range = max_beam_range
@@ -790,13 +796,16 @@ class JESSI(BasePolicy):
         robot_position = obs_stack[:2]  # Shape: (2,)
         robot_orientation = obs_stack[2]  # Shape: ()
         lidar_measurements = obs_stack[11:]  # Shape: (lidar_num_rays)
-        ## Align scan to reference frame
-        # Compute LiDAR angles in world frame
-        lidar_angles = self.lidar_angles_robot_frame + robot_orientation  # Shape: (lidar_num_rays)
-        # Compute cartesian coordinates of LiDAR points in world frame
-        xs = lidar_measurements * jnp.cos(lidar_angles) + robot_position[0]
-        ys = lidar_measurements * jnp.sin(lidar_angles) + robot_position[1]
-        points_world = jnp.stack((xs, ys), axis=-1)  # Shape: (lidar_num_rays, 2)
+        # Rotate the sensor mounting offset into the world frame using
+        offset_x, offset_y = self.lidar_position_robot_frame
+        c_robot = jnp.cos(robot_orientation)
+        s_robot = jnp.sin(robot_orientation)
+        lidar_world_x = robot_position[0] + c_robot * offset_x - s_robot * offset_y
+        lidar_world_y = robot_position[1] + s_robot * offset_x + c_robot * offset_y
+        lidar_angles_world = self.lidar_angles_robot_frame + robot_orientation
+        xs = lidar_world_x + lidar_measurements * jnp.cos(lidar_angles_world)
+        ys = lidar_world_y + lidar_measurements * jnp.sin(lidar_angles_world)
+        points_world = jnp.stack((xs, ys), axis=-1)
         # Roto-translate points to robot frame
         c, s = jnp.cos(ref_orientation), jnp.sin(ref_orientation)
         R = jnp.array([
@@ -1831,6 +1840,11 @@ class JESSI(BasePolicy):
         if spatial_attentions is not None:
             cmap_rays = plt.get_cmap('seismic')
             norm_rays = mcolors.Normalize(vmin=jnp.min(spatial_attentions), vmax=jnp.max(spatial_attentions))
+        # Compute static humans (columns in CCSO)
+        if humans_poses is not None:
+            static_humans = jnp.zeros((humans_poses.shape[1]), dtype=jnp.bool)
+            for h in range(len(humans_poses[0])):
+                static_humans = static_humans.at[h].set(jnp.all(humans_poses[0,h,:2] == humans_poses[:,h,:2]))
         # Animate trajectory
         fig = plt.figure(figsize=(21.43,13.57))
         fig.subplots_adjust(left=0.07, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
@@ -1860,35 +1874,40 @@ class JESSI(BasePolicy):
                 if humans_poses is not None:
                     # Plot humans
                     for h in range(len(humans_poses[frame])):
-                        color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
-                        alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
-                        if humans_leg_states is not None and humans_leg_radii is not None:
-                            l_leg = plt.Circle((humans_leg_states[frame][h,0], humans_leg_states[frame][h,1]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-                            ax.add_patch(l_leg)
-                            r_leg = plt.Circle((humans_leg_states[frame][h,3], humans_leg_states[frame][h,4]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-                            ax.add_patch(r_leg)
-                            alpha = 0.3
-                        head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
-                        ax.add_patch(head)
-                        circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-                        ax.add_patch(circle)
-                    if humans_velocities is not None:
-                        # Plot human velocities
-                        for h in range(len(humans_poses[frame])):
+                        if static_humans[h]:
+                            circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='black', alpha=1., fill=True, zorder=1)
+                            ax.add_patch(circle)
+                        else:
                             color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
                             alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
-                            ax.arrow(
-                                humans_poses[frame][h,0],
-                                humans_poses[frame][h,1],
-                                humans_velocities[frame][h,0],
-                                humans_velocities[frame][h,1],
-                                head_width=0.15,
-                                head_length=0.15,
-                                fc=color,
-                                ec=color,
-                                alpha=alpha,
-                                zorder=30,
-                            )
+                            if humans_leg_states is not None and humans_leg_radii is not None:
+                                l_leg = plt.Circle((humans_leg_states[frame][h,0], humans_leg_states[frame][h,1]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                                ax.add_patch(l_leg)
+                                r_leg = plt.Circle((humans_leg_states[frame][h,3], humans_leg_states[frame][h,4]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                                ax.add_patch(r_leg)
+                                alpha = 0.3
+                            head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                            ax.add_patch(head)
+                            circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                            ax.add_patch(circle)
+                    if humans_velocities is not None:
+                        # Plot human velocities
+                            for h in range(len(humans_poses[frame])):
+                                if not static_humans[h]:
+                                    color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
+                                    alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
+                                    ax.arrow(
+                                        humans_poses[frame][h,0],
+                                        humans_poses[frame][h,1],
+                                        humans_velocities[frame][h,0],
+                                        humans_velocities[frame][h,1],
+                                        head_width=0.15,
+                                        head_length=0.15,
+                                        fc=color,
+                                        ec=color,
+                                        alpha=alpha,
+                                        zorder=30,
+                                    )
                 # Plot robot
                 robot_position = robot_poses[frame,:2]
                 head = plt.Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)

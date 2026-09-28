@@ -231,6 +231,7 @@ class JESSI_S2R(JESSI):
         lidar_max_dist=10.,
         lidar_num_rays=100,
         lidar_angles_robot_frame=None, # If not specified, rays are evenly distributed in the angular range
+        lidar_position_robot_frame:tuple[float, float]=(0.0, 0.0),
         n_detectable_humans:int=10,
         max_humans_velocity:float=1.5,
         max_beam_range:float=10.0, # This is only used to normalize the LiDAR readings before feeding them to the encoder
@@ -255,6 +256,7 @@ class JESSI_S2R(JESSI):
             lidar_max_dist=lidar_max_dist,
             lidar_num_rays=lidar_num_rays,
             lidar_angles_robot_frame=lidar_angles_robot_frame,
+            lidar_position_robot_frame=lidar_position_robot_frame,
             n_detectable_humans=n_detectable_humans,
             max_humans_velocity=max_humans_velocity,
             max_beam_range=max_beam_range, 

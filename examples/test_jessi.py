@@ -22,7 +22,7 @@ kinematics = 'unicycle'
 n_stack_for_action_space_bounding = 1
 env_params = {
     'n_stack': 5,
-    'lidar_num_rays': 200,
+    'lidar_num_rays': 500,
     'lidar_angular_range': jnp.pi * 2,
     'lidar_max_dist': 10.,
     # 'lidar_dt': 0.13,
@@ -37,10 +37,10 @@ env_params = {
     'robot_dt': 0.25,
     'humans_dt': 0.01,      
     'robot_visible': True,
-    'scenario': 'parallel_traffic', 
+    'scenario': 'delayed_circular_crossing', 
     'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6]), # Exclude circular_crossing_with_static_obstacles and corner_traffic
-    'ccso_n_static_humans': 10,
-    'ccso_static_humans_radius_mean': 0.3,
+    'ccso_n_static_humans': 5,
+    'ccso_static_humans_radius_mean': 0.34,
     'ccso_static_humans_radius_std': 0.025,
     'reward_function': Reward(robot_radius=0.3, time_limit=time_limit, v_max=robot_vmax),
     'kinematics': kinematics,
