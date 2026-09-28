@@ -4,8 +4,7 @@ import jax.numpy as jnp
 from functools import partial
 
 class BasePolicy(ABC):
-    def __init__(self, discount) -> None:
-        self.gamma = discount
+    def __init__(self) -> None:
         pass
 
     # Private methods
@@ -95,6 +94,10 @@ class BasePolicy(ABC):
 
     @abstractmethod
     def act(self):
+        pass
+
+    @abstractmethod
+    def evaluate(self):
         pass
 
     @partial(jit, static_argnames=("self","n_edges"))

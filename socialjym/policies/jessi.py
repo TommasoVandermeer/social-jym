@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import random, jit, vmap, lax, debug, nn, value_and_grad
+from jax import random, jit, vmap, lax, debug, nn, value_and_grad, Array
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
 from functools import partial
@@ -9,23 +9,108 @@ import os
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.patches import Ellipse
+from typing import Optional
+import math
 
 from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, HUMAN_POLICIES
 from socialjym.utils.distributions.dirichlet import Dirichlet
-from socialjym.utils.distributions.gaussian import BivariateGaussian
+from socialjym.utils.distributions.gaussian import Gaussian, BivariateGaussian
+from socialjym.utils.distributions.logistic_normal import LogisticNormal
 from socialjym.policies.base_policy import BasePolicy
 from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 
+ABLATIONS = [
+    1, # No action space bounding
+    2, # No uncertainty on human detection for actor critic module
+    3, # MLP in place of scene self-attention
+    4, # Gaussian parameterization of the action space (in place of Dirichlet)
+    5, # CNN + temporal attention perception (loss of lidar agnosticity)
+    6, # Logistic normal parameterization of the action space (in place of Dirichlet)
+]
+
+class MultiHeadAttention(hk.MultiHeadAttention):
+  """Override of Haiku Multi-headed attention (MHA) module to output also attention matrix.
+
+  This module is intended for attending over sequences of vectors.
+
+  Rough sketch:
+  - Compute keys (K), queries (Q), and values (V) as projections of inputs.
+  - Attention weights are computed as W = softmax(QK^T / sqrt(key_size)).
+  - Output is another projection of WV^T.
+
+  For more detail, see the original Transformer paper:
+    "Attention is all you need" https://arxiv.org/abs/1706.03762.
+
+  Glossary of shapes:
+  - T: Sequence length.
+  - D: Vector (embedding) size.
+  - H: Number of attention heads.
+  """
+
+  def __call__(
+      self,
+      query: Array,
+      key: Array,
+      value: Array,
+      mask: Array | None = None,
+  ) -> tuple[Array, Array]:
+    """Computes (optionally masked) MHA with queries, keys & values.
+
+    This module broadcasts over zero or more 'batch-like' leading dimensions.
+
+    Args:
+      query: Embeddings sequence used to compute queries; shape [..., T', D_q].
+      key: Embeddings sequence used to compute keys; shape [..., T, D_k].
+      value: Embeddings sequence used to compute values; shape [..., T, D_v].
+      mask: Optional mask applied to attention weights; shape [..., H=1, T', T].
+
+    Returns:
+      A tuple containing:
+        - A new sequence of embeddings, consisting of a projection of the
+          attention-weighted value projections; shape [..., T', D'].
+        - The attention weights tensor before the final projection; shape [..., H, T', T].
+    """
+    *leading_dims, sequence_length, _ = query.shape
+    projection = self._linear_projection
+    query_heads = projection(query, self.key_size, "query")  # [T', H, Q=K]
+    key_heads = projection(key, self.key_size, "key")  # [T, H, K]
+    value_heads = projection(value, self.value_size, "value")  # [T, H, V]
+    attn_logits = jnp.einsum("...thd,...Thd->...htT", query_heads, key_heads)
+    attn_logits = attn_logits / jnp.sqrt(self.key_size).astype(key.dtype)
+    if mask is not None:
+        if mask.ndim != attn_logits.ndim:
+            raise ValueError(
+                f"Mask dimensionality {mask.ndim} must match "
+                f"logits dimensionality {attn_logits.ndim}."
+            )
+
+        mask = mask.astype(jnp.bool_)
+        has_keys = jnp.any(mask, axis=-1, keepdims=True)
+        masked_logits = jnp.where(mask, attn_logits, -jnp.inf)
+        safe_logits = jnp.where(has_keys, masked_logits, 0.0)
+        attn_weights = nn.softmax(safe_logits, axis=-1)
+        attn_weights = jnp.where(mask, attn_weights, 0.0)  # [H, T', T]
+    else:
+        attn_weights = nn.softmax(attn_logits, axis=-1)  # [H, T', T]
+    attn = jnp.einsum("...htT,...Thd->...thd", attn_weights, value_heads)
+    attn = jnp.reshape(attn, (*leading_dims, sequence_length, -1))  # [T', H*V]
+    final_projection = hk.Linear(self.model_size, w_init=self.w_init,
+                                 with_bias=self.with_bias, b_init=self.b_init)
+    return final_projection(attn), attn_weights
+
 class SinusoidalPositionalEncoding(hk.Module):
     def __init__(self, d_model, max_len=5000, name=None):
         super().__init__(name=name)
         position = jnp.arange(max_len, dtype=jnp.float32)[:, jnp.newaxis]
-        div_term = jnp.exp(jnp.arange(0, d_model, 2) * -(jnp.log(10000.0) / d_model))
+        div_term = jnp.exp(jnp.arange(0, d_model, 2, dtype=jnp.float32) * -(jnp.log(10000.0) / d_model))
         pe = jnp.zeros((max_len, d_model))
         pe = pe.at[:, 0::2].set(jnp.sin(position * div_term))
-        pe = pe.at[:, 1::2].set(jnp.cos(position * div_term))
+        cos_indices_len = d_model // 2
+        pe = pe.at[:, 1::2].set(jnp.cos(position * div_term[:cos_indices_len]))
         self.pe_table = pe 
 
     def __call__(self, x):
@@ -33,89 +118,106 @@ class SinusoidalPositionalEncoding(hk.Module):
         seq_len = x.shape[1]
         return x + self.pe_table[None, :seq_len, :]
 
-class AngularLocalCrossAttention(hk.Module):
-    def __init__(self, embed_dim, target_beams, max_angle_deg=18., name="angular_local_cross_attn", beam_dropout_rate=0.0):
+class SpatialCNNEncoder(hk.Module):
+    def __init__(self, embed_dim, n_sectors, name="spatial_cnn_encoder"):
         super().__init__(name=name)
         self.embed_dim = embed_dim
-        self.target_beams = target_beams 
-        self.threshold = jnp.cos(jnp.deg2rad(max_angle_deg/2)) 
+        self.n_sectors = n_sectors
+
+    def __call__(self, x_emb, key=None):
+        # x_emb shape: [B*T, L, embed_dim]
+        B_T, L, D = x_emb.shape
+        c = hk.Conv1D(output_channels=self.embed_dim, kernel_shape=5, padding="SAME")(x_emb)
+        c = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(c)
+        c = nn.gelu(c)
+        c = hk.Conv1D(output_channels=self.embed_dim, kernel_shape=5, padding="SAME")(c)
+        c = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(c)
+        c = nn.gelu(c) # Shape: [B*T, L, embed_dim]
+        c_transposed = jnp.transpose(c, (0, 2, 1))
+        c_sectors = hk.Linear(self.n_sectors, name="spatial_downsample")(c_transposed) # [B*T, embed_dim, n_sectors]
+        out = jnp.transpose(c_sectors, (0, 2, 1))
+        dummy_attn = jnp.zeros((B_T, 1, self.n_sectors, L))
+        return out, dummy_attn
+
+class AngularLocalCrossAttention(hk.Module):
+    def __init__(self, embed_dim, n_sectors, name="angular_local_cross_attn", beam_dropout_rate=0.0):
+        super().__init__(name=name)
+        self.embed_dim = embed_dim
+        self.n_sectors = n_sectors
+        self.target_indices = jnp.arange(n_sectors)
         self.beam_dropout_rate = beam_dropout_rate
     
-        self.spatial_latents = hk.get_parameter("spatial_latents", [target_beams, embed_dim], init=hk.initializers.TruncatedNormal(stddev=0.02))
-        query_angles = jnp.linspace(0, 2 * jnp.pi, target_beams, endpoint=False)
+        self.spatial_latents = hk.get_parameter("spatial_latents", [n_sectors, embed_dim], init=hk.initializers.TruncatedNormal(stddev=0.02))
 
-        self.latent_vecs = jnp.stack([jnp.sin(query_angles), jnp.cos(query_angles)], axis=-1)
-
-        self.attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
+        self.attn = MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
         self.norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
         self.ffn = hk.nets.MLP([embed_dim], activation=nn.gelu, activate_final=True)
         self.norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
-    def compute_angular_mask(self, input_sin_cos, key=None):
-        # input_sin_cos: [B*T, Beams, 2]
-        # latent_sin_cos: [Target_Beams, 2]
-        cos_diff = jnp.einsum('id,mjd->mij', self.latent_vecs, input_sin_cos) # (B*T, Target_Beams, Beams)
-        mask = cos_diff >= self.threshold # (B*T, Target_Beams, Beams)
-        # debug.print("Mask example {x}", x=jnp.sum(mask[0,0,:]))
-        
-        if key is not None and self.beam_dropout_rate > 0.0:
-            B_T, n_beams, _ = input_sin_cos.shape
-            keep_prob = 1.0 - self.beam_dropout_rate
-            random_mask = random.bernoulli(key, p=keep_prob, shape=(B_T, self.target_beams, n_beams))
-            mask = mask & random_mask
-        
-        return mask[:, None, :, :] # [B*T, 1, Target_Beams, Beams]
-
-    def __call__(self, x_emb, x_raw, key=None, external_mask=None):
-        # x_emb: [B*T, Beams, D], x_raw: [B*T, Beams, 7]
+    def __call__(self, x_emb, beam_sectors, key=None):
+        # x_emb: [B*T, Beams, D], beam_sectors: [B*T, Beams]
         B_T = x_emb.shape[0]
         # 1. Latent Queries
-        q = jnp.broadcast_to(self.spatial_latents[None, ...], (B_T, self.target_beams, self.embed_dim))
-        # 2. Cross Attention
-        if external_mask is not None:
-            mask = external_mask.reshape(B_T, 1, self.target_beams, -1)
-        else:
-            input_sin_cos = x_raw[..., 4:6]
-            mask = self.compute_angular_mask(input_sin_cos, key=key)
-        attn_out = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
+        q = jnp.broadcast_to(self.spatial_latents[None, ...], (B_T, self.n_sectors, self.embed_dim))
+        # 2. Cross Attention (mask shape # [B*T, 1, Target_Beams, Beams])
+        match_matrix = (beam_sectors[:, None, :, :] == self.target_indices[None, :, None, None])
+        mask_bool = jnp.any(match_matrix, axis=-1)
+        mask = mask_bool[:, None, :, :]
+        attn_out, attn_mtrx = self.attn(query=q, key=x_emb, value=x_emb, mask=mask)
         q = self.norm1(q + attn_out)
         # 3. FFN
         ffn_out = self.ffn(q)
-        return self.norm2(q + ffn_out), mask
+        return self.norm2(q + ffn_out), attn_mtrx
 
 class SpatioTemporalEncoder(hk.Module):
-    def __init__(self, embed_dim, n_sectors, lidar_angles_robot_frame, name=None, beam_dropout_rate=0.0): 
+    def __init__(self, embed_dim, n_sectors, lidar_angles_robot_frame, name=None, beam_dropout_rate=0.0, ablation_mode=None, legit=False): 
         super().__init__(name=name)
         self.embed_dim = embed_dim
         self.n_sectors = n_sectors
         self.lidar_angles_robot_frame = lidar_angles_robot_frame # UNUSED
+        self.ablation_mode = ablation_mode
+        self.legit = legit
         # 1. Spatial Feature Extraction
-        self.angular_spatial_attn = AngularLocalCrossAttention(embed_dim, target_beams=n_sectors, max_angle_deg=18., beam_dropout_rate=beam_dropout_rate)
+        if self.ablation_mode == 5:
+            self.spatial_encoder = SpatialCNNEncoder(embed_dim, n_sectors=n_sectors)
+        else:
+            self.spatial_encoder = AngularLocalCrossAttention(embed_dim, n_sectors=n_sectors, beam_dropout_rate=beam_dropout_rate)
         # 2. Temporal Positional Encodings
         self.pos_encoder_time = SinusoidalPositionalEncoding(embed_dim, max_len=100)
         # 3. Temporal Attention
-        self.temporal_attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0)
+        self.temporal_attn = MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0)
         self.temporal_norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
         self.temporal_ffn = hk.nets.MLP([embed_dim * 2, embed_dim], activation=nn.gelu)
         self.temporal_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
 
-    def __call__(self, x, x_raw, key=None, external_mask=None):
+    def __call__(self, x, beam_sectors, key=None):
         # x shape: [Batch, Time, Beams, Features]
         B, T, L, F = x.shape
         x_flat = x.reshape(B * T, L, self.embed_dim)
-        x_raw_flat = x_raw.reshape(B * T, L, x_raw.shape[-1])
-        h_spatial, mask = self.angular_spatial_attn(x_flat, x_raw_flat, key=key, external_mask=external_mask) # [B*T, L, embed_dim]
+        if self.ablation_mode == 5:
+            h_spatial, s_attn_matrix = self.spatial_encoder(x_flat, key=key)
+        else:
+            beam_sectors_flat = beam_sectors.reshape(B * T, L, beam_sectors.shape[-1])
+            h_spatial, s_attn_matrix = self.spatial_encoder(x_flat, beam_sectors_flat, key=key)
         L_new = h_spatial.shape[1]
         h_spatial = h_spatial.reshape(B, T, L_new, self.embed_dim)
         h_time_in = h_spatial.transpose(0, 2, 1, 3).reshape(B * L_new, T, self.embed_dim)
         h_time_in = self.pos_encoder_time(h_time_in)
-        t_out = self.temporal_attn(query=h_time_in, key=h_time_in, value=h_time_in)
+        t_out, t_attn_mtrx = self.temporal_attn(query=h_time_in, key=h_time_in, value=h_time_in)
         h_time_mid = self.temporal_norm1(h_time_in + t_out)
         t_ffn_out = self.temporal_ffn(h_time_mid)
         h_time_out = self.temporal_norm2(h_time_mid + t_ffn_out)
-        h_final = h_time_out.reshape(B, L_new, T, self.embed_dim).transpose(0, 2, 1, 3)
-        return h_final, mask
+        h_temporal = h_time_out.reshape(B, L_new, T, self.embed_dim).transpose(0, 2, 1, 3)
+        # Extract last scan embeddings (for downstream tasks)
+        if self.legit:
+            last_scan_embeddings = h_spatial[:, 0, :, :] # [B, N_sectors, embed_dim]
+        else:
+            last_scan_embeddings = h_temporal[:, 0, :, :] # [B, N_sectors, embed_dim]
+        # Additional info: attention data
+        spatial_attention = jnp.mean(s_attn_matrix, axis=(1,2)) # (T, L)
+        temporal_attention = jnp.mean(t_attn_mtrx, axis=(0,1)) # (T, T)
+        return h_temporal, last_scan_embeddings, spatial_attention, temporal_attention
 
 class HCGQueryDecoder(hk.Module):
     def __init__(self, n_detectable_humans, embed_dim, name=None):
@@ -128,9 +230,9 @@ class HCGQueryDecoder(hk.Module):
             shape=[1, self.n_detectable_humans, embed_dim], 
             init=hk.initializers.TruncatedNormal(stddev=0.02)
         )
-        self.cross_attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, value_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
+        self.cross_attn = MultiHeadAttention(num_heads=4, key_size=embed_dim//4, value_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
         self.norm_cross = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-        self.self_attn = hk.MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
+        self.self_attn = MultiHeadAttention(num_heads=4, key_size=embed_dim//4, w_init_scale=1.0, model_size=embed_dim)
         self.norm_self = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
         self.ffn = hk.nets.MLP([embed_dim * 2, embed_dim], activation=nn.gelu, activate_final=False)
         self.norm_ffn = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
@@ -141,10 +243,10 @@ class HCGQueryDecoder(hk.Module):
         kv = encoder_output.reshape(B, T * L, D)
         q = jnp.tile(self.query_embeddings, (B, 1, 1))
         # Cross Attention
-        attn_out = self.cross_attn(query=q, key=kv, value=kv)
+        attn_out, cross_attn_mtrx = self.cross_attn(query=q, key=kv, value=kv)
         q = self.norm_cross(q + attn_out)
         # Self Attention (avoiding interactions between queries for same human)
-        self_out = self.self_attn(query=q, key=q, value=q)
+        self_out, self_attn_mtrx = self.self_attn(query=q, key=q, value=q)
         q = self.norm_self(q + self_out)
         # FFN + Add & Norm
         ffn_out = self.ffn(q)
@@ -162,6 +264,8 @@ class Perception(hk.Module):
             n_sectors: int,
             lidar_angles_robot_frame: jnp.ndarray,
             beam_dropout_rate: float = 0.0,
+            ablation_mode: Optional[int] = None,
+            legit: bool = False,
         ):
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -170,6 +274,8 @@ class Perception(hk.Module):
         self.max_lidar_distance = max_lidar_distance
         self.lidar_angles_robot_frame = lidar_angles_robot_frame
         self.n_sectors = n_sectors
+        self.ablation_mode = ablation_mode
+        self.legit = legit
         # Modules
         self.input_proj = hk.Linear(embed_dim, name="input_projection")
         self.perception = SpatioTemporalEncoder(
@@ -177,7 +283,9 @@ class Perception(hk.Module):
             n_sectors=n_sectors, 
             name="spatio_temporal_encoder", 
             lidar_angles_robot_frame=lidar_angles_robot_frame, 
-            beam_dropout_rate=beam_dropout_rate
+            beam_dropout_rate=beam_dropout_rate,
+            ablation_mode=ablation_mode,
+            legit=self.legit,
         )
         self.decoder = HCGQueryDecoder(n_detectable_humans, embed_dim, name="decoder")
         # Head: 11 params (weight, mu_x, mu_y, log_sig_x, log_sig_y, corr, mu_vx, mu_vy, log_sig_vx, log_sig_vy, corr_v)
@@ -219,16 +327,17 @@ class Perception(hk.Module):
             "weights": weights
         }
 
-    def __call__(self, x, stop_gradient=False, key=None, external_mask=None):
-        # x input: [batch B, n_stack (T), num_beams (L), 7]
+    def __call__(self, x, stop_gradient=False, key=None):
+        # x input: [batch B, n_stack (T), num_beams (L), 7 + max_sector_attendance]
         has_batch = x.ndim == 4
         if not has_batch:
-            x = jnp.expand_dims(x, 0) # [1, T, L, F]
+            x = jnp.expand_dims(x, 0) # [1, T, L, 7 + max_sector_attendance]
+        beam_sectors = x[:, :, :, 7:]
+        tokens = x[:, :, :, :7] # Remove mask from input before embedding
         # 1. Feature Projection
-        x_emb = self.input_proj(x) # [B, T, L, embed_dim]
+        x_emb = self.input_proj(tokens) # [B, T, L, embed_dim]
         # 2. Spatio-Temporal Encoding
-        encoded_features, mask = self.perception(x_emb, x, key=key, external_mask=external_mask) # [B, T, L, embed_dim]
-        last_scan_embeddings = encoded_features[:, 0, :, :] # [B, N_sectors, embed_dim]
+        encoded_features, last_scan_embeddings, spatial_attention, temporal_attention = self.perception(x_emb, beam_sectors, key=key) # [B, T, L, embed_dim]
         # 3. Decoding via Queries
         latents = self.decoder(encoded_features) # [B, n_detectable_humans, embed_dim]        
         # 4. Heads & Parameter Transformation
@@ -240,7 +349,7 @@ class Perception(hk.Module):
         if stop_gradient:
             hum_distr = tree_map(lambda t: lax.stop_gradient(t), hum_distr)
             last_scan_embeddings = lax.stop_gradient(last_scan_embeddings)
-        return hum_distr, last_scan_embeddings, mask
+        return hum_distr, last_scan_embeddings, spatial_attention, temporal_attention
     
 class ActorCritic(hk.Module):
     def __init__(
@@ -257,6 +366,7 @@ class ActorCritic(hk.Module):
                 "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
             },
             initial_concentration: float = 0.,
+            ablation_mode: Optional[int] = None,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -265,22 +375,33 @@ class ActorCritic(hk.Module):
         self.wmax = 2 * v_max / wheels_distance
         self.wmin = -2 * v_max / wheels_distance
         self.initial_concentration = initial_concentration
+        self.ablation_mode = ablation_mode
         # Dimensions
         self.n_sectors = n_sectors
-        self.n_outputs = 3  # Dirichlet distribution over 3 action vertices
+        if self.ablation_mode == 4: self.n_outputs = 2 # Gaussian (2 means, 1 per action)
+        elif self.ablation_mode == 6: self.n_outputs = 3 # Logistic-Normal (3 means, 1 per vertex)
+        else: self.n_outputs = 3 # Dirichlet (3 alphas, 1 per vertex)
         self.mlp_params = mlp_params
         # Scan embedding reducer
         self.scan_reducer = hk.Linear(1, name="scan_reducer")
         # 2. Self Attention Mechanism
-        self.attention = hk.MultiHeadAttention(
+        add_size = 20 if self.ablation_mode != 2 else 14 # Ablation: No human uncertainty params, so input size is smaller
+        self.attention = MultiHeadAttention(
             num_heads=2,
-            key_size=(n_sectors + 20)//2,
+            key_size=(n_sectors + add_size)//2,
             w_init=hk.initializers.VarianceScaling(1.0, "fan_avg", "uniform"),
             name="hcg_self_attention"
         )
         self.layer_norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-        self.att_ffn = hk.nets.MLP([n_sectors + 20], activation=nn.gelu, activate_final=True)
+        self.att_ffn = hk.nets.MLP([n_sectors + add_size], activation=nn.gelu, activate_final=True)
         self.layer_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
+        # 2.5 Simple MLP (in place of scene-attention for ablation)
+        if self.ablation_mode == 3: # Ablation: No scene attention, simple MLP instead
+            self.simple_mlp = hk.nets.MLP(
+                **mlp_params,
+                output_sizes=[200, 100, n_sectors + 20], 
+                name="simple_mlp"
+            )
         # 3. Final Output MLP
         self.actor_head = hk.nets.MLP(
             **mlp_params,
@@ -292,7 +413,9 @@ class ActorCritic(hk.Module):
             output_sizes=[100, 50, 1],
             name="critic_head"
         )
-        self.dirichlet = Dirichlet()
+        if ablation_mode == 4: self.action_distribution = Gaussian()
+        elif ablation_mode == 6: self.action_distribution = LogisticNormal()
+        else: self.action_distribution = Dirichlet()
 
     def __call__(
             self, 
@@ -318,44 +441,91 @@ class ActorCritic(hk.Module):
         if not has_batch:
             x = jnp.expand_dims(x, 0)
             y = jnp.expand_dims(y, 0)
+        # Ablation 2: no human uncertainties
         batch_size = x.shape[0]
         keys = random.split(random_key, batch_size)
         hcg_scores = x[..., 10:11] 
         global_robot_state = x[:, 0, 11:] 
         action_space_params = global_robot_state[:, :3]
+        if self.ablation_mode == 2:
+            x = x[:,:,[0,1,5,6,10,11,12,13,14,15,16,17,18,19]] # Keep only mean positions, mean velocities and weights            
         ### CONTEXT EXTRACTION
         scalar_scan = self.scan_reducer(y)  # (Batch, n_sectors, 1)
         y = jnp.squeeze(scalar_scan, axis=-1) # (Batch, n_sectors)
-        y_tiled = jnp.broadcast_to(y[:, None, :], (batch_size, self.n_detectable_humans, y.shape[-1]))
-        embeddings = jnp.concatenate([x, y_tiled], axis=-1) # [Batch, N_Humans, 20 + n_sectors]
         # SCENE-ATTENTION MECHANISM
-        att_out = self.attention(embeddings, embeddings, embeddings) # (Batch, N, 20 + n_sectors)
-        att_embeddings = self.layer_norm1(embeddings + att_out) # (Batch, N, 20 + n_sectors)
-        ffn_out = self.att_ffn(att_embeddings)
-        att_embeddings = self.layer_norm2(att_embeddings + ffn_out)
-        summed_embeddings = jnp.sum(att_embeddings * hcg_scores, axis=1) # (Batch, 20 + n_sectors)
-        sum_of_weights = jnp.sum(hcg_scores, axis=1) # (Batch, 1)
-        base_mean = summed_embeddings / (sum_of_weights + 1e-5)  # (Batch, 20 + n_sectors)
-        presence_gate = jnp.tanh(sum_of_weights) # (Batch, 1) Encodes if humans are present in the scene
-        pooled_hcg_context = base_mean * presence_gate # (Batch, 20 + n_sectors)
+        if self.ablation_mode == 3: # Ablation: No scene attention, simple MLP instead
+            humans_state = x[..., :11] # (Batch, N, 11)
+            robot_state = x[:, 0, 11:] # (Batch, 9)
+            mlp_input = jnp.concatenate([humans_state.reshape(batch_size, -1), robot_state, y], axis=-1) # (Batch, N*11 + 9 + n_sectors)
+            pooled_hcg_context = self.simple_mlp(mlp_input) # (Batch, 20 + n_sectors)
+            human_attention = jnp.full((batch_size, self.n_detectable_humans), jnp.nan) # No attention in this ablation
+        else:
+            y_tiled = jnp.broadcast_to(y[:, None, :], (batch_size, self.n_detectable_humans, y.shape[-1]))
+            embeddings = jnp.concatenate([x, y_tiled], axis=-1) # [Batch, N_Humans, 20 + n_sectors]
+            att_out, att_mtrx = self.attention(embeddings, embeddings, embeddings) # (Batch, N, 20 + n_sectors)
+            # debug.print("Attention matrix shape: {s}", s=att_mtrx.shape) # (Batch, N, N)
+            att_embeddings = self.layer_norm1(embeddings + att_out) # (Batch, N, 20 + n_sectors)
+            ffn_out = self.att_ffn(att_embeddings)
+            att_embeddings = self.layer_norm2(att_embeddings + ffn_out)
+            summed_embeddings = jnp.sum(att_embeddings * hcg_scores, axis=1) # (Batch, 20 + n_sectors)
+            sum_of_weights = jnp.sum(hcg_scores, axis=1) # (Batch, 1)
+            base_mean = summed_embeddings / (sum_of_weights + 1e-5)  # (Batch, 20 + n_sectors)
+            presence_gate = jnp.tanh(sum_of_weights) # (Batch, 1) Encodes if humans are present in the scene
+            pooled_hcg_context = base_mean * presence_gate # (Batch, 20 + n_sectors)
+            # Attention (wighted by HCG scores) computation for visualization
+            mean_att_mtrx = jnp.mean(att_mtrx, axis=1)
+            norm_hcg_scores = hcg_scores / (sum_of_weights[:, None, :] + 1e-5)
+            base_human_attention = jnp.sum(mean_att_mtrx * norm_hcg_scores, axis=1) # (Batch, N)
+            human_attention = base_human_attention / jnp.max(base_human_attention)
         context = jnp.concatenate([
             pooled_hcg_context, 
             global_robot_state, 
             y
-        ], axis=-1)  # (20 + n_sectors + 9 + n_sectors,)
+        ], axis=-1)  # (Batch, 20 + n_sectors + 9 + n_sectors,)
         ### ACTOR
-        ## Compute Dirichlet distribution parameters
-        alphas = nn.softplus(self.actor_head(context)) + 1  # (Batch, 3)
-        concentration = jnp.sum(alphas, axis=-1)  # (Batch,)
         ## Compute dirchlet distribution vetices
         zeros = jnp.zeros((batch_size,))
         v1 = jnp.stack([zeros, action_space_params[:, 1] * self.wmax], axis=-1)
         v2 = jnp.stack([zeros, action_space_params[:, 2] * self.wmin], axis=-1)
         v3 = jnp.stack([action_space_params[:, 0] * self.vmax, zeros], axis=-1)
         vertices = jnp.stack([v1, v2, v3], axis=1)  # Shape: (batch_size, 3, 2)
-        distributions = {"alphas": alphas, "vertices": vertices}
+        distributions = {"vertices": vertices}
+        if self.ablation_mode == 4:
+            ## Compute Gaussian distribution parameters
+            scaled_vmax = action_space_params[:, 0] * self.vmax
+            scaled_wmax = action_space_params[:, 1] * self.wmax
+            scaled_wmin = action_space_params[:, 2] * self.wmin
+            actor_out = self.actor_head(context) # [mu_v, mu_w]
+            raw_mu_v = actor_out[..., 0]
+            raw_mu_w = actor_out[..., 1]
+            mu_v = nn.sigmoid(raw_mu_v) * scaled_vmax
+            w_scale = (scaled_wmax - scaled_wmin) / 2.0
+            w_shift = (scaled_wmax + scaled_wmin) / 2.0
+            mu_w = nn.tanh(raw_mu_w) * w_scale + w_shift
+            means = jnp.stack([mu_v, mu_w], axis=-1)  # Shape: (batch_size, 2)
+            raw_logsigmas_param = hk.get_parameter("raw_logsigmas", shape=[2], init=hk.initializers.Constant(jnp.arctanh(9/11)))
+            logsigmas_bounded = jnp.tanh(raw_logsigmas_param) * 11 - 9 # Bound logsigmas between [-20,2]
+            logsigmas = jnp.broadcast_to(logsigmas_bounded, means.shape)
+            distributions["means"] = means
+            distributions["logsigmas"] = logsigmas
+            # Dummy
+            concentration = jnp.zeros((batch_size,))
+        elif self.ablation_mode == 6:
+            locs = self.actor_head(context)
+            raw_logscales_param = hk.get_parameter("raw_logscales", shape=[3], init=hk.initializers.Constant(jnp.arctanh(9/11)))
+            logscales_bounded = jnp.tanh(raw_logscales_param) * 11 - 9 # Bound logscales between [-20,2]
+            logscales = jnp.broadcast_to(logscales_bounded, locs.shape)
+            distributions["locs"] = locs
+            distributions["log_scales"] = logscales
+            # Dummy
+            concentration = jnp.zeros((batch_size,))
+        else:
+            ## Compute Dirichlet distribution parameters
+            alphas = nn.softplus(self.actor_head(context)) + 1  # (Batch, 3)
+            concentration = jnp.sum(alphas, axis=-1)  # (Batch,)
+            distributions["alphas"] = alphas
         ## Sample action
-        sampled_actions = vmap(self.dirichlet.sample)(distributions, keys)
+        sampled_actions = vmap(self.action_distribution.sample)(distributions, keys)
         ### CRITIC
         state_values = self.critic_head(context) # (Batch, 1)
         state_values = jnp.squeeze(state_values, axis=-1) # (Batch,)
@@ -363,11 +533,12 @@ class ActorCritic(hk.Module):
             sampled_actions = sampled_actions[0]
             state_values = state_values[0]
             distributions = tree_map(lambda t: t[0], distributions)
-        return sampled_actions, distributions, concentration, state_values
+        return sampled_actions, distributions, concentration, state_values, human_attention
 
 class E2E(hk.Module):
     def __init__(
         self,
+        actor_critic_module:hk.Module,
         name: str,
         perception_name: str,
         controller_name: str,
@@ -387,6 +558,8 @@ class E2E(hk.Module):
         },
         initial_concentration: float = 0.,
         beam_dropout_rate: float = 0.0,
+        ablation_mode: Optional[int] = None,
+        legit: bool = False,
     ) -> None:
         super().__init__(name=name)
         self.n_detectable_humans = n_detectable_humans
@@ -397,6 +570,7 @@ class E2E(hk.Module):
         self.initial_concentration = initial_concentration
         self.max_humans_velocity = max_humans_velocity
         self.max_lidar_distance = max_lidar_distance
+        self.ablation_mode = ablation_mode
         # Dimensions
         self.embed_dim = embed_dim
         self.n_sectors = n_sectors
@@ -413,9 +587,11 @@ class E2E(hk.Module):
             n_sectors=n_sectors,
             lidar_angles_robot_frame=lidar_angles_robot_frame,
             beam_dropout_rate=beam_dropout_rate,
+            ablation_mode=ablation_mode,
+            legit=legit,
         )
         # Initialize Actor-Critic module
-        self.actor_critic = ActorCritic(
+        self.actor_critic = actor_critic_module(
             controller_name,
             n_detectable_humans=n_detectable_humans,
             v_max=v_max,
@@ -423,6 +599,7 @@ class E2E(hk.Module):
             mlp_params=mlp_params,
             initial_concentration=initial_concentration,
             n_sectors=n_sectors,
+            ablation_mode=ablation_mode,
         )
 
     def __call__(
@@ -436,9 +613,8 @@ class E2E(hk.Module):
         # Extract random key
         action_sample_key = kwargs.get("random_key", random.PRNGKey(0))
         perception_key = kwargs.get("perception_key", None)
-        external_mask = kwargs.get("external_mask", None)
         ## PERCEPTION
-        perception_output, scan_embedding, mask = self.perception(x, stop_gradient=stop_perception_gradient, key=perception_key, external_mask=external_mask) # perception_output: (B, N, 11), scan_embedding: (B, E)
+        perception_output, scan_embedding, spatial_attention, temporal_attention = self.perception(x, stop_gradient=stop_perception_gradient, key=perception_key) # perception_output: (B, N, 11), scan_embedding: (B, E)
         # Prepare actor-critic input
         hcgs = jnp.concatenate((
             perception_output["pos_distrs"]["means"],
@@ -459,21 +635,21 @@ class E2E(hk.Module):
             distributions = None
             concentration = None
             state_values = None
+            human_attention = None
         else:
             ## CONTROL
-            sampled_actions, distributions, concentration, state_values = self.actor_critic(
+            sampled_actions, distributions, concentration, state_values, human_attention = self.actor_critic(
                 actor_input,
                 scan_embedding,
                 random_key=action_sample_key
             )
-        return perception_output, actor_input, sampled_actions, distributions, concentration, state_values, mask
+        return perception_output, actor_input, sampled_actions, distributions, concentration, state_values, spatial_attention, temporal_attention, human_attention
 
 class JESSI(BasePolicy):
     def __init__(
         self, 
         robot_radius:float=0.3,
         v_max:float=1., 
-        gamma:float=0.9, 
         dt:float=0.25, 
         wheels_distance:float=0.7, 
         n_stack:int=5,
@@ -481,13 +657,17 @@ class JESSI(BasePolicy):
         lidar_max_dist=10.,
         lidar_num_rays=100,
         lidar_angles_robot_frame=None, # If not specified, rays are evenly distributed in the angular range
+        lidar_position_robot_frame:tuple[float, float]=(0.0, 0.0),
         n_detectable_humans:int=10,
         max_humans_velocity:float=1.5,
         max_beam_range:float=10.0, # This is only used to normalize the LiDAR readings before feeding them to the encoder
-        embedding_dim:int=96,
+        embedding_dim:int=32,
         n_sectors:int=60,
+        angular_sectors_width_deg:float=18.0, # This is the width of the attention sectors in degrees. It determines how many rays are attended to by each sector.
         n_stack_for_action_space_bounding:int=1,
         beam_dropout_rate:float=0.0,
+        ablation_mode: Optional[int] = None, # Options: 1 (no bounding), 2 (no humans uncertainty), 3 (no scene attention)
+        legit:bool=False, 
     ) -> None:
         """
         JESSI (JAX-based E2E Safe Social Interpretable autonomous navigation).
@@ -495,7 +675,6 @@ class JESSI(BasePolicy):
         # Input validation
         assert robot_radius > 0, "Robot radius must be positive"
         assert v_max > 0, "Maximum robot velocity must be positive"
-        assert gamma >= 0 and gamma <= 1, "Discount factor must be in [0, 1]"
         assert dt > 0, "Time step must be positive"
         assert wheels_distance > 0, "Wheels distance must be positive"
         assert n_stack >= 2, "Number of stacked observations must be at least 2, to observe motion"
@@ -504,8 +683,12 @@ class JESSI(BasePolicy):
         assert lidar_num_rays >= 10, "LiDAR number of rays must be at least 10"
         assert n_detectable_humans >= 2, "Number of detectable humans must be at least 2"
         assert n_stack_for_action_space_bounding <= n_stack, "n_stack_for_action_space_bounding must be less than or equal to n_stack"
+        assert ablation_mode is None or ablation_mode in ABLATIONS, f"ablation_mode must be either None or one of {ABLATIONS}"
+        assert embedding_dim % 4 == 0, "Embedding dimension must be a multiple of 4"
+        if len(lidar_position_robot_frame) != 2: raise ValueError("lidar_position_robot_frame must contain (x, y) in metres")
+        lidar_position_robot_frame = tuple(float(value) for value in lidar_position_robot_frame)
+        if not all(math.isfinite(value) for value in lidar_position_robot_frame): raise ValueError("LiDAR position must contain finite values")
         # Configurable attributes
-        super().__init__(discount=gamma)
         self.robot_radius = robot_radius
         self.v_max = v_max
         self.dt = dt
@@ -520,21 +703,31 @@ class JESSI(BasePolicy):
         else:
             assert len(lidar_angles_robot_frame) == lidar_num_rays, "Length of lidar_angles_robot_frame must be equal to lidar_num_rays"
             self.lidar_angles_robot_frame = lidar_angles_robot_frame
+        self.lidar_position_robot_frame = lidar_position_robot_frame
         self.n_detectable_humans = n_detectable_humans
         self.max_humans_velocity = max_humans_velocity
         self.max_beam_range = max_beam_range
         self.embedding_dim = embedding_dim
         self.n_sectors = n_sectors
+        self.angular_sectors_width_deg = angular_sectors_width_deg
         self.beam_dropout_rate = beam_dropout_rate
+        self.ablation_mode = ablation_mode
+        self.legit = legit
         # Default attributes
         self.name = "JESSI"
         self.kinematics = ROBOT_KINEMATICS.index("unicycle")
-        self.dirichlet = Dirichlet()
+        if ablation_mode == 4: self.action_distribution = Gaussian()
+        elif ablation_mode == 6: self.action_distribution = LogisticNormal()
+        else: self.action_distribution = Dirichlet()
         self.bivariate_gaussian = BivariateGaussian()
+        self.sectors_threshold = jnp.cos(jnp.deg2rad(angular_sectors_width_deg/2))     
+        query_angles = jnp.linspace(0, 2 * jnp.pi, self.n_sectors, endpoint=False)
+        self.sectors_latent_vecs = jnp.stack([jnp.sin(query_angles), jnp.cos(query_angles)], axis=-1)
+        self.max_sector_attendance = jnp.max(jnp.array([0, int(jnp.ceil(angular_sectors_width_deg / (360 / self.n_sectors)))]))
         # Initialize Perception network
         self.perception_name = "lidar_perception"
         @hk.transform
-        def perception_network(x, stop_gradient=False, key=None, external_mask=None) -> jnp.ndarray:
+        def perception_network(x, stop_gradient=False, key=None) -> jnp.ndarray:
             net = Perception(
                 self.perception_name, 
                 self.n_detectable_humans, 
@@ -544,8 +737,10 @@ class JESSI(BasePolicy):
                 n_sectors=n_sectors,
                 lidar_angles_robot_frame=self.lidar_angles_robot_frame,
                 beam_dropout_rate=self.beam_dropout_rate,
+                ablation_mode=ablation_mode,
+                legit=self.legit,
             )
-            return net(x, stop_gradient=stop_gradient, key=key, external_mask=external_mask)
+            return net(x, stop_gradient=stop_gradient, key=key)
         self.perception = perception_network
         # Initialize Actor Critic network
         self.actor_critic_name = "actor_network"
@@ -556,7 +751,8 @@ class JESSI(BasePolicy):
                 self.n_detectable_humans, 
                 self.v_max, 
                 self.wheels_distance, 
-                n_sectors=self.n_sectors
+                n_sectors=self.n_sectors,
+                ablation_mode=self.ablation_mode,
             ) 
             return actor_critic(x, y, **kwargs)
         self.actor_critic = actor_critic_network
@@ -565,6 +761,7 @@ class JESSI(BasePolicy):
         @hk.transform
         def e2e_network(x, y, stop_perception_gradient=False, only_perception=False, **kwargs) -> jnp.ndarray:
             e2e = E2E(
+                ActorCritic,
                 self.e2e_name,
                 self.perception_name,
                 self.actor_critic_name,
@@ -577,6 +774,8 @@ class JESSI(BasePolicy):
                 embed_dim=self.embedding_dim,
                 n_sectors=self.n_sectors,
                 beam_dropout_rate=self.beam_dropout_rate,
+                ablation_mode=self.ablation_mode,
+                legit=self.legit,
             ) 
             return e2e(x, y, stop_perception_gradient=stop_perception_gradient, only_perception=only_perception, **kwargs)
         self.e2e = e2e_network
@@ -587,7 +786,7 @@ class JESSI(BasePolicy):
     def _align_lidar_stack(self, obs_stack, ref_position, ref_orientation):
         """
         args:
-        - obs_stack (lidar_num_rays + 6):  [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs_stack (n_stack, lidar_num_rays + 9): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
 
         outputs:
         - pointcloud_and_action (lidar_num_rays, 2): LiDAR points in robot reference frame
@@ -596,16 +795,17 @@ class JESSI(BasePolicy):
         ## Split obs stack
         robot_position = obs_stack[:2]  # Shape: (2,)
         robot_orientation = obs_stack[2]  # Shape: ()
-        #robot_radius = obs_stack[3]  # Shape: ()
-        #robot_action = obs_stack[4:6]  # Shape: (2,)
-        lidar_measurements = obs_stack[6:]  # Shape: (lidar_num_rays)
-        ## Align scan to reference frame
-        # Compute LiDAR angles in world frame
-        lidar_angles = self.lidar_angles_robot_frame + robot_orientation  # Shape: (lidar_num_rays)
-        # Compute cartesian coordinates of LiDAR points in world frame
-        xs = lidar_measurements * jnp.cos(lidar_angles) + robot_position[0]
-        ys = lidar_measurements * jnp.sin(lidar_angles) + robot_position[1]
-        points_world = jnp.stack((xs, ys), axis=-1)  # Shape: (lidar_num_rays, 2)
+        lidar_measurements = obs_stack[11:]  # Shape: (lidar_num_rays)
+        # Rotate the sensor mounting offset into the world frame using
+        offset_x, offset_y = self.lidar_position_robot_frame
+        c_robot = jnp.cos(robot_orientation)
+        s_robot = jnp.sin(robot_orientation)
+        lidar_world_x = robot_position[0] + c_robot * offset_x - s_robot * offset_y
+        lidar_world_y = robot_position[1] + s_robot * offset_x + c_robot * offset_y
+        lidar_angles_world = self.lidar_angles_robot_frame + robot_orientation
+        xs = lidar_world_x + lidar_measurements * jnp.cos(lidar_angles_world)
+        ys = lidar_world_y + lidar_measurements * jnp.sin(lidar_angles_world)
+        points_world = jnp.stack((xs, ys), axis=-1)
         # Roto-translate points to robot frame
         c, s = jnp.cos(ref_orientation), jnp.sin(ref_orientation)
         R = jnp.array([
@@ -631,12 +831,17 @@ class JESSI(BasePolicy):
         # Extract dimensions
         B, K, _ = human_distrs['pos_distrs']['means'].shape
         _, M, _ = human_positions.shape
+        if M > K:
+            raise ValueError(f"Matching requires M (humans) <= K (detections), but got M={M}, K={K}")
         ### Bipartite matching
         ## Cost matrix
-        diff = jnp.expand_dims(human_distrs['pos_distrs']['means'], 2) - jnp.expand_dims(human_positions, 1) # (B, K, 1, 2) - (B, 1, M, 2)
-        dist = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1) + 1e-6) # Shape (B, K, M)
-        prob_cost = -jnp.log(jnp.expand_dims(human_distrs['weights'], 2) + 1e-6) # (B, K, 1)
-        cost_matrix = lambda_pos_reg * dist + lambda_cls * prob_cost # (B, K, M)
+        diff = human_distrs["pos_distrs"]["means"][:, :, None, :] - human_positions[:, None, :, :]
+        dist = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1) + 1e-6)
+        prob_cost = -jnp.log(human_distrs["weights"][:, :, None] + 1e-6)
+        cost_matrix = (lambda_pos_reg * dist + lambda_cls * prob_cost)
+        # Invisible/padded targets must have no query preference.
+        valid_targets = human_mask[:, None, :].astype(bool)
+        cost_matrix = jnp.where(valid_targets, cost_matrix, 0.0)
         ## Matching
         assigned_query_idx, assigned_gt_idx = vmap(optax.assignment.hungarian_algorithm)(cost_matrix) # Shapes: (B, M), (B, M)
         sort_perm = jnp.argsort(assigned_gt_idx, axis=1) # Shape (B, M)
@@ -644,7 +849,7 @@ class JESSI(BasePolicy):
         # One-hot mask - shape: (B, K, M) -> 1 if k matches m, 0 otherwise
         matched_mask = nn.one_hot(best_pred_idx, K, axis=1) # Shape: (B, K, M)
         # Filter with GT mask
-        valid_matches = matched_mask * jnp.expand_dims(human_mask, 1) # (B, K, M)
+        valid_matches = matched_mask * human_mask[:, None, :] # (B, K, M)
         matched_pos_means = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['pos_distrs']['means']) # (B, M, 2)
         matched_pos_logsigmas = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['pos_distrs']['logsigmas']) # (B, M, 2)
         matched_pos_correlations = jnp.einsum('bkm,bk->bm', valid_matches, human_distrs['pos_distrs']['correlation']) # (B, M)
@@ -681,7 +886,8 @@ class JESSI(BasePolicy):
         target_cls = jnp.max(valid_matches, axis=2) # (B, K) -> 0 o 1
         bce = - (target_cls * jnp.log(human_distrs['weights'] + 1e-6) + (1 - target_cls) * jnp.log(1 - human_distrs['weights'] + 1e-6))
         cls_loss = jnp.mean(bce) 
-        return lambda_pos_reg * pos_reg_loss + lambda_vel_reg * vel_reg_loss + lambda_cls * cls_loss
+        return lambda_pos_reg * pos_reg_loss + lambda_vel_reg * vel_reg_loss + lambda_cls * cls_loss, \
+               {"pos_reg_loss": pos_reg_loss, "vel_reg_loss": vel_reg_loss, "cls_loss": cls_loss}
 
     @partial(jit, static_argnames=("self"))
     def _safety_loss(
@@ -740,7 +946,7 @@ class JESSI(BasePolicy):
         distance_mask = jnp.linalg.norm(h_pos_0, axis=-1) <= distance_threshold
         final_mask = score_mask & distance_mask  # Shape: (B, M)
         ### Compute mean actions
-        mean_actions = vmap(self.dirichlet.mean)(actor_distributions)  # Shape: (B, 2)
+        mean_actions = vmap(self.action_distribution.mean)(actor_distributions)  # Shape: (B, 2)
         v_cmd = mean_actions[:, 0]
         w_cmd = mean_actions[:, 1]
         ### Compute next positions
@@ -823,9 +1029,9 @@ class JESSI(BasePolicy):
         key:random.PRNGKey, 
     ) -> tuple:
         # Input is shaped (self.n_stack, self.lidar_num_rays, 7)
-        perception_params = self.perception.init(key, jnp.zeros((2, 2, 7))) # Cardinality invariant for n_stack and lidar_num_rays
+        perception_params = self.perception.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7))) # Cardinality invariant for n_stack and lidar_num_rays
         actor_critic_params = self.actor_critic.init(key, jnp.zeros((self.n_detectable_humans, 20)), jnp.zeros((self.n_sectors, self.embedding_dim)))
-        e2e_params = self.e2e.init(key, jnp.zeros((2, 2, 7)), jnp.zeros((self.n_detectable_humans, 9))) # Cardinality invariant for n_stack and lidar_num_rays
+        e2e_params = self.e2e.init(key, jnp.zeros((self.n_stack, self.lidar_num_rays, 7)), jnp.zeros((self.n_detectable_humans, 9))) # Cardinality invariant for n_stack and lidar_num_rays
         return perception_params, actor_critic_params, e2e_params
 
     @partial(jit, static_argnames=("self"))
@@ -917,7 +1123,7 @@ class JESSI(BasePolicy):
         Prepare the input for the encoder network.
 
         args:
-        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 10): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
 
         output:
@@ -930,6 +1136,7 @@ class JESSI(BasePolicy):
     @partial(jit, static_argnames=("self"))
     def compute_robot_state_input(
         self,
+        robot_obs_stack,
         action_space_params,
         robot_goal, # In cartesian coordinates (gx, gy) IN THE ROBOT FRAME
     ):
@@ -950,12 +1157,13 @@ class JESSI(BasePolicy):
     @partial(jit, static_argnames=("self"))
     def compute_actor_input(
         self,
+        robot_obs_stack,
         hcgs,
         action_space_params,
         robot_goal, # In cartesian coordinates (gx, gy) IN THE ROBOT FRAME
     ):
         # Compute ROBOT state inputs
-        robot_state_input = self.compute_robot_state_input(action_space_params, robot_goal)
+        robot_state_input = self.compute_robot_state_input(robot_obs_stack, action_space_params, robot_goal)
         # HCGs from dict to jnp.array
         hcgs = jnp.concatenate((
             hcgs["pos_distrs"]["means"],
@@ -982,16 +1190,18 @@ class JESSI(BasePolicy):
         Prepare the input for the encoder network.
 
         args:
-        - obs (n_stack, lidar_num_rays + 6): Each stack [rx,ry,r_theta,r_radius,r_a1,r_a2,lidar_measurements].
+        - obs (n_stack, lidar_num_rays + 11): Each stack [rx,ry,r_theta,r_radius,r_vx, r_wz,r_a1,r_a2,lidar_timestamp,odom_timestamp,control_timestamp,lidar_measurements].
         The first stack is the most recent one.
 
         output:
-        - lidar_tokens (n_stack, lidar_num_rays, 7): aligned LiDAR tokens for transformer encoder.
+        - lidar_tokens (n_stack, lidar_num_rays, 7 + max_sector_attendance): aligned LiDAR tokens for transformer encoder.
         7 features per token: [norm_dist, hit, x, y, sin_fixed_theta (theta of beam in the robot frame), cos_fixed_theta (theta of beam in the robot frame), delta_t (time difference from the most recent scan)].
         - last LiDAR point cloud (lidar_num_rays, 2): in robot frame of the most recent observation.
         """
         # Limit readings to self.lidar_max_dist
-        clipped_obs = obs.at[:, 6:].set(jnp.clip(obs[:, 6:], a_min=0.0, a_max=self.lidar_max_dist))
+        raw_ranges = obs[:, 11:]  # (T, L)
+        clipped_obs = obs.at[:, 11:].set(jnp.clip(obs[:, 11:], a_min=0.0, a_max=self.lidar_max_dist))
+        hit_mask = raw_ranges < self.lidar_max_dist
         # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.
         aligned_lidar_scans = self.align_lidar(clipped_obs)[0]  # Shape: (n_stack, lidar_num_rays, 2)
         point_cloud_for_bounding = aligned_lidar_scans[:self.n_stack_for_action_space_bounding,:, :]  # Shape: (n_stack_for_action_space_bounding, lidar_num_rays, 2)
@@ -1002,8 +1212,9 @@ class JESSI(BasePolicy):
         # Compute LiDAR tokens
         @jit
         def compute_beam_token(
-            scan_index:int,
-            point:jnp.ndarray,
+            scan_index,
+            point,
+            is_hit,
         ) -> jnp.ndarray:
             # Extract point coordinates
             x, y = point
@@ -1012,9 +1223,15 @@ class JESSI(BasePolicy):
             current_theta = jnp.arctan2(y, x)
             sin_current_theta = jnp.sin(current_theta)
             cos_current_theta = jnp.cos(current_theta)
-            hit = jnp.where(distance < self.lidar_max_dist, 1.0, 0.0)
+            hit = is_hit.astype(point.dtype)
             # Compute stack index features
-            delta_t = scan_index * self.dt
+            delta_t = obs[0, 10] - obs[scan_index, 8] # Time difference from the control sampling time
+            # Sector attendance
+            beam_dir = jnp.array([sin_current_theta, cos_current_theta])
+            cos_diffs = jnp.dot(self.sectors_latent_vecs, beam_dir)
+            top_cos, top_indices = lax.top_k(cos_diffs, self.max_sector_attendance)
+            attended_sectors = jnp.where(top_cos >= self.sectors_threshold, top_indices, -1)
+            attended_sectors = attended_sectors.astype(jnp.int32)
             return jnp.array([
                 distance/self.max_beam_range,  # Normalize distance
                 hit,
@@ -1023,10 +1240,13 @@ class JESSI(BasePolicy):
                 sin_current_theta,
                 cos_current_theta,
                 delta_t,
+                # Additional input (not processed by the NN, only used to compute the attendance mask in AngularLocalCrossAttention layer)
+                *attended_sectors,
             ])
-        encoder_input = vmap(vmap(compute_beam_token, in_axes=(None, 0)), in_axes=(0, 0))(
+        encoder_input = vmap(vmap(compute_beam_token, in_axes=(None, 0, 0)), in_axes=(0, 0, 0))(
             jnp.arange(self.n_stack),
             aligned_lidar_scans,
+            hit_mask,
         )  # Shape: (n_stack, lidar_num_rays, 7)
         # Optionally select TOP K beams for each stack here to reduce computation
         # First stack is the most recent one!!!
@@ -1041,9 +1261,10 @@ class JESSI(BasePolicy):
         # Compute encoder input and last lidar point cloud (for action bounding)
         perception_input, point_cloud_for_bounding = self.compute_perception_input(obs)
         # Compute bounded action space parameters and add it to the input
-        bounding_parameters = self.bound_action_space(
-            point_cloud_for_bounding,  
-        )
+        if self.ablation_mode == 1: # Ablation: No action space bounding
+            bounding_parameters = jnp.ones((3,), dtype=jnp.float32)
+        else:
+            bounding_parameters = self.bound_action_space(point_cloud_for_bounding)
         # Prepare input for network
         robot_position = obs[0,:2]
         robot_orientation = obs[0,2]
@@ -1053,6 +1274,7 @@ class JESSI(BasePolicy):
         translated_position = robot_goal - robot_position
         rc_robot_goal = R @ translated_position
         robot_state_input = self.compute_robot_state_input(
+            obs[:,:11],
             bounding_parameters,
             rc_robot_goal,
         )
@@ -1074,16 +1296,26 @@ class JESSI(BasePolicy):
         )
         # Compute action
         key, subkey = random.split(key)
-        perception_output, actor_input, sampled_action, actor_distr, concentration, state_value, mask = self.e2e.apply(
+        perception_output, actor_input, sampled_action, actor_distr, concentration, state_value, spat_attn, temp_attn, human_attn = self.e2e.apply(
             e2e_network_params, 
             None, 
             perception_input,
             robot_state_input,
             random_key=subkey
         )
-        action = lax.cond(sample, lambda _: sampled_action, lambda _: self.dirichlet.mean(actor_distr), None)
-        return action, key, perception_input, robot_state_input, actor_input, sampled_action, perception_output, actor_distr, state_value, mask
-    
+        if self.ablation_mode == 6:
+            action = lax.cond(
+                sample, 
+                lambda _: self.action_distribution.to_env_action(actor_distr, sampled_action), 
+                lambda _: self.action_distribution.mean(actor_distr), 
+                None
+            )
+        else:
+            action = lax.cond(sample, lambda _: sampled_action, lambda _: self.action_distribution.mean(actor_distr), None)
+        if self.ablation_mode == 4:
+            action = self.action_distribution.bound_action_safety(action, actor_distr["vertices"])
+        return action, key, perception_input, robot_state_input, actor_input, sampled_action, perception_output, actor_distr, state_value, spat_attn, temp_attn, human_attn
+
     @partial(jit, static_argnames=("self"))
     def batch_act(
         self,
@@ -1115,14 +1347,14 @@ class JESSI(BasePolicy):
         ) -> jnp.ndarray:
         # B: batch size, K: number of HCGs, M: max number of ground truth humans
         # Compute the prediction
-        human_distrs, _, _= self.perception.apply(current_params, None, inputs, key=key)
+        human_distrs, _, _, _ = self.perception.apply(current_params, None, inputs, key=key)
         return self._perception_loss(
             human_distrs,
             targets,
             lambda_pos_reg,
             lambda_vel_reg,
             lambda_cls,
-        )
+        )[0]
 
     @partial(jit, static_argnames=("self","actor_critic_optimizer"))
     def update_il(
@@ -1154,14 +1386,14 @@ class JESSI(BasePolicy):
                     returnn:jnp.ndarray,
                     ) -> jnp.ndarray:
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                    _, predicted_distr, _, predicted_state_value = self.actor_critic.apply(
+                    _, predicted_distr, _, predicted_state_value, _ = self.actor_critic.apply(
                         current_actor_params, 
                         None, 
                         input['actor_input'], 
                         input['scan_embedding']
                     )                    
                     ## Compute actor loss (MSE between expert action and predicted mean action)
-                    predicted_action = self.dirichlet.mean(predicted_distr)
+                    predicted_action = self.action_distribution.mean(predicted_distr)
                     actor_loss = jnp.mean(jnp.square(predicted_action - expert_action))
                     # Compute critic loss
                     critic_loss = jnp.square(predicted_state_value - returnn)
@@ -1253,16 +1485,18 @@ class JESSI(BasePolicy):
         - targets: dict containing ground truth masks, positions and velocities
 
         returns:
-        - metrics: dict containing for each threshold pair the:
-            - true positives
-            - false positives
-            - false negatives
-            - precision
-            - recall
-            - average displacement error (ADE) for positions (RMSE over true positives)
-            - average velocity error (AVE) for velocities (RMSE over true positives)
-            - Mahlanobis distance for positions (average over true positives)
-            - Mahlanobis distance for velocities (average over true positives)
+        - metrics: 
+            - Dict containing for each threshold pair the:
+                - true positives
+                - false positives
+                - false negatives
+                - precision
+                - recall
+                - average displacement error (ADE) for positions (RMSE over true positives)
+                - average velocity error (AVE) for velocities (RMSE over true positives)
+                - Mahlanobis distance for positions (average over true positives)
+                - Mahlanobis distance for velocities (average over true positives)
+            - Perception loss
         """
         ## EXTRACT DATA 
         # Predictions
@@ -1370,6 +1604,8 @@ class JESSI(BasePolicy):
         ave = compute_mean_metric(e_vel_error, is_tp)
         mean_md_pos = compute_mean_metric(e_md_pos, is_tp)
         mean_md_vel = compute_mean_metric(e_md_vel, is_tp)
+        # Perception loss 
+        perception_loss, individual_losses = self._perception_loss(predicted_distrs, targets)
         # Format output
         metrics = {
             "true_positives": tp_count,
@@ -1385,6 +1621,11 @@ class JESSI(BasePolicy):
             "total_gt_objects": total_gt,
             "distance_thresholds": distance_thresholds,
             "score_thresholds": score_thresholds,
+            # Overal perception loss
+            "perception_loss": perception_loss,
+            "pos_reg_loss": individual_losses["pos_reg_loss"], 
+            "vel_reg_loss": individual_losses["vel_reg_loss"], 
+            "cls_loss": individual_losses["cls_loss"],
         }
         return metrics
 
@@ -1413,7 +1654,7 @@ class JESSI(BasePolicy):
             def _while_body(while_val:tuple):
                 # Retrieve data from the tuple
                 state, obs, info, outcome, policy_key, env_key, steps, all_actions, all_states = while_val
-                action, policy_key, _, _, _, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
+                action, policy_key, _, _, _, _, _, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
                 state, obs, info, _, outcome, (_, env_key) = env.step(state,info,action,test=True,env_key=env_key)    
                 # Save data
                 all_actions = all_actions.at[steps].set(action)
@@ -1505,7 +1746,7 @@ class JESSI(BasePolicy):
             # Retrieve data from the tuple
             state, obs, info, outcome, policy_key, reset_key, env_key, steps, perception_distrs, gt_targets = for_val
             # Compute action and perception out
-            action, policy_key, _, _, _, _, perception_out, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
+            action, policy_key, _, _, _, _, perception_out, _, _, _, _, _ = self.act(policy_key, obs, info, e2e_network_params, sample=False)
             # Save perception outputs and ground truth
             rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.robot_centric_transform(
                 state[:-1,:2], 
@@ -1566,9 +1807,13 @@ class JESSI(BasePolicy):
         humans_velocities=None, # vx, vy (in global frame)
         humans_radii=None,
         humans_visibility_mask=None,
+        humans_leg_states=None,
+        humans_leg_radii=None,
         static_obstacles=None,
         virtual_points=None,
-        p_visualization_threshold_hcgs:float=0.05,
+        spatial_attentions=None,
+        temporal_attentions=None,
+        human_attentions=None,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -1580,7 +1825,7 @@ class JESSI(BasePolicy):
             len(robot_actions) == \
             len(robot_goals) == \
             len(observations) == \
-            len(actor_distrs['alphas']) == \
+            len(actor_distrs['vertices']) == \
             len(humans_distrs['pos_distrs']['means']), "All primary inputs must have the same length"
         # Set matplotlib fonts
         rc('font', weight='regular', size=20)
@@ -1588,14 +1833,18 @@ class JESSI(BasePolicy):
         rcParams['ps.fonttype'] = 42
         # Compute informations for visualization
         n_steps = len(robot_poses)
-        angs = jnp.linspace(0, 2*jnp.pi, 20, endpoint=False)
-        dists = jnp.linspace(0, 1, 10)
-        gauss_samples = jnp.array(jnp.meshgrid(angs, dists)).T.reshape(-1, 2)
-        gauss_samples = gauss_samples.at[:].set(jnp.stack((gauss_samples[:,1] * jnp.cos(gauss_samples[:,0]), gauss_samples[:,1] * jnp.sin(gauss_samples[:,0])), axis=-1))
         from socialjym.policies.cadrl import CADRL
         from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
         dummy_cadrl = CADRL(DummyReward(kinematics="unicycle", v_max=self.v_max),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
         test_action_samples = dummy_cadrl._build_action_space(unicycle_triangle_samples=35)
+        if spatial_attentions is not None:
+            cmap_rays = plt.get_cmap('seismic')
+            norm_rays = mcolors.Normalize(vmin=jnp.min(spatial_attentions), vmax=jnp.max(spatial_attentions))
+        # Compute static humans (columns in CCSO)
+        if humans_poses is not None:
+            static_humans = jnp.zeros((humans_poses.shape[1]), dtype=jnp.bool)
+            for h in range(len(humans_poses[0])):
+                static_humans = static_humans.at[h].set(jnp.all(humans_poses[0,h,:2] == humans_poses[:,h,:2]))
         # Animate trajectory
         fig = plt.figure(figsize=(21.43,13.57))
         fig.subplots_adjust(left=0.07, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
@@ -1625,29 +1874,40 @@ class JESSI(BasePolicy):
                 if humans_poses is not None:
                     # Plot humans
                     for h in range(len(humans_poses[frame])):
-                        color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
-                        alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
-                        head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
-                        ax.add_patch(head)
-                        circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-                        ax.add_patch(circle)
-                    if humans_velocities is not None:
-                        # Plot human velocities
-                        for h in range(len(humans_poses[frame])):
+                        if static_humans[h]:
+                            circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='black', alpha=1., fill=True, zorder=1)
+                            ax.add_patch(circle)
+                        else:
                             color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
                             alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
-                            ax.arrow(
-                                humans_poses[frame][h,0],
-                                humans_poses[frame][h,1],
-                                humans_velocities[frame][h,0],
-                                humans_velocities[frame][h,1],
-                                head_width=0.15,
-                                head_length=0.15,
-                                fc=color,
-                                ec=color,
-                                alpha=alpha,
-                                zorder=30,
-                            )
+                            if humans_leg_states is not None and humans_leg_radii is not None:
+                                l_leg = plt.Circle((humans_leg_states[frame][h,0], humans_leg_states[frame][h,1]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                                ax.add_patch(l_leg)
+                                r_leg = plt.Circle((humans_leg_states[frame][h,3], humans_leg_states[frame][h,4]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                                ax.add_patch(r_leg)
+                                alpha = 0.3
+                            head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                            ax.add_patch(head)
+                            circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                            ax.add_patch(circle)
+                    if humans_velocities is not None:
+                        # Plot human velocities
+                            for h in range(len(humans_poses[frame])):
+                                if not static_humans[h]:
+                                    color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
+                                    alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
+                                    ax.arrow(
+                                        humans_poses[frame][h,0],
+                                        humans_poses[frame][h,1],
+                                        humans_velocities[frame][h,0],
+                                        humans_velocities[frame][h,1],
+                                        head_width=0.15,
+                                        head_length=0.15,
+                                        fc=color,
+                                        ec=color,
+                                        alpha=alpha,
+                                        zorder=30,
+                                    )
                 # Plot robot
                 robot_position = robot_poses[frame,:2]
                 head = plt.Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
@@ -1673,14 +1933,40 @@ class JESSI(BasePolicy):
             c, s = jnp.cos(robot_poses[frame,2]), jnp.sin(robot_poses[frame,2])
             rot = jnp.array([[c, -s], [s, c]])
             # AX 0,0: Simulation with LiDAR ranges
-            lidar_scan = observations[frame,0,6:]
+            lidar_scan = observations[frame,0,11:]
             for ray in range(len(lidar_scan)):
+                if spatial_attentions is not None:
+                    attention = float(spatial_attentions[frame, ray])
+                    rgba_color = cmap_rays(norm_rays(attention))
+                else:
+                    rgba_color = 'black'
                 axs[0].plot(
                     [robot_poses[frame,0], robot_poses[frame,0] + lidar_scan[ray] * jnp.cos(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
                     [robot_poses[frame,1], robot_poses[frame,1] + lidar_scan[ray] * jnp.sin(robot_poses[frame,2] + self.lidar_angles_robot_frame[ray])],
-                    color="black", 
+                    color=rgba_color, 
                     linewidth=0.5, 
                     zorder=0
+                )
+            if temporal_attentions is not None:
+                scores = temporal_attentions[frame]
+                text = []
+                for i, score in enumerate(scores):
+                    label = "t" if i == 0 else f"t-{i}"
+                    text.append(f"{label} = {float(score):.2f}")
+                final_text = "\n".join(text)
+                axs[0].text(
+                    0.03, 0.97,             
+                    final_text, 
+                    transform=axs[0].transAxes, 
+                    fontsize=8,             
+                    verticalalignment='top', 
+                    zorder=100,              
+                    bbox=dict(               
+                        boxstyle='round,pad=0.4', 
+                        facecolor='white', 
+                        alpha=0.8, 
+                        edgecolor='gray'
+                    )
                 )
             axs[0].set_title("Trajectory")
             # AX 0,1: Simulation with LiDAR point cloud stack
@@ -1717,23 +2003,96 @@ class JESSI(BasePolicy):
             for h in range(self.n_detectable_humans):
                 human_pos_distr = tree_map(lambda x: x[h], pos_distrs)
                 human_vel_distr = tree_map(lambda x: x[h], vel_distrs)
-                pos = rot @ human_pos_distr["means"] + robot_poses[frame,:2]
-                vel = rot @ human_vel_distr["means"] + pos
+                human_pos_distr = self.bivariate_gaussian.roto_translate(
+                    human_pos_distr, 
+                    robot_poses[frame]
+                )
+                human_vel_distr = self.bivariate_gaussian.roto_translate(
+                    human_vel_distr, 
+                    jnp.array([0, 0, robot_poses[frame,2]]) # Velocities are not affected by translation, only rotation
+                )
+                pos = human_pos_distr["means"]
+                vel = human_vel_distr["means"] + pos
                 if probs[h] > 0.5:
                     # Position HCG
-                    test_p = self.bivariate_gaussian.batch_p(human_pos_distr, human_pos_distr["means"] + gauss_samples)
-                    points_high_p = gauss_samples[test_p > p_visualization_threshold_hcgs]
-                    corresponding_colors = test_p[test_p > p_visualization_threshold_hcgs]
-                    rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + pos
-                    axs[2].scatter(pos[0], pos[1], c='red', s=10, marker='x', zorder=100)
-                    axs[2].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+                    cov_matrix = self.bivariate_gaussian.covariance(human_pos_distr)
+                    eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+                    angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+                    width, height = 2 * jnp.sqrt(eigenvalues)
+                    ellipse = Ellipse(
+                        xy=pos,
+                        width=width,
+                        height=height,
+                        angle=jnp.degrees(angle),
+                        edgecolor='blue',
+                        facecolor='lightblue',
+                        alpha=0.8,
+                        zorder=15,
+                    )
+                    axs[2].add_patch(ellipse)
+                    axs[2].scatter(pos[0], pos[1], c='red', s=30, marker='x', zorder=100)
+                    text_dir = jnp.arctan2(-(vel[1] - pos[1]), -(vel[0] - pos[0]))
+                    axs[2].text(
+                        pos[0] + jnp.cos(text_dir), 
+                        pos[1] - jnp.sin(text_dir), 
+                        f"s\n{probs[h]:.2f}", 
+                        fontsize=8, 
+                        color="red", 
+                        fontweight="bold", 
+                        zorder=101,
+                        horizontalalignment='center',
+                        verticalalignment='center',
+                        bbox=dict(
+                            boxstyle='round,pad=0.2', 
+                            facecolor='white', 
+                            alpha=0.5, 
+                        )
+                    )
                     # Velocity HCG
-                    test_p = self.bivariate_gaussian.batch_p(human_vel_distr, human_vel_distr["means"] + gauss_samples)
-                    points_high_p = gauss_samples[test_p > p_visualization_threshold_hcgs]
-                    corresponding_colors = test_p[test_p > p_visualization_threshold_hcgs]
-                    rotated_points_high_p = jnp.einsum('ij,jk->ik', rot, points_high_p.T).T + vel
-                    axs[3].scatter(vel[0], vel[1], c='red', s=10, marker='x', zorder=100)
-                    axs[3].scatter(rotated_points_high_p[:, 0], rotated_points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+                    cov_matrix = self.bivariate_gaussian.covariance(human_vel_distr)
+                    eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+                    angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+                    width, height = 2 * jnp.sqrt(eigenvalues)
+                    ellipse = Ellipse(
+                        xy=vel,
+                        width=width,
+                        height=height,
+                        angle=jnp.degrees(angle),
+                        edgecolor='blue',
+                        facecolor='lightblue',
+                        alpha=0.8,
+                        zorder=15,
+                    )
+                    axs[3].add_patch(ellipse)
+                    axs[3].arrow(
+                        pos[0],
+                        pos[1],
+                        vel[0] - pos[0],
+                        vel[1] - pos[1],
+                        head_width=0.2,
+                        head_length=0.2,
+                        fc='red',
+                        ec='red',
+                        zorder=100,
+                    )
+                    if human_attentions is not None:
+                        attention = float(human_attentions[frame, h])
+                        axs[3].text(
+                            pos[0] + jnp.cos(text_dir), 
+                            pos[1] - jnp.sin(text_dir), 
+                            f"a\n{attention:.2f}", 
+                            fontsize=8, 
+                            color="black", 
+                            fontweight="bold", 
+                            zorder=101,
+                            horizontalalignment='center',
+                            verticalalignment='center',
+                            bbox=dict(
+                                boxstyle='round,pad=0.2', 
+                                facecolor='white', 
+                                alpha=0.5, 
+                            )
+                           )
                 else:
                     axs[2].scatter(pos[0], pos[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
                     axs[3].scatter(vel[0], vel[1], c='grey', s=10, marker='x', zorder=99, alpha=0.5)
@@ -1802,8 +2161,8 @@ class JESSI(BasePolicy):
                 ),
             )
             actor_distr = tree_map(lambda x: x[frame], actor_distrs)
-            samples = test_action_samples[self.dirichlet.batch_is_in_support(actor_distr, test_action_samples)]
-            test_action_p = self.dirichlet.batch_p(actor_distr, samples)
+            samples = test_action_samples[self.action_distribution.batch_is_in_support(actor_distr, test_action_samples)]
+            test_action_p = self.action_distribution.batch_p(actor_distr, samples)
             points_high_p = samples[test_action_p > p_visualization_threshold_dir]
             corresponding_colors = test_action_p[test_action_p > p_visualization_threshold_dir]
             axs[4].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
@@ -1826,6 +2185,7 @@ class JESSI(BasePolicy):
         self,
         lasernav_env:LaserNav,
         states=None,
+        humans_leg_states=None,
         observations=None,
         actions=None,
         actor_distrs=None,
@@ -1833,8 +2193,11 @@ class JESSI(BasePolicy):
         goals=None,
         static_obstacles=None,
         humans_radii=None,
+        humans_leg_radii=None,
         virtual_points=None,
-        p_visualization_threshold_gmm:float=0.05,
+        spatial_attentions=None,
+        temporal_attentions=None,
+        human_attentions=None,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -1891,9 +2254,13 @@ class JESSI(BasePolicy):
             humans_velocities,
             humans_radii,
             humans_visibility_mask,
+            humans_leg_states,
+            humans_leg_radii,
             static_obstacles,
             virtual_points,
-            p_visualization_threshold_gmm,
+            spatial_attentions,
+            temporal_attentions,
+            human_attentions,
             p_visualization_threshold_dir,
             x_lims,
             y_lims,

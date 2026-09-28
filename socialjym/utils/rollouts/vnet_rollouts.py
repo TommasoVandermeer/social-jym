@@ -82,7 +82,7 @@ def vnet_rl_rollout(
                                 lambda _: 1.0,
                                 (epsilon_start, epsilon_end, i - exploration_episodes, decay_rate))
                         action, policy_key, vnet_input, _ = policy.act(policy_key, obs, info, model_params, epsilon)
-                        state, obs, info, reward, outcome, _ = env.step(state, info, action)
+                        state, obs, info, (reward, _), outcome, _ = env.step(state, info, action)
                         # Save data
                         vnet_inputs = vnet_inputs.at[steps].set(vnet_input)
                         rewards = rewards.at[steps].set(reward)
@@ -277,7 +277,7 @@ def vnet_il_rollout(
                         state, obs, info, outcome, vnet_inputs, rewards, steps = val
                         # Step
                         vnet_input = policy.batch_compute_vnet_input(obs[-1], obs[0:-1], info)
-                        state, obs, info, reward, outcome = env.imitation_learning_step(state, info)
+                        state, obs, info, (reward, _), outcome = env.imitation_learning_step(state, info)
                         # Save data
                         vnet_inputs = vnet_inputs.at[steps].set(vnet_input)
                         rewards = rewards.at[steps].set(reward)

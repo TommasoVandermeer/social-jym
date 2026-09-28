@@ -3,11 +3,32 @@ A novel reinforcement learning framework designed to bring the benefits of multi
 
 ![jessi architecture](.media/jessi.png)
 
+![jessi video](.media/jessi.gif)
+
 ## Cite this paper
+```
+@inproceedings{van2026end,
+  title={End-to-End Safe Social Navigation via Multi-Task Reinforcement Learning and Probabilistic Perception},
+  author={Van Der Meer, Tommaso and Garulli, Andrea and Giannitrapani, Antonio and Quartullo, Renato and Vaglio, Alberto and Alahi, Alexandre},
+  booktitle={2026 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
+  year={2026},
+  organization={IEEE}
+}
+```
 
-## Simulation videos
+## Trained policies (open weights)
+You can download the trained policies at this [link](https://drive.google.com/drive/folders/1tgGlOlIsvVTaoK4Ib8Ni5J7KUtjIqGEw?usp=sharing).
 
-## Real-world experiments videos
+Load the weights as
+```
+import os
+import pickle
+
+with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask.pkl'), 'rb') as f:
+    network_params, _, _ = pickle.load(f)
+```
+
+Checkout ```examples/test_jessi.py``` for usage.
 
 ## Installation (Python 3.10 or Python 3.13)
 
@@ -31,6 +52,3 @@ Instead, if you want to run JAX on your GPU (with CUDA12) run:
 ```
 pip install -e social-jym[cuda12] social-jym/JHSFM social-jym/JSFM social-jym/JORCA
 ```
-
-
-## References

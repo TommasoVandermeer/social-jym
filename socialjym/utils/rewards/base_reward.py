@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
+import jax.numpy as jnp
+from typing import Union
 
 class BaseReward(ABC):
-    def __init__(self, gamma:float) -> None:
+    def __init__(self, gamma:Union[float, list, tuple, jnp.ndarray] = 0.9,) -> None:
         self.gamma = gamma
 
     # --- Private methods ---

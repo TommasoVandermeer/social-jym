@@ -1,0 +1,1457 @@
+import jax.numpy as jnp
+from jax import vmap, random, lax, tree_map
+import matplotlib.pyplot as plt
+import os
+from scipy.spatial import ConvexHull
+from matplotlib import rc, rcParams
+rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman"],
+    "font.weight": "regular",
+    "font.size": 23,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})
+from matplotlib.patches import Ellipse
+import pickle
+
+from socialjym.envs.lasernav import LaserNav
+from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward
+from socialjym.policies.jessi import JESSI
+from socialjym.envs.base_env import SCENARIOS, HUMAN_POLICIES
+from jhsfm.hsfm import get_linear_velocity
+
+### PARAMETERS
+L = 0.7 # Distance between the wheels of the robot
+v_max = 1. # Maximum linear velocity of the robot
+dt = 0.75
+radius = 0.3
+n_actions_per_dim = 50 # Number of actions per dimension to plot the action space boundaries
+n_points_per_per_circle = 50 # Number of points to plot the circles around the envelope points
+obstacles = jnp.array([
+    [[-0.2, 0.4],[-0.2, 0.37]],
+    [[-0.2, 0.37],[0.67, 0.37]],
+    [[0.67, 0.37],[0.67, -0.4]],
+    [[0.67, -0.4],[0.7, -0.4]],
+    [[0.7, -0.4],[0.7, 0.4]],
+    [[0.7, 0.4],[-0.2, 0.4]],
+])
+lidar_num_rays = 20
+lidar_angular_range = jnp.pi
+
+### UTILS
+w_max = 2*v_max/L # Maximum angular velocity of the robot, given the maximum linear velocity and the distance between the wheels
+policy = JESSI(
+    radius, 
+    v_max, 
+    dt, 
+    L,
+    5,
+    lidar_angular_range,
+    10.,
+    lidar_num_rays,
+)
+env_params = {
+    'n_stack': 5,
+    'lidar_num_rays': lidar_num_rays,
+    'lidar_angular_range': lidar_angular_range,
+    'lidar_max_dist': 10.,
+    'n_humans': 1, #5,
+    'n_obstacles': 0, #5,
+    'robot_radius': 0.3,
+    'robot_dt': dt,
+    'humans_dt': 0.01,
+    'robot_visible': True,
+    'scenario': 'hybrid_scenario',
+    'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
+    'kinematics': 'unicycle',
+}
+env = LaserNav(**env_params)
+
+### FIG1: action_space.pdf
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space.pdf')):
+    figure, ax = plt.subplots(1,1, figsize=(10, 3))
+    figure.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.25)
+    ax.add_patch(
+        plt.Polygon(
+            [   
+                [w_max,0],
+                [-w_max,0],
+                [0.,v_max],
+            ],
+            closed=True,
+            fill=True,
+            edgecolor='green',
+            facecolor='lightgreen',
+            linewidth=2,
+            zorder=2,
+        ),
+    )
+    ax.set_xticks([w_max, 0., -w_max])
+    ax.set_xticklabels([r"$\overline{\omega}$", "0", r"$-\overline{\omega}$"])
+    ax.set_yticks([0.,v_max])
+    ax.set_yticklabels(["0", r"$\overline{v}$"])
+    ax.set_ylim(-0.1, v_max + 0.1)
+    ax.set_xlim(-w_max - 0.3, w_max + 0.3)
+    ax.set_ylabel("$v$ (m/s)", labelpad=-15)
+    ax.set_xlabel("$\omega$ (rad/s)", labelpad=-5)
+    ax.plot([-10, 10], [0, 0], color='black', linewidth=3, zorder=5)
+    ax.text(0, 0.1, "$v \geq 0$", zorder=5, verticalalignment='bottom', horizontalalignment='center')
+    ax.plot([-(w_max)*2, w_max], [-v_max, 2], color='black', linewidth=3, zorder=5)
+    # ax.text(-2.5 , L, r"$\omega \leq \frac{\overline{\omega}}{\overline{v}}v - \overline{\omega}$", zorder=5, verticalalignment='center', horizontalalignment='left')
+    ax.text(-2.5 , L, r"$\omega \geq \frac{2(v-\overline{v})}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
+    ax.plot([(w_max)*2, -w_max], [-v_max, 2], color='black', linewidth=3, zorder=5)
+    # ax.text(2.5 , L, r"$\omega \leq \overline{\omega} - \frac{\overline{\omega}}{\overline{v}}v$", zorder=5, verticalalignment='center', horizontalalignment='right')
+    ax.text(2.5 , L, r"$\omega \leq \frac{2(\overline{v}-v)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='right')
+    ax.grid()
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space.pdf'), format='pdf')
+    plt.close()
+
+### FIG2: action_space_2.pdf
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_2.pdf')):
+    temp_wmax = 1.
+    temp_vmax  = 5.71
+    figure, ax = plt.subplots(1,1, figsize=(10, 3))
+    figure.subplots_adjust(left=0.1, right=0.98, top=0.95, bottom=0.18)
+    ax.add_patch(
+        plt.Polygon(
+            [   
+                [0,temp_wmax],
+                [0,-temp_wmax],
+                [temp_vmax,0],
+            ],
+            closed=True,
+            fill=True,
+            edgecolor='black',
+            facecolor='lightgreen',
+            linewidth=3,
+            zorder=2,
+        ),
+    )
+    ax.set_yticks([temp_wmax, 0., -temp_wmax])
+    ax.set_yticklabels([r"$\frac{2 \bar{\eta} \rho}{L}$", "0", r"$-\frac{2 \bar{\eta} \rho}{L}$"])
+    ax.set_xticks([0.,temp_vmax])
+    ax.set_xticklabels(["0", r"$\bar{\eta} \rho$"])
+    ax.set_xlim(-0.1, temp_vmax + 0.1)
+    ax.set_ylim(-temp_wmax - 0.1, temp_wmax + 0.1)
+    ax.set_xlabel("$v$ (m/s)", labelpad=-15)
+    ax.set_ylabel("$\omega$ (rad/s)", labelpad=-20)
+    ax.text(temp_vmax/2, -temp_wmax/2-0.2, r"$\omega \geq \frac{2(v-\bar{\eta} \rho)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
+    ax.text(temp_vmax/2, +temp_wmax/2+0.2, r"$\omega \leq \frac{2(\bar{\eta} \rho-v)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
+    ax.grid()
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_2.pdf'), format='pdf')
+plt.close()
+
+### FIG3: action_space_bounding_1.pdf & action_space_bounding_2.pdf & action_space_bounding_3.pdf & action_space_bounding_4.pdf
+if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_1.pdf'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_2.pdf'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_3.pdf'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_4.pdf'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_summary.pdf'))) or \
+   (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bounding_proof.pdf'))):
+    vs = jnp.concatenate([
+        jnp.zeros(n_actions_per_dim),
+        jnp.linspace(0, v_max, n_actions_per_dim),
+        jnp.linspace(0, v_max, n_actions_per_dim),
+    ])
+    ws = jnp.concatenate([
+        jnp.linspace(-w_max, w_max, n_actions_per_dim),
+        jnp.linspace(-w_max, 0, n_actions_per_dim),
+        jnp.linspace(w_max, 0, n_actions_per_dim),
+    ])
+    actions = jnp.stack((vs, ws), axis=-1)
+    displacements = jnp.array([[
+        a[0]/a[1] * jnp.sin(a[1]*dt) if a[1] != 0 else a[0]*dt,
+        a[0]/a[1] * (1 - jnp.cos(a[1]*dt)) if a[1] != 0 else 0,
+    ] for a in actions])
+    envelope_points = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    hull = ConvexHull(envelope_points)
+    angles = jnp.linspace(-lidar_angular_range/2, lidar_angular_range/2, lidar_num_rays)
+    directions = jnp.array([
+        jnp.array([jnp.cos(angle), jnp.sin(angle)]) for angle in angles
+    ])
+    dist, _ = vmap(env._obstacle_ray_intersect, in_axes=(0, None, None))(
+        directions,
+        obstacles,
+        jnp.array([0., 0.]),
+    )
+    collision_points = jnp.array([dist[i] * directions[i] for i in range(lidar_num_rays)])
+    figure, ax = plt.subplots(1,1,figsize=(11, 8))
+    figure.subplots_adjust(left=0.08, right=1, top=0.99, bottom=0.10, wspace=0.1)
+    ax.set_aspect('equal')
+    ax.fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightcoral', edgecolor='red', zorder=2)
+    ax.fill(obstacles[:,:,0],obstacles[:,:,1], facecolor='black', edgecolor='black', zorder=7)
+    ax.add_artist(plt.Circle((0, 0), radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
+    for i in range(lidar_num_rays):
+        ax.plot([0, collision_points[i, 0]], [0, collision_points[i, 1]], color='blue', linewidth=1, zorder=5)
+    ax.scatter(collision_points[:,0], collision_points[:,1], color='blue', s=150, zorder=8, marker='x')
+    ax.set_xlim(-radius - 0.05, v_max * dt + radius + 0.05)
+    ax.set_ylim(-0.55, 0.55)
+    ax.set_xlabel("$\Delta x$ (m)")
+    ax.set_ylabel("$\Delta y$ (m)", labelpad=-5)
+    ax.grid()
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_1.pdf'), format='pdf')
+    plt.close()
+    figure, ax = plt.subplots(1,1,figsize=(4, 8))
+    figure.subplots_adjust(left=0.18, right=0.97, top=0.98, bottom=0.10, wspace=0.1)
+    ax.add_patch(
+        plt.Polygon(
+            [   
+                [0,w_max],
+                [0,-w_max],
+                [v_max,0],
+            ],
+            closed=True,
+            fill=True,
+            edgecolor='red',
+            facecolor='lightcoral',
+            linewidth=2,
+            zorder=2,
+            label='Feasible action space'
+        ),
+    )
+    ax.set_xlim(-0.1, v_max + 0.1)
+    ax.set_ylim(-w_max - 0.1, w_max + 0.1)
+    ax.set_xlabel("$v$ (m/s)")
+    ax.set_ylabel("$\omega$ (rad/s)", labelpad=-20)
+    ax.grid()
+    ax.set_xticks(jnp.arange(0, v_max+0.5, 0.5))
+    ax.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"])
+    ax.set_yticks(jnp.arange(-2,3,1).tolist() + [w_max,-w_max])
+    ax.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_2.pdf'), format='pdf')
+    plt.close()
+    alpha, beta, gamma = policy.bound_action_space(collision_points)
+    vs = jnp.concatenate([
+        jnp.zeros(n_actions_per_dim),
+        jnp.linspace(0, alpha * v_max, n_actions_per_dim),
+        jnp.linspace(0, alpha * v_max, n_actions_per_dim),
+    ])
+    ws = jnp.concatenate([
+        jnp.linspace(-gamma * w_max, beta * w_max, n_actions_per_dim),
+        jnp.linspace(-gamma * w_max, 0, n_actions_per_dim),
+        jnp.linspace(beta * w_max, 0, n_actions_per_dim),
+    ])
+    actions = jnp.stack((vs, ws), axis=-1)
+    displacements = jnp.array([[
+        a[0]/a[1] * jnp.sin(a[1]*dt) if a[1] != 0 else a[0]*dt,
+        a[0]/a[1] * (1 - jnp.cos(a[1]*dt)) if a[1] != 0 else 0,
+    ] for a in actions])
+    envelope_points = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    hull = ConvexHull(envelope_points)
+    figure, ax = plt.subplots(1,1,figsize=(11, 8))
+    figure.subplots_adjust(left=0.10, right=1, top=0.99, bottom=0.10, wspace=0.1)
+    ax.set_aspect('equal')
+    ax.fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightgreen', edgecolor='green', zorder=2)
+    ax.fill(obstacles[:,:,0],obstacles[:,:,1], facecolor='black', edgecolor='black', zorder=7)
+    ax.add_artist(plt.Circle((0, 0), radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
+    for i in range(lidar_num_rays):
+        ax.plot([0, collision_points[i, 0]], [0, collision_points[i, 1]], color='blue', linewidth=1, zorder=5)
+    ax.scatter(collision_points[:,0], collision_points[:,1], color='blue', s=150, zorder=8, marker='x')
+    ax.set_xlim(-radius - 0.05, v_max * dt + radius + 0.05)
+    ax.set_ylim(-0.55, 0.55)
+    ax.set_xlabel("$\Delta x$ (m)")
+    ax.set_ylabel("$\Delta y$ (m)", labelpad=-5)
+    ax.grid()
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_3.pdf'), format='pdf')
+    plt.close()
+    figure, ax = plt.subplots(1,1,figsize=(4, 8))
+    figure.subplots_adjust(left=0.18, right=0.97, top=0.98, bottom=0.10, wspace=0.1)
+    ax.add_patch(
+        plt.Polygon(
+            [   
+                [0,w_max],
+                [0,-w_max],
+                [v_max,0],
+            ],
+            closed=True,
+            fill=True,
+            edgecolor='red',
+            facecolor='lightcoral',
+            linewidth=2,
+            zorder=2,
+            label='Original set'
+        ),
+    )
+    ax.add_patch(
+        plt.Polygon(
+            [   
+                [0,beta*w_max],
+                [0,-gamma*w_max],
+                [alpha*v_max,0],
+            ],
+            closed=True,
+            fill=True,
+            edgecolor='green',
+            facecolor='lightgreen',
+            linewidth=2,
+            zorder=2,
+            label='Feasible set'
+        ),
+    )
+    ax.set_xlim(-0.1, v_max + 0.1)
+    ax.set_ylim(-w_max - 0.1, w_max + 0.1)
+    ax.set_xlabel("$v$ (m/s)")
+    ax.set_ylabel("$\omega$ (rad/s)", labelpad=-20)
+    ax.grid()
+    ax.set_xticks(jnp.arange(0, v_max+0.5, 0.5))
+    ax.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"])
+    ax.set_yticks(jnp.arange(-2,3,1).tolist() + [w_max,-w_max])
+    ax.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+    ax.legend(fontsize=16.5, loc='upper right')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_4.pdf'), format='pdf')
+    plt.close()
+
+### FIG4: action_space_bounding_summary.eps
+    figure = plt.figure(figsize=(11.93, 8))
+    figure.subplots_adjust(left=0.07, right=0.98, top=0.98, bottom=0.1)
+    gs = figure.add_gridspec(2, 3, width_ratios=[1, 1, 0.55], wspace=0., hspace=0.)
+    ax00 = figure.add_subplot(gs[0, 0])
+    ax01 = figure.add_subplot(gs[0, 1])
+    ax10 = figure.add_subplot(gs[1, 0])
+    ax11 = figure.add_subplot(gs[1, 1])
+    ax_right = figure.add_subplot(gs[:, 2])
+    pos = ax_right.get_position()
+    ax_right.set_position([pos.x0 + 0.07, pos.y0, pos.width - 0.07, pos.height])
+    for ax in (ax00, ax01, ax10, ax11):
+        ax.tick_params(axis="both", which="both", labelsize=18)
+        ax.set_aspect('equal')
+        ax.set_xlim(-radius - 0.05, v_max * dt + radius + 0.05)
+        ax.set_ylim(-0.55, 0.65)
+        ax.grid()
+        ax.add_artist(plt.Circle((0, 0), radius, color='black', fill=False, zorder=100, linewidth=2, linestyle='--'))
+        ax.scatter(collision_points[:,0], collision_points[:,1], color='blue', s=150, zorder=101, marker='x')
+    for ax in (ax00, ax10):
+        ax.set_ylabel("$\Delta y$ (m)", labelpad=-5, fontsize=18)
+    for ax in (ax10, ax11):
+        ax.set_xlabel("$\Delta x$ (m)", fontsize=18)
+    for ax in (ax00, ax01):
+        ax.set_xticklabels([])
+    for ax in (ax01, ax11):
+        ax.set_yticklabels([])
+    ax_right.set_xlim(-0.1, v_max + 0.1)
+    ax_right.set_ylim(-w_max - 0.1, w_max + 0.1)
+    ax_right.set_xlabel("$v$ (m/s)", fontsize=18)
+    ax_right.set_ylabel("$\omega$ (rad/s)", labelpad=-5, fontsize=18)
+    ax_right.grid()
+    ax_right.set_xticks(jnp.arange(0, v_max+0.5, 0.5))
+    ax_right.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"], fontsize=18)
+    ax_right.set_yticks(jnp.arange(-2,3,1).tolist() + [w_max,-w_max])
+    ax_right.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"], fontsize=18)
+    ## AX (0,0)
+    ax00.text(-0.3, 0.58, r"{\bfseries\boldmath Unbounded displacements}", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
+    policy = JESSI(
+        radius, 
+        v_max, 
+        dt, 
+        L,
+        5,
+        lidar_angular_range,
+        10.,
+        lidar_num_rays,
+    )
+    env_params = {
+        'n_stack': 5,
+        'lidar_num_rays': lidar_num_rays,
+        'lidar_angular_range': lidar_angular_range,
+        'lidar_max_dist': 10.,
+        'n_humans': 1, #5,
+        'n_obstacles': 0, #5,
+        'robot_radius': 0.3,
+        'robot_dt': dt,
+        'humans_dt': 0.01,
+        'robot_visible': True,
+        'scenario': 'hybrid_scenario',
+        'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
+        'kinematics': 'unicycle',
+    }
+    env = LaserNav(**env_params)
+    vs = jnp.concatenate([
+        jnp.zeros(n_actions_per_dim),
+        jnp.linspace(0, v_max, n_actions_per_dim),
+        jnp.linspace(0, v_max, n_actions_per_dim),
+    ])
+    ws = jnp.concatenate([
+        jnp.linspace(-w_max, w_max, n_actions_per_dim),
+        jnp.linspace(-w_max, 0, n_actions_per_dim),
+        jnp.linspace(w_max, 0, n_actions_per_dim),
+    ])
+    actions = jnp.stack((vs, ws), axis=-1)
+    displacements = jnp.array([[
+        a[0]/a[1] * jnp.sin(a[1]*dt) if a[1] != 0 else a[0]*dt,
+        a[0]/a[1] * (1 - jnp.cos(a[1]*dt)) if a[1] != 0 else 0,
+    ] for a in actions])
+    envelope_points = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    hull = ConvexHull(envelope_points)
+    angles = jnp.linspace(-lidar_angular_range/2, lidar_angular_range/2, lidar_num_rays)
+    directions = jnp.array([
+        jnp.array([jnp.cos(angle), jnp.sin(angle)]) for angle in angles
+    ])
+    dist, _ = vmap(env._obstacle_ray_intersect, in_axes=(0, None, None))(
+        directions,
+        obstacles,
+        jnp.array([0., 0.]),
+    )
+    collision_points = jnp.array([dist[i] * directions[i] for i in range(lidar_num_rays)])
+    ax00.set_aspect('equal')
+    ax00.fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightcoral', edgecolor='red', zorder=2)
+    ax00.fill(obstacles[:,:,0],obstacles[:,:,1], facecolor='black', edgecolor='black', zorder=7)
+    for i in range(lidar_num_rays):
+        ax00.plot([0, collision_points[i, 0]], [0, collision_points[i, 1]], color='blue', linewidth=1, zorder=5)
+    ## AX (0,1)
+    ax01.text(-0.3, 0.58, r"{\bfseries\boldmath  Bounded displacements}", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
+    alpha, beta, gamma = policy.bound_action_space(collision_points)
+    vs = jnp.concatenate([
+        jnp.zeros(n_actions_per_dim),
+        jnp.linspace(0, alpha * v_max, n_actions_per_dim),
+        jnp.linspace(0, alpha * v_max, n_actions_per_dim),
+    ])
+    ws = jnp.concatenate([
+        jnp.linspace(-gamma * w_max, beta * w_max, n_actions_per_dim),
+        jnp.linspace(-gamma * w_max, 0, n_actions_per_dim),
+        jnp.linspace(beta * w_max, 0, n_actions_per_dim),
+    ])
+    actions = jnp.stack((vs, ws), axis=-1)
+    displacements = jnp.array([[
+        a[0]/a[1] * jnp.sin(a[1]*dt) if a[1] != 0 else a[0]*dt,
+        a[0]/a[1] * (1 - jnp.cos(a[1]*dt)) if a[1] != 0 else 0,
+    ] for a in actions])
+    envelope_points = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    hull = ConvexHull(envelope_points)
+    ax01.set_aspect('equal')
+    ax01.fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightgreen', edgecolor='green', zorder=2)
+    ax01.fill(obstacles[:,:,0],obstacles[:,:,1], facecolor='black', edgecolor='black', zorder=7)
+    for i in range(lidar_num_rays):
+        ax01.plot([0, collision_points[i, 0]], [0, collision_points[i, 1]], color='blue', linewidth=1, zorder=5)
+    ## AX (:,2)
+    ax_right.add_patch(
+        plt.Polygon(
+            [   
+                [0,w_max],
+                [0,-w_max],
+                [v_max,0],
+            ],
+            closed=True,
+            fill=True,
+            edgecolor='red',
+            facecolor='lightcoral',
+            linewidth=2,
+            zorder=2,
+            label='Original set'
+        ),
+    )
+    ax_right.add_patch(
+        plt.Polygon(
+            [   
+                [0,beta*w_max],
+                [0,-gamma*w_max],
+                [alpha*v_max,0],
+            ],
+            closed=True,
+            fill=True,
+            edgecolor='green',
+            facecolor='lightgreen',
+            linewidth=2,
+            zorder=2,
+            label='Feasible set'
+        ),
+    )
+    # ax_right.legend(fontsize=16.5, loc='upper right')
+    ## AX (1,0)
+    ax10.text(-0.3, 0.58, r"{\bfseries\boldmath Stage 1: Reduce $\alpha$}", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
+    ax10.add_artist(
+        plt.Rectangle(
+            (-radius, -dt**2*v_max**2/(4*L) - radius), 
+            v_max*dt + 2 * radius, 
+            2*radius + (dt**2*v_max**2/(4*L) * 2), 
+            color='red', 
+            fill=False, 
+            zorder=3, 
+            linewidth=2,
+        )
+    )
+    ax10.add_artist(
+        plt.Rectangle(
+            (-radius,-radius), 
+            v_max*dt + 2 * radius, 
+            2*radius, 
+            edgecolor='red', 
+            fill=False, 
+            zorder=3, 
+            linewidth=2,
+        )
+    )
+    ax10.add_artist(
+        plt.Rectangle(
+            (0,-radius), 
+            v_max*dt + radius, 
+            2*radius, 
+            edgecolor='red', 
+            fill=True, 
+            facecolor='lightgrey',
+            zorder=3, 
+            linewidth=2
+        )
+    )
+    def is_inside_box(point, box):
+        x, y = point
+        x_min, y_min = box[0]
+        x_max, y_max = box[1]
+        return x_min <= x <= x_max and y_min <= y <= y_max
+    is_in = [is_inside_box(p, [(0, -radius), (v_max*dt + radius, radius)]) for p in collision_points]
+    for i, p in enumerate(collision_points):
+        ax10.scatter(p[0], p[1], color='darkgreen' if is_in[i] else 'blue', s=150, zorder=101, marker='x')
+    def segment(ax, xy0, xy1, label, label_pos=None, color='black'):
+        ax.plot([xy0[0],xy1[0]], [xy0[1],xy1[1]], color=color, zorder=8, linewidth=2)
+        if xy0[0] == xy1[0]: # Vertical segment
+            marker = '_'
+            label_pos = label_pos if label_pos is not None else (xy0[0] + 0.03, (xy0[1] + xy1[1]) / 2)
+            ax.text(label_pos[0], label_pos[1], label, verticalalignment='center', horizontalalignment='left', color=color, zorder=8, fontsize=16)
+        elif xy0[1] == xy1[1]: # Horizontal segment
+            marker = '|'
+            label_pos = label_pos if label_pos is not None else ((xy0[0] + xy1[0]) / 2, xy0[1]+0.01)
+            ax.text(label_pos[0], label_pos[1], label, verticalalignment='bottom', horizontalalignment='center', color=color, zorder=8, fontsize=16)
+        else: # Diagonal segment
+            marker = 'x'
+            label_pos = label_pos if label_pos is None else ((xy0[0] + xy1[0]) / 2, (xy0[1] + xy1[1]) / 2)
+            ax.text(label_pos[0], label_pos[1], label, verticalalignment='center', horizontalalignment='center', color=color, zorder=8, fontsize=16)
+        ax.scatter([xy0[0],xy1[0]], [xy0[1],xy1[1]], color=color, s=50, zorder=8, marker=marker)
+    segment(ax10, [0.,0.], [0.,-radius], '$r$', color='black')
+    segment(ax10, [radius,0.], [v_max*dt + radius,0.], '$\Delta x_{\max}$', label_pos=(0.85,0.01), color='black')
+    ax10.text(-radius/2, 0, r'$\mathcal{B}_0$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
+    ax10.text(-radius/2, -radius-(dt**2*v_max/(4*L))/2, r'$\mathcal{B}_{\gamma}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
+    ax10.text(-radius/2, radius+(dt**2*v_max/(4*L))/2+0.02, r'$\mathcal{B}_{\beta}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
+    ax10.text((radius + v_max * dt)/2, -0.05, r'$\mathcal{B}_{\alpha}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
+    ## AX (1,1)
+    ax11.text(-0.3, 0.58,r"{\bfseries\boldmath Stage 2: Reduce $\beta$ and $\gamma$}", verticalalignment="center", horizontalalignment="left", fontsize=18)
+    ax11.add_artist(
+        plt.Rectangle(
+            (-radius, -alpha*dt**2*v_max**2/(4*L) - radius), 
+            alpha*v_max*dt + 2 * radius, 
+            2*radius + (alpha*dt**2*v_max**2/(4*L) * 2), 
+            color='red', 
+            fill=False, 
+            zorder=3, 
+            linewidth=2,
+        )
+    )
+    ax11.add_artist(
+        plt.Rectangle(
+            (-radius,radius), 
+            alpha*v_max*dt + 2 * radius, 
+            (alpha*dt**2*v_max/(4*L)), 
+            edgecolor='red', 
+            fill=True, 
+            facecolor='lightgrey',
+            zorder=3, 
+            linewidth=2,
+        )
+    )
+    ax11.add_artist(
+        plt.Rectangle(
+            (-radius,-alpha*dt**2*v_max/(4*L) - radius), 
+            alpha*v_max*dt + 2 * radius, 
+            (alpha*dt**2*v_max/(4*L)), 
+            edgecolor='red', 
+            fill=True, 
+            facecolor='lightgrey', 
+            zorder=3, 
+            linewidth=2,
+        )
+    )
+    is_in = [is_inside_box(p, [(-radius, radius), (alpha*v_max*dt + radius, alpha*dt**2*v_max/(4*L) + radius)]) or \
+            is_inside_box(p, [(-radius, -alpha*dt**2*v_max/(4*L) - radius), (alpha*v_max*dt + radius, - radius)]) for p in collision_points]
+    for i, p in enumerate(collision_points):
+        ax11.scatter(p[0], p[1], color='darkgreen' if is_in[i] else 'blue', s=150, zorder=101, marker='x')
+    segment(ax11, [radius,0.], [alpha*v_max*dt + radius,0.], r'$\tilde{\Delta} x_{\max}$', color='black')
+    segment(ax11, [0.,0.], [0.,-radius], '$r$', color='black')
+    segment(
+        ax11, 
+        [(alpha*v_max*dt + 2*radius)/2-radius-0.3,-radius], 
+        [(alpha*v_max*dt + 2*radius)/2-radius-0.3,-radius-(alpha*dt**2*v_max/(4*L))], 
+        r'$|\Delta y_{\min}|$', 
+        label_pos=((alpha*v_max*dt + 2*radius)/2-radius-0.3,-radius-(alpha*dt**2*v_max/(4*L))-0.05), 
+        color='black'
+    )
+    segment(
+        ax11, 
+        [(alpha*v_max*dt + 2*radius)/2-radius-0.3,+radius], 
+        [(alpha*v_max*dt + 2*radius)/2-radius-0.3,+radius+(alpha*dt**2*v_max/(4*L))], 
+        r'$\Delta y_{\max}$', 
+        label_pos=((alpha*v_max*dt + 2*radius)/2-radius-0.3,+radius+(alpha*dt**2*v_max/(4*L))+0.05), 
+        color='black'
+    )
+    ax11.text(-radius + 0.05, -radius-(gamma*alpha*dt**2*v_max/(4*L))/2 , r'$\mathcal{B}_{\overline{\gamma}}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
+    ax11.text(-radius + 0.05, radius+(beta*alpha*dt**2*v_max/(4*L))/2 , r'$\mathcal{B}_{\overline{\beta}}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_summary.pdf'), format='pdf')
+    # plt.show()
+    plt.close()
+
+### FIG5: action_space_bounding_proof.pdf
+    figure, ax = plt.subplots(1,2,figsize=(12, 6))
+    policy = JESSI(
+        radius, 
+        v_max, 
+        dt, 
+        L,
+        5,
+        lidar_angular_range,
+        10.,
+        lidar_num_rays,
+    )
+    env_params = {
+        'n_stack': 5,
+        'lidar_num_rays': lidar_num_rays,
+        'lidar_angular_range': lidar_angular_range,
+        'lidar_max_dist': 10.,
+        'n_humans': 1, #5,
+        'n_obstacles': 0, #5,
+        'robot_radius': 0.3,
+        'robot_dt': dt,
+        'humans_dt': 0.01,
+        'robot_visible': True,
+        'scenario': 'hybrid_scenario',
+        'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
+        'kinematics': 'unicycle',
+    }
+    env = LaserNav(**env_params)
+    vs = jnp.concatenate([
+        jnp.zeros(n_actions_per_dim),
+        jnp.linspace(0, v_max, n_actions_per_dim),
+        jnp.linspace(0, v_max, n_actions_per_dim),
+    ])
+    ws = jnp.concatenate([
+        jnp.linspace(-w_max, w_max, n_actions_per_dim),
+        jnp.linspace(-w_max, 0, n_actions_per_dim),
+        jnp.linspace(w_max, 0, n_actions_per_dim),
+    ])
+    actions = jnp.stack((vs, ws), axis=-1)
+    displacements = jnp.array([[
+        a[0]/a[1] * jnp.sin(a[1]*dt) if a[1] != 0 else a[0]*dt,
+        a[0]/a[1] * (1 - jnp.cos(a[1]*dt)) if a[1] != 0 else 0,
+    ] for a in actions])
+    envelope_points = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    hull = ConvexHull(envelope_points)
+    angles = jnp.linspace(-lidar_angular_range/2, lidar_angular_range/2, lidar_num_rays)
+    directions = jnp.array([
+        jnp.array([jnp.cos(angle), jnp.sin(angle)]) for angle in angles
+    ])
+    dist, _ = vmap(env._obstacle_ray_intersect, in_axes=(0, None, None))(
+        directions,
+        obstacles,
+        jnp.array([0., 0.]),
+    )
+    collision_points = jnp.array([dist[i] * directions[i] for i in range(lidar_num_rays)])
+    ax[0].set_aspect('equal')
+    ax[0].fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightcoral', edgecolor='red', zorder=2)
+    omegas = jnp.linspace(0.01, w_max, n_actions_per_dim, endpoint=True)
+    vs = v_max * (1 - (omegas / (w_max)))
+    delta_y = (v_max * dt**2 / 2) * omegas - (v_max * dt**2 / (2 * w_max)) * omegas**2
+    delta_x = (vs / omegas) * jnp.sin(omegas*dt)
+    displacements = jnp.vstack((delta_x, delta_y)).T
+    envelope_points_1 = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    omegas = jnp.linspace(-0.01, -w_max, n_actions_per_dim, endpoint=True)
+    vs = v_max * (1 + (omegas / (w_max)))
+    delta_y = (v_max * dt**2 / 2) * omegas + (v_max * dt**2 / (2 * w_max)) * omegas**2
+    delta_x = (vs / omegas) * jnp.sin(omegas*dt)
+    displacements = jnp.vstack((delta_x, delta_y)).T
+    envelope_points_2 = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    envelope_points = jnp.vstack((envelope_points_1, envelope_points_2))
+    hull = ConvexHull(envelope_points)
+    closed_vertices = jnp.append(hull.vertices, hull.vertices[0])
+    ax[0].plot(envelope_points[closed_vertices, 0], envelope_points[closed_vertices, 1], color='black', linewidth=2, zorder=3, linestyle='--')
+    # ax(1)
+    alpha, beta, gamma = policy.bound_action_space(collision_points)
+    vs = jnp.concatenate([
+        jnp.zeros(n_actions_per_dim),
+        jnp.linspace(0, alpha * v_max, n_actions_per_dim),
+        jnp.linspace(0, alpha * v_max, n_actions_per_dim),
+    ])
+    ws = jnp.concatenate([
+        jnp.linspace(-gamma * w_max, beta * w_max, n_actions_per_dim),
+        jnp.linspace(-gamma * w_max, 0, n_actions_per_dim),
+        jnp.linspace(beta * w_max, 0, n_actions_per_dim),
+    ])
+    actions = jnp.stack((vs, ws), axis=-1)
+    displacements = jnp.array([[
+        a[0]/a[1] * jnp.sin(a[1]*dt) if a[1] != 0 else a[0]*dt,
+        a[0]/a[1] * (1 - jnp.cos(a[1]*dt)) if a[1] != 0 else 0,
+    ] for a in actions])
+    envelope_points = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    hull = ConvexHull(envelope_points)
+    ax[1].set_aspect('equal')
+    ax[1].fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightgreen', edgecolor='green', zorder=2)
+    omegas = jnp.linspace(0.01, beta * w_max, n_actions_per_dim, endpoint=True)
+    vs = alpha * v_max * (1 - (omegas / (beta * w_max)))
+    delta_y = (alpha * v_max * dt**2 / 2) * omegas - (alpha *v_max * dt**2 / (2 * beta * w_max)) * omegas**2
+    delta_x = (vs / omegas) * jnp.sin(omegas*dt)
+    displacements = jnp.vstack((delta_x, delta_y)).T
+    envelope_points_1 = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    omegas = jnp.linspace(-0.01, -gamma * w_max, n_actions_per_dim, endpoint=True)
+    vs = alpha * v_max * (1 + (omegas / (gamma * w_max)))
+    delta_y = (alpha * v_max * dt**2 / 2) * omegas + (alpha *v_max * dt**2 / (2 * gamma * w_max)) * omegas**2
+    delta_x = (vs / omegas) * jnp.sin(omegas*dt)
+    displacements = jnp.vstack((delta_x, delta_y)).T
+    envelope_points_2 = jnp.array([[
+        c + jnp.array([radius * jnp.cos(theta), radius * jnp.sin(theta)]) for theta in jnp.linspace(0, 2*jnp.pi, n_points_per_per_circle)
+    ] for c in displacements]).reshape(-1, 2)
+    envelope_points = jnp.vstack((envelope_points_1, envelope_points_2))
+    hull = ConvexHull(envelope_points)
+    closed_vertices = jnp.append(hull.vertices, hull.vertices[0])
+    ax[1].plot(envelope_points[closed_vertices, 0], envelope_points[closed_vertices, 1], color='black', linewidth=2, zorder=3, linestyle='--')
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_proof.pdf'), format='pdf')
+    plt.close()
+
+### FIG6: scenarios.pdf
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'scenarios.pdf')):
+    def plot_initial_state(env, scenario, ax, state, humans_velocities, info, flip_axis=False):
+        if flip_axis:
+            state = state.at[:,:2].set(state[:, [1, 0]])
+            state = state.at[:,4].set(jnp.pi/2 - state[:,4])
+            info["static_obstacles"] = info["static_obstacles"][:,:,:,:,[1,0]]
+            info["robot_goal"] = info["robot_goal"] @ jnp.array([[0, 1],[1, 0]])
+            humans_velocities = humans_velocities.at[:,:2].set(humans_velocities[:, [1, 0]])
+        humans_positions = state[:-1,:2]
+        humans_orientations = state[:-1,4]
+        humans_poses = jnp.concatenate([humans_positions, humans_orientations[:,None]], axis=-1)
+        robot_position = state[-1,:2]
+        robot_goal = info['robot_goal']
+        obstacles = info['static_obstacles'][-1]
+        min_x = min(robot_position[0], robot_goal[0])
+        max_x = max(robot_position[0], robot_goal[0])
+        min_y = min(robot_position[1], robot_goal[1])
+        max_y = max(robot_position[1], robot_goal[1])
+        if len(humans_positions) > 0:
+            min_x = min(min_x, jnp.min(humans_positions[:, 0]))
+            max_x = max(max_x, jnp.max(humans_positions[:, 0]))
+            min_y = min(min_y, jnp.min(humans_positions[:, 1]))
+            max_y = max(max_y, jnp.max(humans_positions[:, 1]))
+        for o in obstacles:
+            if o.size > 0:
+                min_x = min(min_x, jnp.min(o[..., 0]))
+                max_x = max(max_x, jnp.max(o[..., 0]))
+                min_y = min(min_y, jnp.min(o[..., 1]))
+                max_y = max(max_y, jnp.max(o[..., 1]))
+        margin_x = 0.6 #(max_x - min_x) * 0.1 + 0.2
+        margin_y = 0.6 #(max_y - min_y) * 0.1 + 0.2
+        ax.set_xlim([min_x - margin_x, max_x + margin_x])
+        ax.set_ylim([min_y - margin_y, max_y + margin_y])
+        ax.set_aspect('equal', adjustable='box')
+        for h in range(len(humans_poses)):
+            if scenario == 'circular_crossing_with_static_obstacles' and h < env.ccso_n_static_humans:
+                color = 'black'
+                alpha = 1.
+            else:
+                color = 'blue'
+                alpha = 0.6
+                head = plt.Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * info['humans_parameters'][h,0], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
+                ax.add_patch(head)
+            circle = plt.Circle((humans_poses[h,0], humans_poses[h,1]), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            ax.add_patch(circle)
+        for h in range(len(humans_poses)):
+            if scenario == 'circular_crossing_with_static_obstacles' and h < env.ccso_n_static_humans:
+                continue
+            color = 'blue'
+            alpha = 0.6
+            ax.arrow(
+                humans_poses[h,0],
+                humans_poses[h,1],
+                humans_velocities[h,0],
+                humans_velocities[h,1],
+                head_width=0.15,
+                head_length=0.15,
+                fc=color,
+                ec=color,
+                alpha=alpha,
+                zorder=30,
+            )
+        head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+        ax.add_patch(head)
+        circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+        ax.add_patch(circle)
+        for goal in env.robot_goals_per_scenario[SCENARIOS.index(scenario)]:
+            if info["is_x_flipped"]: goal = goal.at[0].set(-goal[0])
+            if info["is_y_flipped"]: goal = goal.at[1].set(-goal[1])
+            if flip_axis:
+                goal = jnp.array([goal[1], goal[0]])
+            ax.plot(
+                goal[0],
+                goal[1],
+                marker='*',
+                markersize=7,
+                color='red',
+                zorder=5,
+            )
+        if info['static_obstacles'][-1].shape[1] > 1: # Polygon obstacles
+            for o in info['static_obstacles'][-1]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+        else: # One segment obstacles
+            for o in info['static_obstacles'][-1]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
+    scenario_layout = {
+        'circular_crossing': (0, 0),
+        'circular_crossing_with_static_obstacles': (1, 0),
+        'delayed_circular_crossing': (0, 1),
+        'corner_traffic': (1, 1),
+        'parallel_traffic': (2, 2),
+        'robot_crowding': (1, 2),
+        'crowd_navigation': (0, 2),
+        'perpendicular_traffic': (0, 3),
+        'door_crossing': (1, 3),
+        'crowd_chasing': (2, 3),
+    }
+    scenario_labels = {
+        'circular_crossing_with_static_obstacles': "Circular Crossing With Columns",
+    }
+    scenario_seeds = {
+        'parallel_traffic': 1,
+        'circular_crossing_with_static_obstacles': 2,
+        'door_crossing': 1,
+    }
+    max_cols = max(pos[1] for pos in scenario_layout.values()) + 1
+    columns_data = {c: [] for c in range(max_cols)}
+    for scenario, (row, col) in scenario_layout.items():
+        columns_data[col].append((row, scenario))
+    for col in columns_data:
+        columns_data[col].sort(key=lambda x: x[0])
+    figure = plt.figure(figsize=(20, 10), layout="constrained")
+    main_gs = figure.add_gridspec(1, max_cols, wspace=0.05)
+    for col in range(max_cols):
+        scenarios_in_col = columns_data[col]
+        num_rows = len(scenarios_in_col) # Sarà 2 o 3
+        if num_rows == 0: continue
+        sub_gs = main_gs[0, col].subgridspec(num_rows, 1, hspace=0.02)
+        for i, (original_row, scenario) in enumerate(scenarios_in_col):
+            current_ax = figure.add_subplot(sub_gs[i, 0])
+            env_params = {
+                'n_stack': 5,
+                'lidar_num_rays': lidar_num_rays,
+                'lidar_angular_range': lidar_angular_range,
+                'lidar_max_dist': 10.,
+                'n_humans': 10 if scenario == 'circular_crossing_with_static_obstacles' else 5,
+                'n_obstacles': 5,
+                'robot_radius': 0.3,
+                'robot_dt': dt,
+                'humans_dt': 0.01,
+                'robot_visible': True,
+                'scenario': scenario,
+                'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
+                'ccso_n_static_humans': 5 if scenario == 'circular_crossing_with_static_obstacles' else 0,
+                'kinematics': 'unicycle',
+                'ccso_static_humans_radius_mean': .3,
+                'ccso_static_humans_radius_std': 0.,
+            }
+            env = LaserNav(**env_params)
+            seed_val = scenario_seeds.get(scenario, 0)
+            key = random.PRNGKey(seed_val)
+            state, key, obs, info, outcome = env.reset(key)
+            init_state = state
+            seconds = 2
+            humans_trajectory = jnp.zeros((int(seconds//env.robot_dt), env.n_humans,2))
+            for step in range(int(seconds//env.robot_dt)):
+                state, _, _, _, _, _ = env.step(state, info, jnp.zeros((2,))) 
+                humans_trajectory = humans_trajectory.at[step].set(state[:-1,:2])
+            humans_velocity = (humans_trajectory[-1] - init_state[:-1,:2]) / seconds
+            flip_axis = True if scenario in ["perpendicular_traffic", "crowd_navigation"] else False
+            plot_initial_state(env, scenario, current_ax, init_state, humans_velocity, info, flip_axis)
+            title = scenario_labels.get(scenario, scenario.replace('_', ' ').title())
+            current_ax.set_title(r'{\bfseries\boldmath ' + title + r'}', fontsize=18)
+            current_ax.tick_params(axis='both', which='major', labelsize=18)
+    figure.savefig(os.path.join(os.path.dirname(__file__), "scenarios.pdf"), format='pdf')
+    plt.close()
+
+### FIG7: teaser.pdf
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or \
+    not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser1.svg')) or \
+    not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser2.svg')) or \
+    not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser3.svg')):
+    dt = 0.25
+    font = {
+        'weight' : 'regular',
+        'size'   : 15
+    }
+    rc('font', **font)
+    lidar_num_rays = 50
+    lidar_angular_range = jnp.pi
+    obstacles = jnp.array([
+        [[[-3.,2.],[3.,2.]],[[3.,2.],[3.,1.9]],[[3.,1.9],[-3.,1.9]],[[-3.,1.9],[-3.,2.]]],
+        [[[-3.,-2.],[3.,-2.]],[[3.,-2.],[3.,-1.9]],[[3.,-1.9],[-3.,-1.9]],[[-3.,-1.9],[-3.,-2.]]],
+    ])
+    full_state = jnp.array([
+        [0.2, 1.5,0.9,0.1,jnp.pi,0.02],
+        [-.5, -1.3,0.8,-0.2,jnp.pi,-0.01],
+        [-2., 0.,0.,0.,0.,0.], # ROBOT
+    ])
+    humans_goal = jnp.array([
+        [-3., 1.2],
+        [-3, .5],
+    ])
+    robot_goal = jnp.array([2.5, 0.])
+    custom_episode = {
+        "full_state": full_state,
+        "humans_goal": humans_goal,
+        "robot_goal": robot_goal,
+        "humans_radius": jnp.ones((humans_goal.shape[0],)) * 0.3,
+        "humans_speed": jnp.ones((humans_goal.shape[0],)) * 1.,
+        "scenario": -1,
+        "static_obstacles": jnp.repeat(obstacles[None, ...], full_state.shape[0], axis=0)
+    }
+    env_params = {
+        'n_stack': 5,
+        'lidar_num_rays': lidar_num_rays,
+        'lidar_angular_range': lidar_angular_range,
+        'lidar_max_dist': 10.,
+        'n_humans': 2, #5,
+        'n_obstacles': 2, #5,
+        'robot_radius': 0.3,
+        'robot_dt': dt,
+        'humans_dt': 0.01,
+        'robot_visible': True,
+        'scenario': None,
+        'reward_function': DummyReward(robot_radius=0.3, time_limit=10),
+        'kinematics': 'unicycle',
+    }
+    env = LaserNav(**env_params)
+    with open(os.path.join(os.path.dirname(__file__), 'jessi_multitask_rl_out.pkl'), 'rb') as f:
+        network_params, _, _ = pickle.load(f)
+    policy = JESSI(
+        radius, 
+        v_max, 
+        dt, 
+        L,
+        5,
+        lidar_angular_range=lidar_angular_range,
+        lidar_max_dist=10.,
+        lidar_num_rays=lidar_num_rays,
+    )
+    state, env_key, obs, info, _ = env.reset_custom_episode(random.PRNGKey(0), custom_episode)
+    for i in range (policy.n_stack):
+        state, obs, info, _, _, (_, env_key) = env.step(state, info, jnp.array([0.,0.]), env_key=env_key)
+    action, _, perc_input, _, _, _, human_distr, actor_distr, _, _, _, human_attns  = policy.act(random.PRNGKey(0),obs,info,network_params)
+    ### PLOT: teaser.pdf
+    fig, ax = plt.subplots(2,1,figsize=(5,6.5))
+    fig.subplots_adjust(left=0.09, right=0.98, top=0.98, bottom=0.07, hspace=0.)
+    # Plot humans
+    for h in range(len(state[:-1])):
+        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.6, zorder=1)
+        ax[0].add_patch(head)
+        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+        ax[0].add_patch(circle)
+    # Plot human velocities
+    humans_velocities = lax.cond(
+        env.humans_policy == HUMAN_POLICIES.index('hsfm'),
+        lambda: vmap(get_linear_velocity, in_axes=(0,0))(
+                state[:-1,4],
+                state[:-1,2:4],
+            ),
+        lambda: state[:-1,2:4],
+    )
+    for h in range(len(state[:-1])):
+        ax[0].arrow(
+            state[h,0],
+            state[h,1],
+            humans_velocities[h,0],
+            humans_velocities[h,1],
+            head_width=0.1,
+            head_length=0.1,
+            fc='blue',
+            ec='blue',
+            alpha=0.6,
+            zorder=30,
+        )
+    lidar_scan = obs[0,11:]
+    for ray in range(len(lidar_scan)):
+        rgba_color = 'black'
+        ax[0].plot(
+            [state[-1,0], state[-1,0] + lidar_scan[ray] * jnp.cos(state[-1,4] + policy.lidar_angles_robot_frame[ray])],
+            [state[-1,1], state[-1,1] + lidar_scan[ray] * jnp.sin(state[-1,4] + policy.lidar_angles_robot_frame[ray])],
+            color=rgba_color, 
+            linewidth=0.5, 
+            zorder=0
+        )
+    # Robot action
+    action_linear = lax.cond(
+        jnp.abs(action[1]) > 1e-3,
+        lambda: jnp.array([
+            (action[0]/action[1])*(jnp.sin(state[-1,4]+action[1]*0.5)-jnp.sin(state[-1,4])),
+            (action[0]/action[1])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+action[1]*0.5)),
+        ]),
+        lambda: jnp.array([
+            action[0]*dt*jnp.cos(state[-1,4]),
+            action[0]*dt*jnp.sin(state[-1,4]),
+        ]),
+    )
+    ax[1].arrow(
+        state[-1,0],
+        state[-1,1],
+        action_linear[0],
+        action_linear[1]+0.15,
+        head_width=0.1,
+        head_length=0.1,
+        fc='green',
+        ec='green',
+        alpha=1.,
+        zorder=30,
+    )
+    ax[0].set_xticks([])
+    ax[1].set_xlabel('X', labelpad=-2)
+    # Plots in both AX
+    for i, a in enumerate(ax):
+        a.set_ylabel('Y', labelpad=-13)
+        a.set_aspect('equal', adjustable='datalim')
+        y_min_slack = -0.13 if i==0 else 0.
+        y_max_slack = 0.13 if i==1 else 0.
+        a.set(xlim=[jnp.min(obstacles[:,:,:,0])-0.1,jnp.max(obstacles[:,:,:,0])+0.1],ylim=[jnp.min(obstacles[:,:,:,1])-0.1+y_min_slack,jnp.max(obstacles[:,:,:,1])+0.1+y_max_slack])
+        # Plot robot
+        robot_position = state[-1,:2]
+        head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+        a.add_patch(head)
+        circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+        a.add_patch(circle)
+        # Plot robot goal
+        a.plot(
+            robot_goal[0],
+            robot_goal[1],
+            marker='*',
+            markersize=10,
+            color='red',
+            zorder=5,
+        )
+        # Plot static obstacles
+        for o in obstacles: a.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+    # Human-centric Gaussians (HCGs) positions and velocities
+    pos_distrs = human_distr["pos_distrs"]
+    vel_distrs = human_distr["vel_distrs"]
+    probs = human_distr["weights"]
+    robot_pose = state[-1,[0,1,4]]
+    for h in range(policy.n_detectable_humans):
+        human_pos_distr = tree_map(lambda x: x[h], pos_distrs)
+        human_vel_distr = tree_map(lambda x: x[h], vel_distrs)
+        human_pos_distr = policy.bivariate_gaussian.roto_translate(
+            human_pos_distr, 
+            robot_pose
+        )
+        human_vel_distr = policy.bivariate_gaussian.roto_translate(
+            human_vel_distr, 
+            jnp.array([0, 0, robot_pose[2]]) # Velocities are not affected by translation, only rotation
+        )
+        pos = human_pos_distr["means"]
+        vel = human_vel_distr["means"] + pos
+        if probs[h] > 0.5:
+            # Position HCG
+            cov_matrix = policy.bivariate_gaussian.covariance(human_pos_distr)
+            eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+            angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+            width, height = 2 * jnp.sqrt(eigenvalues)
+            ellipse = Ellipse(
+                xy=pos,
+                width=width,
+                height=height,
+                angle=jnp.degrees(angle),
+                edgecolor='blue',
+                facecolor='lightblue',
+                alpha=0.8,
+                zorder=15,
+            )
+            ax[1].add_patch(ellipse)
+            ax[1].scatter(pos[0], pos[1], c='red', s=30, marker='x', zorder=100)
+            text_dir = jnp.arctan2(-(vel[1] - pos[1]), -(vel[0] - pos[0]))
+            ax[1].text(
+                pos[0] + jnp.cos(text_dir) * 0.5, 
+                pos[1] - jnp.sin(text_dir) * 0.5, 
+                f"score\n{probs[h]:.2f}", 
+                fontsize=8, 
+                color="red", 
+                fontweight="bold", 
+                zorder=101,
+                horizontalalignment='center',
+                verticalalignment='center',
+                bbox=dict(
+                    boxstyle='round,pad=0.2', 
+                    facecolor='white', 
+                    alpha=0.5, 
+                )
+            )
+            # Velocity HCG
+            cov_matrix = policy.bivariate_gaussian.covariance(human_vel_distr)
+            eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+            angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+            width, height = 2 * jnp.sqrt(eigenvalues)
+            ellipse = Ellipse(
+                xy=vel,
+                width=width,
+                height=height,
+                angle=jnp.degrees(angle),
+                edgecolor='blue',
+                facecolor='lightblue',
+                alpha=0.8,
+                zorder=15,
+            )
+            ax[1].add_patch(ellipse)
+            ax[1].arrow(
+                pos[0],
+                pos[1],
+                vel[0] - pos[0],
+                vel[1] - pos[1],
+                head_width=0.1,
+                head_length=0.1,
+                fc='red',
+                ec='red',
+                zorder=100,
+            )
+    fig.savefig(os.path.join(os.path.dirname(__file__), "teaser.pdf"), format='pdf')
+    plt.close()
+    ### PLOT: teaser1.pdf teaser2.pdf teaser3.pdf
+    fig1, ax1 = plt.subplots(1,1,figsize=(4.2,3))
+    fig2, ax2 = plt.subplots(1,1,figsize=(4.2,3))
+    fig3, ax3 = plt.subplots(1,1,figsize=(4.2,3))
+    fig1.subplots_adjust(left=0.05, right=0.98, top=0.98, bottom=0.03, hspace=0., wspace=0.)
+    fig2.subplots_adjust(left=0.05, right=0.98, top=0.98, bottom=0.03, hspace=0., wspace=0.)
+    fig3.subplots_adjust(left=0.05, right=0.98, top=0.98, bottom=0.03, hspace=0., wspace=0.)
+    # All axes
+    for a in (ax1,ax2,ax3):
+            a.set_axis_off()
+            a.set_aspect('equal', adjustable='datalim')
+            a.set(xlim=[jnp.min(obstacles[:,:,:,0])-0.01,jnp.max(obstacles[:,:,:,0])+0.01],ylim=[jnp.min(obstacles[:,:,:,1])-0.05,jnp.max(obstacles[:,:,:,1])+0.05])
+            # Plot robot
+            robot_position = state[-1,:2]
+            head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+            a.add_patch(head)
+            circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+            a.add_patch(circle)
+            # Plot robot goal
+            a.plot(
+                robot_goal[0],
+                robot_goal[1],
+                marker='*',
+                markersize=10,
+                color='red',
+                zorder=5,
+            )
+            # Plot static obstacles
+            for o in obstacles: a.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
+    # Plot humans
+    for h in range(len(state[:-1])):
+        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.6, zorder=1)
+        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+        ax1.add_patch(head)
+        ax1.add_patch(circle)
+        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.3, zorder=1)
+        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.2, fill=True, zorder=1)
+        ax2.add_patch(head)
+        ax2.add_patch(circle)
+        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.3, zorder=1)
+        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.2, fill=True, zorder=1)
+        ax3.add_patch(head)
+        ax3.add_patch(circle)
+    # Plot human velocities
+    humans_velocities = lax.cond(
+        env.humans_policy == HUMAN_POLICIES.index('hsfm'),
+        lambda: vmap(get_linear_velocity, in_axes=(0,0))(
+                state[:-1,4],
+                state[:-1,2:4],
+            ),
+        lambda: state[:-1,2:4],
+    )
+    for h in range(len(state[:-1])):
+        ax1.arrow(
+            state[h,0],
+            state[h,1],
+            humans_velocities[h,0],
+            humans_velocities[h,1],
+            head_width=0.1,
+            head_length=0.1,
+            fc='blue',
+            ec='blue',
+            alpha=0.6,
+            zorder=30,
+        )
+        ax2.arrow(
+            state[h,0],
+            state[h,1],
+            humans_velocities[h,0],
+            humans_velocities[h,1],
+            head_width=0.1,
+            head_length=0.1,
+            fc='blue',
+            ec='blue',
+            alpha=0.2,
+            zorder=30,
+        )
+        ax3.arrow(
+            state[h,0],
+            state[h,1],
+            humans_velocities[h,0],
+            humans_velocities[h,1],
+            head_width=0.1,
+            head_length=0.1,
+            fc='blue',
+            ec='blue',
+            alpha=0.2,
+            zorder=30,
+        )
+    lidar_scan = obs[0,11:]
+    for ray in range(len(lidar_scan)):
+        rgba_color = 'black'
+        ax1.plot(
+            [state[-1,0], state[-1,0] + lidar_scan[ray] * jnp.cos(state[-1,4] + policy.lidar_angles_robot_frame[ray])],
+            [state[-1,1], state[-1,1] + lidar_scan[ray] * jnp.sin(state[-1,4] + policy.lidar_angles_robot_frame[ray])],
+            color=rgba_color, 
+            linewidth=0.5, 
+            zorder=0
+        )
+    # Human-centric Gaussians (HCGs) positions and velocities
+    # Human attentions
+    pos_distrs = human_distr["pos_distrs"]
+    vel_distrs = human_distr["vel_distrs"]
+    probs = human_distr["weights"]
+    robot_pose = state[-1,[0,1,4]]
+    for h in range(policy.n_detectable_humans):
+        human_pos_distr = tree_map(lambda x: x[h], pos_distrs)
+        human_vel_distr = tree_map(lambda x: x[h], vel_distrs)
+        human_pos_distr = policy.bivariate_gaussian.roto_translate(
+            human_pos_distr, 
+            robot_pose
+        )
+        human_vel_distr = policy.bivariate_gaussian.roto_translate(
+            human_vel_distr, 
+            jnp.array([0, 0, robot_pose[2]]) # Velocities are not affected by translation, only rotation
+        )
+        pos = human_pos_distr["means"]
+        vel = human_vel_distr["means"] + pos
+        if probs[h] > 0.5:
+            # Position HCG
+            cov_matrix = policy.bivariate_gaussian.covariance(human_pos_distr)
+            eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+            angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+            width, height = 2 * jnp.sqrt(eigenvalues)
+            ellipse = Ellipse(
+                xy=pos,
+                width=width,
+                height=height,
+                angle=jnp.degrees(angle),
+                edgecolor='blue',
+                facecolor='lightblue',
+                alpha=0.8,
+                zorder=15,
+            )
+            ax2.add_patch(ellipse)
+            ax2.scatter(pos[0], pos[1], c='red', s=30, marker='x', zorder=100)
+            # Score
+            text_dir = jnp.arctan2(-(vel[1] - pos[1]), -(vel[0] - pos[0]))
+            text = (
+                r"{\bfseries score}"
+                "\n"
+                rf"{{\bfseries {probs[h]:.2f}}}"
+            )
+            ax2.text(
+                pos[0] + jnp.cos(text_dir), 
+                pos[1] - jnp.sin(text_dir), 
+                text, 
+                fontsize=18, 
+                color="red", 
+                fontweight="bold", 
+                zorder=101,
+                horizontalalignment='center',
+                verticalalignment='center',
+                bbox=dict(
+                    boxstyle='round,pad=0.2', 
+                    facecolor='white', 
+                    alpha=0.5, 
+                )
+            )
+            # Attention
+            text_dir = jnp.arctan2(-(vel[1] - pos[1]), -(vel[0] - pos[0]))
+            text = (
+                r"{\bfseries attn.}"
+                "\n"
+                rf"{{\bfseries {human_attns[0,h]:.2f}}}"
+            )
+            ax3.text(
+                pos[0] + jnp.cos(text_dir), 
+                pos[1] - jnp.sin(text_dir), 
+                text, 
+                fontsize=18, 
+                color="black", 
+                fontweight="bold", 
+                zorder=101,
+                horizontalalignment='center',
+                verticalalignment='center',
+                bbox=dict(
+                    boxstyle='round,pad=0.2', 
+                    facecolor='white', 
+                    alpha=0.5, 
+                )
+            )
+            # Velocity HCG
+            cov_matrix = policy.bivariate_gaussian.covariance(human_vel_distr)
+            eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+            angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+            width, height = 2 * jnp.sqrt(eigenvalues)
+            ellipse = Ellipse(
+                xy=vel,
+                width=width,
+                height=height,
+                angle=jnp.degrees(angle),
+                edgecolor='blue',
+                facecolor='lightblue',
+                alpha=0.8,
+                zorder=15,
+            )
+            ax2.add_patch(ellipse)
+            ax2.arrow(
+                pos[0],
+                pos[1],
+                vel[0] - pos[0],
+                vel[1] - pos[1],
+                head_width=0.1,
+                head_length=0.1,
+                fc='red',
+                ec='red',
+                zorder=100,
+            )
+    # Robot action
+    action_linear = lax.cond(
+        jnp.abs(action[1]) > 1e-3,
+        lambda: jnp.array([
+            (action[0]/action[1])*(jnp.sin(state[-1,4]+action[1]*0.5)-jnp.sin(state[-1,4])),
+            (action[0]/action[1])*(jnp.cos(state[-1,4])-jnp.cos(state[-1,4]+action[1]*0.5)),
+        ]),
+        lambda: jnp.array([
+            action[0]*dt*jnp.cos(state[-1,4]),
+            action[0]*dt*jnp.sin(state[-1,4]),
+        ]),
+    )
+    ax3.arrow(
+        state[-1,0],
+        state[-1,1],
+        action_linear[0],
+        action_linear[1]+0.15,
+        head_width=0.1,
+        head_length=0.1,
+        fc='green',
+        ec='green',
+        alpha=1.,
+        zorder=30,
+    )
+    # Robot goal label
+    text = (
+        r"{\bfseries robot}"
+        "\n"
+        r"{\bfseries goal}"
+    )
+    ax3.text(
+        robot_goal[0],
+        robot_goal[1]+0.7, 
+        text, 
+        fontsize=18, 
+        color="red", 
+        fontweight="bold", 
+        zorder=101,
+        horizontalalignment='center',
+        verticalalignment='center',
+        bbox=dict(
+            boxstyle='round,pad=0.2', 
+            facecolor='white', 
+            alpha=0.5, 
+        )
+    )
+    fig1.savefig(os.path.join(os.path.dirname(__file__), "teaser1.svg"), format='svg')
+    fig2.savefig(os.path.join(os.path.dirname(__file__), "teaser2.svg"), format='svg')
+    fig3.savefig(os.path.join(os.path.dirname(__file__), "teaser3.svg"), format='svg')
+    plt.show()
+    plt.close()
+    ### Re-set default params
+    font = {
+        'weight' : 'regular',
+        'size'   : 23
+    }
+    rc('font', **font)
+    dt = 0.75
+
+### FIG8: campaign_metrics.pdf
+if not os.path.exists(os.path.join(os.path.dirname(__file__), 'campaign_metrics.pdf')):
+    import csv
+    import numpy as np
+    from matplotlib.ticker import MaxNLocator
+
+    campaign_path = os.path.join(os.path.dirname(__file__), 'campaign_metrics.csv')
+    with open(campaign_path, newline='', encoding='utf-8') as f:
+        campaign_rows = list(csv.DictReader(f))
+
+    campaign_policies = ('DWA', 'JESSI')
+    campaign_colors = ('lightcoral', 'lightgreen')
+    campaign_metrics = (
+        ('time_to_goal_s', 'Time to goal (s)', ''),
+        ('average_translational_jerk_m_s3', r'Linear jerk (m/$s^3$)', ''),
+        ('average_angular_jerk_rad_s3', r'Angular jerk (rad/$s^3$)', ''),
+        ('space_compliance', r'Space compliance (\%)', ''),
+    )
+
+    # Inherit the script's LaTeX/Computer Modern and PDF font settings.
+    figure, axes = plt.subplots(2, 2, figsize=(8, 5.8), layout='constrained')
+    figure.subplots_adjust(right=0.95)
+    campaign_rng = np.random.default_rng(0)  # Reproducible horizontal jitter only.
+    for ax, (metric, title, unit) in zip(axes.flat, campaign_metrics):
+        data = []
+        for campaign_policy in campaign_policies:
+            values = []
+            for row in campaign_rows:
+                if row['policy'] != campaign_policy or row['synchronization_valid'].lower() != 'true':
+                    continue
+                # Time to goal is defined only for successful runs. Use qualified
+                # space compliance, never the unqualified tracking estimate.
+                if metric == 'time_to_goal_s' and row['success'].lower() != 'true':
+                    continue
+                if metric == 'space_compliance' and row['tracking_valid_for_comparison'].lower() != 'true':
+                    continue
+                value = float(row[metric]) if row[metric].strip() else np.nan
+                if np.isfinite(value):
+                    values.append(100. * value if metric == 'space_compliance' else value)
+            if not values:
+                raise ValueError(f'No valid {metric} values for {campaign_policy} in {campaign_path}')
+            data.append(np.asarray(values))
+
+        # Boxes: Q1--Q3; black line: median; whiskers: 1.5 IQR.
+        # Every run is shown as a dot, including outliers (not drawn twice).
+        boxes = ax.boxplot(
+            data, widths=0.5, patch_artist=True, showfliers=False,
+            medianprops={'color': 'black', 'linewidth': 1.8},
+            boxprops={'linewidth': 1.2},
+            whiskerprops={'linewidth': 1.2},
+            capprops={'linewidth': 1.2},
+        )
+        for position, (box, values, color) in enumerate(zip(boxes['boxes'], data, campaign_colors), start=1):
+            box.set_facecolor(color)
+        ax.set_title(title, fontsize=20, pad=6)
+        ax.set_ylabel(unit, fontsize=20, labelpad=5)
+        ax.set_xticks([1, 2], campaign_policies)
+        ax.tick_params(axis='both', labelsize=18)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax.set_axisbelow(True)
+        ax.grid(axis='y', linestyle=':', alpha=0.4)
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.margins(y=0.15)
+        if metric == 'space_compliance':
+            lower, upper = ax.get_ylim()
+            ax.set_ylim(max(0., lower), min(100., upper))
+
+    figure.savefig(os.path.join(os.path.dirname(__file__), 'campaign_metrics.pdf'), bbox_inches='tight', pad_inches=0.04)
+    plt.close(figure)

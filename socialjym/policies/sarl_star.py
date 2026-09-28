@@ -30,8 +30,8 @@ class SARLStar(SARL):
             grid_size:jnp.ndarray,
             use_planner=True,
             planner="A*", # "A*" or "Dijkstra"
+            safety_margin=0.0, # Safety margin to filter actions (in meters)
             v_max=1., 
-            gamma=0.9, 
             dt=0.25, 
             wheels_distance=0.7, 
             kinematics='holonomic',
@@ -49,7 +49,6 @@ class SARLStar(SARL):
         super().__init__(
             reward_function=reward_function, 
             v_max=v_max, 
-            gamma=gamma, 
             dt=dt, 
             wheels_distance=wheels_distance, 
             kinematics=kinematics,
@@ -60,6 +59,7 @@ class SARLStar(SARL):
             # position_noise_sigma_angle = position_noise_sigma_angle,
             # velocity_noise_sigma_percentage = velocity_noise_sigma_percentage, # Standard deviation of the noise as a percentage of the (vx,vy) coordinates of humans' velocity in the robot frame
         )
+        self.safety_margin = safety_margin
         self.use_planner = use_planner
         if planner == "A*":
             self.planner = AStarPlanner(grid_size)
@@ -88,7 +88,7 @@ class SARLStar(SARL):
         return lax.cond(
             jnp.isnan(min_distance), # All dummy obstacles
             lambda _: True,
-            lambda x: x > obs[-1,4],
+            lambda x: x > (obs[-1,4] + self.safety_margin),
             min_distance,
         )
 
@@ -109,7 +109,7 @@ class SARLStar(SARL):
         # Check collision with obstacles
         distances = jnp.linalg.norm(point_cloud - next_pos, axis=1)
         min_distance = jnp.min(distances)
-        return min_distance > obs[-1,4]
+        return min_distance > (obs[-1,4] + self.safety_margin)
     
     @partial(jit, static_argnames=("self"))
     def _compute_safe_action_space_from_lidar(self, point_cloud:jnp.ndarray, obs:jnp.ndarray) -> jnp.ndarray:
@@ -260,7 +260,7 @@ class SARLStar(SARL):
             info['grid_cells_size']
         )
         ## Identify visible humans with JESSI perception
-        hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        hcgs, _, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
         humans_mask = hcgs['weights'] > 0.5
         rc_humans_pos = hcgs['pos_distrs']['means']
         rc_humans_vel = hcgs['vel_distrs']['means']

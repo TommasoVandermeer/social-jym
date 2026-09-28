@@ -1,6 +1,7 @@
 from jax import jit, lax
 import jax.numpy as jnp
 from functools import partial
+from typing import Union
 
 from socialjym.utils.rewards.base_reward import BaseReward
 from socialjym.envs.base_env import ROBOT_KINEMATICS
@@ -11,7 +12,7 @@ from socialjym.utils.terminations.timeout import Timeout
 class Reward1(BaseReward):
     def __init__(
         self, 
-        gamma:float=0.9, # Discount factor
+        gamma:Union[float, list, tuple, jnp.ndarray] = 0.9,
         v_max:float=1., # Maximum speed of the robot
         goal_reward: float=1., 
         collision_penalty: float=-0.25, 
@@ -26,6 +27,24 @@ class Reward1(BaseReward):
         assert collision_penalty < 0, "collision_penalty must be negative"
         assert discomfort_distance > 0, "discomfort_distance must be positive"
         assert time_limit > 0, "time_limit must be positive"
+        # If multi-gamma mode
+        if isinstance(gamma, (list, tuple, jnp.ndarray)):
+            print(
+                "REWARD - Multi-discount mode active. Gammas will be assigned in this order:",
+                "\n- Discomfort",
+                "\n- Collision",
+                "\n- Target reached",
+            )
+            self.multi_gamma = True
+            gamma_list = [float(g) for g in gamma]
+            assert len(gamma_list) == 3, "Number of gammas must be the same as active reward terms (success, failure, discomfort)."
+            self.g_goal = gamma_list[0] 
+            self.g_coll = gamma_list[1] 
+            self.g_disc = gamma_list[2] 
+            self.unique_gammas = tuple(set(gamma_list))
+        else:
+            self.multi_gamma = False
+            self.unique_gammas = (float(gamma),)
         # Initialize reward parameters
         self.type = "socialnav_reward1"
         self.v_max = v_max
@@ -62,6 +81,7 @@ class Reward1(BaseReward):
         output:
         - reward: reward obtained in the current state.
         - outcome: dictionary indicating if the episode is finished or not and why.
+        - reward_terms: dictionary of all the reward terms with different discounts
         """
         robot_pos = obs[-1,0:2]
         humans_pos = obs[0:len(obs)-1,0:2]
@@ -106,10 +126,17 @@ class Reward1(BaseReward):
         # Timeout
         timeout, _ =  self.timeout(time) 
         # Compute reward
-        reward = 0.
-        reward = lax.cond(~(collision) & (reached_goal), lambda r: r + self.goal_reward, lambda r: r, reward) # Reward for reaching the goal
-        reward = lax.cond(collision, lambda r: r + self.collision_penalty, lambda r: r, reward) # Penalty for collision
-        reward = lax.cond(discomfort, lambda r: r - 0.5 * dt * (self.discomfort_distance - min_distance), lambda r: r, reward) # Penalty for getting too close to humans
+        goal_reward = lax.cond(~(collision) & (reached_goal), lambda: self.goal_reward, lambda: 0.) # Reward for reaching the goal
+        collision_reward = lax.cond(collision, lambda: self.collision_penalty, lambda: 0.) # Penalty for collision
+        discomfort_reward = lax.cond(discomfort, lambda: - 0.5 * dt * (self.discomfort_distance - min_distance), lambda: 0.) # Penalty for getting too close to humans
+        reward = goal_reward + collision_reward + discomfort_reward
+        if self.multi_gamma:
+            reward_terms = {g: 0.0 for g in self.unique_gammas}
+            reward_terms[self.g_goal] += goal_reward
+            reward_terms[self.g_coll] += collision_reward
+            reward_terms[self.g_disc] += discomfort_reward
+        else:
+            reward_terms = {self.gamma: reward}
         # Compute outcome 
         outcome = {
             "nothing": ~((collision) | (reached_goal) | (timeout)),
@@ -122,4 +149,4 @@ class Reward1(BaseReward):
         # debug.print("collision: {x}", x=collision)
         # debug.print("reached_goal: {x}", x=reached_goal)
         # debug.print("timeout: {x}", x=timeout)
-        return reward, outcome
+        return reward, outcome, reward_terms

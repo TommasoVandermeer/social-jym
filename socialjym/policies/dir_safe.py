@@ -105,7 +105,6 @@ class DIRSAFE(SARL):
             self, 
             reward_function:FunctionType, 
             v_max:float=1., 
-            gamma:float=0.9, 
             dt:float=0.25, 
             wheels_distance:float=0.7, 
             noise:bool=False, # If True, noise is added to humams positions and velocities
@@ -122,7 +121,6 @@ class DIRSAFE(SARL):
             reward_function=reward_function, 
             v_max=v_max, 
             wheels_distance=wheels_distance,
-            gamma=gamma, 
             dt=dt,
             kinematics='unicycle',
             noise=noise,
@@ -725,7 +723,7 @@ class DIRSAFE(SARL):
         aligned_lidar = jessi.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[0]
         point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
         ## Identify visible humans with JESSI perception
-        hcgs, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        hcgs, _, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
         humans_mask = hcgs['weights'] > 0.5
         rc_humans_pos = hcgs['pos_distrs']['means']
         rc_humans_vel = hcgs['vel_distrs']['means']

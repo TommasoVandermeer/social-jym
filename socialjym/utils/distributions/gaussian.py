@@ -20,6 +20,10 @@ class Gaussian(BaseDistribution):
         return .5 * jnp.log(2*jnp.pi*jnp.exp(1)) * len(logsigmas)  + jnp.sum(logsigmas)
 
     @partial(jit, static_argnames=("self"))
+    def batch_entropy(self, distributions:dict) -> float:
+        return vmap(Gaussian.entropy, in_axes=(None,0))(self, distributions)
+
+    @partial(jit, static_argnames=("self"))
     def sample(self, distribution:dict, key:random.PRNGKey):
         means = distribution["means"]
         sigmas = jnp.exp(distribution["logsigmas"])
@@ -143,12 +147,64 @@ class Gaussian(BaseDistribution):
         return constrained_action
     
     @partial(jit, static_argnames=("self"))
+    def bound_action_safety(
+        self,
+        sampled_action:jnp.ndarray,
+        vertices:jnp.ndarray
+    ) -> jnp.ndarray:
+        """
+        This function is only used to limit the values of a 2D Diagonal Gaussian within a given range for unicycle kinematics.
+        ONLY FOR UNICYCLE KINEMATICS
+
+        args:
+        - sampled_action (jnp.ndarray): sampled action from the Gaussian distribution.
+        - vertices (jnp.ndarray): wmax, wmin and vmax for the unicycle robot.
+
+        returns:
+        - constrained_action (jnp.ndarray): action bounded by the robot kinematics.
+        """
+        w_max = vertices[0,1]
+        w_min = vertices[1,1]
+        v_max = vertices[2,0]
+        x, y = sampled_action
+        cases = jnp.array([
+            x <= 0,
+            (y == 0) & (x > 0),
+            (y > 0) & (y <= (v_max - x)*(w_max/v_max)) & (x > 0),
+            (y < 0) & (y >= (v_max - x)*(w_min/v_max)) & (x > 0),
+            (y > 0) & (y > (v_max - x)*(w_max/v_max)) & (x > 0),
+            (y < 0) & (y < (v_max - x)*(w_min/v_max)) & (x > 0)
+        ], dtype=jnp.int32)
+        bounded_action = lax.switch(
+            jnp.argmax(cases),
+            [
+                lambda _: jnp.array([0., jnp.clip(y, w_min, w_max)]),
+                lambda _: jnp.array([jnp.min(jnp.array([v_max,x])), 0.]),
+                lambda _: jnp.array([x, y]),
+                lambda _: jnp.array([x, y]),
+                lambda _: jnp.array([x*v_max*w_max/(x*w_max+v_max*y), y*v_max*w_max/(x*w_max+v_max*y)]),
+                lambda _: jnp.array([x*v_max*w_min/(x*w_min+v_max*y), y*v_max*w_min/(x*w_min+v_max*y)]),
+            ],
+            None,
+        )
+        return bounded_action
+
+    @partial(jit, static_argnames=("self"))
     def batch_std(self, distributions:dict) -> jnp.ndarray:
         """
         Compute the standard deviations of a batch of Gaussian distributions.
         """
         return jnp.exp(distributions["logsigmas"])
     
+    @partial(jit, static_argnames=("self"))
+    def is_in_support(self, distribution:dict, action:jnp.ndarray) -> bool:
+        vertices = distribution["vertices"]
+        sample = jnp.linalg.solve(jnp.vstack((vertices.T,jnp.ones((len(vertices),)))), jnp.append(action, 1.))
+        return jnp.all(sample >= 0) & jnp.isclose(jnp.sum(sample), 1.0)
+    
+    @partial(jit, static_argnames=("self"))
+    def batch_is_in_support(self, distribution:dict, actions:jnp.ndarray) -> jnp.ndarray:
+        return vmap(Gaussian.is_in_support, in_axes=(None,None,0))(self, distribution, actions) 
 class BivariateGaussian(BaseDistribution):
     def __init__(self, epsilon=1e-6) -> None:
         """
