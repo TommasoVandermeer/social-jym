@@ -13,7 +13,7 @@ from socialjym.utils.aux_functions import animate_trajectory
 
 # Hyperparameters
 random_seed = 3
-num_samples = 100
+num_samples = 50
 robot_vmax = 1
 robot_wheel_distance = 0.7
 time_limit = 50
@@ -110,9 +110,17 @@ for i in range(n_episodes):
     all_trajectories = jnp.zeros((max_steps, policy.num_samples, policy.horizon+1, 3))
     all_trajectories_costs = jnp.zeros((max_steps,policy.num_samples))
     all_u_means = jnp.zeros((max_steps, policy.horizon, 2))
+    all_humans_distrs = {
+        "pos_distrs": {
+            "means": jnp.zeros((max_steps, policy.horizon, policy.n_detectable_humans,2)),
+            "logsigmas": jnp.zeros((max_steps,policy.horizon, policy.n_detectable_humans,2)),
+            "correlation": jnp.zeros((max_steps,policy.horizon, policy.n_detectable_humans)),
+        },
+        "weights": jnp.zeros((max_steps, policy.horizon, policy.n_detectable_humans)),
+    }
     while outcome["nothing"]:
         # Compute action from trained JESSI
-        action, u_mean, trajectories, costs, perception_distr, actor_distr, state_value, spatial_attn, temporal_attn, human_attn, key = policy.act(
+        action, u_mean, trajectories, costs, perception_distr, humans_distr_seq, actor_distr, state_value, spatial_attn, temporal_attn, human_attn, key = policy.act(
             policy_key, 
             obs, 
             info, 
@@ -132,6 +140,7 @@ for i in range(n_episodes):
         all_predicted_state_values = all_predicted_state_values.at[step].set(state_value)
         all_actor_distrs = tree_map(lambda x, y: x.at[step].set(y), all_actor_distrs, actor_distr)
         all_encoder_distrs = tree_map(lambda x, y: x.at[step].set(y), all_encoder_distrs, perception_distr)
+        all_humans_distrs = tree_map(lambda x, y: x.at[step].set(y), all_humans_distrs, humans_distr_seq)
         all_states = jnp.vstack((all_states, jnp.array([state])))
         all_intermediate_states = all_intermediate_states.at[step].set(info["intermediate_states"])
         all_observations = jnp.vstack((all_observations, jnp.array([obs])))
@@ -149,6 +158,7 @@ for i in range(n_episodes):
         # Increment step
         step += 1
     all_encoder_distrs = tree_map(lambda x: x[:step], all_encoder_distrs)
+    all_humans_distrs = tree_map(lambda x: x[:step], all_humans_distrs)
     all_actor_distrs = tree_map(lambda x: x[:step], all_actor_distrs)
     all_intermediate_states = all_intermediate_states[:step]
     all_actions = all_actions[:step]
@@ -181,4 +191,5 @@ for i in range(n_episodes):
         trajectories=all_trajectories,
         trajectories_costs=all_trajectories_costs,
         control_sequences=all_u_means,
+        future_humans_distrs=all_humans_distrs,
     )

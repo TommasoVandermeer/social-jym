@@ -363,4 +363,17 @@ class JESSI_MPPI(JESSI):
         action_space_vertices = actor_distr['vertices']  # Shape: (3, 2)
         control_sequence = control_sequence.at[0].set(self.bound_action(control_sequence[0], action_space_vertices))
         action = control_sequence[0]
-        return action, control_sequence, trajectories, costs, perception_output_rf, actor_distr, state_value, spatial_attn, temporal_attn, human_attn, key    
+        return (
+            action, 
+            control_sequence, 
+            trajectories, 
+            costs, 
+            perception_output_rf, 
+            {"pos_distrs": humans_distr_seq["pos_distrs"], "weights": humans_distr_seq["weights"]}, 
+            actor_distr, 
+            state_value, 
+            spatial_attn, 
+            temporal_attn, 
+            human_attn, 
+            key
+        )    

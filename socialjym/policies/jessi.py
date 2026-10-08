@@ -1840,6 +1840,7 @@ class JESSI(BasePolicy):
         trajectories=None,
         trajectories_costs=None,
         chosen_trajectories=None,
+        future_humans_distrs=None,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -1992,14 +1993,36 @@ class JESSI(BasePolicy):
                         edgecolor='gray'
                     )
                 )
+            axs[0].set_title("Trajectory")
+            # AX 0,1: Simulation with LiDAR point cloud stack
             if trajectories is not None and trajectories_costs is not None and chosen_trajectories is not None:
                 for i, trajectory in enumerate(trajectories[frame]):
                     cost = trajectories_costs[frame][i]
                     color = 'green' if cost < 1_000_000 else 'orange'
                     axs[1].plot(trajectory[:,0], trajectory[:,1], color=color, alpha=0.5, linewidth=1, zorder=10)
                 axs[1].plot(chosen_trajectories[frame][:,0], chosen_trajectories[frame][:,1], color='blue', alpha=1, linewidth=3, zorder=30)
-            axs[0].set_title("Trajectory")
-            # AX 0,1: Simulation with LiDAR point cloud stack
+            if future_humans_distrs is not None:
+                distrs = tree_map(lambda x: x[frame], future_humans_distrs)
+                for t in range(distrs['pos_distrs']['means'].shape[0]):
+                    for h in range(distrs['pos_distrs']['means'].shape[1]):
+                        mean = distrs['pos_distrs']['means'][t,h]
+                        if distrs['weights'][t, h] <= 0.5: continue
+                        d = tree_map(lambda x: x[t, h], distrs)["pos_distrs"]
+                        cov_matrix = self.biv_gaussian.covariance(d)
+                        eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+                        angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+                        width, height = 2 * jnp.sqrt(eigenvalues)
+                        ellipse = Ellipse(
+                            xy=mean,
+                            width=width,
+                            height=height,
+                            angle=jnp.degrees(angle),
+                            edgecolor='blue',
+                            facecolor='lightblue',
+                            alpha=0.5,
+                            zorder=15,
+                        )
+                        axs[1].add_patch(ellipse)
             point_cloud = self.align_lidar(observations[frame])[1]
             for i, cloud in enumerate(point_cloud):
                 # color/alpha fade with i (smaller i -> less faded)
@@ -2233,6 +2256,7 @@ class JESSI(BasePolicy):
         trajectories=None,
         trajectories_costs=None,
         control_sequences=None,
+        future_humans_distrs=None,
         # Visualization stuff
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
@@ -2311,6 +2335,7 @@ class JESSI(BasePolicy):
             trajectories,
             trajectories_costs,
             chosen_trajectories,
+            future_humans_distrs,
             p_visualization_threshold_dir,
             x_lims,
             y_lims,
