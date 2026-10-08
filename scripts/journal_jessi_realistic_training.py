@@ -14,7 +14,6 @@ rcParams['ps.fonttype'] = 42
 
 from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.policies.jessi import JESSI
-from socialjym.policies.jessi_sa import JESSI_SA
 from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
@@ -22,7 +21,6 @@ from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
 
-state_augmented = False
 ### Sim-to-real parameters
 lidar_dt = 0.13
 odometry_dt = 0.05
@@ -36,9 +34,6 @@ save_videos = False  # Whether to save videos of the debug inspections
 perception_nn_name = 'pre_perception_network_32.pkl'
 policy_nn_name = 'LATEST_pre_controller_network_32.pkl'
 multitask_network_name = 'LATEST1_jessi_multitask_rl_out_32.pkl'
-if state_augmented:
-    policy_nn_name = "SA_" + policy_nn_name
-    multitask_network_name = "SA_" + multitask_network_name
 ### Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
@@ -100,34 +95,19 @@ training_hyperparams = {
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 # JESSI policy
-if state_augmented:
-    jessi = JESSI_SA(
-        v_max=robot_vmax, 
-        wheels_distance=robot_wheel_distance,
-        dt=robot_dt, 
-        lidar_num_rays=lidar_num_rays, 
-        lidar_max_dist=lidar_max_dist,
-        lidar_angular_range=lidar_angular_range,
-        n_stack=n_stack, 
-        n_detectable_humans=n_detectable_humans, 
-        max_humans_velocity=max_humans_velocity,
-        embedding_dim=embeddings_dim,
-        ablation_mode=ablation_mode,
-    )
-else:
-    jessi = JESSI(
-        v_max=robot_vmax, 
-        wheels_distance=robot_wheel_distance,
-        dt=robot_dt, 
-        lidar_num_rays=lidar_num_rays, 
-        lidar_max_dist=lidar_max_dist,
-        lidar_angular_range=lidar_angular_range,
-        n_stack=n_stack, 
-        n_detectable_humans=n_detectable_humans, 
-        max_humans_velocity=max_humans_velocity,
-        embedding_dim=embeddings_dim,
-        ablation_mode=ablation_mode,
-    )
+jessi = JESSI(
+    v_max=robot_vmax, 
+    wheels_distance=robot_wheel_distance,
+    dt=robot_dt, 
+    lidar_num_rays=lidar_num_rays, 
+    lidar_max_dist=lidar_max_dist,
+    lidar_angular_range=lidar_angular_range,
+    n_stack=n_stack, 
+    n_detectable_humans=n_detectable_humans, 
+    max_humans_velocity=max_humans_velocity,
+    embedding_dim=embeddings_dim,
+    ablation_mode=ablation_mode,
+)
 # Plotting settings
 ax_visibility = 2
 ax_lims = jnp.array([
@@ -1016,34 +996,19 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     env = LaserNav(**env_params)
     _, _, obs, info, _ = env.reset(random.PRNGKey(training_hyperparams['random_seed']))
     # Initialize robot policy and vnet params
-    if state_augmented:
-        policy = JESSI_SA(
-            robot_radius=env_params['robot_radius'],
-            v_max=robot_vmax, 
-            wheels_distance=robot_wheel_distance,
-            dt=env_params['robot_dt'], 
-            lidar_num_rays=lidar_num_rays, 
-            lidar_max_dist=lidar_max_dist,
-            lidar_angular_range=lidar_angular_range,
-            n_stack=n_stack,
-            beam_dropout_rate=0.2,
-            embedding_dim=embeddings_dim,
-            ablation_mode=ablation_mode,
-        )
-    else:
-        policy = JESSI(
-            robot_radius=env_params['robot_radius'],
-            v_max=robot_vmax, 
-            wheels_distance=robot_wheel_distance,
-            dt=env_params['robot_dt'], 
-            lidar_num_rays=lidar_num_rays, 
-            lidar_max_dist=lidar_max_dist,
-            lidar_angular_range=lidar_angular_range,
-            n_stack=n_stack,
-            beam_dropout_rate=0.2,
-            embedding_dim=embeddings_dim,
-            ablation_mode=ablation_mode,
-        )
+    policy = JESSI(
+        robot_radius=env_params['robot_radius'],
+        v_max=robot_vmax, 
+        wheels_distance=robot_wheel_distance,
+        dt=env_params['robot_dt'], 
+        lidar_num_rays=lidar_num_rays, 
+        lidar_max_dist=lidar_max_dist,
+        lidar_angular_range=lidar_angular_range,
+        n_stack=n_stack,
+        beam_dropout_rate=0.2,
+        embedding_dim=embeddings_dim,
+        ablation_mode=ablation_mode,
+    )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
         il_encoder_params = pickle.load(f)

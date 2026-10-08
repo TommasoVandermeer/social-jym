@@ -20,6 +20,7 @@ from socialjym.utils.distributions.gaussian import Gaussian, BivariateGaussian
 from socialjym.utils.distributions.logistic_normal import LogisticNormal
 from socialjym.policies.base_policy import BasePolicy
 from jhsfm.hsfm import get_linear_velocity
+from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 
@@ -1035,6 +1036,28 @@ class JESSI(BasePolicy):
         return perception_params, actor_critic_params, e2e_params
 
     @partial(jit, static_argnames=("self"))
+    def motion(
+        self,
+        pose:jnp.ndarray,
+        action:jnp.ndarray,
+        dt:float,
+    ) -> jnp.ndarray:
+        new_pose = lax.cond(
+            jnp.abs(action[1]) > 1e-5,
+            lambda _: jnp.array([
+                pose[0]+(action[0]/action[1])*(jnp.sin(pose[2]+action[1]*dt)-jnp.sin(pose[2])),
+                pose[1]+(action[0]/action[1])*(jnp.cos(pose[2])-jnp.cos(pose[2]+action[1]*dt)),
+                wrap_angle(pose[2]+action[1]*dt),
+            ]),
+            lambda _: jnp.array([
+                pose[0]+action[0]*dt*jnp.cos(pose[2]),
+                pose[1]+action[0]*dt*jnp.sin(pose[2]),
+                pose[2],
+            ]),
+            None)
+        return new_pose
+
+    @partial(jit, static_argnames=("self"))
     def bound_action_space(self, lidar_point_cloud, eps=1e-6):
         """
         Compute the bounds of the action space based on the control parameters alpha, beta, gamma.
@@ -1814,6 +1837,9 @@ class JESSI(BasePolicy):
         spatial_attentions=None,
         temporal_attentions=None,
         human_attentions=None,
+        trajectories=None,
+        trajectories_costs=None,
+        chosen_trajectories=None,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -1824,9 +1850,7 @@ class JESSI(BasePolicy):
             len(robot_poses) == \
             len(robot_actions) == \
             len(robot_goals) == \
-            len(observations) == \
-            len(actor_distrs['vertices']) == \
-            len(humans_distrs['pos_distrs']['means']), "All primary inputs must have the same length"
+            len(observations), "All primary inputs must have the same length"
         # Set matplotlib fonts
         rc('font', weight='regular', size=20)
         rcParams['pdf.fonttype'] = 42
@@ -1968,6 +1992,12 @@ class JESSI(BasePolicy):
                         edgecolor='gray'
                     )
                 )
+            if trajectories is not None and trajectories_costs is not None and chosen_trajectories is not None:
+                for i, trajectory in enumerate(trajectories[frame]):
+                    cost = trajectories_costs[frame][i]
+                    color = 'green' if cost < 1_000_000 else 'orange'
+                    axs[1].plot(trajectory[:,0], trajectory[:,1], color=color, alpha=0.5, linewidth=1, zorder=10)
+                axs[1].plot(chosen_trajectories[frame][:,0], chosen_trajectories[frame][:,1], color='blue', alpha=1, linewidth=3, zorder=30)
             axs[0].set_title("Trajectory")
             # AX 0,1: Simulation with LiDAR point cloud stack
             point_cloud = self.align_lidar(observations[frame])[1]
@@ -2144,28 +2174,29 @@ class JESSI(BasePolicy):
                     zorder=2,
                 ),
             )
-            bounded_action_space_vertices = actor_distrs["vertices"][frame]
-            axs[4].add_patch(
-                plt.Polygon(
-                    [   
-                        bounded_action_space_vertices[0],
-                        bounded_action_space_vertices[1],
-                        bounded_action_space_vertices[2],
-                    ],
-                    closed=True,
-                    fill=True,
-                    edgecolor='green',
-                    facecolor='lightgreen',
-                    linewidth=2,
-                    zorder=3,
-                ),
-            )
-            actor_distr = tree_map(lambda x: x[frame], actor_distrs)
-            samples = test_action_samples[self.action_distribution.batch_is_in_support(actor_distr, test_action_samples)]
-            test_action_p = self.action_distribution.batch_p(actor_distr, samples)
-            points_high_p = samples[test_action_p > p_visualization_threshold_dir]
-            corresponding_colors = test_action_p[test_action_p > p_visualization_threshold_dir]
-            axs[4].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+            if actor_distrs is not None:
+                bounded_action_space_vertices = actor_distrs["vertices"][frame]
+                axs[4].add_patch(
+                    plt.Polygon(
+                        [   
+                            bounded_action_space_vertices[0],
+                            bounded_action_space_vertices[1],
+                            bounded_action_space_vertices[2],
+                        ],
+                        closed=True,
+                        fill=True,
+                        edgecolor='green',
+                        facecolor='lightgreen',
+                        linewidth=2,
+                        zorder=3,
+                    ),
+                )
+                actor_distr = tree_map(lambda x: x[frame], actor_distrs)
+                samples = test_action_samples[self.action_distribution.batch_is_in_support(actor_distr, test_action_samples)]
+                test_action_p = self.action_distribution.batch_p(actor_distr, samples)
+                points_high_p = samples[test_action_p > p_visualization_threshold_dir]
+                corresponding_colors = test_action_p[test_action_p > p_visualization_threshold_dir]
+                axs[4].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[4].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=7,color='red',zorder=51)
             axs[4].set_title("Action space")
         anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
@@ -2198,6 +2229,11 @@ class JESSI(BasePolicy):
         spatial_attentions=None,
         temporal_attentions=None,
         human_attentions=None,
+        # JESSI-MPPI stuff
+        trajectories=None,
+        trajectories_costs=None,
+        control_sequences=None,
+        # Visualization stuff
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -2243,6 +2279,17 @@ class JESSI(BasePolicy):
             humans_poses = None
             humans_velocities = None
             humans_visibility_mask = None
+        if control_sequences is not None:
+            def rollout_fn(robot_pose, control_sequence):
+                def step_fn(carry, control):
+                    state = carry
+                    next_state = self.motion(state, control, self.dt)
+                    return next_state, next_state
+                _, chosen_trajectory = lax.scan(step_fn, robot_pose, control_sequence)
+                return chosen_trajectory
+            chosen_trajectories = vmap(rollout_fn)(robot_poses, control_sequences)
+        else:
+            chosen_trajectories = None
         self.animate_trajectory(
             robot_poses,
             actions,
@@ -2261,6 +2308,9 @@ class JESSI(BasePolicy):
             spatial_attentions,
             temporal_attentions,
             human_attentions,
+            trajectories,
+            trajectories_costs,
+            chosen_trajectories,
             p_visualization_threshold_dir,
             x_lims,
             y_lims,
