@@ -6,6 +6,9 @@
 *.mp4
 *.csv
 
+# Seed sensitivity analysis results folder
+scripts/jessi_seed_sensitivity_results/
+
 # Real-world experiment recordings and derived results
 turtlebot/experiments/data/*
 !turtlebot/experiments/data/.gitkeep
