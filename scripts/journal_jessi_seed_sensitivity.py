@@ -1,4 +1,4 @@
-from jax import random, jit, vmap, lax, debug
+from jax import random, jit, vmap, lax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import os
 import pickle
 import optax
+import pandas as pd
 from matplotlib import rc, rcParams
 rc('font', weight='regular', size=20)
 rcParams['pdf.fonttype'] = 42
@@ -15,7 +16,6 @@ from socialjym.policies.jessi import JESSI
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
-from jhsfm.hsfm import vectorized_compute_edge_closest_point
 
 out_folder = 'jessi_seed_sensitivity_results'
 perception_nn_name = 'pre_perception_network.pkl'
@@ -89,6 +89,49 @@ jessi = JESSI(
 if not os.path.exists(os.path.join(os.path.dirname(__file__), out_folder)):
     os.makedirs(os.path.join(os.path.dirname(__file__), out_folder))
 base_dir = os.path.join(os.path.join(os.path.dirname(__file__), out_folder))
+
+### Plot Return
+if not os.path.exists(os.path.join(base_dir, "jessi_multitask_return.pdf")) or \
+   not os.path.exists(os.path.join(base_dir, "jessi_modular_return.pdf")) or \
+   not os.path.exists(os.path.join(base_dir, "jessi_policy_return.pdf")):
+    window_size = 20
+    ## MULTITASK
+    returns_mt = jnp.full((n_seeds, rl_training_updates), jnp.nan)
+    for seed in range(n_seeds):
+        multitask_network_name = base_multitask_network_name + '_seed' + str(seed) + '.pkl'
+        if os.path.exists(os.path.join(base_dir, multitask_network_name)):
+            print(f"Loading MULTITASK metrics SEED{seed}")
+            with open(os.path.join(base_dir, multitask_network_name), 'rb') as f:
+                _, _, metrics = pickle.load(f)
+                processed_metrics = {}
+                for key, value in metrics.items():
+                    if isinstance(value, list):
+                        processed_metrics[key] = jnp.array(value)
+                    if isinstance(value, dict):
+                        processed_metrics[key] = tree_map(lambda x: jnp.array(x), value)
+                returns_mt = returns_mt.at[seed].set(processed_metrics['returns'])
+    smoothed_returns = jnp.array([
+        pd.Series(seed_data).rolling(window=window_size, min_periods=1).mean() 
+        for seed_data in returns_mt
+    ])
+    mean_returns = jnp.nanmean(smoothed_returns, axis=0)
+    std_returns = jnp.nanstd(smoothed_returns, axis=0)
+    se_returns = std_returns / jnp.sqrt(rl_training_updates)
+    x = jnp.arange(rl_training_updates)
+    plt.figure(figsize=(10, 6))
+    plt.plot(x, mean_returns, label='Return Medio', color='blue', linewidth=1.5)
+    plt.fill_between(x, mean_returns - std_returns, mean_returns + std_returns, color='blue', alpha=0.2)
+    # plt.fill_between(x, mean_returns - se_returns, mean_returns + se_returns, color='blue', alpha=0.2)
+    plt.xlabel('Training Updates')
+    plt.ylabel('Return')
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+
+    ## MODULAR
+
+    ## POLICY
+                  
 
 for seed in range(n_seeds):
     # Set the random seed
@@ -587,7 +630,7 @@ for seed in range(n_seeds):
             label='Collisions obstacles',
             color='black',
         )
-        figure.savefig(os.path.join(os.path.dirname(__file__),multitask_network_name.replace('.pkl', '.eps')), format='eps')
+        figure.savefig(os.path.join(base_dir,multitask_network_name.replace('.pkl', '.eps')), format='eps')
     else:
         print(f"JESSI-MULTITASK RL training already done and saved... Remove '{multitask_network_name}' to retrain.")
 
@@ -898,7 +941,7 @@ for seed in range(n_seeds):
             label='Collisions obstacles',
             color='black',
         )
-        figure.savefig(os.path.join(os.path.dirname(__file__),modular_network_name.replace('.pkl', '.eps')), format='eps')
+        figure.savefig(os.path.join(base_dir,modular_network_name.replace('.pkl', '.eps')), format='eps')
     else:
         print(f"JESSI-MODULAR RL training already done and saved... Remove '{modular_network_name}' to retrain.")
 
