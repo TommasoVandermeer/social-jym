@@ -206,6 +206,14 @@ ccso_scenarios_mean_summary = {p: {} for p in policies.keys()}
 train_scenarios_std_summary = {p: {} for p in policies.keys()}
 test_scenarios_std_summary = {p: {} for p in policies.keys()}
 ccso_scenarios_std_summary = {p: {} for p in policies.keys()}
+# Maxs
+train_scenarios_max_summary = {p: {} for p in policies.keys()}
+test_scenarios_max_summary = {p: {} for p in policies.keys()}
+ccso_scenarios_max_summary = {p: {} for p in policies.keys()}
+# Mins
+train_scenarios_min_summary = {p: {} for p in policies.keys()}
+test_scenarios_min_summary = {p: {} for p in policies.keys()}
+ccso_scenarios_min_summary = {p: {} for p in policies.keys()}
 for metric in metrics_to_plot:
     # TRAIN Scenarios
     for p in all_results.keys():
@@ -213,34 +221,46 @@ for metric in metrics_to_plot:
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
             y_data = jnp.nanmean(all_results[p][metric][:,0, :, :]) / n_trials
             y_data_std = jnp.nanstd(all_results[p][metric][:,0, :, :]) / n_trials
+            y_data_raw = jnp.nanmean(all_results[p][metric][:,0, :, :], axis=(1,2)) / n_trials
         else:
             y_data = jnp.nanmean(all_results[p][metric][:,0, :, :, :])
             y_data_std = jnp.nanstd(all_results[p][metric][:,0, :, :, :])
+            y_data_raw = jnp.nanmean(all_results[p][metric][:,0, :, :, :], axis=(1,2,3))
         train_scenarios_mean_summary[p][metric] = float(y_data)
         train_scenarios_std_summary[p][metric] = float(y_data_std)
+        train_scenarios_max_summary[p][metric] = float(jnp.nanmax(y_data_raw))
+        train_scenarios_min_summary[p][metric] = float(jnp.nanmin(y_data_raw))
     # TEST Scenarios
     for p in all_results.keys():
         if policies[p]["only_ccso"]: continue
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
             y_data = jnp.nanmean(all_results[p][metric][:,1, :, :]) / n_trials
             y_data_std = jnp.nanstd(all_results[p][metric][:,1, :, :]) / n_trials
+            y_data_raw = jnp.nanmean(all_results[p][metric][:,1, :, :], axis=(1,2)) / n_trials
         else:
             y_data = jnp.nanmean(all_results[p][metric][:,1, :, :, :])
             y_data_std = jnp.nanstd(all_results[p][metric][:,1, :, :, :])
+            y_data_raw = jnp.nanmean(all_results[p][metric][:,1, :, :, :], axis=(1,2,3))
         test_scenarios_mean_summary[p][metric] = float(y_data)
         test_scenarios_std_summary[p][metric] = float(y_data_std)
+        test_scenarios_max_summary[p][metric] = float(jnp.nanmax(y_data_raw))
+        test_scenarios_min_summary[p][metric] = float(jnp.nanmin(y_data_raw))
     # CCSO Scenario
     for p in all_results.keys():
         idx = 0 if policies[p]["only_ccso"] else 2
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
             y_data = jnp.nanmean(all_results[p][metric][:,idx, :, :]) / n_trials
             y_data_std = jnp.nanstd(all_results[p][metric][:,idx, :, :]) / n_trials
+            y_data_raw = jnp.nanmean(all_results[p][metric][:,idx, :, :], axis=(1,2)) / n_trials
         else:
             y_data = jnp.nanmean(all_results[p][metric][:,idx, :, :, :])
             y_data_std = jnp.nanstd(all_results[p][metric][:,idx, :, :, :])
+            y_data_raw = jnp.nanmean(all_results[p][metric][:,idx, :, :, :], axis=(1,2,3))
         ccso_scenarios_mean_summary[p][metric] = float(y_data)
         ccso_scenarios_std_summary[p][metric] = float(y_data_std)
-def print_pretty_table(mean_summary_dict, std_summary_dict, title, latex_mode=False):
+        ccso_scenarios_max_summary[p][metric] = float(jnp.nanmax(y_data_raw))
+        ccso_scenarios_min_summary[p][metric] = float(jnp.nanmin(y_data_raw))
+def print_pretty_table(mean_or_min_summary_dict, std_or_max_summary_dict, title, latex_mode=False, max_min=False):
     print(f"\n{'-'*30} {title.upper()} {'-'*30}")
     if latex_mode:
         headers = [
@@ -258,16 +278,16 @@ def print_pretty_table(mean_summary_dict, std_summary_dict, title, latex_mode=Fa
         headers = ["Policy", "SR (%)", "CR-H (%)", "CR-O (%)", "TR (%)", "TtG (s)", "LJ (m/s^3)", "AJ (rad/s^3)", "SC (%)"]
     top_3_values = {}
     for metric in metrics_to_plot:
-        valid_vals = [m[metric] for p, m in mean_summary_dict.items() if m and not jnp.isnan(m.get(metric, float('nan')))]
+        valid_vals = [m[metric] for p, m in mean_or_min_summary_dict.items() if m and not jnp.isnan(m.get(metric, float('nan')))]
         if not valid_vals:
             continue
         unique_vals = list(set([round(v, 5) for v in valid_vals]))
         unique_vals.sort(reverse=(metric in higher_is_better))
         top_3_values[metric] = unique_vals[:3]
     table_data = []
-    for p, metrics in mean_summary_dict.items():
+    for p, metrics in mean_or_min_summary_dict.items():
         if not metrics: continue
-        std_metrics = std_summary_dict.get(p, {})
+        std_metrics = std_or_max_summary_dict.get(p, {})
         row = [policies[p]["short"]]
         for metric in metrics_to_plot:
             val = metrics.get(metric, float('nan'))
@@ -279,20 +299,32 @@ def print_pretty_table(mean_summary_dict, std_summary_dict, title, latex_mode=Fa
                 if latex_mode:
                     val_str = f"{val*100:.1f}"
                     std_str = f"{std_val*100:.1f}" if not jnp.isnan(std_val) else "0.0"
-                    cell_str = f"{val_str} $\\pm$ {std_str}"
+                    if not max_min:
+                        cell_str = f"{val_str} $\\pm$ {std_str}"
+                    else:
+                        cell_str = f"{val_str} $-$ {std_str}"
                 else:
                     val_str = f"{val*100:.1f}"
                     std_str = f"{std_val*100:.1f}" if not jnp.isnan(std_val) else "0.0"
-                    cell_str = f"{val_str} ± {std_str}%"
+                    if not max_min:
+                        cell_str = f"{val_str} ± {std_str}%"
+                    else:
+                        cell_str = f"{val_str}% - {std_str}%"
             else:
                 if latex_mode:
                     val_str = f"{val:.2f}"
                     std_str = f"{std_val:.2f}" if not jnp.isnan(std_val) else "0.00"
-                    cell_str = f"{val_str} $\\pm$ {std_str}"
+                    if not max_min:
+                        cell_str = f"{val_str} $\\pm$ {std_str}"
+                    else:
+                        cell_str = f"{val_str} $-$ {std_str}"
                 else:
                     val_str = f"{val:.2f}"
                     std_str = f"{std_val:.2f}" if not jnp.isnan(std_val) else "0.00"
-                    cell_str = f"{val_str} ± {std_str}"
+                    if not max_min:
+                        cell_str = f"{val_str} ± {std_str}"
+                    else:
+                        cell_str = f"{val_str} - {std_str}"
             val_rounded = round(val, 5)
             if metric in top_3_values and val_rounded in top_3_values[metric]:
                 if latex_mode:
@@ -323,6 +355,9 @@ def print_pretty_table(mean_summary_dict, std_summary_dict, title, latex_mode=Fa
         print("\n".join(latex_lines))
     else:
         print(tabulate(table_data, headers=headers, tablefmt="fancy_grid", stralign="center", numalign="center"))
-print_pretty_table(train_scenarios_mean_summary, train_scenarios_std_summary, "Train Scenarios Results", latex_mode=False)
-print_pretty_table(test_scenarios_mean_summary, test_scenarios_std_summary, "Test Scenarios Results", latex_mode=False)
-print_pretty_table(ccso_scenarios_mean_summary, ccso_scenarios_std_summary, "Second experimental setup results", latex_mode=False)
+print_pretty_table(train_scenarios_mean_summary, train_scenarios_std_summary, "First setup", latex_mode=False)
+print_pretty_table(test_scenarios_mean_summary, test_scenarios_std_summary, "Second setup", latex_mode=False)
+print_pretty_table(ccso_scenarios_mean_summary, ccso_scenarios_std_summary, "Third setup", latex_mode=False)
+print_pretty_table(train_scenarios_min_summary, train_scenarios_max_summary, "First setup (min-max)", latex_mode=False, max_min=True)
+print_pretty_table(test_scenarios_min_summary, test_scenarios_max_summary, "Second setup (min-max)", latex_mode=False, max_min=True)
+print_pretty_table(ccso_scenarios_min_summary, ccso_scenarios_max_summary, "Third setup (min-max)", latex_mode=False, max_min=True)

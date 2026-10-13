@@ -127,9 +127,12 @@ if not os.path.exists(os.path.join(base_dir, "jessi_multitask_return.pdf")) or \
         mean_returns = jnp.nanmean(smoothed_returns, axis=0)
         std_returns = jnp.nanstd(smoothed_returns, axis=0)
         x = jnp.arange(rl_training_updates)
+        colors = ["red", "green", "blue"]
+        color = colors[["MT","MD","PO"].index(training_paradigm)]
         plt.figure(figsize=(10, 6))
-        plt.plot(x, mean_returns, color='blue', linewidth=1.5)
-        plt.fill_between(x, mean_returns - std_returns, mean_returns + std_returns, color='blue', alpha=0.2)
+        plt.plot(x, mean_returns, color=color, linewidth=3.)
+        # for seed in range(n_seeds): plt.plot(x, smoothed_returns[seed], color=color, linewidth=1.)
+        plt.fill_between(x, mean_returns - std_returns, mean_returns + std_returns, color=color, alpha=0.2)
         plt.xlabel('Training Updates')
         plt.ylabel('Return')
         plt.grid(True, linestyle='--', alpha=0.7)
