@@ -170,10 +170,10 @@ if not os.path.exists(os.path.join(base_dir,"jessi_seed_sensitivity_tests.pkl"))
 
     ### AGGREGATE ALL RESULTS ###
     # Load all test results and aggregate them in a single dictionary
-    metrics_dims = (3,len(tests_n_obstacles),len(tests_n_humans))
-    all_mt = initialize_metrics_dict(n_training_seeds, n_trials, metrics_dims)
-    all_md = initialize_metrics_dict(n_training_seeds, n_trials, metrics_dims)
-    all_po = initialize_metrics_dict(n_training_seeds, n_trials, metrics_dims)
+    metrics_dims = (n_training_seeds, 3, len(tests_n_obstacles),len(tests_n_humans))
+    all_mt = initialize_metrics_dict(n_trials, metrics_dims)
+    all_md = initialize_metrics_dict(n_trials, metrics_dims)
+    all_po = initialize_metrics_dict(n_trials, metrics_dims)
     for seed in range(n_training_seeds):
         with open(os.path.join(base_dir,f"jessi_multitask_seed{seed}_tests.pkl"), 'rb') as f:
                 jessi_multitask_results = pickle.load(f)  
@@ -189,55 +189,58 @@ if not os.path.exists(os.path.join(base_dir,"jessi_seed_sensitivity_tests.pkl"))
         'jessi_modular': all_md,
         'jessi_policy': all_po,
     }
-    with open(os.path.join(os.path.dirname(__file__),"jessi_seed_sensitivity_tests.pkl"), 'wb') as f:
+    with open(os.path.join(base_dir,"jessi_seed_sensitivity_tests.pkl"), 'wb') as f:
         pickle.dump(all_results, f)
 else:
-    with open(os.path.join(os.path.dirname(__file__),"jessi_seed_sensitivity_tests.pkl"), 'rb') as f:
+    with open(os.path.join(base_dir,"jessi_seed_sensitivity_tests.pkl"), 'rb') as f:
         all_results = pickle.load(f)
 
 ### PRINT RESULTS SUMMARIES ###
 metrics_to_plot = ["successes","collisions_with_human","collisions_with_obstacle","timeouts","times_to_goal","average_jerk","average_angular_jerk","space_compliance"]
 higher_is_better = ["successes", "space_compliance"]
-train_scenarios_summary = {p: {} for p in policies.keys()}
-test_scenarios_summary = {p: {} for p in policies.keys()}
-train_and_test_scenarios_summary = {p: {} for p in policies.keys()}
-ccso_scenarios_summary = {p: {} for p in policies.keys()}
-complete_summary = {p: {} for p in policies.keys()}
+# Means
+train_scenarios_mean_summary = {p: {} for p in policies.keys()}
+test_scenarios_mean_summary = {p: {} for p in policies.keys()}
+ccso_scenarios_mean_summary = {p: {} for p in policies.keys()}
+# Stds
+train_scenarios_std_summary = {p: {} for p in policies.keys()}
+test_scenarios_std_summary = {p: {} for p in policies.keys()}
+ccso_scenarios_std_summary = {p: {} for p in policies.keys()}
 for metric in metrics_to_plot:
     # TRAIN Scenarios
     for p in all_results.keys():
         if policies[p]["only_ccso"]: continue
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
-            y_data = jnp.nanmean(all_results[p][metric][0, :, :]) / n_trials
+            y_data = jnp.nanmean(all_results[p][metric][:,0, :, :]) / n_trials
+            y_data_std = jnp.nanstd(all_results[p][metric][:,0, :, :]) / n_trials
         else:
-            y_data = jnp.nanmean(all_results[p][metric][0, :, :, :])
-        train_scenarios_summary[p][metric] = float(y_data)
+            y_data = jnp.nanmean(all_results[p][metric][:,0, :, :, :])
+            y_data_std = jnp.nanstd(all_results[p][metric][:,0, :, :, :])
+        train_scenarios_mean_summary[p][metric] = float(y_data)
+        train_scenarios_std_summary[p][metric] = float(y_data_std)
     # TEST Scenarios
     for p in all_results.keys():
         if policies[p]["only_ccso"]: continue
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
-            y_data = jnp.nanmean(all_results[p][metric][1, :, :]) / n_trials
+            y_data = jnp.nanmean(all_results[p][metric][:,1, :, :]) / n_trials
+            y_data_std = jnp.nanstd(all_results[p][metric][:,1, :, :]) / n_trials
         else:
-            y_data = jnp.nanmean(all_results[p][metric][1, :, :, :])
-        test_scenarios_summary[p][metric] = float(y_data)
+            y_data = jnp.nanmean(all_results[p][metric][:,1, :, :, :])
+            y_data_std = jnp.nanstd(all_results[p][metric][:,1, :, :, :])
+        test_scenarios_mean_summary[p][metric] = float(y_data)
+        test_scenarios_std_summary[p][metric] = float(y_data_std)
     # CCSO Scenario
     for p in all_results.keys():
         idx = 0 if policies[p]["only_ccso"] else 2
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
-            y_data = jnp.nanmean(all_results[p][metric][idx, :, :]) / n_trials
+            y_data = jnp.nanmean(all_results[p][metric][:,idx, :, :]) / n_trials
+            y_data_std = jnp.nanstd(all_results[p][metric][:,idx, :, :]) / n_trials
         else:
-            y_data = jnp.nanmean(all_results[p][metric][idx, :, :, :])
-        ccso_scenarios_summary[p][metric] = float(y_data)
-    ### Complete summary & Train and Test scenarios summary
-    for p in all_results.keys():
-        v_train = train_scenarios_summary[p].get(metric, jnp.nan)
-        v_test  = test_scenarios_summary[p].get(metric, jnp.nan)
-        if not policies[p]["only_ccso"]:
-            train_and_test_scenarios_summary[p][metric] = float(jnp.nanmean(jnp.array([v_train, v_test])))
-        v_ccso  = ccso_scenarios_summary[p].get(metric, jnp.nan)
-        avg_val = float(jnp.nanmean(jnp.array([v_train, v_test, v_ccso])))
-        complete_summary[p][metric] = avg_val
-def print_pretty_table(summary_dict, title, latex_mode=False):
+            y_data = jnp.nanmean(all_results[p][metric][:,idx, :, :, :])
+            y_data_std = jnp.nanstd(all_results[p][metric][:,idx, :, :, :])
+        ccso_scenarios_mean_summary[p][metric] = float(y_data)
+        ccso_scenarios_std_summary[p][metric] = float(y_data_std)
+def print_pretty_table(mean_summary_dict, std_summary_dict, title, latex_mode=False):
     print(f"\n{'-'*30} {title.upper()} {'-'*30}")
     if latex_mode:
         headers = [
@@ -255,32 +258,48 @@ def print_pretty_table(summary_dict, title, latex_mode=False):
         headers = ["Policy", "SR (%)", "CR-H (%)", "CR-O (%)", "TR (%)", "TtG (s)", "LJ (m/s^3)", "AJ (rad/s^3)", "SC (%)"]
     top_3_values = {}
     for metric in metrics_to_plot:
-        valid_vals = [m[metric] for p, m in summary_dict.items() if m and not jnp.isnan(m.get(metric, float('nan')))]
+        valid_vals = [m[metric] for p, m in mean_summary_dict.items() if m and not jnp.isnan(m.get(metric, float('nan')))]
         if not valid_vals:
             continue
         unique_vals = list(set([round(v, 5) for v in valid_vals]))
         unique_vals.sort(reverse=(metric in higher_is_better))
         top_3_values[metric] = unique_vals[:3]
     table_data = []
-    for p, metrics in summary_dict.items():
+    for p, metrics in mean_summary_dict.items():
         if not metrics: continue
+        std_metrics = std_summary_dict.get(p, {})
         row = [policies[p]["short"]]
         for metric in metrics_to_plot:
             val = metrics.get(metric, float('nan'))
+            std_val = std_metrics.get(metric, float('nan'))
             if jnp.isnan(val):
                 row.append("N/A")
                 continue
             if metric in ['successes', 'collisions_with_human', 'collisions_with_obstacle', 'timeouts','space_compliance']:
-                val_str = f"{val*100:.1f}" if latex_mode else f"{val*100:.1f}%"
+                if latex_mode:
+                    val_str = f"{val*100:.1f}"
+                    std_str = f"{std_val*100:.1f}" if not jnp.isnan(std_val) else "0.0"
+                    cell_str = f"{val_str} $\\pm$ {std_str}"
+                else:
+                    val_str = f"{val*100:.1f}"
+                    std_str = f"{std_val*100:.1f}" if not jnp.isnan(std_val) else "0.0"
+                    cell_str = f"{val_str} ± {std_str}%"
             else:
-                val_str = f"{val:.2f}"
+                if latex_mode:
+                    val_str = f"{val:.2f}"
+                    std_str = f"{std_val:.2f}" if not jnp.isnan(std_val) else "0.00"
+                    cell_str = f"{val_str} $\\pm$ {std_str}"
+                else:
+                    val_str = f"{val:.2f}"
+                    std_str = f"{std_val:.2f}" if not jnp.isnan(std_val) else "0.00"
+                    cell_str = f"{val_str} ± {std_str}"
             val_rounded = round(val, 5)
             if metric in top_3_values and val_rounded in top_3_values[metric]:
                 if latex_mode:
-                    val_str = f"\\textbf{{{val_str}}}"
+                    cell_str = f"\\textbf{{{cell_str}}}"
                 else:
-                    val_str = f"\033[1m{val_str}\033[0m" # Codice ANSI per grassetto terminale  
-            row.append(val_str)
+                    cell_str = f"\033[1m{cell_str}\033[0m"
+            row.append(cell_str)
         table_data.append(row)
     if latex_mode:
         num_cols = len(headers)
@@ -304,8 +323,6 @@ def print_pretty_table(summary_dict, title, latex_mode=False):
         print("\n".join(latex_lines))
     else:
         print(tabulate(table_data, headers=headers, tablefmt="fancy_grid", stralign="center", numalign="center"))
-print_pretty_table(complete_summary, "Overall Results", latex_mode=False)
-print_pretty_table(train_and_test_scenarios_summary, "First experimental setup results", latex_mode=False)
-print_pretty_table(train_scenarios_summary, "Train Scenarios Results", latex_mode=False)
-print_pretty_table(test_scenarios_summary, "Test Scenarios Results", latex_mode=False)
-print_pretty_table(ccso_scenarios_summary, "Second experimental setup results", latex_mode=False)
+print_pretty_table(train_scenarios_mean_summary, train_scenarios_std_summary, "Train Scenarios Results", latex_mode=False)
+print_pretty_table(test_scenarios_mean_summary, test_scenarios_std_summary, "Test Scenarios Results", latex_mode=False)
+print_pretty_table(ccso_scenarios_mean_summary, ccso_scenarios_std_summary, "Second experimental setup results", latex_mode=False)
