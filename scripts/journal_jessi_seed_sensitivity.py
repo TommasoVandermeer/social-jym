@@ -7,10 +7,17 @@ import os
 import pickle
 import optax
 import pandas as pd
+import scipy.stats as stats
 from matplotlib import rc, rcParams
-rc('font', weight='regular', size=20)
-rcParams['pdf.fonttype'] = 42
-rcParams['ps.fonttype'] = 42
+rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman"],
+    "font.weight": "regular",
+    "font.size": 23,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})
 
 from socialjym.policies.jessi import JESSI
 from socialjym.envs.lasernav import LaserNav
@@ -89,77 +96,6 @@ jessi = JESSI(
 if not os.path.exists(os.path.join(os.path.dirname(__file__), out_folder)):
     os.makedirs(os.path.join(os.path.dirname(__file__), out_folder))
 base_dir = os.path.join(os.path.join(os.path.dirname(__file__), out_folder))
-
-### Plot return
-if not os.path.exists(os.path.join(base_dir, "jessi_multitask_return.pdf")) or \
-   not os.path.exists(os.path.join(base_dir, "jessi_modular_return.pdf")) or \
-   not os.path.exists(os.path.join(base_dir, "jessi_policy_return.pdf")):
-    window_size = 20
-    def plot(training_paradigm):
-        assert training_paradigm in ["MT","MD","PO"], f"Training paradigm is not valid, choose one in {["MT","MD","PO"]}"
-        returns_mt = jnp.full((n_seeds, rl_training_updates), jnp.nan)
-        for seed in range(n_seeds):
-            if training_paradigm == "MT":
-                base_network_name = base_multitask_network_name
-            elif training_paradigm == "MD":
-                base_network_name = base_modular_network_name
-            elif training_paradigm == "PO":
-                base_network_name = base_policy_network_name
-            else:
-                print("Training paradigm not valid")
-                break
-            network_name = base_network_name + '_seed' + str(seed) + '.pkl'
-            if os.path.exists(os.path.join(base_dir, network_name)):
-                print(f"Loading {training_paradigm} metrics SEED{seed}")
-                with open(os.path.join(base_dir, network_name), 'rb') as f:
-                    _, _, metrics = pickle.load(f)
-                    processed_metrics = {}
-                    for key, value in metrics.items():
-                        if isinstance(value, list):
-                            processed_metrics[key] = jnp.array(value)
-                        if isinstance(value, dict):
-                            processed_metrics[key] = tree_map(lambda x: jnp.array(x), value)
-                    returns_mt = returns_mt.at[seed].set(processed_metrics['returns'])
-        smoothed_returns = jnp.array([
-            pd.Series(seed_data).rolling(window=window_size, min_periods=1).mean() 
-            for seed_data in returns_mt
-        ])
-        mean_returns = jnp.nanmean(smoothed_returns, axis=0)
-        std_returns = jnp.nanstd(smoothed_returns, axis=0)
-        x = jnp.arange(rl_training_updates)
-        colors = ["red", "green", "blue"]
-        color = colors[["MT","MD","PO"].index(training_paradigm)]
-        plt.figure(figsize=(10, 6))
-        plt.plot(x, mean_returns, color=color, linewidth=3.)
-        # for seed in range(n_seeds): plt.plot(x, smoothed_returns[seed], color=color, linewidth=1.)
-        plt.fill_between(x, mean_returns - std_returns, mean_returns + std_returns, color=color, alpha=0.2)
-        plt.xlabel('Training Updates')
-        plt.ylabel('Return')
-        plt.grid(True, linestyle='--', alpha=0.7)
-        plt.tight_layout()
-        plt.show()
-        return mean_returns, std_returns
-
-    ## MULTITASK
-    mean_mt, std_mt = plot("MT")
-    ## MODULAR
-    mean_md, std_md = plot("MD")
-    ## POLICY
-    mean_po, std_po = plot("PO")  
-    ## Summary plot
-    x = jnp.arange(rl_training_updates)
-    plt.figure(figsize=(10, 6))
-    plt.plot(x, mean_mt, color='red', linewidth=1.5)
-    plt.fill_between(x, mean_mt - std_mt, mean_mt + std_mt, color='red', alpha=0.2)
-    plt.plot(x, mean_md, color='green', linewidth=1.5)
-    plt.fill_between(x, mean_md - std_md, mean_md + std_md, color='green', alpha=0.2)
-    plt.plot(x, mean_po, color='blue', linewidth=1.5)
-    plt.fill_between(x, mean_po - std_po, mean_po + std_po, color='blue', alpha=0.2)
-    plt.xlabel('Training Updates')
-    plt.ylabel('Return')
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.tight_layout()
-    plt.show()
 
 for seed in range(n_seeds):
     # Set the random seed
@@ -1255,3 +1191,76 @@ for seed in range(n_seeds):
         figure.savefig(os.path.join(base_dir,policy_network_name.replace('.pkl', '.eps')), format='eps')
     else:
         print(f"JESSI-POLICY RL training already done and saved... Remove '{policy_network_name}' to retrain.")
+
+### Plot return
+if not os.path.exists(os.path.join(base_dir, "jessi_mean_returns.pdf")):
+    window_size = 20
+    def plot(training_paradigm):
+        assert training_paradigm in ["MT","MD","PO"], f"Training paradigm is not valid, choose one in {["MT","MD","PO"]}"
+        returns_mt = jnp.full((n_seeds, rl_training_updates), jnp.nan)
+        for seed in range(n_seeds):
+            if training_paradigm == "MT":
+                base_network_name = base_multitask_network_name
+            elif training_paradigm == "MD":
+                base_network_name = base_modular_network_name
+            elif training_paradigm == "PO":
+                base_network_name = base_policy_network_name
+            else:
+                print("Training paradigm not valid")
+                break
+            network_name = base_network_name + '_seed' + str(seed) + '.pkl'
+            if os.path.exists(os.path.join(base_dir, network_name)):
+                print(f"Loading {training_paradigm} metrics SEED{seed}")
+                with open(os.path.join(base_dir, network_name), 'rb') as f:
+                    _, _, metrics = pickle.load(f)
+                    processed_metrics = {}
+                    for key, value in metrics.items():
+                        if isinstance(value, list):
+                            processed_metrics[key] = jnp.array(value)
+                        if isinstance(value, dict):
+                            processed_metrics[key] = tree_map(lambda x: jnp.array(x), value)
+                    returns_mt = returns_mt.at[seed].set(processed_metrics['returns'])
+        smoothed_returns = jnp.array([
+            pd.Series(seed_data).rolling(window=window_size, min_periods=1).mean() 
+            for seed_data in returns_mt
+        ])
+        mean_returns = jnp.nanmean(smoothed_returns, axis=0)
+        std_returns = jnp.nanstd(smoothed_returns, axis=0)
+        # x = jnp.arange(rl_training_updates)
+        # colors = ["red", "green", "blue"]
+        # color = colors[["MT","MD","PO"].index(training_paradigm)]
+        # plt.figure(figsize=(10, 6))
+        # plt.plot(x, mean_returns, color=color, linewidth=3.)
+        # # for seed in range(n_seeds): plt.plot(x, smoothed_returns[seed], color=color, linewidth=1.)
+        # plt.fill_between(x, mean_returns - std_returns, mean_returns + std_returns, color=color, alpha=0.2)
+        # plt.xlabel('Training Updates')
+        # plt.ylabel('Return')
+        # plt.grid(True, linestyle='--', alpha=0.7)
+        # plt.tight_layout()
+        # plt.show()
+        return mean_returns, std_returns
+    ## MULTITASK
+    mean_mt, std_mt = plot("MT")
+    ci_mean_mt = stats.t.ppf(0.975, 9) * std_mt / jnp.sqrt(n_seeds)
+    ## MODULAR
+    mean_md, std_md = plot("MD")
+    ci_mean_md = stats.t.ppf(0.975, 9) * std_md / jnp.sqrt(n_seeds)
+    ## POLICY
+    mean_po, std_po = plot("PO")  
+    ci_mean_po = stats.t.ppf(0.975, 9) * std_po / jnp.sqrt(n_seeds)
+    ## Summary plot
+    x = jnp.arange(rl_training_updates)
+    figure, ax = plt.subplots(1,1, figsize=(10, 6))
+    figure.subplots_adjust(left=0.1, right=0.99, top=0.99, bottom=0.13)
+    ax.plot(x, mean_mt, color='red', linewidth=1.5, label='JESSI-MT')
+    ax.fill_between(x, mean_mt - ci_mean_mt, mean_mt + ci_mean_mt, color='red', alpha=0.2)
+    ax.plot(x, mean_md, color='green', linewidth=1.5, label='JESSI-MD')
+    ax.fill_between(x, mean_md - ci_mean_md, mean_md + ci_mean_md, color='green', alpha=0.2)
+    ax.plot(x, mean_po, color='blue', linewidth=1.5, label='JESSI-PO')
+    ax.fill_between(x, mean_po - ci_mean_po, mean_po + ci_mean_po, color='blue', alpha=0.2)
+    ax.set_xlabel('Training Updates')
+    ax.set_ylabel('Return')
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles[::-1], labels[::-1],loc='lower right', bbox_to_anchor=(0.999, 0.01))
+    ax.grid(True, linestyle='--', alpha=0.7)
+    figure.savefig(os.path.join(base_dir, "jessi_mean_returns.pdf"), format='pdf')

@@ -3,6 +3,7 @@ from jax.tree_util import tree_map
 import os
 import pickle
 from tabulate import tabulate
+import scipy.stats as stats
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as LaserReward
@@ -221,10 +222,12 @@ for metric in metrics_to_plot:
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
             y_data = jnp.nanmean(all_results[p][metric][:,0, :, :]) / n_trials
             y_data_std = jnp.nanstd(all_results[p][metric][:,0, :, :]) / n_trials
+            y_data_std = stats.t.ppf(0.975, 9) * y_data_std / jnp.sqrt(n_training_seeds)
             y_data_raw = jnp.nanmean(all_results[p][metric][:,0, :, :], axis=(1,2)) / n_trials
         else:
             y_data = jnp.nanmean(all_results[p][metric][:,0, :, :, :])
             y_data_std = jnp.nanstd(all_results[p][metric][:,0, :, :, :])
+            y_data_std = stats.t.ppf(0.975, 9) * y_data_std / jnp.sqrt(n_training_seeds)
             y_data_raw = jnp.nanmean(all_results[p][metric][:,0, :, :, :], axis=(1,2,3))
         train_scenarios_mean_summary[p][metric] = float(y_data)
         train_scenarios_std_summary[p][metric] = float(y_data_std)
@@ -236,10 +239,12 @@ for metric in metrics_to_plot:
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
             y_data = jnp.nanmean(all_results[p][metric][:,1, :, :]) / n_trials
             y_data_std = jnp.nanstd(all_results[p][metric][:,1, :, :]) / n_trials
+            y_data_std = stats.t.ppf(0.975, 9) * y_data_std / jnp.sqrt(n_training_seeds)
             y_data_raw = jnp.nanmean(all_results[p][metric][:,1, :, :], axis=(1,2)) / n_trials
         else:
             y_data = jnp.nanmean(all_results[p][metric][:,1, :, :, :])
             y_data_std = jnp.nanstd(all_results[p][metric][:,1, :, :, :])
+            y_data_std = stats.t.ppf(0.975, 9) * y_data_std / jnp.sqrt(n_training_seeds)
             y_data_raw = jnp.nanmean(all_results[p][metric][:,1, :, :, :], axis=(1,2,3))
         test_scenarios_mean_summary[p][metric] = float(y_data)
         test_scenarios_std_summary[p][metric] = float(y_data_std)
@@ -251,10 +256,12 @@ for metric in metrics_to_plot:
         if metric in ['successes', 'collisions', 'timeouts', 'collisions_with_obstacle', 'collisions_with_human']:
             y_data = jnp.nanmean(all_results[p][metric][:,idx, :, :]) / n_trials
             y_data_std = jnp.nanstd(all_results[p][metric][:,idx, :, :]) / n_trials
+            y_data_std = stats.t.ppf(0.975, 9) * y_data_std / jnp.sqrt(n_training_seeds)
             y_data_raw = jnp.nanmean(all_results[p][metric][:,idx, :, :], axis=(1,2)) / n_trials
         else:
             y_data = jnp.nanmean(all_results[p][metric][:,idx, :, :, :])
             y_data_std = jnp.nanstd(all_results[p][metric][:,idx, :, :, :])
+            y_data_std = stats.t.ppf(0.975, 9) * y_data_std / jnp.sqrt(n_training_seeds)
             y_data_raw = jnp.nanmean(all_results[p][metric][:,idx, :, :, :], axis=(1,2,3))
         ccso_scenarios_mean_summary[p][metric] = float(y_data)
         ccso_scenarios_std_summary[p][metric] = float(y_data_std)
