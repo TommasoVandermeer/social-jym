@@ -11,7 +11,7 @@ An environment based on JAX to train mobile robots within crowded environments. 
 > This repository hosts the official implementation of our work on mobile robot navigation in dense crowds:
 > 
 > 1. **"Safe Robot Navigation with Reinforcement Learning using Dirichlet Distributions and Social Attention"**  
->    *Published at IEEE ICAR 2025* — [[Paper]](https://doi.org/10.1109/ICAR65334.2025.11338678) | 📌 **[Code: DIR-SAFE branch](https://github.com/TommasoVandermeer/social-jym/tree/dir-saf)**
+>    *Published at IEEE ICAR 2025* — [[Paper]](https://doi.org/10.1109/ICAR65334.2025.11338678) | 📌 **[Code: DIR-SAFE branch](https://github.com/TommasoVandermeer/social-jym/tree/dir-safe)**
 >
 > 2. **"End-to-End Safe Social Navigation via Multi-Task Reinforcement Learning and Probabilistic Perception"**  
 >    *Presented at IEEE/RSJ IROS 2026* — [[Paper]](https://doi.org/10.48550/arXiv.2610.05733) | 📌 **[Code: JESSI branch](https://github.com/TommasoVandermeer/social-jym/tree/jessi)**
