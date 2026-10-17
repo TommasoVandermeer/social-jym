@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import os
 import pickle
 import optax
+import pandas as pd
+import scipy.stats as stats
 from matplotlib import rc, rcParams
 rcParams.update({
     "text.usetex": True,
@@ -79,6 +81,72 @@ training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_si
 if not os.path.exists(os.path.join(os.path.dirname(__file__), out_folder)):
     os.makedirs(os.path.join(os.path.dirname(__file__), out_folder))
 base_dir = os.path.join(os.path.join(os.path.dirname(__file__), out_folder))
+
+### Plot return
+if not os.path.exists(os.path.join(base_dir, "vanilla_e2e_mean_returns.pdf")):
+    window_size = 20
+    def plot(training_paradigm):
+        assert training_paradigm in ["V", "BV"], f"Training paradigm is not valid, choose one in {["V", "BV"]}"
+        returns_mt = jnp.full((n_seeds, rl_training_updates), jnp.nan)
+        for seed in range(n_seeds):
+            if training_paradigm == "V":
+                base_network_name = base_unbounded_network_name
+            elif training_paradigm == "BV":
+                base_network_name = base_bounded_network_name
+            else:
+                print("Training paradigm not valid")
+                break
+            network_name = base_network_name + '_seed' + str(seed) + '.pkl'
+            if os.path.exists(os.path.join(base_dir, network_name)):
+                print(f"Loading {training_paradigm} metrics SEED{seed}")
+                with open(os.path.join(base_dir, network_name), 'rb') as f:
+                    _, _, metrics = pickle.load(f)
+                    processed_metrics = {}
+                    for key, value in metrics.items():
+                        if isinstance(value, list):
+                            processed_metrics[key] = jnp.array(value)
+                        if isinstance(value, dict):
+                            processed_metrics[key] = tree_map(lambda x: jnp.array(x), value)
+                    returns_mt = returns_mt.at[seed].set(processed_metrics['returns'])
+        smoothed_returns = jnp.array([
+            pd.Series(seed_data).rolling(window=window_size, min_periods=1).mean() 
+            for seed_data in returns_mt
+        ])
+        mean_returns = jnp.nanmean(smoothed_returns, axis=0)
+        std_returns = jnp.nanstd(smoothed_returns, axis=0)
+        # x = jnp.arange(rl_training_updates)
+        # colors = ["red", "green", "blue"]
+        # color = colors[["MT","MD","PO"].index(training_paradigm)]
+        # plt.figure(figsize=(10, 6))
+        # plt.plot(x, mean_returns, color=color, linewidth=3.)
+        # # for seed in range(n_seeds): plt.plot(x, smoothed_returns[seed], color=color, linewidth=1.)
+        # plt.fill_between(x, mean_returns - std_returns, mean_returns + std_returns, color=color, alpha=0.2)
+        # plt.xlabel('Training Updates')
+        # plt.ylabel('Return')
+        # plt.grid(True, linestyle='--', alpha=0.7)
+        # plt.tight_layout()
+        # plt.show()
+        return mean_returns, std_returns
+    ## UNBOUNDED
+    mean_vanilla, std_vanilla = plot("V")
+    ci_mean_vanilla = stats.t.ppf(0.975, 9) * std_vanilla / jnp.sqrt(n_seeds)
+    ## BOUNDED
+    mean_bounded_vanilla, std_bounded_vanilla = plot("BV")
+    ci_mean_bounded_vanilla = stats.t.ppf(0.975, 9) * std_bounded_vanilla / jnp.sqrt(n_seeds)
+    ## Summary plot
+    x = jnp.arange(rl_training_updates)
+    figure, ax = plt.subplots(1,1, figsize=(10, 6))
+    figure.subplots_adjust(left=0.15, right=0.99, top=0.99, bottom=0.13)
+    ax.plot(x, mean_vanilla, color='orange', linewidth=1.5, label='V-E2E')
+    ax.fill_between(x, mean_vanilla - ci_mean_vanilla, mean_vanilla + ci_mean_vanilla, color='orange', alpha=0.2)
+    ax.plot(x, mean_bounded_vanilla, color="#800080", linewidth=1.5, label='BV-E2E')
+    ax.fill_between(x, mean_bounded_vanilla - ci_mean_bounded_vanilla, mean_bounded_vanilla + ci_mean_bounded_vanilla, color='#800080', alpha=0.2)
+    ax.set_xlabel('Training Updates')
+    ax.set_ylabel('Return')
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles[::-1], labels[::-1],loc='lower right', bbox_to_anchor=(0.999, 0.01))
+    ax.grid(True, linestyle='--', alpha=0.7)
+    figure.savefig(os.path.join(base_dir, "vanilla_e2e_mean_returns.pdf"), format='pdf')
 
 for seed in range(n_seeds):
     random_seed = seed
