@@ -1,8 +1,8 @@
 # social-jym
 An environment based on JAX to train mobile robots within crowded environments. Includes several human motion models, several RL algorithms for social navigation and implements fast training and computing thanks to JAX.
 
-[![Paper: ICAR'25](https://img.shields.io/badge/ICAR'25-Paper-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
-[![Paper: IROS'26](https://img.shields.io/badge/IROS'26-Paper-b31b1b.svg)](https://arxiv.org/abs/YYYY.YYYYY)
+[![Paper: ICAR'25](https://img.shields.io/badge/ICAR'25-Paper-b31b1b.svg)](https://doi.org/10.1109/ICAR65334.2025.11338678)
+[![Paper: IROS'26](https://img.shields.io/badge/IROS'26-Paper-b31b1b.svg)](https://doi.org/10.48550/arXiv.2610.05733)
 [![Branch: ICAR25](https://img.shields.io/badge/branch-icar25--results-blue?logo=git)](https://github.com/TommasoVandermeer/social-jym/tree/dir-safe)
 [![Branch: IROS26](https://img.shields.io/badge/branch-iros26--results-blue?logo=git)](https://github.com/TommasoVandermeer/social-jym/tree/jessi)
 
