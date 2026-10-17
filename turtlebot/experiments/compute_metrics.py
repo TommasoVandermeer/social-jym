@@ -200,20 +200,40 @@ def compute_run(run_dir: Path) -> dict:
         np.asarray([yaw_from_quaternion(msg.pose.pose.orientation) for msg in odom])
     )
     odom_v = np.asarray([msg.twist.twist.linear.x for msg in odom])
+    odom_w = np.asarray([msg.twist.twist.angular.z for msg in odom])
     pose_xy = interpolate_series(odom_t, odom_xy, control_t, config["tracking_max_gap_s"])
     yaw = interpolate_series(odom_t, odom_yaw[:, None], control_t, config["tracking_max_gap_s"])[:, 0]
     body_v = interpolate_series(odom_t, odom_v[:, None], control_t, config["tracking_max_gap_s"])[:, 0]
-    if not np.all(np.isfinite(pose_xy)) or not np.all(np.isfinite(yaw)):
+    body_w = interpolate_series(odom_t, odom_w[:, None], control_t, config["tracking_max_gap_s"])[:, 0]
+    if not all(np.all(np.isfinite(values)) for values in (pose_xy, yaw, body_v, body_w)):
         raise ValueError("Odometry does not cover every control timestamp within the maximum gap")
     world_v = np.column_stack((body_v * np.cos(yaw), body_v * np.sin(yaw)))
-    smoothed_v, acceleration, jerk = local_polynomial_motion(
+    smoothed_v, acceleration, translational_jerk = local_polynomial_motion(
         control_t,
         world_v,
         int(config["jerk_window_samples"]),
         int(config["jerk_polynomial_degree"]),
     )
+    smoothed_body_v, longitudinal_acceleration, longitudinal_jerk = local_polynomial_motion(
+        control_t,
+        body_v[:, None],
+        int(config["jerk_window_samples"]),
+        int(config["jerk_polynomial_degree"]),
+    )
+    smoothed_body_w, angular_acceleration, angular_jerk = local_polynomial_motion(
+        control_t,
+        body_w[:, None],
+        int(config["jerk_window_samples"]),
+        int(config["jerk_polynomial_degree"]),
+    )
+    smoothed_body_v = smoothed_body_v[:, 0]
+    longitudinal_acceleration = longitudinal_acceleration[:, 0]
+    longitudinal_jerk = longitudinal_jerk[:, 0]
+    smoothed_body_w = smoothed_body_w[:, 0]
+    angular_acceleration = angular_acceleration[:, 0]
+    angular_jerk = angular_jerk[:, 0]
     speed = np.linalg.norm(smoothed_v, axis=1)
-    jerk_magnitude = np.linalg.norm(jerk, axis=1)
+    translational_jerk_magnitude = np.linalg.norm(translational_jerk, axis=1)
     dt = np.diff(control_t)
     path_until_termination = float(np.sum(np.linalg.norm(np.diff(pose_xy, axis=0), axis=1)))
 
@@ -250,7 +270,7 @@ def compute_run(run_dir: Path) -> dict:
     synchronization_valid = read_json(alignment_path).get("valid", False) if alignment_path.exists() else False
 
     metrics = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": utc_now(),
         "run_id": manifest["run_id"],
         "policy": manifest["policy"],
@@ -265,7 +285,15 @@ def compute_run(run_dir: Path) -> dict:
         "path_length_m": json_number(path_until_termination if success else np.nan),
         "path_length_until_termination_m": path_until_termination,
         "average_speed_m_s": json_number(time_weighted_mean(speed, control_t)),
-        "average_jerk_m_s3": json_number(time_weighted_mean(jerk_magnitude, control_t)),
+        "average_translational_jerk_m_s3": json_number(
+            time_weighted_mean(translational_jerk_magnitude, control_t)
+        ),
+        "average_longitudinal_jerk_m_s3": json_number(
+            time_weighted_mean(np.abs(longitudinal_jerk), control_t)
+        ),
+        "average_angular_jerk_rad_s3": json_number(
+            time_weighted_mean(np.abs(angular_jerk), control_t)
+        ),
         "space_compliance": json_number(space_compliance if space_valid else np.nan),
         "space_compliance_unqualified": json_number(space_compliance),
         "tracking_coverage": json_number(coverage),
@@ -277,7 +305,10 @@ def compute_run(run_dir: Path) -> dict:
         "p95_control_dt_s": json_number(np.quantile(dt, 0.95)),
         "synchronization_valid": synchronization_valid,
         "jerk_estimator": {
-            "source": "measured odometry body speed transformed to global velocity",
+            "source": "measured odometry linear.x, angular.z, and yaw",
+            "translational_definition": "magnitude of the second derivative of global velocity",
+            "longitudinal_definition": "absolute second derivative of body-frame linear.x",
+            "angular_definition": "absolute second derivative of body-frame angular.z",
             "window_samples": int(config["jerk_window_samples"]),
             "polynomial_degree": int(config["jerk_polynomial_degree"]),
             "timestamp_aware": True,
@@ -287,7 +318,11 @@ def compute_run(run_dir: Path) -> dict:
 
     fieldnames = (
         "timestamp", "x_m", "y_m", "yaw_rad", "speed_m_s", "vx_m_s", "vy_m_s",
-        "ax_m_s2", "ay_m_s2", "jerk_x_m_s3", "jerk_y_m_s3", "jerk_m_s3",
+        "ax_m_s2", "ay_m_s2", "translational_jerk_x_m_s3",
+        "translational_jerk_y_m_s3", "translational_jerk_m_s3",
+        "longitudinal_velocity_m_s", "longitudinal_acceleration_m_s2",
+        "longitudinal_jerk_m_s3", "angular_velocity_rad_s",
+        "angular_acceleration_rad_s2", "angular_jerk_rad_s3",
         "minimum_human_clearance_m", "space_compliant", "tracking_known",
         "tracked_humans", "command_v_m_s", "command_w_rad_s",
     )
@@ -301,8 +336,16 @@ def compute_run(run_dir: Path) -> dict:
                 "y_m": pose_xy[index, 1], "yaw_rad": yaw[index],
                 "speed_m_s": speed[index], "vx_m_s": smoothed_v[index, 0],
                 "vy_m_s": smoothed_v[index, 1], "ax_m_s2": acceleration[index, 0],
-                "ay_m_s2": acceleration[index, 1], "jerk_x_m_s3": jerk[index, 0],
-                "jerk_y_m_s3": jerk[index, 1], "jerk_m_s3": jerk_magnitude[index],
+                "ay_m_s2": acceleration[index, 1],
+                "translational_jerk_x_m_s3": translational_jerk[index, 0],
+                "translational_jerk_y_m_s3": translational_jerk[index, 1],
+                "translational_jerk_m_s3": translational_jerk_magnitude[index],
+                "longitudinal_velocity_m_s": smoothed_body_v[index],
+                "longitudinal_acceleration_m_s2": longitudinal_acceleration[index],
+                "longitudinal_jerk_m_s3": longitudinal_jerk[index],
+                "angular_velocity_rad_s": smoothed_body_w[index],
+                "angular_acceleration_rad_s2": angular_acceleration[index],
+                "angular_jerk_rad_s3": angular_jerk[index],
                 "minimum_human_clearance_m": clearance[index],
                 "space_compliant": compliant[index], "tracking_known": tracking_known[index],
                 "tracked_humans": tracked_count[index], "command_v_m_s": command[0],

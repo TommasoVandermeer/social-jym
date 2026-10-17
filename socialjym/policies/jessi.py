@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.patches import Ellipse
 from typing import Optional
+import math
 
 from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, HUMAN_POLICIES
 from socialjym.utils.distributions.dirichlet import Dirichlet
@@ -19,6 +20,7 @@ from socialjym.utils.distributions.gaussian import Gaussian, BivariateGaussian
 from socialjym.utils.distributions.logistic_normal import LogisticNormal
 from socialjym.policies.base_policy import BasePolicy
 from jhsfm.hsfm import get_linear_velocity
+from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
 
@@ -81,13 +83,20 @@ class MultiHeadAttention(hk.MultiHeadAttention):
     attn_logits = jnp.einsum("...thd,...Thd->...htT", query_heads, key_heads)
     attn_logits = attn_logits / jnp.sqrt(self.key_size).astype(key.dtype)
     if mask is not None:
-      if mask.ndim != attn_logits.ndim:
-        raise ValueError(
-            f"Mask dimensionality {mask.ndim} must match logits dimensionality "
-            f"{attn_logits.ndim}."
-        )
-      attn_logits = jnp.where(mask, attn_logits, -1e30)
-    attn_weights = nn.softmax(attn_logits)  # [H, T', T]
+        if mask.ndim != attn_logits.ndim:
+            raise ValueError(
+                f"Mask dimensionality {mask.ndim} must match "
+                f"logits dimensionality {attn_logits.ndim}."
+            )
+
+        mask = mask.astype(jnp.bool_)
+        has_keys = jnp.any(mask, axis=-1, keepdims=True)
+        masked_logits = jnp.where(mask, attn_logits, -jnp.inf)
+        safe_logits = jnp.where(has_keys, masked_logits, 0.0)
+        attn_weights = nn.softmax(safe_logits, axis=-1)
+        attn_weights = jnp.where(mask, attn_weights, 0.0)  # [H, T', T]
+    else:
+        attn_weights = nn.softmax(attn_logits, axis=-1)  # [H, T', T]
     attn = jnp.einsum("...htT,...Thd->...thd", attn_weights, value_heads)
     attn = jnp.reshape(attn, (*leading_dims, sequence_length, -1))  # [T', H*V]
     final_projection = hk.Linear(self.model_size, w_init=self.w_init,
@@ -467,7 +476,8 @@ class ActorCritic(hk.Module):
             # Attention (wighted by HCG scores) computation for visualization
             mean_att_mtrx = jnp.mean(att_mtrx, axis=1)
             norm_hcg_scores = hcg_scores / (sum_of_weights[:, None, :] + 1e-5)
-            human_attention = jnp.sum(mean_att_mtrx * norm_hcg_scores, axis=1) # (Batch, N)
+            base_human_attention = jnp.sum(mean_att_mtrx * norm_hcg_scores, axis=1) # (Batch, N)
+            human_attention = base_human_attention / jnp.max(base_human_attention)
         context = jnp.concatenate([
             pooled_hcg_context, 
             global_robot_state, 
@@ -648,6 +658,7 @@ class JESSI(BasePolicy):
         lidar_max_dist=10.,
         lidar_num_rays=100,
         lidar_angles_robot_frame=None, # If not specified, rays are evenly distributed in the angular range
+        lidar_position_robot_frame:tuple[float, float]=(0.0, 0.0),
         n_detectable_humans:int=10,
         max_humans_velocity:float=1.5,
         max_beam_range:float=10.0, # This is only used to normalize the LiDAR readings before feeding them to the encoder
@@ -675,6 +686,9 @@ class JESSI(BasePolicy):
         assert n_stack_for_action_space_bounding <= n_stack, "n_stack_for_action_space_bounding must be less than or equal to n_stack"
         assert ablation_mode is None or ablation_mode in ABLATIONS, f"ablation_mode must be either None or one of {ABLATIONS}"
         assert embedding_dim % 4 == 0, "Embedding dimension must be a multiple of 4"
+        if len(lidar_position_robot_frame) != 2: raise ValueError("lidar_position_robot_frame must contain (x, y) in metres")
+        lidar_position_robot_frame = tuple(float(value) for value in lidar_position_robot_frame)
+        if not all(math.isfinite(value) for value in lidar_position_robot_frame): raise ValueError("LiDAR position must contain finite values")
         # Configurable attributes
         self.robot_radius = robot_radius
         self.v_max = v_max
@@ -690,6 +704,7 @@ class JESSI(BasePolicy):
         else:
             assert len(lidar_angles_robot_frame) == lidar_num_rays, "Length of lidar_angles_robot_frame must be equal to lidar_num_rays"
             self.lidar_angles_robot_frame = lidar_angles_robot_frame
+        self.lidar_position_robot_frame = lidar_position_robot_frame
         self.n_detectable_humans = n_detectable_humans
         self.max_humans_velocity = max_humans_velocity
         self.max_beam_range = max_beam_range
@@ -782,13 +797,16 @@ class JESSI(BasePolicy):
         robot_position = obs_stack[:2]  # Shape: (2,)
         robot_orientation = obs_stack[2]  # Shape: ()
         lidar_measurements = obs_stack[11:]  # Shape: (lidar_num_rays)
-        ## Align scan to reference frame
-        # Compute LiDAR angles in world frame
-        lidar_angles = self.lidar_angles_robot_frame + robot_orientation  # Shape: (lidar_num_rays)
-        # Compute cartesian coordinates of LiDAR points in world frame
-        xs = lidar_measurements * jnp.cos(lidar_angles) + robot_position[0]
-        ys = lidar_measurements * jnp.sin(lidar_angles) + robot_position[1]
-        points_world = jnp.stack((xs, ys), axis=-1)  # Shape: (lidar_num_rays, 2)
+        # Rotate the sensor mounting offset into the world frame using
+        offset_x, offset_y = self.lidar_position_robot_frame
+        c_robot = jnp.cos(robot_orientation)
+        s_robot = jnp.sin(robot_orientation)
+        lidar_world_x = robot_position[0] + c_robot * offset_x - s_robot * offset_y
+        lidar_world_y = robot_position[1] + s_robot * offset_x + c_robot * offset_y
+        lidar_angles_world = self.lidar_angles_robot_frame + robot_orientation
+        xs = lidar_world_x + lidar_measurements * jnp.cos(lidar_angles_world)
+        ys = lidar_world_y + lidar_measurements * jnp.sin(lidar_angles_world)
+        points_world = jnp.stack((xs, ys), axis=-1)
         # Roto-translate points to robot frame
         c, s = jnp.cos(ref_orientation), jnp.sin(ref_orientation)
         R = jnp.array([
@@ -814,12 +832,17 @@ class JESSI(BasePolicy):
         # Extract dimensions
         B, K, _ = human_distrs['pos_distrs']['means'].shape
         _, M, _ = human_positions.shape
+        if M > K:
+            raise ValueError(f"Matching requires M (humans) <= K (detections), but got M={M}, K={K}")
         ### Bipartite matching
         ## Cost matrix
-        diff = jnp.expand_dims(human_distrs['pos_distrs']['means'], 2) - jnp.expand_dims(human_positions, 1) # (B, K, 1, 2) - (B, 1, M, 2)
-        dist = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1) + 1e-6) # Shape (B, K, M)
-        prob_cost = -jnp.log(jnp.expand_dims(human_distrs['weights'], 2) + 1e-6) # (B, K, 1)
-        cost_matrix = lambda_pos_reg * dist + lambda_cls * prob_cost # (B, K, M)
+        diff = human_distrs["pos_distrs"]["means"][:, :, None, :] - human_positions[:, None, :, :]
+        dist = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1) + 1e-6)
+        prob_cost = -jnp.log(human_distrs["weights"][:, :, None] + 1e-6)
+        cost_matrix = (lambda_pos_reg * dist + lambda_cls * prob_cost)
+        # Invisible/padded targets must have no query preference.
+        valid_targets = human_mask[:, None, :].astype(bool)
+        cost_matrix = jnp.where(valid_targets, cost_matrix, 0.0)
         ## Matching
         assigned_query_idx, assigned_gt_idx = vmap(optax.assignment.hungarian_algorithm)(cost_matrix) # Shapes: (B, M), (B, M)
         sort_perm = jnp.argsort(assigned_gt_idx, axis=1) # Shape (B, M)
@@ -827,7 +850,7 @@ class JESSI(BasePolicy):
         # One-hot mask - shape: (B, K, M) -> 1 if k matches m, 0 otherwise
         matched_mask = nn.one_hot(best_pred_idx, K, axis=1) # Shape: (B, K, M)
         # Filter with GT mask
-        valid_matches = matched_mask * jnp.expand_dims(human_mask, 1) # (B, K, M)
+        valid_matches = matched_mask * human_mask[:, None, :] # (B, K, M)
         matched_pos_means = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['pos_distrs']['means']) # (B, M, 2)
         matched_pos_logsigmas = jnp.einsum('bkm,bkd->bmd', valid_matches, human_distrs['pos_distrs']['logsigmas']) # (B, M, 2)
         matched_pos_correlations = jnp.einsum('bkm,bk->bm', valid_matches, human_distrs['pos_distrs']['correlation']) # (B, M)
@@ -1013,6 +1036,28 @@ class JESSI(BasePolicy):
         return perception_params, actor_critic_params, e2e_params
 
     @partial(jit, static_argnames=("self"))
+    def motion(
+        self,
+        pose:jnp.ndarray,
+        action:jnp.ndarray,
+        dt:float,
+    ) -> jnp.ndarray:
+        new_pose = lax.cond(
+            jnp.abs(action[1]) > 1e-5,
+            lambda _: jnp.array([
+                pose[0]+(action[0]/action[1])*(jnp.sin(pose[2]+action[1]*dt)-jnp.sin(pose[2])),
+                pose[1]+(action[0]/action[1])*(jnp.cos(pose[2])-jnp.cos(pose[2]+action[1]*dt)),
+                wrap_angle(pose[2]+action[1]*dt),
+            ]),
+            lambda _: jnp.array([
+                pose[0]+action[0]*dt*jnp.cos(pose[2]),
+                pose[1]+action[0]*dt*jnp.sin(pose[2]),
+                pose[2],
+            ]),
+            None)
+        return new_pose
+
+    @partial(jit, static_argnames=("self"))
     def bound_action_space(self, lidar_point_cloud, eps=1e-6):
         """
         Compute the bounds of the action space based on the control parameters alpha, beta, gamma.
@@ -1177,7 +1222,9 @@ class JESSI(BasePolicy):
         - last LiDAR point cloud (lidar_num_rays, 2): in robot frame of the most recent observation.
         """
         # Limit readings to self.lidar_max_dist
+        raw_ranges = obs[:, 11:]  # (T, L)
         clipped_obs = obs.at[:, 11:].set(jnp.clip(obs[:, 11:], a_min=0.0, a_max=self.lidar_max_dist))
+        hit_mask = raw_ranges < self.lidar_max_dist
         # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.
         aligned_lidar_scans = self.align_lidar(clipped_obs)[0]  # Shape: (n_stack, lidar_num_rays, 2)
         point_cloud_for_bounding = aligned_lidar_scans[:self.n_stack_for_action_space_bounding,:, :]  # Shape: (n_stack_for_action_space_bounding, lidar_num_rays, 2)
@@ -1188,8 +1235,9 @@ class JESSI(BasePolicy):
         # Compute LiDAR tokens
         @jit
         def compute_beam_token(
-            scan_index:int,
-            point:jnp.ndarray,
+            scan_index,
+            point,
+            is_hit,
         ) -> jnp.ndarray:
             # Extract point coordinates
             x, y = point
@@ -1198,7 +1246,7 @@ class JESSI(BasePolicy):
             current_theta = jnp.arctan2(y, x)
             sin_current_theta = jnp.sin(current_theta)
             cos_current_theta = jnp.cos(current_theta)
-            hit = jnp.where(distance < self.lidar_max_dist, 1.0, 0.0)
+            hit = is_hit.astype(point.dtype)
             # Compute stack index features
             delta_t = obs[0, 10] - obs[scan_index, 8] # Time difference from the control sampling time
             # Sector attendance
@@ -1218,9 +1266,10 @@ class JESSI(BasePolicy):
                 # Additional input (not processed by the NN, only used to compute the attendance mask in AngularLocalCrossAttention layer)
                 *attended_sectors,
             ])
-        encoder_input = vmap(vmap(compute_beam_token, in_axes=(None, 0)), in_axes=(0, 0))(
+        encoder_input = vmap(vmap(compute_beam_token, in_axes=(None, 0, 0)), in_axes=(0, 0, 0))(
             jnp.arange(self.n_stack),
             aligned_lidar_scans,
+            hit_mask,
         )  # Shape: (n_stack, lidar_num_rays, 7)
         # Optionally select TOP K beams for each stack here to reduce computation
         # First stack is the most recent one!!!
@@ -1788,6 +1837,10 @@ class JESSI(BasePolicy):
         spatial_attentions=None,
         temporal_attentions=None,
         human_attentions=None,
+        trajectories=None,
+        trajectories_costs=None,
+        chosen_trajectories=None,
+        future_humans_distrs=None,
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -1798,9 +1851,7 @@ class JESSI(BasePolicy):
             len(robot_poses) == \
             len(robot_actions) == \
             len(robot_goals) == \
-            len(observations) == \
-            len(actor_distrs['vertices']) == \
-            len(humans_distrs['pos_distrs']['means']), "All primary inputs must have the same length"
+            len(observations), "All primary inputs must have the same length"
         # Set matplotlib fonts
         rc('font', weight='regular', size=20)
         rcParams['pdf.fonttype'] = 42
@@ -1814,6 +1865,11 @@ class JESSI(BasePolicy):
         if spatial_attentions is not None:
             cmap_rays = plt.get_cmap('seismic')
             norm_rays = mcolors.Normalize(vmin=jnp.min(spatial_attentions), vmax=jnp.max(spatial_attentions))
+        # Compute static humans (columns in CCSO)
+        if humans_poses is not None:
+            static_humans = jnp.zeros((humans_poses.shape[1]), dtype=jnp.bool)
+            for h in range(len(humans_poses[0])):
+                static_humans = static_humans.at[h].set(jnp.all(humans_poses[0,h,:2] == humans_poses[:,h,:2]))
         # Animate trajectory
         fig = plt.figure(figsize=(21.43,13.57))
         fig.subplots_adjust(left=0.07, bottom=0.07, right=0.98, top=0.97, wspace=0, hspace=0)
@@ -1843,35 +1899,40 @@ class JESSI(BasePolicy):
                 if humans_poses is not None:
                     # Plot humans
                     for h in range(len(humans_poses[frame])):
-                        color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
-                        alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
-                        if humans_leg_states is not None and humans_leg_radii is not None:
-                            l_leg = plt.Circle((humans_leg_states[frame][h,0], humans_leg_states[frame][h,1]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-                            ax.add_patch(l_leg)
-                            r_leg = plt.Circle((humans_leg_states[frame][h,3], humans_leg_states[frame][h,4]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-                            ax.add_patch(r_leg)
-                            alpha = 0.3
-                        head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
-                        ax.add_patch(head)
-                        circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
-                        ax.add_patch(circle)
-                    if humans_velocities is not None:
-                        # Plot human velocities
-                        for h in range(len(humans_poses[frame])):
+                        if static_humans[h]:
+                            circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='black', alpha=1., fill=True, zorder=1)
+                            ax.add_patch(circle)
+                        else:
                             color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
                             alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
-                            ax.arrow(
-                                humans_poses[frame][h,0],
-                                humans_poses[frame][h,1],
-                                humans_velocities[frame][h,0],
-                                humans_velocities[frame][h,1],
-                                head_width=0.15,
-                                head_length=0.15,
-                                fc=color,
-                                ec=color,
-                                alpha=alpha,
-                                zorder=30,
-                            )
+                            if humans_leg_states is not None and humans_leg_radii is not None:
+                                l_leg = plt.Circle((humans_leg_states[frame][h,0], humans_leg_states[frame][h,1]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                                ax.add_patch(l_leg)
+                                r_leg = plt.Circle((humans_leg_states[frame][h,3], humans_leg_states[frame][h,4]), humans_leg_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                                ax.add_patch(r_leg)
+                                alpha = 0.3
+                            head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                            ax.add_patch(head)
+                            circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                            ax.add_patch(circle)
+                    if humans_velocities is not None:
+                        # Plot human velocities
+                            for h in range(len(humans_poses[frame])):
+                                if not static_humans[h]:
+                                    color = 'blue' if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 'grey'
+                                    alpha = 0.6 if ((humans_visibility_mask[frame][h] == 1) and (i >= 2)) or (i < 2) else 0.3
+                                    ax.arrow(
+                                        humans_poses[frame][h,0],
+                                        humans_poses[frame][h,1],
+                                        humans_velocities[frame][h,0],
+                                        humans_velocities[frame][h,1],
+                                        head_width=0.15,
+                                        head_length=0.15,
+                                        fc=color,
+                                        ec=color,
+                                        alpha=alpha,
+                                        zorder=30,
+                                    )
                 # Plot robot
                 robot_position = robot_poses[frame,:2]
                 head = plt.Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
@@ -1934,6 +1995,34 @@ class JESSI(BasePolicy):
                 )
             axs[0].set_title("Trajectory")
             # AX 0,1: Simulation with LiDAR point cloud stack
+            if trajectories is not None and trajectories_costs is not None and chosen_trajectories is not None:
+                for i, trajectory in enumerate(trajectories[frame]):
+                    cost = trajectories_costs[frame][i]
+                    color = 'green' if cost < 1_000_000 else 'orange'
+                    axs[1].plot(trajectory[:,0], trajectory[:,1], color=color, alpha=0.5, linewidth=1, zorder=10)
+                axs[1].plot(chosen_trajectories[frame][:,0], chosen_trajectories[frame][:,1], color='blue', alpha=1, linewidth=3, zorder=30)
+            if future_humans_distrs is not None:
+                distrs = tree_map(lambda x: x[frame], future_humans_distrs)
+                for t in range(distrs['pos_distrs']['means'].shape[0]):
+                    for h in range(distrs['pos_distrs']['means'].shape[1]):
+                        mean = distrs['pos_distrs']['means'][t,h]
+                        if distrs['weights'][t, h] <= 0.5: continue
+                        d = tree_map(lambda x: x[t, h], distrs)["pos_distrs"]
+                        cov_matrix = self.biv_gaussian.covariance(d)
+                        eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
+                        angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+                        width, height = 2 * jnp.sqrt(eigenvalues)
+                        ellipse = Ellipse(
+                            xy=mean,
+                            width=width,
+                            height=height,
+                            angle=jnp.degrees(angle),
+                            edgecolor='blue',
+                            facecolor='lightblue',
+                            alpha=0.5,
+                            zorder=15,
+                        )
+                        axs[1].add_patch(ellipse)
             point_cloud = self.align_lidar(observations[frame])[1]
             for i, cloud in enumerate(point_cloud):
                 # color/alpha fade with i (smaller i -> less faded)
@@ -2108,28 +2197,29 @@ class JESSI(BasePolicy):
                     zorder=2,
                 ),
             )
-            bounded_action_space_vertices = actor_distrs["vertices"][frame]
-            axs[4].add_patch(
-                plt.Polygon(
-                    [   
-                        bounded_action_space_vertices[0],
-                        bounded_action_space_vertices[1],
-                        bounded_action_space_vertices[2],
-                    ],
-                    closed=True,
-                    fill=True,
-                    edgecolor='green',
-                    facecolor='lightgreen',
-                    linewidth=2,
-                    zorder=3,
-                ),
-            )
-            actor_distr = tree_map(lambda x: x[frame], actor_distrs)
-            samples = test_action_samples[self.action_distribution.batch_is_in_support(actor_distr, test_action_samples)]
-            test_action_p = self.action_distribution.batch_p(actor_distr, samples)
-            points_high_p = samples[test_action_p > p_visualization_threshold_dir]
-            corresponding_colors = test_action_p[test_action_p > p_visualization_threshold_dir]
-            axs[4].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
+            if actor_distrs is not None:
+                bounded_action_space_vertices = actor_distrs["vertices"][frame]
+                axs[4].add_patch(
+                    plt.Polygon(
+                        [   
+                            bounded_action_space_vertices[0],
+                            bounded_action_space_vertices[1],
+                            bounded_action_space_vertices[2],
+                        ],
+                        closed=True,
+                        fill=True,
+                        edgecolor='green',
+                        facecolor='lightgreen',
+                        linewidth=2,
+                        zorder=3,
+                    ),
+                )
+                actor_distr = tree_map(lambda x: x[frame], actor_distrs)
+                samples = test_action_samples[self.action_distribution.batch_is_in_support(actor_distr, test_action_samples)]
+                test_action_p = self.action_distribution.batch_p(actor_distr, samples)
+                points_high_p = samples[test_action_p > p_visualization_threshold_dir]
+                corresponding_colors = test_action_p[test_action_p > p_visualization_threshold_dir]
+                axs[4].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[4].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=7,color='red',zorder=51)
             axs[4].set_title("Action space")
         anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
@@ -2162,6 +2252,12 @@ class JESSI(BasePolicy):
         spatial_attentions=None,
         temporal_attentions=None,
         human_attentions=None,
+        # JESSI-MPPI stuff
+        trajectories=None,
+        trajectories_costs=None,
+        control_sequences=None,
+        future_humans_distrs=None,
+        # Visualization stuff
         p_visualization_threshold_dir:float=0.05,
         x_lims:jnp.ndarray=None,
         y_lims:jnp.ndarray=None,
@@ -2207,6 +2303,17 @@ class JESSI(BasePolicy):
             humans_poses = None
             humans_velocities = None
             humans_visibility_mask = None
+        if control_sequences is not None:
+            def rollout_fn(robot_pose, control_sequence):
+                def step_fn(carry, control):
+                    state = carry
+                    next_state = self.motion(state, control, self.dt)
+                    return next_state, next_state
+                _, chosen_trajectory = lax.scan(step_fn, robot_pose, control_sequence)
+                return chosen_trajectory
+            chosen_trajectories = vmap(rollout_fn)(robot_poses, control_sequences)
+        else:
+            chosen_trajectories = None
         self.animate_trajectory(
             robot_poses,
             actions,
@@ -2225,6 +2332,10 @@ class JESSI(BasePolicy):
             spatial_attentions,
             temporal_attentions,
             human_attentions,
+            trajectories,
+            trajectories_costs,
+            chosen_trajectories,
+            future_humans_distrs,
             p_visualization_threshold_dir,
             x_lims,
             y_lims,

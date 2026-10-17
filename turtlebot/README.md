@@ -130,3 +130,18 @@ python3 turtlebot/experiments/process_run.py \
   --config turtlebot/experiments/corridor_campaign.json \
   --skip-tracking
 ```
+
+An aborted setup attempt can be archived and the same scheduled trial repeated:
+
+```bash
+python3 turtlebot/experiments/run_experiment.py retry-last \
+  --config turtlebot/experiments/corridor_campaign.json
+
+python3 turtlebot/experiments/run_experiment.py run-next \
+  --config turtlebot/experiments/corridor_campaign.json
+```
+
+This is permitted only for `operator_abort` and `controller_error` outcomes.
+The original bag is preserved under the campaign's `aborted_attempts/` folder;
+collisions, safety stops, timeouts, and successful runs cannot be discarded by
+the retry command.

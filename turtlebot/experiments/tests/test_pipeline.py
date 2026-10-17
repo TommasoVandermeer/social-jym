@@ -17,7 +17,7 @@ from turtlebot.experiments.compute_metrics import (
     local_polynomial_motion,
     tracking_clearance_at_controls,
 )
-from turtlebot.experiments.run_experiment import controller_outcome
+from turtlebot.experiments.run_experiment import controller_outcome, prepare_retry
 from turtlebot.experiments.process_run import latest_campaign_run
 from turtlebot.extract_humans_tracks_and_render import (
     add_track_positions_to_preview,
@@ -30,7 +30,7 @@ def stamp(timestamp):
     return SimpleNamespace(sec=seconds, nanosec=int((timestamp - seconds) * 1e9))
 
 
-def odometry(timestamp, x, y, yaw, speed):
+def odometry(timestamp, x, y, yaw, speed, angular_speed=0.0):
     orientation = SimpleNamespace(
         x=0.0, y=0.0, z=np.sin(yaw / 2), w=np.cos(yaw / 2)
     )
@@ -41,7 +41,10 @@ def odometry(timestamp, x, y, yaw, speed):
                 position=SimpleNamespace(x=x, y=y), orientation=orientation
             )
         ),
-        twist=SimpleNamespace(twist=SimpleNamespace(linear=SimpleNamespace(x=speed))),
+        twist=SimpleNamespace(twist=SimpleNamespace(
+            linear=SimpleNamespace(x=speed),
+            angular=SimpleNamespace(z=angular_speed),
+        )),
     )
 
 
@@ -75,6 +78,57 @@ class ScheduleTests(unittest.TestCase):
             reason, event = controller_outcome(Path(directory))
             self.assertEqual(reason, "goal_reached")
             self.assertEqual(event["timestamp"], 4.0)
+
+    def test_retry_archives_aborted_attempt_and_resets_schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = root / "run_002_jessi_trial_01"
+            run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(json.dumps({
+                "outcome": "operator_abort"
+            }))
+            schedule = {"runs": [
+                {
+                    "ordinal": 1, "policy": "DWA", "policy_trial": 1,
+                    "status": "complete", "outcome": "success",
+                    "run_directory": "run_001_dwa_trial_01",
+                },
+                {
+                    "ordinal": 2, "policy": "JESSI", "policy_trial": 1,
+                    "status": "complete", "outcome": "operator_abort",
+                    "run_directory": run_dir.name,
+                },
+            ]}
+            (root / "schedule.json").write_text(json.dumps(schedule))
+            archive_dir, entry = prepare_retry(root)
+            self.assertFalse(run_dir.exists())
+            self.assertTrue((archive_dir / "manifest.json").is_file())
+            self.assertEqual(entry["status"], "pending")
+            self.assertIsNone(entry["run_directory"])
+            self.assertNotIn("outcome", entry)
+            self.assertEqual(
+                entry["previous_attempts"][0]["directory"],
+                "aborted_attempts/run_002_jessi_trial_01_attempt_01",
+            )
+            saved = json.loads((root / "schedule.json").read_text())
+            self.assertEqual(saved["runs"][1]["status"], "pending")
+
+    def test_retry_rejects_meaningful_outcome(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = root / "run_001_dwa_trial_01"
+            run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(json.dumps({
+                "outcome": "collision"
+            }))
+            (root / "schedule.json").write_text(json.dumps({"runs": [{
+                "ordinal": 1, "policy": "DWA", "policy_trial": 1,
+                "status": "complete", "outcome": "collision",
+                "run_directory": run_dir.name,
+            }]}))
+            with self.assertRaises(ValueError):
+                prepare_retry(root)
+            self.assertTrue(run_dir.is_dir())
 
     def test_latest_campaign_run_uses_schedule_ordinal(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -213,7 +267,14 @@ class TimestampAndMetricTests(unittest.TestCase):
             ]
             with (run_dir / "controller.pkl").open("wb") as stream:
                 pickle.dump({"trajectory": trajectory, "final_event": manifest["outcome_event"]}, stream)
-            odom = [odometry(t, t, 0, 0, 1) for t in (0., .5, 1., 1.5, 2.)]
+            odom = [
+                odometry(
+                    t, t, 0, 0,
+                    speed=1 + 2 * t + 3 * t**2,
+                    angular_speed=t**2,
+                )
+                for t in (0., .5, 1., 1.5, 2.)
+            ]
             with (run_dir / "sensor_messages.pkl").open("wb") as stream:
                 pickle.dump({"odom": odom}, stream)
             np.savez_compressed(
@@ -226,7 +287,9 @@ class TimestampAndMetricTests(unittest.TestCase):
             metrics = compute_run(run_dir)
             self.assertAlmostEqual(metrics["time_to_goal_s"], 3.0)
             self.assertAlmostEqual(metrics["path_length_m"], 2.0)
-            self.assertAlmostEqual(metrics["average_jerk_m_s3"], 0.0)
+            self.assertAlmostEqual(metrics["average_translational_jerk_m_s3"], 6.0)
+            self.assertAlmostEqual(metrics["average_longitudinal_jerk_m_s3"], 6.0)
+            self.assertAlmostEqual(metrics["average_angular_jerk_rad_s3"], 2.0)
             self.assertTrue(metrics["synchronization_valid"])
 
 

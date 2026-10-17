@@ -69,14 +69,19 @@ def process(run_dir: Path, skip_tracking=False, save_animation=False) -> None:
     manifest["metrics_summary"] = {
         key: metrics[key]
         for key in (
-            "time_to_goal_s", "path_length_m", "average_jerk_m_s3",
+            "time_to_goal_s", "path_length_m",
+            "average_translational_jerk_m_s3",
+            "average_longitudinal_jerk_m_s3",
+            "average_angular_jerk_rad_s3",
             "space_compliance", "tracking_coverage", "synchronization_valid",
         )
     }
     atomic_write_json(run_dir / "manifest.json", manifest)
     print(
         f"Computed {metrics['run_id']}: outcome={metrics['outcome']}, "
-        f"jerk={metrics['average_jerk_m_s3']}, "
+        f"translational jerk={metrics['average_translational_jerk_m_s3']}, "
+        f"longitudinal jerk={metrics['average_longitudinal_jerk_m_s3']}, "
+        f"angular jerk={metrics['average_angular_jerk_rad_s3']}, "
         f"space compliance={metrics['space_compliance']}"
     )
 

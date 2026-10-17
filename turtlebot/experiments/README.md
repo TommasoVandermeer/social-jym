@@ -2,7 +2,8 @@
 
 This directory contains the reproducible workflow for comparing JESSI and DWA
 over 10 real-world trials per policy. The primary metrics are time to goal,
-average translational jerk, path length, and pedestrian-space compliance.
+average translational, longitudinal, and angular jerk, path length, and
+pedestrian-space compliance.
 
 All commands below are run from `/opt/social-jym` inside the project Docker
 container unless stated otherwise.
@@ -143,6 +144,33 @@ If intervention is required:
 3. Select collision, safety stop, or unrelated operator abort.
 4. Add a concise note identifying what happened.
 
+If the interruption was an unrelated operator abort—for example, an incorrect
+start pose or unavailable ROS topics—the attempt can be repeated without
+consuming its scheduled trial. First archive and reset the latest attempt:
+
+```bash
+python3 turtlebot/experiments/run_experiment.py retry-last \
+  --config turtlebot/experiments/corridor_campaign.json
+```
+
+Then correct the setup problem and start it again with the normal command:
+
+```bash
+python3 turtlebot/experiments/run_experiment.py run-next \
+  --config turtlebot/experiments/corridor_campaign.json
+```
+
+The retry command never deletes or overwrites data. It moves the original run
+into `CAMPAIGN_NAME/aborted_attempts/RUN_DIRECTORY_attempt_01`, records that
+path in `schedule.json`, and resets the same policy/trial entry to pending.
+Additional retries receive increasing attempt numbers, and the replacement
+run's manifest records its `attempt_number`. The `status` command also reports
+how many attempts were archived. Only `operator_abort`
+and `controller_error` outcomes are retryable, and only when they are the most
+recent attempted schedule entry. Collisions, safety stops, timeouts, and
+successful trials remain part of the experiment and cannot be retried through
+this command.
+
 After every trial, and before repositioning for the next one:
 
 ```bash
@@ -151,8 +179,9 @@ ros2 bag info turtlebot/experiments/data/CAMPAIGN_NAME/RUN_DIRECTORY/rosbag
 
 Confirm that scan, odometry, and stamped command topics all contain messages,
 that the duration is plausible, and that `manifest.json` has a final outcome.
-If logging is incomplete, keep the directory and mark the trial failed; never
-reuse its run identifier or overwrite it.
+If logging is incomplete, label the attempt as an operator abort or let the
+runner record a controller error, then use `retry-last`. Never manually delete,
+rename, or overwrite a run directory.
 
 ## 5. Extract and verify pedestrian tracks
 
@@ -240,10 +269,18 @@ Interpolation never extrapolates and rejects source gaps over 0.5 s.
 - **Path length:** sum of odometry position increments at control timestamps.
   The primary comparison is success-only; distance until termination is also
   retained for every run.
-- **Average jerk:** odometry body speed is transformed into global velocity.
-  A timestamp-aware quadratic fit over seven control samples provides
-  acceleration and jerk. The reported value is the time-weighted mean jerk
-  magnitude in m/s³.
+- **Average translational jerk:** odometry body speed is transformed into
+  global velocity. A timestamp-aware quadratic fit over seven control samples
+  provides acceleration and jerk. The reported value is the time-weighted mean
+  magnitude of the global jerk vector in m/s³, so it includes changes in both
+  speed and direction.
+- **Average longitudinal jerk:** the same timestamp-aware fit is applied to
+  measured odometry `linear.x`. The reported value is the time-weighted mean
+  absolute jerk in m/s³ and measures forward-speed smoothness independently of
+  changes in heading.
+- **Average angular jerk:** the same timestamp-aware fit is applied to measured
+  odometry `angular.z`. The reported value is the time-weighted mean absolute
+  jerk in rad/s³.
 - **Space compliance:** for each currently valid pedestrian track, clearance is
   `center distance - 0.30 m robot radius - 0.30 m human radius`. A sample is
   compliant above 0.50 m clearance, equivalent to a 1.10 m center distance.
@@ -267,6 +304,23 @@ python3 turtlebot/experiments/aggregate_results.py \
   turtlebot/experiments/data/CAMPAIGN_NAME
 ```
 
+After changing a metric definition, rebuild every run before aggregating. For
+the `official` campaign, the following reuses the existing pedestrian tracks
+while rebuilding aligned sensor data, per-run metrics, and manifest summaries:
+
+```bash
+set -e
+for run_dir in turtlebot/experiments/data/official/run_*; do
+  python3 turtlebot/experiments/process_run.py "$run_dir" --skip-tracking
+done
+
+python3 turtlebot/experiments/aggregate_results.py \
+  turtlebot/experiments/data/official
+```
+
+Do not run only the aggregation command after a metric change: aggregation
+reads the already-generated `metrics.json` from each run.
+
 Outputs are:
 
 - `campaign_metrics.csv`: one row per run.
@@ -274,7 +328,8 @@ Outputs are:
   bootstrap confidence interval by policy and cohort.
 - `policy_comparison.json`: seeded JESSI-minus-DWA mean differences and 95%
   bootstrap intervals.
-- `policy_comparison.png`: time, path, jerk, and compliance plots.
+- `policy_comparison.png`: time, path, all three jerk metrics, and compliance
+  plots.
 
 Time to goal and primary path length use successful runs only. Jerk and space
 compliance are summarized over both all analyzable runs and successful runs.

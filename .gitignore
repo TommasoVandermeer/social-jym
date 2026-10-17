@@ -1,7 +1,14 @@
 # Pickle, eps and mp4 files
 *.pkl
 *.eps
+*.pdf
+*.svg
 *.mp4
+*.csv
+
+# Seed sensitivity analysis results folder
+scripts/jessi_seed_sensitivity_results/
+scripts/vanilla_e2e_seed_sensitivity_results/
 
 # Real-world experiment recordings and derived results
 turtlebot/experiments/data/*

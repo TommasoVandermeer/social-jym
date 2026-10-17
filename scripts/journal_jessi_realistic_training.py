@@ -14,7 +14,6 @@ rcParams['ps.fonttype'] = 42
 
 from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.policies.jessi import JESSI
-from socialjym.policies.jessi_sa import JESSI_SA
 from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
@@ -22,7 +21,6 @@ from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
 
-state_augmented = True
 ### Sim-to-real parameters
 lidar_dt = 0.13
 odometry_dt = 0.05
@@ -30,28 +28,27 @@ control_delay_mean = 0.1
 control_delay_sigma = 0.01
 wheels_max_linear_acceleration = 0.87
 leg_dynamics = True  # Whether to include leg dynamics in the simulation (introduces more realistic trajectories but also more noise in the data)
+rl_scenario_subset = jnp.array([0,1,2,3,4,6,9,10,11,12,13,14,15,16])
 ### Script parameters
 save_videos = False  # Whether to save videos of the debug inspections
-perception_nn_name = 'realistic_pre_perception_network_32.pkl'
-policy_nn_name = 'realistic_pre_controller_network_32.pkl'
-multitask_network_name = 'realistic_jessi_multitask_rl_out_32.pkl'
-if state_augmented:
-    policy_nn_name = "SA_" + policy_nn_name
-    multitask_network_name = "SA_" + multitask_network_name
+perception_nn_name = 'pre_perception_network_32.pkl'
+policy_nn_name = 'LATEST_pre_controller_network_32.pkl'
+multitask_network_name = 'LATEST1_jessi_multitask_rl_out_32.pkl'
 ### Environment parameters
 robot_radius = 0.3
 robot_dt = 0.25
 robot_vmax = 0.45
-robot_wmax = 1.9
+robot_wmax = 3.8
 robot_wheel_distance = 2 * robot_vmax / robot_wmax
+ablation_mode = None
 kinematics = "unicycle"
 lidar_angular_range = 2*jnp.pi
 lidar_max_dist = 10.
 lidar_num_rays = 200
 scenario = "hybrid_scenario"
 hybrid_scenario_subset = jnp.array([0,1,2,3,4,6])  # Exclude circular_crossing_with_static_obstacles and corner_traffic
-n_humans = 5
-n_obstacles = 3
+n_humans = 4
+n_obstacles = 4
 humans_policy = 'hsfm'
 ### PRE-TRAIN Hyperparameters
 random_seed = 0
@@ -91,41 +88,26 @@ training_hyperparams = {
     # 'humans_policy': 'hsfm', It is set by default in the LaserNav env
     'scenario': 'hybrid_scenario',
     'hybrid_scenario_subset': hybrid_scenario_subset,
-    'reward_function': 'lasernav_reward1',
+    'reward_function': 'lasernav_reward4',
     'gradient_norm_scale': 1, # Scale the gradient norm by this value
     'safety_loss': False,  # Whether to include safety loss in the RL training
     'target_kl': None,  # Target KL divergence for early stopping in each update
 }
 training_hyperparams['rl_num_batches'] = training_hyperparams['rl_total_batch_size'] // training_hyperparams['rl_mini_batch_size']
 # JESSI policy
-if state_augmented:
-    jessi = JESSI_SA(
-        v_max=robot_vmax, 
-        wheels_distance=robot_wheel_distance,
-        dt=robot_dt, 
-        lidar_num_rays=lidar_num_rays, 
-        lidar_max_dist=lidar_max_dist,
-        lidar_angular_range=lidar_angular_range,
-        n_stack=n_stack, 
-        n_detectable_humans=n_detectable_humans, 
-        max_humans_velocity=max_humans_velocity,
-        embedding_dim=embeddings_dim,
-        ablation_mode=6,
-    )
-else:
-    jessi = JESSI(
-        v_max=robot_vmax, 
-        wheels_distance=robot_wheel_distance,
-        dt=robot_dt, 
-        lidar_num_rays=lidar_num_rays, 
-        lidar_max_dist=lidar_max_dist,
-        lidar_angular_range=lidar_angular_range,
-        n_stack=n_stack, 
-        n_detectable_humans=n_detectable_humans, 
-        max_humans_velocity=max_humans_velocity,
-        embedding_dim=embeddings_dim,
-        ablation_mode=6,
-    )
+jessi = JESSI(
+    v_max=robot_vmax, 
+    wheels_distance=robot_wheel_distance,
+    dt=robot_dt, 
+    lidar_num_rays=lidar_num_rays, 
+    lidar_max_dist=lidar_max_dist,
+    lidar_angular_range=lidar_angular_range,
+    n_stack=n_stack, 
+    n_detectable_humans=n_detectable_humans, 
+    max_humans_velocity=max_humans_velocity,
+    embedding_dim=embeddings_dim,
+    ablation_mode=ablation_mode,
+)
 # Plotting settings
 ax_visibility = 2
 ax_lims = jnp.array([
@@ -181,6 +163,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         reward_function = Reward4(
             robot_radius=0.3,
             v_max=robot_vmax,
+            wheels_distance=robot_wheel_distance,
+            dt=robot_dt,
         )
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
@@ -576,19 +560,29 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name
         # }
         input_key, rotation_key, beam_dropout_key = random.split(key, 3)
         ## Gaussian noise to LiDAR scans + Beam dropout
-        raw_distances = data['inputs'][:,:,0] * jessi.max_beam_range  # (n_stack, lidar_num_rays)
-        sigma = base_lidar_noise_std + proportional_lidar_noise_std * raw_distances  # (n_stack, lidar_num_rays)
-        noise = random.normal(input_key, shape=raw_distances.shape) * sigma * data['inputs'][:,:,1]  # (n_stack, lidar_num_rays)
-        noisy_distances = jnp.clip(raw_distances + noise, 0., jessi.max_beam_range) # (n_stack, lidar_num_rays)
-        is_dropout = random.bernoulli(beam_dropout_key, p=beam_dropout_prob, shape=raw_distances.shape)
-        noisy_distances = jnp.where(is_dropout, jessi.max_beam_range, noisy_distances)  # (n_stack, lidar_num_rays)
-        new_hit = jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0) * (1.0 - is_dropout)  # (n_stack, lidar_num_rays)
-        x = noisy_distances * data['inputs'][:,:,4]  # (n_stack, lidar_num_rays)
-        y = noisy_distances * data['inputs'][:,:,5]  # (n_stack, lidar_num_rays)
-        data['inputs'] = data['inputs'].at[:,:,0].set(noisy_distances / jessi.max_beam_range)
-        data['inputs'] = data['inputs'].at[:,:,1].set(new_hit)
-        data['inputs'] = data['inputs'].at[:,:,2].set(x)
-        data['inputs'] = data['inputs'].at[:,:,3].set(y)
+        inputs = data["inputs"]
+        distances = inputs[..., 0] * jessi.max_beam_range
+        original_hit = inputs[..., 1] > 0.5
+        sigma = base_lidar_noise_std + proportional_lidar_noise_std * distances
+        noise = random.normal(input_key, shape=distances.shape) * sigma
+        noisy_distances = jnp.where(original_hit,jnp.maximum(distances + noise, 0.0),distances)
+        is_dropout = (
+            random.bernoulli(
+                beam_dropout_key,
+                p=beam_dropout_prob,
+                shape=distances.shape,
+            )
+            & original_hit
+        )
+        noisy_distances = jnp.where(is_dropout,jessi.max_beam_range,noisy_distances)
+        new_hit = original_hit & ~is_dropout
+        x = noisy_distances * inputs[..., 5]  # cos(theta)
+        y = noisy_distances * inputs[..., 4]  # sin(theta)
+        inputs = inputs.at[..., 0].set(noisy_distances / jessi.max_beam_range)
+        inputs = inputs.at[..., 1].set(new_hit.astype(inputs.dtype))
+        inputs = inputs.at[..., 2].set(x)
+        inputs = inputs.at[..., 3].set(y)
+        data["inputs"] = inputs
         ## Random rotation
         alpha = random.uniform(rotation_key, minval=-jnp.pi, maxval=jnp.pi)
         ca, sa = jnp.cos(alpha), jnp.sin(alpha)
@@ -601,6 +595,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name
         data['inputs'] = data['inputs'].at[..., 5].set(c_new) 
         data['targets']['gt_poses'] = data['targets']['gt_poses'] @ rot_mat.T
         data['targets']['gt_vels'] = data['targets']['gt_vels'] @ rot_mat.T
+        # Re-compute attendance sectors
+        beam_dirs = data['inputs'][..., 4:6]                  # (B, T, L, 2)
+        sector_dirs = jessi.sectors_latent_vecs       # (S, 2), [sin, cos]
+        cos_diffs = beam_dirs @ sector_dirs.T         # (B, T, L, S)
+        k = data['inputs'].shape[-1] - 7
+        top_cos, top_indices = lax.top_k(cos_diffs, k)
+        attended_sectors = jnp.where(top_cos >= jessi.sectors_threshold,top_indices,-1)
+        data['inputs'] = data['inputs'].at[..., 7:].set(attended_sectors.astype(data['inputs'].dtype))
         return data
     @jit 
     def _epoch_loop(
@@ -818,19 +820,29 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
         # }
         input_key, beam_dropout_key = random.split(key, 2)
         ## Gaussian noise to LiDAR scans + Beam dropout
-        raw_distances = data['inputs'][:,:,0] * jessi.max_beam_range  # (n_stack, lidar_num_rays)
-        sigma = base_lidar_noise_std + proportional_lidar_noise_std * raw_distances  # (n_stack, lidar_num_rays)
-        noise = random.normal(input_key, shape=raw_distances.shape) * sigma * data['inputs'][:,:,1]  # (n_stack, lidar_num_rays)
-        noisy_distances = jnp.clip(raw_distances + noise, 0., jessi.max_beam_range) # (n_stack, lidar_num_rays)
-        is_dropout = random.bernoulli(beam_dropout_key, p=beam_dropout_prob, shape=raw_distances.shape)
-        noisy_distances = jnp.where(is_dropout, jessi.max_beam_range, noisy_distances)  # (n_stack, lidar_num_rays)
-        new_hit = jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0) * (1.0 - is_dropout)  # (n_stack, lidar_num_rays)
-        x = noisy_distances * data['inputs'][:,:,4]  # (n_stack, lidar_num_rays)
-        y = noisy_distances * data['inputs'][:,:,5]  # (n_stack, lidar_num_rays)
-        data['inputs'] = data['inputs'].at[:,:,0].set(noisy_distances / jessi.max_beam_range)
-        data['inputs'] = data['inputs'].at[:,:,1].set(new_hit)
-        data['inputs'] = data['inputs'].at[:,:,2].set(x)
-        data['inputs'] = data['inputs'].at[:,:,3].set(y)
+        inputs = data["inputs"]
+        distances = inputs[..., 0] * jessi.max_beam_range
+        original_hit = inputs[..., 1] > 0.5
+        sigma = base_lidar_noise_std + proportional_lidar_noise_std * distances
+        noise = random.normal(input_key, shape=distances.shape) * sigma
+        noisy_distances = jnp.where(original_hit,jnp.maximum(distances + noise, 0.0),distances)
+        is_dropout = (
+            random.bernoulli(
+                beam_dropout_key,
+                p=beam_dropout_prob,
+                shape=distances.shape,
+            )
+            & original_hit
+        )
+        noisy_distances = jnp.where(is_dropout,jessi.max_beam_range,noisy_distances)
+        new_hit = original_hit & ~is_dropout
+        x = noisy_distances * inputs[..., 5]  # cos(theta)
+        y = noisy_distances * inputs[..., 4]  # sin(theta)
+        inputs = inputs.at[..., 0].set(noisy_distances / jessi.max_beam_range)
+        inputs = inputs.at[..., 1].set(new_hit.astype(inputs.dtype))
+        inputs = inputs.at[..., 2].set(x)
+        inputs = inputs.at[..., 3].set(y)
+        data["inputs"] = inputs
         return data
     @loop_tqdm(policy_n_epochs, desc="Training Controller network")
     @jit 
@@ -947,20 +959,22 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
         reward_function = Reward4(
             robot_radius=0.3,
             v_max=robot_vmax,
+            wheels_distance=robot_wheel_distance,
+            dt=robot_dt,
         )
     else:
         raise ValueError(f"{training_hyperparams['reward_function']} is not a valid reward function")
     # Environment parameters
     env_params = {
         'robot_radius': 0.3,
-        'n_humans': 4,
-        'n_obstacles': 5,
-        'robot_dt': 0.25,
+        'n_humans': n_humans,
+        'n_obstacles': n_obstacles,
+        'robot_dt': robot_dt,
         'wheels_distance': robot_wheel_distance,
         'humans_dt': 0.01,
         'robot_visible': False,
         'scenario': training_hyperparams['scenario'],
-        'hybrid_scenario_subset': jnp.array([0,1,2,3,4,6,9,10,11,12,13,14,15,16]),
+        'hybrid_scenario_subset': rl_scenario_subset,
         'circle_radius': 7,
         'reward_function': reward_function,
         'kinematics': 'unicycle',
@@ -982,34 +996,19 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     env = LaserNav(**env_params)
     _, _, obs, info, _ = env.reset(random.PRNGKey(training_hyperparams['random_seed']))
     # Initialize robot policy and vnet params
-    if state_augmented:
-        policy = JESSI_SA(
-            robot_radius=env_params['robot_radius'],
-            v_max=robot_vmax, 
-            wheels_distance=robot_wheel_distance,
-            dt=env_params['robot_dt'], 
-            lidar_num_rays=lidar_num_rays, 
-            lidar_max_dist=lidar_max_dist,
-            lidar_angular_range=lidar_angular_range,
-            n_stack=n_stack,
-            beam_dropout_rate=0.2,
-            embedding_dim=embeddings_dim,
-            ablation_mode=6,
-        )
-    else:
-        policy = JESSI(
-            robot_radius=env_params['robot_radius'],
-            v_max=robot_vmax, 
-            wheels_distance=robot_wheel_distance,
-            dt=env_params['robot_dt'], 
-            lidar_num_rays=lidar_num_rays, 
-            lidar_max_dist=lidar_max_dist,
-            lidar_angular_range=lidar_angular_range,
-            n_stack=n_stack,
-            beam_dropout_rate=0.2,
-            embedding_dim=embeddings_dim,
-            ablation_mode=6,
-        )
+    policy = JESSI(
+        robot_radius=env_params['robot_radius'],
+        v_max=robot_vmax, 
+        wheels_distance=robot_wheel_distance,
+        dt=env_params['robot_dt'], 
+        lidar_num_rays=lidar_num_rays, 
+        lidar_max_dist=lidar_max_dist,
+        lidar_angular_range=lidar_angular_range,
+        n_stack=n_stack,
+        beam_dropout_rate=0.2,
+        embedding_dim=embeddings_dim,
+        ablation_mode=ablation_mode,
+    )
     # Load pre-trained weights
     with open(os.path.join(os.path.dirname(__file__), perception_nn_name), 'rb') as f:
         il_encoder_params = pickle.load(f)

@@ -191,12 +191,12 @@ def train_one_epoch(
                 inputs1_f16 = inputs1.astype(jnp.bfloat16)
                 # Forward pass (For Actor/Critic)
                 (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=~(multitask_training)
+                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=modular_training
                 )
             else:
                 # Forward pass (For Actor/Critic)
                 (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0, inputs1, stop_perception_gradient=~(multitask_training)
+                    p, None, inputs0, inputs1, stop_perception_gradient=modular_training
                 )
             # Cast back to higher precision for loss computation
             if multitask_training or modular_training:
@@ -208,7 +208,7 @@ def train_one_epoch(
             # Actor
             new_neglogp = policy.action_distribution.batch_neglogp(actor_dist, u_mb["actions"])
             log_ratio = u_mb["neglogpdfs"] - new_neglogp
-            # log_ratio = jnp.clip(log_ratio, -10, 10) # MORE STABLE
+            log_ratio = jnp.clip(log_ratio, -10, 10) # MORE STABLE
             ratio = jnp.exp(log_ratio)
             lax.cond(
                 debugging & (batch_idx == 0),
@@ -218,7 +218,7 @@ def train_one_epoch(
             surr1 = ratio * u_mb["advantages"]
             surr2 = jnp.clip(ratio, 1.0 - clip_range, 1.0 + clip_range) * u_mb["advantages"]
             actor_loss = -jnp.mean(jnp.minimum(surr1, surr2))
-            approx_kl = jnp.mean((ratio - 1) - log_ratio)
+            approx_kl = jnp.mean(jnp.expm1(log_ratio) - log_ratio)
             clip_frac = jnp.mean(jnp.abs(ratio - 1.0) > clip_range)
             # Critic
             v_loss = jnp.square(pred_val - u_mb["critic_targets"])
@@ -240,7 +240,7 @@ def train_one_epoch(
                 # Data augmentation (random rotations, angular mask dropout) for regularization
                 def augment_data(inputs0, gt_dict, key):
                     # Input shape is (B, n_stack, num_beams, 7) and gt_poses/gt_vels shape is (B, n_stack, num_beams, 2)
-                    # Random rotation
+                    ## Random rotation
                     alpha = random.uniform(key, minval=-jnp.pi, maxval=jnp.pi)
                     ca, sa = jnp.cos(alpha), jnp.sin(alpha)
                     rot_mat = jnp.array([[ca, -sa], [sa, ca]])
@@ -250,6 +250,15 @@ def train_one_epoch(
                     inputs0 = inputs0.at[..., 2:4].set(xy_rotated)
                     inputs0 = inputs0.at[..., 4].set(s_new) 
                     inputs0 = inputs0.at[..., 5].set(c_new) 
+                    # Re-compute attendance sectors
+                    beam_dirs = inputs0[..., 4:6]                  # (B, T, L, 2)
+                    sector_dirs = policy.sectors_latent_vecs       # (S, 2), [sin, cos]
+                    cos_diffs = beam_dirs @ sector_dirs.T         # (B, T, L, S)
+                    k = inputs0.shape[-1] - 7
+                    top_cos, top_indices = lax.top_k(cos_diffs, k)
+                    attended_sectors = jnp.where(top_cos >= policy.sectors_threshold,top_indices,-1)
+                    inputs0 = inputs0.at[..., 7:].set(attended_sectors.astype(inputs0.dtype))
+                    # Rotate GT
                     gt_dict['gt_poses'] = gt_dict['gt_poses'] @ rot_mat.T
                     gt_dict['gt_vels'] = gt_dict['gt_vels'] @ rot_mat.T
                     return inputs0, gt_dict

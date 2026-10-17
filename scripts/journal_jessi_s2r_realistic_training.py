@@ -596,19 +596,29 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name
         # }
         input_key, rotation_key, beam_dropout_key = random.split(key, 3)
         ## Gaussian noise to LiDAR scans + Beam dropout
-        raw_distances = data['inputs'][:,:,0] * jessi.max_beam_range  # (n_stack, lidar_num_rays)
-        sigma = base_lidar_noise_std + proportional_lidar_noise_std * raw_distances  # (n_stack, lidar_num_rays)
-        noise = random.normal(input_key, shape=raw_distances.shape) * sigma * data['inputs'][:,:,1]  # (n_stack, lidar_num_rays)
-        noisy_distances = jnp.clip(raw_distances + noise, 0., jessi.max_beam_range) # (n_stack, lidar_num_rays)
-        is_dropout = random.bernoulli(beam_dropout_key, p=beam_dropout_prob, shape=raw_distances.shape)
-        noisy_distances = jnp.where(is_dropout, jessi.max_beam_range, noisy_distances)  # (n_stack, lidar_num_rays)
-        new_hit = jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0) * (1.0 - is_dropout)  # (n_stack, lidar_num_rays)
-        x = noisy_distances * data['inputs'][:,:,4]  # (n_stack, lidar_num_rays)
-        y = noisy_distances * data['inputs'][:,:,5]  # (n_stack, lidar_num_rays)
-        data['inputs'] = data['inputs'].at[:,:,0].set(noisy_distances / jessi.max_beam_range)
-        data['inputs'] = data['inputs'].at[:,:,1].set(new_hit)
-        data['inputs'] = data['inputs'].at[:,:,2].set(x)
-        data['inputs'] = data['inputs'].at[:,:,3].set(y)
+        inputs = data["inputs"]
+        distances = inputs[..., 0] * jessi.max_beam_range
+        original_hit = inputs[..., 1] > 0.5
+        sigma = base_lidar_noise_std + proportional_lidar_noise_std * distances
+        noise = random.normal(input_key, shape=distances.shape) * sigma
+        noisy_distances = jnp.where(original_hit,jnp.maximum(distances + noise, 0.0),distances)
+        is_dropout = (
+            random.bernoulli(
+                beam_dropout_key,
+                p=beam_dropout_prob,
+                shape=distances.shape,
+            )
+            & original_hit
+        )
+        noisy_distances = jnp.where(is_dropout,jessi.max_beam_range,noisy_distances)
+        new_hit = original_hit & ~is_dropout
+        x = noisy_distances * inputs[..., 5]  # cos(theta)
+        y = noisy_distances * inputs[..., 4]  # sin(theta)
+        inputs = inputs.at[..., 0].set(noisy_distances / jessi.max_beam_range)
+        inputs = inputs.at[..., 1].set(new_hit.astype(inputs.dtype))
+        inputs = inputs.at[..., 2].set(x)
+        inputs = inputs.at[..., 3].set(y)
+        data["inputs"] = inputs
         ## Random rotation
         alpha = random.uniform(rotation_key, minval=-jnp.pi, maxval=jnp.pi)
         ca, sa = jnp.cos(alpha), jnp.sin(alpha)
@@ -621,6 +631,14 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name
         data['inputs'] = data['inputs'].at[..., 5].set(c_new) 
         data['targets']['gt_poses'] = data['targets']['gt_poses'] @ rot_mat.T
         data['targets']['gt_vels'] = data['targets']['gt_vels'] @ rot_mat.T
+        # Re-compute attendance sectors
+        beam_dirs = data['inputs'][..., 4:6]                  # (B, T, L, 2)
+        sector_dirs = jessi.sectors_latent_vecs       # (S, 2), [sin, cos]
+        cos_diffs = beam_dirs @ sector_dirs.T         # (B, T, L, S)
+        k = data['inputs'].shape[-1] - 7
+        top_cos, top_indices = lax.top_k(cos_diffs, k)
+        attended_sectors = jnp.where(top_cos >= jessi.sectors_threshold,top_indices,-1)
+        data['inputs'] = data['inputs'].at[..., 7:].set(attended_sectors.astype(data['inputs'].dtype))
         return data
     @jit 
     def _epoch_loop(
@@ -873,19 +891,29 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
         # }
         input_key, beam_dropout_key = random.split(key, 2)
         ## Gaussian noise to LiDAR scans + Beam dropout
-        raw_distances = data['inputs'][:,:,0] * jessi.max_beam_range  # (n_stack, lidar_num_rays)
-        sigma = base_lidar_noise_std + proportional_lidar_noise_std * raw_distances  # (n_stack, lidar_num_rays)
-        noise = random.normal(input_key, shape=raw_distances.shape) * sigma * data['inputs'][:,:,1]  # (n_stack, lidar_num_rays)
-        noisy_distances = jnp.clip(raw_distances + noise, 0., jessi.max_beam_range) # (n_stack, lidar_num_rays)
-        is_dropout = random.bernoulli(beam_dropout_key, p=beam_dropout_prob, shape=raw_distances.shape)
-        noisy_distances = jnp.where(is_dropout, jessi.max_beam_range, noisy_distances)  # (n_stack, lidar_num_rays)
-        new_hit = jnp.where(noisy_distances < jessi.max_beam_range, 1.0, 0.0) * (1.0 - is_dropout)  # (n_stack, lidar_num_rays)
-        x = noisy_distances * data['inputs'][:,:,4]  # (n_stack, lidar_num_rays)
-        y = noisy_distances * data['inputs'][:,:,5]  # (n_stack, lidar_num_rays)
-        data['inputs'] = data['inputs'].at[:,:,0].set(noisy_distances / jessi.max_beam_range)
-        data['inputs'] = data['inputs'].at[:,:,1].set(new_hit)
-        data['inputs'] = data['inputs'].at[:,:,2].set(x)
-        data['inputs'] = data['inputs'].at[:,:,3].set(y)
+        inputs = data["inputs"]
+        distances = inputs[..., 0] * jessi.max_beam_range
+        original_hit = inputs[..., 1] > 0.5
+        sigma = base_lidar_noise_std + proportional_lidar_noise_std * distances
+        noise = random.normal(input_key, shape=distances.shape) * sigma
+        noisy_distances = jnp.where(original_hit,jnp.maximum(distances + noise, 0.0),distances)
+        is_dropout = (
+            random.bernoulli(
+                beam_dropout_key,
+                p=beam_dropout_prob,
+                shape=distances.shape,
+            )
+            & original_hit
+        )
+        noisy_distances = jnp.where(is_dropout,jessi.max_beam_range,noisy_distances)
+        new_hit = original_hit & ~is_dropout
+        x = noisy_distances * inputs[..., 5]  # cos(theta)
+        y = noisy_distances * inputs[..., 4]  # sin(theta)
+        inputs = inputs.at[..., 0].set(noisy_distances / jessi.max_beam_range)
+        inputs = inputs.at[..., 1].set(new_hit.astype(inputs.dtype))
+        inputs = inputs.at[..., 2].set(x)
+        inputs = inputs.at[..., 3].set(y)
+        data["inputs"] = inputs
         return data
     @loop_tqdm(policy_n_epochs, desc="Training Controller network")
     @jit 
