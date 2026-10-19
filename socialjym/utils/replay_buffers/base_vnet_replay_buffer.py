@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from functools import partial
-from jax import jit, vmap, tree_map, random, lax, debug
+from jax import jit, vmap, random, lax, debug
+from jax.tree_util import tree_map
 import jax.numpy as jnp
 
 class BaseVNetReplayBuffer(ABC):

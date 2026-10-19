@@ -61,6 +61,7 @@ cd social-jym
 ```
 ./docker/run.sh --gpu
 ```
+If the GPU is newer than Hopper (compute capability 10 or higher, e.g. RTX 50xx), `run.sh` detects it and automatically builds a separate `social-jym:gpu-blackwell` image with a `ptxas` wrapper that lets JAX 0.4.30 compile for it. If Docker cannot attach the GPU (nvidia-container-toolkit missing, or Docker not restarted after installing it), `run.sh` passes it to the container manually.
 
 To force a rebuild of the image (e.g. after updating dependencies):
 ```
