@@ -1,5 +1,6 @@
 from jax import random
 import jax.numpy as jnp
+from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
 import os
 import pickle
@@ -40,8 +41,8 @@ rl_n_parallel_envs = 300
 rl_training_updates = 500
 training_hyperparams = {
     'random_seed': 0,
-    'n_humans': 5, 
-    'n_obstacles': 3,
+    'n_humans': n_humans, 
+    'n_obstacles': n_obstacles,
     'il_buffer_size': 500_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
     'il_n_parallel_envs': 1_000,
     'il_training_episodes': 10_000,
@@ -100,7 +101,7 @@ for seed in range(n_seeds):
             'hybrid_scenario_subset': training_hyperparams['hybrid_scenario_subset'],
             'humans_policy': training_hyperparams['humans_policy'],
             'reward_function': reward_function,
-            'kinematics': 'unicycle',
+            'kinematics': training_hyperparams['kinematics'],
         }
         # Initialize environment
         env = SocialNav(**env_params)
@@ -419,3 +420,56 @@ rcParams.update({
     "pdf.fonttype": 42,
     "ps.fonttype": 42,
 })
+if not os.path.exists(os.path.join(base_dir, "dir_safe_mean_returns.pdf")):
+    window_size = 20
+    def plot():
+        returns_mt = jnp.full((n_seeds, rl_training_updates), jnp.nan)
+        for seed in range(n_seeds):
+            network_name = base_rl_network_name + '_seed' + str(seed) + '.pkl'
+            if os.path.exists(os.path.join(base_dir, network_name)):
+                print(f"Loading metrics SEED{seed}")
+                with open(os.path.join(base_dir, network_name), 'rb') as f:
+                    metrics = pickle.load(f)['aux_data']
+                    processed_metrics = {}
+                    for key, value in metrics.items():
+                        if isinstance(value, list):
+                            processed_metrics[key] = jnp.array(value)
+                        if isinstance(value, dict):
+                            processed_metrics[key] = tree_map(lambda x: jnp.array(x), value)
+                        if isinstance(value, jnp.ndarray):
+                            processed_metrics[key] = value
+                    returns_mt = returns_mt.at[seed].set(processed_metrics['returns'])
+        smoothed_returns = jnp.array([
+            pd.Series(seed_data).rolling(window=window_size, min_periods=1).mean() 
+            for seed_data in returns_mt
+        ])
+        mean_returns = jnp.nanmean(smoothed_returns, axis=0)
+        std_returns = jnp.nanstd(smoothed_returns, axis=0)
+        # x = jnp.arange(rl_training_updates)
+        # colors = ["red", "green", "blue"]
+        # color = colors[["MT","MD","PO"].index(training_paradigm)]
+        # plt.figure(figsize=(10, 6))
+        # plt.plot(x, mean_returns, color=color, linewidth=3.)
+        # # for seed in range(n_seeds): plt.plot(x, smoothed_returns[seed], color=color, linewidth=1.)
+        # plt.fill_between(x, mean_returns - std_returns, mean_returns + std_returns, color=color, alpha=0.2)
+        # plt.xlabel('Training Updates')
+        # plt.ylabel('Return')
+        # plt.grid(True, linestyle='--', alpha=0.7)
+        # plt.tight_layout()
+        # plt.show()
+        return mean_returns, std_returns
+    ## UNBOUNDED
+    mean_dir, std_dir = plot()
+    ci_dir = stats.t.ppf(0.975, 9) * std_dir / jnp.sqrt(n_seeds)
+    ## Summary plot
+    x = jnp.arange(rl_training_updates)
+    figure, ax = plt.subplots(1,1, figsize=(10, 6))
+    figure.subplots_adjust(left=0.15, right=0.99, top=0.99, bottom=0.13)
+    ax.plot(x, mean_dir, color='orange', linewidth=1.5, label='DIR-SAFE')
+    ax.fill_between(x, mean_dir - ci_dir, mean_dir + ci_dir, color='orange', alpha=0.2)
+    ax.set_xlabel('Training Updates')
+    ax.set_ylabel('Return')
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles[::-1], labels[::-1],loc='lower right', bbox_to_anchor=(0.999, 0.01))
+    ax.grid(True, linestyle='--', alpha=0.7)
+    figure.savefig(os.path.join(base_dir, "dir_safe_mean_returns.pdf"), format='pdf')
