@@ -6,16 +6,6 @@ import pickle
 import optax
 import pandas as pd
 import scipy.stats as stats
-from matplotlib import rc, rcParams
-rcParams.update({
-    "text.usetex": True,
-    "font.family": "serif",
-    "font.serif": ["Computer Modern Roman"],
-    "font.weight": "regular",
-    "font.size": 23,
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-})
 
 from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.envs.socialnav import SocialNav
@@ -23,7 +13,7 @@ from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2 as Reward
 from socialjym.utils.rollouts.ppo_gpu_rollouts import ppo_rl_rollout
 from socialjym.utils.replay_buffers.base_act_cri_buffer import BaseACBuffer
 from socialjym.utils.replay_buffers.ppo_replay_buffer import PPOBuffer
-from socialjym.utils.rollouts.act_cri_rollouts import actor_critic_il_rollout
+from socialjym.utils.rollouts.act_cri_gpu_rollouts import actor_critic_il_rollout
 
 out_folder = 'dir_safe_seed_sensitivity_results'
 base_il_network_name = 'dir_safe_il_out'
@@ -46,14 +36,15 @@ policy_learning_rate = 0.005
 policy_batch_size = 200
 policy_n_epochs = 30 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
 ### RL Hyperparameters
-rl_n_parallel_envs = 1000 
+rl_n_parallel_envs = 300 
 rl_training_updates = 500
 training_hyperparams = {
     'random_seed': 0,
     'n_humans': 5, 
     'n_obstacles': 3,
-    'il_buffer_size': n_steps, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
-    'il_training_episodes': 2_000,
+    'il_buffer_size': 500_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
+    'il_n_parallel_envs': 1_000,
+    'il_training_episodes': 10_000,
     'il_actor_learning_rate': policy_learning_rate,
     'il_critic_learning_rate': 0.01,
     'il_num_epochs': policy_n_epochs, # Number of epochs to train the model after ending IL
@@ -152,6 +143,7 @@ for seed in range(n_seeds):
             'buffer_capacity': training_hyperparams['il_buffer_size'],
             'num_epochs': training_hyperparams['il_num_epochs'],
             'batch_size': training_hyperparams['il_batch_size'],
+            'n_parallel_envs': training_hyperparams['il_n_parallel_envs'],
         }
         # IMITATION LEARNING ROLLOUT
         il_out = actor_critic_il_rollout(**il_rollout_params)
@@ -415,3 +407,15 @@ for seed in range(n_seeds):
         figure.savefig(os.path.join(base_dir,rl_network_name.replace('.pkl', '.eps')), format='eps')
     else:
         print(f"Seed {seed} of DIR-SAFE training already done and saved... Remove '{rl_network_name}' to retrain.")
+
+### Plots returns
+from matplotlib import rc, rcParams
+rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman"],
+    "font.weight": "regular",
+    "font.size": 23,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})

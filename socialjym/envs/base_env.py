@@ -705,11 +705,15 @@ class BaseEnv(ABC):
         - full_state: initial state of the environment. (UNUSED HERE)
         - humans_goal: array of humans' goals.
         - robot_goal: array of robot's goal.
+        - robot_goal_list: list of all the goals the robot has to reach.
         - humans_parameters: array of humans' parameters.
         - static_obstacles: array of static obstacles.
         - current_scenario: current scenario index.
         - humans_delay: array of humans' delays.
+        - is_x_flipped: is the X Axis flipped in the episode with respect to the standard scenario
+        - is_y_flipped: is the Y Axis flipped in the episode with respect to the standard scenario
         - noise_key: random.PRNGKey for noise generation. (UNUSED HERE)
+        - visibility_chance: probability that the robot is visible to humans
 
         output:
         - info: dictionary containing the initialized values.
