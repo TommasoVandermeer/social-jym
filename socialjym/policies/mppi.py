@@ -2,6 +2,7 @@ from jax import jit, lax, vmap, debug, random
 from jax_tqdm import loop_tqdm
 from jax.tree_util import tree_map
 import jax.numpy as jnp
+import numpy as np
 from functools import partial
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
@@ -15,6 +16,20 @@ from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
+from socialjym.utils.animation import (
+    TrajectoryAnimator, 
+    LinesLayer, 
+    ScatterLayer, 
+    LineLayer, 
+    EllipsesLayer, 
+    scene_layers, 
+    point_cloud_layers, 
+    perception_points_layers, 
+    to_numpy, 
+    states_to_scene, 
+    lidar_ray_segments, 
+    gaussian_ellipses,
+)
 from jhsfm.hsfm import get_linear_velocity
 
 class MPPI(DWA):
@@ -586,4 +601,170 @@ class MPPI(DWA):
             y_lims=y_lims,
             save_video=save_video,
         )
-    
+
+    @partial(jit, static_argnames=("self"))
+    def _first_sampled_actions(self, robot_poses, robot_trajectories):
+        """Actions (n_steps, num_samples, 2) leading from each robot pose to the first pose of each sampled trajectory."""
+        @jit
+        def inverse_kinematics(robot_pose, next_robot_pose):
+            dtheta = wrap_angle(next_robot_pose[2] - robot_pose[2])
+            w = dtheta / self.dt
+            dx = next_robot_pose[0] - robot_pose[0]
+            dy = next_robot_pose[1] - robot_pose[1]
+            theta_mid = robot_pose[2] + dtheta / 2.0
+            chord_len = dx * jnp.cos(theta_mid) + dy * jnp.sin(theta_mid)
+            v = lax.cond(
+                jnp.abs(w) > 1e-5,
+                lambda: chord_len * w / (2.0 * jnp.sin(dtheta / 2.0)),
+                lambda: (dx * jnp.cos(robot_pose[2]) + dy * jnp.sin(robot_pose[2])) / self.dt,
+            )
+            return jnp.array([v, w])
+        return vmap(vmap(inverse_kinematics, in_axes=(None, 0)))(robot_poses, robot_trajectories[:,:,1])
+
+    def animate_trajectory_fast(
+        self,
+        robot_poses, # x, y, theta
+        robot_actions,
+        robot_chosen_trajectories, # Trajectories computed using U_mean (num_steps, horizon+1, 3)
+        robot_trajectories, # Sampled trajectories (num_steps, num_samples, horizon+1, 3)
+        robot_trajectories_costs,
+        robot_goals,
+        humans_poses, # x, y, theta
+        humans_velocities, # vx, vy (in global frame)
+        humans_radii,
+        static_obstacles,
+        lidar_scans=None, # Shape: (num_steps, lidar_num_rays)
+        point_clouds=None, # Shape: (num_steps, lidar_n_stack_to_use, lidar_num_rays, 2)
+        humans_distributions=None, # DRA-MPPI Shape: Dict {'means': (num_steps, horizon, n_humans, 2), 'logsigmas': (num_steps, horizon, n_humans, 2), 'correlation': (num_steps, horizon, n_humans)}
+        perception_distributions=None, # JESSI Shape: Dict {'pos_distrs': {'means': (num_steps, n_humans, 2), ...}, 'vel_distrs': {'means': (num_steps, n_humans, 2), ...}, 'weights': (num_steps, n_humans)} (world frame)
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+        save_path:str=None, # (optional) path of the saved video (default: same as animate_trajectory)
+        dpi:int=300, # dpi of the saved video
+        speed:float=1., # playback speed (1 = real time)
+        blit:bool=True, # if False, the whole figure is redrawn at each frame (slower, but zooming while playing works fine)
+    ):
+        """
+        Same animation of animate_trajectory, but much faster: everything is computed once for all frames and the artists 
+        are created once and only moved at each frame (see socialjym/utils/animation).
+        """
+        # Validate input args
+        assert \
+            len(robot_poses) == \
+            len(robot_actions) == \
+            len(robot_chosen_trajectories) == \
+            len(robot_trajectories) == \
+            len(robot_trajectories_costs) == \
+            len(robot_goals) == \
+            len(humans_poses) == \
+            len(humans_velocities) == \
+            len(humans_radii) == \
+            len(static_obstacles), "All inputs must have the same length"
+        n_steps = len(robot_poses)
+        first_sampled_actions = self._first_sampled_actions(robot_poses, robot_trajectories)
+        if humans_distributions is not None:
+            humans_ellipses = gaussian_ellipses(humans_distributions, self.biv_gaussian)
+        (
+            robot_poses, robot_actions, robot_chosen_trajectories, robot_trajectories, robot_trajectories_costs, robot_goals, 
+            humans_poses, humans_velocities, humans_radii, static_obstacles, first_sampled_actions,
+        ) = to_numpy((
+            robot_poses, robot_actions, robot_chosen_trajectories, robot_trajectories, robot_trajectories_costs, robot_goals, 
+            humans_poses, humans_velocities, humans_radii, static_obstacles, first_sampled_actions,
+        ))
+        # Animate trajectory
+        anim = TrajectoryAnimator(n_steps, self.dt, sim_cols=2, x_lims=x_lims, y_lims=y_lims)
+        for ax in anim.sim_axs:
+            anim.add(*scene_layers(ax, robot_poses, self.robot_radius, robot_goals, humans_poses, humans_velocities, humans_radii, static_obstacles))
+        # AX 0: Simulation with LiDAR ranges and perceived humans
+        if lidar_scans is not None:
+            anim.add(LinesLayer(anim.sim_axs[0], lidar_ray_segments(robot_poses, np.asarray(lidar_scans), self.lidar_angles_robot_frame), color="black", linewidth=0.5, zorder=0))
+        if perception_distributions is not None:
+            perception_distributions = to_numpy(perception_distributions)
+            anim.add(*perception_points_layers(
+                anim.sim_axs[0],
+                perception_distributions['pos_distrs']['means'], # ALREADY CONVERTED TO WORLD FRAME FROM DRA-MPPI
+                perception_distributions['vel_distrs']['means'],
+                perception_distributions['weights'] > 0.5,
+            ))
+        # AX 1: Simulation with LiDAR point cloud, humans predicted distributions and MPPI sampled trajectories
+        if point_clouds is not None:
+            point_clouds = np.asarray(point_clouds)
+            anim.add(*point_cloud_layers(anim.sim_axs[1], point_clouds[:,None] if point_clouds.ndim == 3 else point_clouds, self.n_stack))
+        if humans_distributions is not None:
+            centers, widths, heights, angles = (x.reshape((n_steps, -1) + x.shape[3:]) for x in humans_ellipses)
+            anim.add(EllipsesLayer(
+                anim.sim_axs[1],
+                centers,
+                widths,
+                heights,
+                angles,
+                mask=~np.any(np.isnan(centers), axis=-1),
+                edgecolor='blue',
+                facecolor='lightblue',
+                alpha=0.5,
+                zorder=15,
+            ))
+        anim.add(LinesLayer(anim.sim_axs[1], robot_trajectories[...,:2], mask=robot_trajectories_costs < 1_000_000, color='green', alpha=0.5, linewidth=1, zorder=10))
+        anim.add(LineLayer(anim.sim_axs[1], robot_chosen_trajectories[...,:2], color='blue', alpha=1, linewidth=3, zorder=30))
+        # AX 2: Feasible action space + sampled actions and action taken
+        anim.setup_action_space(self.v_max, self.wheels_distance, edgecolor='green', facecolor='lightgreen')
+        anim.add(ScatterLayer(anim.action_ax, first_sampled_actions, color='orange', alpha=0.5, zorder=10, s=5))
+        anim.add(LineLayer(anim.action_ax, robot_actions, marker='^', markersize=9, color='blue', zorder=51)) # Action taken
+        if save_path is None:
+            save_path = os.path.join(os.path.dirname(__file__), f'{self.name}_trajectory.mp4')
+        anim.run(save_video=save_video, save_path=save_path, dpi=dpi, speed=speed, blit=blit)
+
+    def animate_lasernav_trajectory_fast(
+        self,
+        states,
+        observations,
+        actions,
+        u_means,
+        trajectories,
+        trajectories_costs,
+        goals,
+        static_obstacles,
+        humans_radii,
+        lasernav_env:LaserNav,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+        save_path:str=None,
+        dpi:int=300,
+        speed:float=1.,
+        blit:bool=True,
+    ):
+        """Same animation of animate_lasernav_trajectory, but much faster (see animate_trajectory_fast)."""
+        robot_poses, humans_poses, humans_velocities = states_to_scene(states, lasernav_env.humans_policy)
+        # Compute full trajectories with U_mean
+        @jit
+        def compute_chosen_trajectory(robot_pose, robot_u_mean, robot_goal, obs):
+            aligned_lidar = self.align_lidar(obs[:self.lidar_n_stack_to_use])[1]
+            point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
+            _, chosen_trajectory = self._rollout_and_cost(robot_pose, robot_u_mean, robot_goal, point_cloud)
+            return chosen_trajectory
+        chosen_trajectories = vmap(compute_chosen_trajectory)(robot_poses, u_means, goals, observations)
+        # Compute point clouds from LaserNav observations
+        point_clouds = vmap(lambda obs: self.align_lidar(obs)[1][:self.lidar_n_stack_to_use].reshape(-1, 2))(observations)
+        self.animate_trajectory_fast(
+            robot_poses,
+            actions,
+            chosen_trajectories,
+            trajectories,
+            trajectories_costs,
+            goals,
+            humans_poses,
+            humans_velocities,
+            humans_radii,
+            static_obstacles,
+            lidar_scans=observations[:,0,11:],
+            point_clouds=point_clouds,
+            x_lims=x_lims,
+            y_lims=y_lims,
+            save_video=save_video,
+            save_path=save_path,
+            dpi=dpi,
+            speed=speed,
+            blit=blit,
+        )

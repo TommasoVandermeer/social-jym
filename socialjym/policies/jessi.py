@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import numpy as np
 from jax import random, jit, vmap, lax, debug, nn, value_and_grad, Array
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
@@ -23,6 +24,27 @@ from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
+from socialjym.utils.animation import (
+    TrajectoryAnimator, 
+    LinesLayer, 
+    ScatterLayer, 
+    PolygonLayer, 
+    LineLayer, 
+    EllipsesLayer, 
+    ArrowsLayer, 
+    TextsLayer, 
+    scene_layers, 
+    point_cloud_layers, 
+    rgba, 
+    to_numpy, 
+    states_to_scene, 
+    robot_to_world, 
+    lidar_ray_segments, 
+    gaussian_ellipses, 
+    roto_translate_gaussians, 
+    action_distribution_grid, 
+    static_humans_mask,
+)
 
 ABLATIONS = [
     1, # No action space bounding
@@ -2340,4 +2362,306 @@ class JESSI(BasePolicy):
             x_lims,
             y_lims,
             save_video,
+        )
+
+    def animate_trajectory_fast(
+        self,
+        robot_poses, # x, y, theta
+        robot_actions,
+        robot_goals,
+        observations,
+        actor_distrs,
+        humans_distrs,
+        humans_poses=None, # x, y, theta
+        humans_velocities=None, # vx, vy (in global frame)
+        humans_radii=None,
+        humans_visibility_mask=None,
+        humans_leg_states=None,
+        humans_leg_radii=None,
+        static_obstacles=None,
+        virtual_points=None,
+        spatial_attentions=None,
+        temporal_attentions=None,
+        human_attentions=None,
+        trajectories=None,
+        trajectories_costs=None,
+        chosen_trajectories=None,
+        future_humans_distrs=None,
+        p_visualization_threshold_dir:float=0.05,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+        save_path:str=None, # (optional) path of the saved video (default: same as animate_trajectory)
+        dpi:int=300, # dpi of the saved video
+        speed:float=1., # playback speed (1 = real time)
+        blit:bool=True, # if False, the whole figure is redrawn at each frame (slower, but zooming while playing works fine)
+    ):
+        """
+        Same animation of animate_trajectory, but much faster: everything is computed once for all frames and the artists 
+        are created once and only moved at each frame (see socialjym/utils/animation).
+        """
+        # Validate input args
+        assert \
+            len(robot_poses) == \
+            len(robot_actions) == \
+            len(robot_goals) == \
+            len(observations), "All primary inputs must have the same length"
+        n_steps = len(robot_poses)
+        ### Compute (once for all frames) the quantities to visualize
+        # LiDAR point clouds
+        point_clouds = vmap(lambda obs: self.align_lidar(obs)[1])(observations)
+        # Human-centric Gaussians (HCGs) in the world frame
+        hcgs_pos = roto_translate_gaussians(humans_distrs["pos_distrs"], robot_poses, self.bivariate_gaussian)
+        hcgs_vel = roto_translate_gaussians(
+            humans_distrs["vel_distrs"], 
+            jnp.column_stack((jnp.zeros(n_steps), jnp.zeros(n_steps), robot_poses[:,2])), # Velocities are not affected by translation, only rotation
+            self.bivariate_gaussian,
+        )
+        hcgs_pos_ellipses = gaussian_ellipses(hcgs_pos, self.bivariate_gaussian)
+        hcgs_vel_ellipses = gaussian_ellipses(hcgs_vel, self.bivariate_gaussian)
+        # Action distribution
+        if actor_distrs is not None:
+            from socialjym.policies.cadrl import CADRL
+            from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
+            dummy_cadrl = CADRL(DummyReward(kinematics="unicycle", v_max=self.v_max),kinematics="unicycle",v_max=self.v_max,wheels_distance=self.wheels_distance)
+            test_action_samples = dummy_cadrl._build_action_space(unicycle_triangle_samples=35)
+            test_action_p, high_p_mask = action_distribution_grid(self.action_distribution, actor_distrs, test_action_samples, p_visualization_threshold_dir)
+        # Predicted future humans positions (JESSI-MPPI)
+        if future_humans_distrs is not None:
+            future_ellipses = gaussian_ellipses(future_humans_distrs["pos_distrs"], self.bivariate_gaussian)
+        (
+            robot_poses, robot_actions, robot_goals, observations, point_clouds, humans_poses, humans_velocities, humans_radii, 
+            humans_visibility_mask, humans_leg_states, humans_leg_radii, static_obstacles, virtual_points, temporal_attentions, human_attentions,
+        ) = to_numpy((
+            robot_poses, robot_actions, robot_goals, observations, point_clouds, humans_poses, humans_velocities, humans_radii, 
+            humans_visibility_mask, humans_leg_states, humans_leg_radii, static_obstacles, virtual_points, temporal_attentions, human_attentions,
+        ))
+        # Animate trajectory
+        anim = TrajectoryAnimator(n_steps, self.dt, sim_rows=2, sim_cols=2, left=0.07, x_lims=x_lims, y_lims=y_lims, ylabel_pad=-16, xlabel_only_bottom_row=True)
+        ax_lidar, ax_point_cloud, ax_hcgs_pos, ax_hcgs_vel = anim.sim_axs
+        static_humans = static_humans_mask(humans_poses) if humans_poses is not None else None
+        for i, ax in enumerate(anim.sim_axs):
+            anim.add(*scene_layers(
+                ax, 
+                robot_poses, 
+                self.robot_radius, 
+                robot_goals, 
+                humans_poses, 
+                humans_velocities, 
+                humans_radii, 
+                static_obstacles, 
+                visibility=humans_visibility_mask if i >= 2 else None, # Non visible humans are greyed out in the perception axes
+                static=static_humans, 
+                legs_states=humans_leg_states, 
+                legs_radii=humans_leg_radii,
+            ))
+        ### FIRST ROW AXS: SIMULATION + INPUT VISUALIZATION
+        # AX 0,0: Simulation with LiDAR ranges (colored by spatial attention, if given)
+        if spatial_attentions is not None:
+            spatial_attentions = np.asarray(spatial_attentions)
+            norm_rays = mcolors.Normalize(vmin=float(np.min(spatial_attentions)), vmax=float(np.max(spatial_attentions)))
+            rays_colors = plt.get_cmap('seismic')(norm_rays(spatial_attentions.astype(np.float64)))
+            rays_kwargs = dict(colors=rays_colors)
+        else:
+            rays_kwargs = dict(color='black')
+        anim.add(LinesLayer(ax_lidar, lidar_ray_segments(robot_poses, observations[:,0,11:], self.lidar_angles_robot_frame), linewidth=0.5, zorder=0, **rays_kwargs))
+        if temporal_attentions is not None:
+            temporal_texts = np.array([["\n".join(f"{'t' if i == 0 else f't-{i}'} = {float(score):.2f}" for i, score in enumerate(scores))] for scores in temporal_attentions], dtype=object)
+            anim.add(TextsLayer(
+                ax_lidar,
+                np.full((n_steps, 1, 2), [0.03, 0.97]),
+                temporal_texts,
+                transform=ax_lidar.transAxes, 
+                fontsize=8,             
+                verticalalignment='top', 
+                zorder=100,              
+                bbox=dict(               
+                    boxstyle='round,pad=0.4', 
+                    facecolor='white', 
+                    alpha=0.8, 
+                    edgecolor='gray'
+                ),
+            ))
+        ax_lidar.set_title("Trajectory")
+        # AX 0,1: Simulation with LiDAR point cloud stack (+ JESSI-MPPI trajectories and predicted humans)
+        if trajectories is not None and trajectories_costs is not None and chosen_trajectories is not None:
+            trajectories, trajectories_costs, chosen_trajectories = to_numpy((trajectories, trajectories_costs, chosen_trajectories))
+            anim.add(LinesLayer(
+                ax_point_cloud, 
+                trajectories[...,:2], 
+                colors=np.where((trajectories_costs < 1_000_000)[...,None], rgba('green', 0.5), rgba('orange', 0.5)), 
+                linewidth=1, 
+                zorder=10,
+            ))
+            anim.add(LineLayer(ax_point_cloud, chosen_trajectories[...,:2], color='blue', alpha=1, linewidth=3, zorder=30))
+        if future_humans_distrs is not None:
+            centers, widths, heights, angles = (x.reshape((n_steps, -1) + x.shape[3:]) for x in future_ellipses)
+            anim.add(EllipsesLayer(
+                ax_point_cloud, 
+                centers, 
+                widths, 
+                heights, 
+                angles, 
+                mask=np.asarray(future_humans_distrs['weights']).reshape(n_steps, -1) > 0.5, 
+                edgecolor='blue', 
+                facecolor='lightblue', 
+                alpha=0.5, 
+                zorder=15,
+            ))
+        anim.add(*point_cloud_layers(ax_point_cloud, point_clouds, self.n_stack))
+        if virtual_points is not None:
+            anim.add(ScatterLayer(ax_point_cloud, robot_to_world(virtual_points, robot_poses), color='blue', alpha=0.6, zorder=30))
+        ax_point_cloud.set_title("Pointcloud")
+        ### SECOND ROW AXS: PERCEPTION VISUALIZATION
+        # AX 1,0 and 1,1: Human-centric Gaussians (HCGs) positions and velocities
+        probs = np.asarray(humans_distrs["weights"])
+        detected = probs > 0.5
+        hcgs_positions, pos_widths, pos_heights, pos_angles = hcgs_pos_ellipses
+        hcgs_velocities, vel_widths, vel_heights, vel_angles = hcgs_vel_ellipses
+        hcgs_velocities = hcgs_velocities + hcgs_positions
+        text_dirs = np.arctan2(-(hcgs_velocities[...,1] - hcgs_positions[...,1]), -(hcgs_velocities[...,0] - hcgs_positions[...,0]))
+        text_positions = np.stack((hcgs_positions[...,0] + np.cos(text_dirs), hcgs_positions[...,1] - np.sin(text_dirs)), axis=-1)
+        text_kwargs = dict(
+            fontsize=8, 
+            fontweight="bold", 
+            zorder=101,
+            horizontalalignment='center',
+            verticalalignment='center',
+            bbox=dict(
+                boxstyle='round,pad=0.2', 
+                facecolor='white', 
+                alpha=0.5, 
+            ),
+        )
+        anim.add(EllipsesLayer(ax_hcgs_pos, hcgs_positions, pos_widths, pos_heights, pos_angles, mask=detected, edgecolor='blue', facecolor='lightblue', alpha=0.8, zorder=15))
+        anim.add(ScatterLayer(ax_hcgs_pos, hcgs_positions, mask=detected, c='red', s=30, marker='x', zorder=100))
+        anim.add(TextsLayer(ax_hcgs_pos, text_positions, np.vectorize(lambda p: f"s\n{p:.2f}", otypes=[object])(probs), mask=detected, color="red", **text_kwargs))
+        anim.add(ScatterLayer(ax_hcgs_pos, hcgs_positions, mask=~detected, c='grey', s=10, marker='x', zorder=99, alpha=0.5))
+        anim.add(EllipsesLayer(ax_hcgs_vel, hcgs_velocities, vel_widths, vel_heights, vel_angles, mask=detected, edgecolor='blue', facecolor='lightblue', alpha=0.8, zorder=15))
+        anim.add(ArrowsLayer(ax_hcgs_vel, hcgs_positions, hcgs_velocities - hcgs_positions, mask=detected, head_width=0.2, head_length=0.2, fc='red', ec='red', zorder=100))
+        if human_attentions is not None:
+            anim.add(TextsLayer(ax_hcgs_vel, text_positions, np.vectorize(lambda a: f"a\n{float(a):.2f}", otypes=[object])(human_attentions), mask=detected, color="black", **text_kwargs))
+        anim.add(ScatterLayer(ax_hcgs_vel, hcgs_velocities, mask=~detected, c='grey', s=10, marker='x', zorder=99, alpha=0.5))
+        ax_hcgs_pos.text(0.5, -0.13, "Humans' predicted positions", transform=ax_hcgs_pos.transAxes, rotation=0, va="center", ha="center")
+        ax_hcgs_vel.text(0.5, -0.13, "Humans' predicted velocities", transform=ax_hcgs_vel.transAxes, rotation=0, va="center", ha="center")
+        # AX :,2: Feasible and bounded action space + action space distribution and action taken
+        anim.setup_action_space(self.v_max, self.wheels_distance, edgecolor='red', facecolor='lightcoral', adaptive_xticks=True, title="Action space")
+        if actor_distrs is not None:
+            anim.add(PolygonLayer(anim.action_ax, np.asarray(actor_distrs["vertices"]), fill=True, edgecolor='green', facecolor='lightgreen', linewidth=2, zorder=3))
+            anim.add(ScatterLayer(
+                anim.action_ax, 
+                np.broadcast_to(np.asarray(test_action_samples), (n_steps,) + test_action_samples.shape), 
+                mask=high_p_mask, 
+                values=test_action_p, 
+                cmap='viridis', 
+                s=7, 
+                zorder=50,
+            ))
+        anim.add(LineLayer(anim.action_ax, robot_actions, marker='^', markersize=7, color='red', zorder=51)) # Action taken
+        if save_path is None:
+            save_path = os.path.join(os.path.dirname(__file__), f'jessi_trajectory.mp4')
+        anim.run(save_video=save_video, save_path=save_path, dpi=dpi, speed=speed, blit=blit)
+
+    @partial(jit, static_argnames=("self"))
+    def _rollout_control_sequences(self, robot_poses, control_sequences):
+        """Trajectories (n_steps, horizon, 3) obtained applying each control sequence (n_steps, horizon, 2) from each robot pose (n_steps, 3)."""
+        def rollout_fn(robot_pose, control_sequence):
+            def step_fn(carry, control):
+                state = carry
+                next_state = self.motion(state, control, self.dt)
+                return next_state, next_state
+            _, chosen_trajectory = lax.scan(step_fn, robot_pose, control_sequence)
+            return chosen_trajectory
+        return vmap(rollout_fn)(robot_poses, control_sequences)
+
+    def animate_lasernav_trajectory_fast(
+        self,
+        lasernav_env:LaserNav,
+        states=None,
+        humans_leg_states=None,
+        observations=None,
+        actions=None,
+        actor_distrs=None,
+        humans_distrs=None,
+        goals=None,
+        static_obstacles=None,
+        humans_radii=None,
+        humans_leg_radii=None,
+        virtual_points=None,
+        spatial_attentions=None,
+        temporal_attentions=None,
+        human_attentions=None,
+        # JESSI-MPPI stuff
+        trajectories=None,
+        trajectories_costs=None,
+        control_sequences=None,
+        future_humans_distrs=None,
+        # Visualization stuff
+        p_visualization_threshold_dir:float=0.05,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+        save_path:str=None,
+        dpi:int=300,
+        speed:float=1.,
+        blit:bool=True,
+    ):
+        """Same animation of animate_lasernav_trajectory, but much faster (see animate_trajectory_fast)."""
+        if (states is not None) and (goals is not None) and (static_obstacles is not None) and (humans_radii is not None):
+            robot_poses, humans_poses, humans_velocities = states_to_scene(states, lasernav_env.humans_policy)
+            rc_humans_positions, _, _, rc_static_obstacles, _ = lasernav_env.batch_robot_centric_transform(
+                humans_poses[:,:,:2],
+                humans_poses[:,:,2],
+                humans_velocities,
+                static_obstacles,
+                robot_poses[:,:2],
+                robot_poses[:,2],
+                goals,
+            )
+            humans_visibility_mask, _ = lasernav_env.batch_object_visibility(
+                rc_humans_positions, 
+                humans_radii, 
+                rc_static_obstacles
+            )
+            humans_in_range = lasernav_env.batch_humans_inside_lidar_range(
+                rc_humans_positions,
+                humans_radii,
+            )
+            humans_visibility_mask = humans_visibility_mask & humans_in_range
+        else:
+            robot_poses = observations[:,0,:3]
+            humans_poses = None
+            humans_velocities = None
+            humans_visibility_mask = None
+        chosen_trajectories = self._rollout_control_sequences(robot_poses, control_sequences) if control_sequences is not None else None
+        self.animate_trajectory_fast(
+            robot_poses,
+            actions,
+            goals,
+            observations,
+            actor_distrs,
+            humans_distrs,
+            humans_poses,
+            humans_velocities,
+            humans_radii,
+            humans_visibility_mask,
+            humans_leg_states,
+            humans_leg_radii,
+            static_obstacles,
+            virtual_points,
+            spatial_attentions,
+            temporal_attentions,
+            human_attentions,
+            trajectories,
+            trajectories_costs,
+            chosen_trajectories,
+            future_humans_distrs,
+            p_visualization_threshold_dir,
+            x_lims,
+            y_lims,
+            save_video,
+            save_path=save_path,
+            dpi=dpi,
+            speed=speed,
+            blit=blit,
         )

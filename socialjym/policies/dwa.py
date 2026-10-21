@@ -1,6 +1,7 @@
 from jax import jit, lax, vmap, debug, random
 from jax_tqdm import loop_tqdm
 import jax.numpy as jnp
+import numpy as np
 from functools import partial
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
@@ -12,6 +13,19 @@ from socialjym.policies.base_policy import BasePolicy
 from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
+from socialjym.utils.animation import (
+    TrajectoryAnimator,
+    LinesLayer,
+    ScatterLayer,
+    LineLayer,
+    scene_layers,
+    point_cloud_layers,
+    rgba,
+    to_numpy,
+    states_to_scene,
+    lidar_ray_segments,
+    safe_nanargmin,
+)
 from jhsfm.hsfm import get_linear_velocity
 
 class DWA(BasePolicy):
@@ -614,4 +628,145 @@ class DWA(BasePolicy):
             x_lims,
             y_lims,
             save_video,
+        )
+
+    def animate_trajectory_fast(
+        self,
+        robot_poses, # x, y, theta
+        robot_actions,
+        robot_actions_costs,
+        robot_goals,
+        observations,
+        humans_poses, # x, y, theta
+        humans_velocities, # vx, vy (in global frame)
+        humans_radii,
+        static_obstacles,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+        save_path:str=None, # (optional) path of the saved video (default: same as animate_trajectory)
+        dpi:int=300, # dpi of the saved video
+        speed:float=1., # playback speed (1 = real time)
+        blit:bool=True, # if False, the whole figure is redrawn at each frame (slower, but zooming while playing works fine)
+    ):
+        """
+        Same animation of animate_trajectory, but much faster: everything is computed once for all frames and the artists 
+        are created once and only moved at each frame (see socialjym/utils/animation).
+        """
+        # Validate input args
+        assert \
+            len(robot_poses) == \
+            len(robot_actions) == \
+            len(robot_goals) == \
+            len(observations) == \
+            len(humans_poses) == \
+            len(humans_velocities) == \
+            len(humans_radii) == \
+            len(static_obstacles), "All inputs must have the same length"
+        n_steps = len(robot_poses)
+        # Paths of the evaluated actions (only actions belonging to the action space have a path)
+        def compute_trajectory(action):
+            return lax.fori_loop(
+                1,
+                self.n_steps+1,
+                lambda i, x: x.at[i].set(self.motion(x[i-1], action, self.dt)),
+                jnp.zeros((self.n_steps+1, 3)),
+            )
+        delta_trajectories = vmap(compute_trajectory)(self.action_space)
+        evaluated_actions = self.box_action_space if self.use_box_action_space else self.action_space
+        matches = jnp.all(evaluated_actions[:,None,:] == self.action_space[None,:,:], axis=-1)
+        has_trajectory = jnp.any(matches, axis=1)
+        c, s = jnp.cos(robot_poses[:,2]), jnp.sin(robot_poses[:,2])
+        rots = jnp.stack((jnp.stack((c, -s), axis=-1), jnp.stack((s, c), axis=-1)), axis=-2)
+        trajectories = robot_poses[:,None,None,:2] + jnp.einsum('ali,tji->talj', delta_trajectories[jnp.argmax(matches, axis=1),:,:2], rots)
+        is_best_action = jnp.all(evaluated_actions[None,:,:] == robot_actions[:,None,:], axis=-1)
+        # LiDAR point clouds
+        point_clouds = vmap(lambda obs: self.align_lidar(obs)[1][:self.lidar_n_stack_to_use].reshape(-1, 2))(observations)
+        (
+            robot_poses, robot_actions, robot_actions_costs, robot_goals, observations, humans_poses, humans_velocities, humans_radii, 
+            static_obstacles, evaluated_actions, has_trajectory, trajectories, is_best_action, point_clouds,
+        ) = to_numpy((
+            robot_poses, robot_actions, robot_actions_costs, robot_goals, observations, humans_poses, humans_velocities, humans_radii, 
+            static_obstacles, evaluated_actions, has_trajectory, trajectories, is_best_action, point_clouds,
+        ))
+        feasible_actions = ~np.isinf(robot_actions_costs)
+        # Animate trajectory
+        anim = TrajectoryAnimator(n_steps, self.dt, sim_cols=2, x_lims=x_lims, y_lims=y_lims)
+        for ax in anim.sim_axs:
+            anim.add(*scene_layers(ax, robot_poses, self.robot_radius, robot_goals, humans_poses, humans_velocities, humans_radii, static_obstacles))
+        # AX 0: Simulation with LiDAR ranges
+        anim.add(LinesLayer(anim.sim_axs[0], lidar_ray_segments(robot_poses, observations[:,0,11:], self.lidar_angles_robot_frame), color="black", linewidth=0.5, zorder=0))
+        anim.sim_axs[0].set_title("Trajectory")
+        # AX 1: Simulation with LiDAR point cloud and DWA possible paths (the chosen one in blue)
+        anim.add(*point_cloud_layers(anim.sim_axs[1], point_clouds[:,None], self.n_stack))
+        anim.sim_axs[1].set_title("Pointcloud & Paths")
+        anim.add(LinesLayer(
+            anim.sim_axs[1],
+            trajectories,
+            mask=feasible_actions & has_trajectory[None,:],
+            colors=np.where(is_best_action[...,None], rgba('blue', 1), rgba('green', 0.5)),
+            linewidths=np.where(is_best_action, 3, 1),
+            zorder=10,
+        ))
+        # AX 2: Feasible action space + actions cost and action taken
+        anim.setup_action_space(self.v_max, self.wheels_distance, edgecolor='green', facecolor='lightgreen')
+        with np.errstate(divide='ignore'):
+            inverse_costs = 1 / robot_actions_costs
+        anim.add(ScatterLayer(
+            anim.action_ax,
+            np.broadcast_to(evaluated_actions, (n_steps,) + evaluated_actions.shape),
+            mask=feasible_actions,
+            values=inverse_costs,
+            cmap='Reds',
+            s=20,
+            alpha=0.7,
+            label='Feasible actions',
+            zorder=3,
+        ))
+        anim.add(LineLayer(anim.action_ax, robot_actions, marker='^', markersize=9, color='blue', zorder=51)) # Action taken
+        if self.use_box_action_space:
+            min_cost_box_actions = evaluated_actions[safe_nanargmin(np.where(feasible_actions, robot_actions_costs, np.nan), axis=1)]
+            anim.add(LineLayer(anim.action_ax, min_cost_box_actions, marker='^', markersize=9, color='darkorange', zorder=50)) # Best action in the box action space
+            anim.add(LineLayer(anim.action_ax, np.stack((robot_actions, min_cost_box_actions), axis=1), color='darkorange', linestyle='--', zorder=49)) # Line between best box action and action taken
+        if save_path is None:
+            save_path = os.path.join(os.path.dirname(__file__), f'{self.name}_trajectory.mp4')
+        anim.run(save_video=save_video, save_path=save_path, dpi=dpi, speed=speed, blit=blit)
+
+    def animate_lasernav_trajectory_fast(
+        self,
+        states,
+        observations,
+        actions,
+        actions_costs,
+        goals,
+        static_obstacles,
+        humans_radii,
+        lasernav_env:LaserNav,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+        save_path:str=None,
+        dpi:int=300,
+        speed:float=1.,
+        blit:bool=True,
+    ):
+        """Same animation of animate_lasernav_trajectory, but much faster (see animate_trajectory_fast)."""
+        robot_poses, humans_poses, humans_velocities = states_to_scene(states, lasernav_env.humans_policy)
+        self.animate_trajectory_fast(
+            robot_poses,
+            actions,
+            actions_costs,
+            goals,
+            observations,
+            humans_poses,
+            humans_velocities,
+            humans_radii,
+            static_obstacles,
+            x_lims,
+            y_lims,
+            save_video,
+            save_path=save_path,
+            dpi=dpi,
+            speed=speed,
+            blit=blit,
         )

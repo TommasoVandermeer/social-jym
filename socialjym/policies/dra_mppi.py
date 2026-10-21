@@ -11,6 +11,7 @@ from socialjym.utils.distributions.gaussian import BivariateGaussian
 from socialjym.envs.lasernav import LaserNav
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
+from socialjym.utils.animation import states_to_scene
 from .jessi import JESSI
 from jhsfm.hsfm import get_linear_velocity, vectorized_compute_obstacle_closest_point
 
@@ -469,6 +470,61 @@ class DRAMPPI(MPPI):
             y_lims=y_lims,
             save_video=save_video,
         )
+
+    @partial(jit, static_argnames=("self"))
+    def _rollout_u_means(self, robot_poses, u_means):
+        """Trajectories (n_steps, horizon+1, 3) obtained applying each U_mean (n_steps, horizon, 2) from each robot pose (n_steps, 3)."""
+        def compute_chosen_trajectory(robot_pose, robot_u_mean):
+            trajectory = jnp.empty((self.horizon+1, 3))
+            trajectory = trajectory.at[0].set(robot_pose)
+            for t in range(1,self.horizon+1):
+                next_pose = self.motion(trajectory[t-1], robot_u_mean[t-1], self.dt)
+                trajectory = trajectory.at[t].set(next_pose)
+            return trajectory
+        return vmap(compute_chosen_trajectory)(robot_poses, u_means)
+
+    def animate_socialnav_trajectory_fast(
+        self,
+        states,
+        actions,
+        u_means,
+        trajectories,
+        trajectories_costs,
+        goals,
+        static_obstacles,
+        humans_radii,
+        humans_distributions,
+        socialnav_env:SocialNav,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+        save_path:str=None,
+        dpi:int=300,
+        speed:float=1.,
+        blit:bool=True,
+    ):
+        """Same animation of animate_socialnav_trajectory, but much faster (see MPPI.animate_trajectory_fast)."""
+        robot_poses, humans_poses, humans_velocities = states_to_scene(states, socialnav_env.humans_policy)
+        self.animate_trajectory_fast(
+            robot_poses,
+            actions,
+            self._rollout_u_means(robot_poses, u_means),
+            trajectories,
+            trajectories_costs,
+            goals,
+            humans_poses,
+            humans_velocities,
+            humans_radii,
+            static_obstacles,
+            humans_distributions=humans_distributions,
+            x_lims=x_lims,
+            y_lims=y_lims,
+            save_video=save_video,
+            save_path=save_path,
+            dpi=dpi,
+            speed=speed,
+            blit=blit,
+        )
    
     # LaserNav methods
 
@@ -612,6 +668,53 @@ class DRAMPPI(MPPI):
             x_lims=x_lims,
             y_lims=y_lims,
             save_video=save_video,
+        )
+
+    def animate_lasernav_trajectory_fast(
+        self,
+        states,
+        observations,
+        actions,
+        u_means,
+        trajectories,
+        trajectories_costs,
+        goals,
+        static_obstacles,
+        humans_radii,
+        humans_distributions,
+        perception_distributions,
+        lasernav_env:LaserNav,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+        save_path:str=None,
+        dpi:int=300,
+        speed:float=1.,
+        blit:bool=True,
+    ):
+        """Same animation of animate_lasernav_trajectory, but much faster (see MPPI.animate_trajectory_fast)."""
+        robot_poses, humans_poses, humans_velocities = states_to_scene(states, lasernav_env.humans_policy)
+        self.animate_trajectory_fast(
+            robot_poses,
+            actions,
+            self._rollout_u_means(robot_poses, u_means),
+            trajectories,
+            trajectories_costs,
+            goals,
+            humans_poses,
+            humans_velocities,
+            humans_radii,
+            static_obstacles,
+            lidar_scans=observations[:,0,11:],
+            humans_distributions=humans_distributions,
+            perception_distributions=perception_distributions,
+            x_lims=x_lims,
+            y_lims=y_lims,
+            save_video=save_video,
+            save_path=save_path,
+            dpi=dpi,
+            speed=speed,
+            blit=blit,
         )
 
     def evaluate_on_jessi_perception(

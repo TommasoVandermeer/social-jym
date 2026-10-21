@@ -183,6 +183,7 @@ def sarl_star_tests(network_params:dict, perception_params:dict):
                 'reward_function': LaserReward(robot_radius=0.3,collision_with_humans_penalty=-.5),
                 'kinematics': 'unicycle',
                 'lidar_noise': True,
+                'grid_map_computation': True,
             }
             ct_env_params = seen_env_params.copy()
             ct_env_params['scenario'] = 'testing_scenario'
