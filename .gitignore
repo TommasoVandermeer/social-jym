@@ -10,6 +10,7 @@
 scripts/jessi_seed_sensitivity_results/
 scripts/vanilla_e2e_seed_sensitivity_results/
 scripts/dir_safe_seed_sensitivity_results/
+scripts/sarl_seed_sensitivity_results/
 
 # Real-world experiment recordings and derived results
 turtlebot/experiments/data/*

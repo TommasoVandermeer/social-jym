@@ -36,9 +36,8 @@ policy_learning_rate = 0.005
 policy_batch_size = 200
 policy_n_epochs = 30 # Just a few to not overfit on DIR-SAFE data (if action space becomes too deterministic there will be no exploration in RL fine-tuning)
 ### RL Hyperparameters
-rl_n_parallel_envs = 300 
-rl_training_updates = 500
-n_rl_episodes = 200_000 # Roughly the same as 500 updates * 30_000 steps (at 75 steps per episode)
+rl_n_parallel_envs = 50 
+n_rl_episodes = 30_000 # Roughly the same as 500 updates * 30_000 steps (at 75 steps per episode)
 training_hyperparams = {
     'random_seed': 0,
     'kinematics': 'unicycle',
@@ -52,12 +51,12 @@ training_hyperparams = {
     'rl_training_episodes': n_rl_episodes,
     'rl_parallel_envs': rl_n_parallel_envs,
     'rl_learning_rate': 0.001,
-    'rl_num_batches': 30, # Number of batches to train the model after each RL episode
-    'batch_size': 1_000, # Number of experiences to sample from the replay buffer for each model update
+    'rl_num_batches': 100, # Number of batches to train the model after each RL episode
+    'batch_size': 100, # Number of experiences to sample from the replay buffer for each model update
     'epsilon_start': 0.5,
     'epsilon_end': 0.1,
     'epsilon_decay': int(0.4*n_rl_episodes), # Number of episodes to decay epsilon from start to end
-    'rl_buffer_size': 30_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
+    'rl_buffer_size': 100_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
     'target_update_interval': 50, # Number of episodes to wait before updating the target network for RL (the one used to compute the target state values)
     'humans_policy': humans_policy,
     'scenario': 'hybrid_scenario',
@@ -218,6 +217,7 @@ for seed in range(n_seeds):
             'decay_rate': training_hyperparams['epsilon_decay'],
             'target_update_interval': training_hyperparams['target_update_interval'],
             'custom_episodes': None,
+            'debugging': True,
         }
         # REINFORCEMENT LEARNING ROLLOUT
         rl_out = vnet_rl_rollout(**rl_rollout_params)
@@ -231,7 +231,6 @@ for seed in range(n_seeds):
         # Load RL rollout output
         with open(os.path.join(base_dir,rl_network_name), 'rb') as f:
             rl_out = pickle.load(f)
-            print(f"Total episodes simulated: {jnp.sum(rl_out['aux_data']['episodes'])}")
         # Save the training returns
         window = 20 
         ## Plot RL training stats
@@ -265,7 +264,7 @@ for seed in range(n_seeds):
         )
         figure.savefig(os.path.join(base_dir,rl_network_name.replace('.pkl', '.eps')), format='eps')
     else:
-        print(f"Seed {seed} of DIR-SAFE training already done and saved... Remove '{rl_network_name}' to retrain.")
+        print(f"Seed {seed} of SARL training already done and saved... Remove '{rl_network_name}' to retrain.")
 
 ### Plots returns
 from matplotlib import rc, rcParams
@@ -278,16 +277,16 @@ rcParams.update({
     "pdf.fonttype": 42,
     "ps.fonttype": 42,
 })
-if not os.path.exists(os.path.join(base_dir, "dir_safe_mean_returns.pdf")):
-    window_size = 20
+if not os.path.exists(os.path.join(base_dir, "sarl_mean_returns.pdf")):
+    window_size = int(0.04 * n_rl_episodes)
     def plot():
-        returns_mt = jnp.full((n_seeds, rl_training_updates), jnp.nan)
+        returns_mt = jnp.full((n_seeds, n_rl_episodes), jnp.nan)
         for seed in range(n_seeds):
             network_name = base_rl_network_name + '_seed' + str(seed) + '.pkl'
             if os.path.exists(os.path.join(base_dir, network_name)):
                 print(f"Loading metrics SEED{seed}")
                 with open(os.path.join(base_dir, network_name), 'rb') as f:
-                    metrics = pickle.load(f)['aux_data']
+                    metrics = pickle.load(f)#['aux_data']
                     processed_metrics = {}
                     for key, value in metrics.items():
                         if isinstance(value, list):
@@ -303,12 +302,11 @@ if not os.path.exists(os.path.join(base_dir, "dir_safe_mean_returns.pdf")):
         ])
         mean_returns = jnp.nanmean(smoothed_returns, axis=0)
         std_returns = jnp.nanstd(smoothed_returns, axis=0)
-        # x = jnp.arange(rl_training_updates)
-        # colors = ["red", "green", "blue"]
-        # color = colors[["MT","MD","PO"].index(training_paradigm)]
+        # x = jnp.arange(n_rl_episodes)
         # plt.figure(figsize=(10, 6))
+        # color = 'pink'
         # plt.plot(x, mean_returns, color=color, linewidth=3.)
-        # # for seed in range(n_seeds): plt.plot(x, smoothed_returns[seed], color=color, linewidth=1.)
+        # for seed in range(n_seeds): plt.plot(x, smoothed_returns[seed], color=color, linewidth=1.)
         # plt.fill_between(x, mean_returns - std_returns, mean_returns + std_returns, color=color, alpha=0.2)
         # plt.xlabel('Training Updates')
         # plt.ylabel('Return')
@@ -320,14 +318,14 @@ if not os.path.exists(os.path.join(base_dir, "dir_safe_mean_returns.pdf")):
     mean_dir, std_dir = plot()
     ci_dir = stats.t.ppf(0.975, 9) * std_dir / jnp.sqrt(n_seeds)
     ## Summary plot
-    x = jnp.arange(rl_training_updates)
+    x = jnp.arange(n_rl_episodes)
     figure, ax = plt.subplots(1,1, figsize=(10, 6))
     figure.subplots_adjust(left=0.15, right=0.99, top=0.99, bottom=0.13)
-    ax.plot(x, mean_dir, color='orange', linewidth=1.5, label='DIR-SAFE')
-    ax.fill_between(x, mean_dir - ci_dir, mean_dir + ci_dir, color='orange', alpha=0.2)
+    ax.plot(x, mean_dir, color='pink', linewidth=1.5, label='SARL')
+    ax.fill_between(x, mean_dir - ci_dir, mean_dir + ci_dir, color='pink', alpha=0.2)
     ax.set_xlabel('Training Updates')
     ax.set_ylabel('Return')
     handles, labels = ax.get_legend_handles_labels()
     ax.legend(handles[::-1], labels[::-1],loc='lower right', bbox_to_anchor=(0.999, 0.01))
     ax.grid(True, linestyle='--', alpha=0.7)
-    figure.savefig(os.path.join(base_dir, "dir_safe_mean_returns.pdf"), format='pdf')
+    figure.savefig(os.path.join(base_dir, "sarl_mean_returns.pdf"), format='pdf')

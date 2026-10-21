@@ -146,6 +146,7 @@ def vnet_rl_wave(
     Collects the episodes with the given ids in parallel with the current model, then processes them one by one in
     order exactly as vnet_rollouts.vnet_rl_rollout does after each episode (buffer update, shuffle, num_batches model
     updates, target network update). Ids >= n_episodes are padding (last wave) and are skipped.
+    Also returns the return and outcome of each collected episode.
     """
     model_params = training_state[0]
     # Policy, buffer and reset keys are all PRNGKey(random_seed + i), as in vnet_rollouts.py
@@ -212,11 +213,12 @@ def vnet_rl_wave(
                 _update,
                 lambda x: x,
                 (model_params, target_model_params, optimizer_state, losses, returns))
-            return model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns
-        return lax.cond(episode_ids[e] < n_episodes, _process, lambda x: x, training_state), None
+            return (model_params, target_model_params, optimizer_state, buffer_state, current_buffer_size, losses, returns), cumulative_episode_reward
+        return lax.cond(episode_ids[e] < n_episodes, _process, lambda x: (x, jnp.zeros(())), training_state)
 
-    training_state, _ = lax.scan(_process_episode, training_state, jnp.arange(episode_ids.shape[0]))
-    return training_state
+    training_state, episode_returns = lax.scan(_process_episode, training_state, jnp.arange(episode_ids.shape[0]))
+    episodes_stats = {"returns": episode_returns, "success": outcomes["success"], "failure": outcomes["failure"]}
+    return training_state, episodes_stats
 
 def vnet_rl_rollout(
         initial_vnet_params: dict,
@@ -277,9 +279,10 @@ def vnet_rl_rollout(
     stored_steps = int(env.reward_function.time_limit/env.robot_dt) + 1
     max_steps = stored_steps + 2 # Upper bound of the episode length
     print(f"Performing RL training for {train_episodes} episodes after {exploration_episodes} exploration episodes, {n_parallel_envs} episodes collected in parallel")
+    debug_window = [] # Per-chunk [episodes, sum of returns, successes, collisions] of the training episodes since the last print
     for wave in tqdm(range(n_waves)):
         episode_ids = jnp.arange(wave * n_parallel_envs, (wave + 1) * n_parallel_envs, dtype=jnp.int32)
-        training_state = vnet_rl_wave(
+        training_state, episodes_stats = vnet_rl_wave(
             episode_ids, total_episodes, random_seed, training_state, custom_data,
             policy, env, model, optimizer, replay_buffer, epsilon_decay_fn, epsilon_start, epsilon_end, decay_rate,
             max_steps, stored_steps, buffer_size, num_batches, target_update_interval, exploration_episodes,
@@ -287,9 +290,22 @@ def vnet_rl_rollout(
         training_state[4].block_until_ready() # SYNC (keeps the progress bar honest)
         # DEBUG: print the mean loss and the return every 100 training episodes
         if debugging:
-            for i in range(wave * n_parallel_envs, min((wave + 1) * n_parallel_envs, total_episodes)):
-                if (i >= exploration_episodes) and ((i - exploration_episodes) % 100 == 0):
-                    tqdm.write(f"Episode {i-exploration_episodes} - Mean loss over {num_batches} batches: {float(training_state[5][i-exploration_episodes])} - Return: {float(training_state[6][i-exploration_episodes])}")
+            # for i in range(wave * n_parallel_envs, min((wave + 1) * n_parallel_envs, total_episodes)):
+            #     if (i >= exploration_episodes) and ((i - exploration_episodes) % 100 == 0):
+            #         tqdm.write(f"Episode {i-exploration_episodes} - Mean loss over {num_batches} batches: {float(training_state[5][i-exploration_episodes])} - Return: {float(training_state[6][i-exploration_episodes])}")
+            # Every 10 chunks: mean return, success rate, and collision rate of the training episodes of the last 10 chunks
+            training_episodes = (episode_ids < total_episodes) & (episode_ids >= exploration_episodes)
+            debug_window.append(jnp.stack([
+                jnp.sum(training_episodes),
+                jnp.sum(jnp.where(training_episodes, episodes_stats["returns"], 0.)),
+                jnp.sum(training_episodes & episodes_stats["success"]),
+                jnp.sum(training_episodes & episodes_stats["failure"]),
+            ]).astype(jnp.float32))
+            if ((wave + 1) % 10 == 0) or (wave == n_waves - 1):
+                n, sum_returns, successes, collisions = [float(x) for x in jnp.sum(jnp.stack(debug_window), axis=0)]
+                if n > 0:
+                    tqdm.write(f"Chunk {wave+1}/{n_waves} - Last {int(n)} training episodes - Return: {sum_returns/n:.4f} - Success rate: {successes/n:.3f} - Collision rate: {collisions/n:.3f}")
+                debug_window = []
 
     output_dict = {}
     keys = ["model_params", "target_model_params", "optimizer_state", "buffer_state", "current_buffer_size", "losses", "returns"]
