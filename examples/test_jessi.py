@@ -222,7 +222,7 @@ for i in range(n_episodes):
     ax[1].legend(fontsize=16)
     plt.show()
     ## Animate trajectory with JESSI's perception and action distribution
-    policy.animate_lasernav_trajectory(
+    policy.animate_lasernav_trajectory_fast(
         env,
         all_states[:-1],
         all_humans_leg_states[:-1] if env.leg_dynamics else None,

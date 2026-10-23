@@ -105,7 +105,7 @@ def sarl_tests(network_params:dict, perception_params:dict):
                 'lidar_angular_range': jnp.pi * 2,
                 'lidar_max_dist': 10.0,
                 'n_humans': n_human + n_obstacle * 2,
-                'n_obstacles': 0,
+                'n_obstacles': n_obstacle,
                 'robot_radius': 0.3,
                 'robot_dt': 0.25,
                 'humans_dt': 0.01,      
@@ -235,6 +235,7 @@ if not os.path.exists(os.path.join(base_dir,"sarl_seed_sensitivity_tests.pkl")):
         perception_params = pickle.load(f)
 
     for seed in range(n_training_seeds):
+        print(f"\n\nStarting SEED {seed}\n\n")
         network_file_name = base_rl_network_name + '_seed' + str(seed) + '.pkl'
         with open(os.path.join(base_dir, network_file_name), 'rb') as f:
             network_params = pickle.load(f)['model_params']

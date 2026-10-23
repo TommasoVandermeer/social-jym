@@ -176,7 +176,9 @@ def vnet_rl_wave(
             def _add(args):
                 buffer_state, current_buffer_size = args
                 next_vnet_inputs = jnp.concatenate([vnet_inputs[1:], vnet_inputs[-1:]])
-                next_values = jnp.reshape(vmap(model.apply, in_axes=(None,None,0))(target_model_params, None, next_vnet_inputs), (max_steps,))
+                next_values = vmap(model.apply, in_axes=(None,None,0))(target_model_params, None, next_vnet_inputs)
+                # Value of each next state: min over the humans' values for CADRL (as in CADRL._compute_action_value), no-op for SARL
+                next_values = jnp.min(jnp.reshape(next_values, (max_steps, -1)), axis=1)
                 targets = rewards + (1 - dones) * discount * next_values
                 return _add_experiences(buffer_state, current_buffer_size, vnet_inputs, targets, jnp.arange(max_steps) < length, replay_buffer)
             buffer_state, current_buffer_size = lax.cond(
@@ -251,8 +253,6 @@ def vnet_rl_rollout(
     collected with the model parameters at the start of its group of episodes (up to n_parallel_envs-1 episodes old).
     The time per episode is dominated by the num_batches sequential model updates already with n_parallel_envs=50.
     """
-    # If policy is CADRL, the number of humans in the training environment must be 1
-    if policy.name == "CADRL": assert env.n_humans == 1, "CADRL policy only supports training with one human."
     # For a correct shuffling of the buffer, the latter size must be a multiple of the number of batches times the batch size
     assert buffer_size % (num_batches * replay_buffer.batch_size) == 0, "The buffer size must be a multiple of the number of batches times the batch size."
     if default_backend() != "gpu":
@@ -393,8 +393,6 @@ def vnet_il_rollout(
     Episodes are simulated n_parallel_envs at a time instead of one by one. Episode i is reset with the same key as
     in vnet_rollouts.py, so the collected experiences, returns, and buffer are the same.
     """
-    # If policy is CADRL, the number of humans in the training environment must be 1
-    if policy.name == "CADRL": assert env.n_humans == 1, "CADRL policy only supports training with one human."
     if default_backend() != "gpu":
         print(f"WARNING: JAX default backend is '{default_backend()}', IL will not run on GPU.")
 
