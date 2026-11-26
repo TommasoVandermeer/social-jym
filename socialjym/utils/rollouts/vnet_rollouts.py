@@ -117,7 +117,7 @@ def vnet_rl_rollout(
                 # Compute episode return
                 @jit
                 def _compute_state_value_for_body(j:int, t:int, value:float):
-                        value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
+                        value += pow(policy.reward_function.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
                         return value 
                 cumulative_episode_reward = lax.fori_loop(0, episode_steps, lambda k, val: _compute_state_value_for_body(k, 0, val), 0.)
                 # Update buffer state
@@ -126,7 +126,7 @@ def vnet_rl_rollout(
                         lambda x: lax.fori_loop(
                                 0,
                                 episode_steps,
-                                lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], rewards[k] + (1 - dones[k]) * pow(policy.gamma, policy.dt * policy.v_max) * jnp.squeeze(model.apply(target_model_params, None, vnet_inputs[k+1]))), buff[1]), buff[1]+1),
+                                lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], rewards[k] + (1 - dones[k]) * pow(policy.reward_function.gamma, policy.dt * policy.v_max) * jnp.squeeze(model.apply(target_model_params, None, vnet_inputs[k+1]))), buff[1]), buff[1]+1),
                                 (x[0], x[1])),
                         lambda x: x,
                         (buffer_state, current_buffer_size))
@@ -312,7 +312,7 @@ def vnet_il_rollout(
                 # Update buffer state
                 @jit
                 def _compute_state_value_for_body(j:int, t:int, value:float):
-                        value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
+                        value += pow(policy.reward_function.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
                         return value 
                 buffer_state, current_buffer_size = lax.cond(
                         jnp.any(jnp.array([outcome["success"], outcome["failure"]])), # Add only experiences of successful or failed episodes

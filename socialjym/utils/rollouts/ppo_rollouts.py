@@ -84,8 +84,8 @@ def ppo_rl_rollout(
                         successes += jnp.sum(outcomes["success"])
                         failures += jnp.sum(outcomes["failure"])
                         timeouts += jnp.sum(outcomes["timeout"])
-                        # returns = returns.at[:].set(returns + rewards * jnp.power(jnp.broadcast_to(policy.gamma,(n_parallel_envs,)), policy.v_max * (infos["time"] - policy.dt)))  
-                        returns = returns.at[:].set(returns + (~outcomes["nothing"]) * init_infos['return'] + jnp.power(policy.gamma, (init_infos['step']+1) * policy.dt * policy.v_max) * rewards)  
+                        # returns = returns.at[:].set(returns + rewards * jnp.power(jnp.broadcast_to(policy.reward_function.gamma,(n_parallel_envs,)), policy.v_max * (infos["time"] - policy.dt)))  
+                        returns = returns.at[:].set(returns + (~outcomes["nothing"]) * init_infos['return'] + jnp.power(policy.reward_function.gamma, (init_infos['step']+1) * policy.dt * policy.v_max) * rewards)  
                         episode_count += jnp.sum(~(outcomes["nothing"]))
                         batch_stds = batch_stds.at[:,step,:].set(policy.distr.batch_std(distrs))
                         return (actor_params, critic_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds)
@@ -139,8 +139,8 @@ def ppo_rl_rollout(
                         # Retrieve data from the tuple
                         values, rewards, dones, advantages = val
                         # Compute the advantage
-                        delta = rewards[:,rt] + pow(policy.gamma, policy.dt * policy.v_max) * values[:,rt+1] * (1 - dones[:,rt+1]) - values[:,rt]
-                        advantages = advantages.at[:,rt].set(delta + pow(policy.gamma * lambda_gae, policy.dt * policy.v_max) * advantages[:,rt+1] * (1 - dones[:,rt+1]))
+                        delta = rewards[:,rt] + pow(policy.reward_function.gamma, policy.dt * policy.v_max) * values[:,rt+1] * (1 - dones[:,rt+1]) - values[:,rt]
+                        advantages = advantages.at[:,rt].set(delta + pow(policy.reward_function.gamma * lambda_gae, policy.dt * policy.v_max) * advantages[:,rt+1] * (1 - dones[:,rt+1]))
                         return values, rewards, dones, advantages
                 _, _, _, advatages = lax.fori_loop(
                         0,
