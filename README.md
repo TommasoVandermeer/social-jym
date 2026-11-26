@@ -41,7 +41,7 @@ source socialjym/bin/activate
 ```
 Clone the repository and its submodules.
 ```
-git clone --recurse-submodules -b dir-safe https://github.com/TommasoVandermeer/social-jym.git
+git clone --recurse-submodules -b dir-safe-icar25 https://github.com/TommasoVandermeer/social-jym.git
 ```
 Install the submodules and the main package.
 ```
