@@ -3,18 +3,18 @@ An environment based on JAX to train mobile robots within crowded environments. 
 
 [![Paper: ICAR'25](https://img.shields.io/badge/ICAR'25-Paper-b31b1b.svg)](https://doi.org/10.1109/ICAR65334.2025.11338678)
 [![Paper: IROS'26](https://img.shields.io/badge/IROS'26-Paper-b31b1b.svg)](https://doi.org/10.48550/arXiv.2610.05733)
-[![Branch: ICAR25](https://img.shields.io/badge/branch-icar25--results-blue?logo=git)](https://github.com/TommasoVandermeer/social-jym/tree/dir-safe)
-[![Branch: IROS26](https://img.shields.io/badge/branch-iros26--results-blue?logo=git)](https://github.com/TommasoVandermeer/social-jym/tree/jessi)
+[![Release: ICAR25](https://img.shields.io/badge/release-dir--safe--icar25-blue?logo=github)](https://github.com/TommasoVandermeer/social-jym/releases/tag/dir-safe-icar25)
+[![Release: IROS26](https://img.shields.io/badge/release-jessi--iros26-blue?logo=github)](https://github.com/TommasoVandermeer/social-jym/releases/tag/jessi-iros26)
 
 >  **Research Contributions**
 >
 > This repository hosts the official implementation of our work on mobile robot navigation in dense crowds:
 > 
 > 1. **"Safe Robot Navigation with Reinforcement Learning using Dirichlet Distributions and Social Attention"**  
->    *Published at IEEE ICAR 2025* — [[Paper]](https://doi.org/10.1109/ICAR65334.2025.11338678) | 📌 **[Code: DIR-SAFE branch](https://github.com/TommasoVandermeer/social-jym/tree/dir-safe)**
+>    *Published at IEEE ICAR 2025* — [[Paper]](https://doi.org/10.1109/ICAR65334.2025.11338678) | 📌 **[Code: release `dir-safe-icar25`](https://github.com/TommasoVandermeer/social-jym/releases/tag/dir-safe-icar25)** (development continues on the [dir-safe branch](https://github.com/TommasoVandermeer/social-jym/tree/dir-safe))
 >
 > 2. **"End-to-End Safe Social Navigation via Multi-Task Reinforcement Learning and Probabilistic Perception"**  
->    *Presented at IEEE/RSJ IROS 2026* — [[Paper]](https://doi.org/10.48550/arXiv.2610.05733) | 📌 **[Code: JESSI branch](https://github.com/TommasoVandermeer/social-jym/tree/jessi)**
+>    *Presented at IEEE/RSJ IROS 2026* — [[Paper]](https://doi.org/10.48550/arXiv.2610.05733) | 📌 **[Code: release `jessi-iros26`](https://github.com/TommasoVandermeer/social-jym/releases/tag/jessi-iros26)** (development continues on the [jessi branch](https://github.com/TommasoVandermeer/social-jym/tree/jessi))
 
 ## Installation
 
@@ -114,8 +114,8 @@ Includes all the available Reinforcement Learning policies that can be used in t
 - SARL [[6]](#sarl).
 - SARL* [[7]](#sarl-star).
 - SARL-PPO: an actor-critic version of SARL, trained with PPO.
-- DIR-SAFE: discover more on the <a href="https://github.com/TommasoVandermeer/social-jym/tree/dir-safe">dedicated branch</a>.
-- JESSI: discover more on the <a href="https://github.com/TommasoVandermeer/social-jym/tree/jessi">dedicated branch</a>.
+- DIR-SAFE: discover more on the <a href="https://github.com/TommasoVandermeer/social-jym/releases/tag/dir-safe-icar25">dedicated release</a>.
+- JESSI: discover more on the <a href="https://github.com/TommasoVandermeer/social-jym/releases/tag/jessi-iros26">dedicated release</a>.
 - DWA [[8]](#dwa).
 - MPPI [[9]](#mppi).
 - DRA-MPPI [[10]](#dra-mppi).
