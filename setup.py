@@ -38,17 +38,12 @@ setup(
         'pandas==2.2.3',
         
     ],
+    # Only CUDA 12 is offered: jax 0.4.30/0.4.34 provide no cuda11 or cuda13 extra
+    # (CUDA 13 wheels need jax>=0.8, which conflicts with the pins above).
     extras_require={
-        'cuda13': [
-            'jax[cuda13]>=0.8.0',
-        ],
         'cuda12': [
             'jax[cuda12]==0.4.30; python_version == "3.10"',
             'jax[cuda12]==0.4.34; python_version == "3.13"',
         ],
-        'cuda11': [
-            'jax[cuda11]==0.4.30; python_version == "3.10"',
-            'jax[cuda11]==0.4.34; python_version == "3.13"',
-        ]
     }
 )
