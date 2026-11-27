@@ -1,5 +1,6 @@
 from jax import random
 import jax.numpy as jnp
+import numpy as np
 from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
 import os
@@ -44,6 +45,7 @@ training_hyperparams = {
     'random_seed': 0,
     'n_humans': n_humans, 
     'n_obstacles': n_obstacles,
+    'kinematics': 'unicycle',
     'il_buffer_size': 500_000, # Maximum number of experiences to store in the replay buffer (after exceeding this limit, the oldest experiences are overwritten with new ones)
     'il_n_parallel_envs': 1_000,
     'il_training_episodes': 10_000,
@@ -437,7 +439,7 @@ if not os.path.exists(os.path.join(base_dir, "dir_safe_mean_returns.pdf")):
                             processed_metrics[key] = jnp.array(value)
                         if isinstance(value, dict):
                             processed_metrics[key] = tree_map(lambda x: jnp.array(x), value)
-                        if isinstance(value, jnp.ndarray):
+                        if isinstance(value, (jnp.ndarray, np.ndarray)): # Saved outputs contain numpy arrays
                             processed_metrics[key] = value
                     returns_mt = returns_mt.at[seed].set(processed_metrics['returns'])
         smoothed_returns = jnp.array([

@@ -1,5 +1,6 @@
 from jax import random
 import jax.numpy as jnp
+import numpy as np
 from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
 import os
@@ -294,7 +295,7 @@ if not os.path.exists(os.path.join(base_dir, "sarl_mean_returns.pdf")):
                             processed_metrics[key] = jnp.array(value)
                         if isinstance(value, dict):
                             processed_metrics[key] = tree_map(lambda x: jnp.array(x), value)
-                        if isinstance(value, jnp.ndarray):
+                        if isinstance(value, (jnp.ndarray, np.ndarray)): # Saved outputs contain numpy arrays
                             processed_metrics[key] = value
                     returns_mt = returns_mt.at[seed].set(processed_metrics['returns'])
         smoothed_returns = jnp.array([
