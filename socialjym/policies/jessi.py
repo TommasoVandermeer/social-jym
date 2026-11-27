@@ -1473,7 +1473,9 @@ class JESSI(BasePolicy):
         # Cost matrix: Distance (B, K, M)
         diff_matrix = jnp.expand_dims(pred_means, 2) - jnp.expand_dims(gt_pos, 1)
         dist_matrix = jnp.sqrt(jnp.sum(jnp.square(diff_matrix), axis=-1) + 1e-6)
-        cost_matrix = dist_matrix 
+        # Invisible/padded targets must have no query preference (as in _perception_loss), otherwise they can
+        # take the best prediction of a visible human
+        cost_matrix = jnp.where(gt_mask[:, None, :].astype(bool), dist_matrix, 0.0)
         assigned_query_idx, assigned_gt_idx = vmap(optax.assignment.hungarian_algorithm)(cost_matrix)
         sort_perm = jnp.argsort(assigned_gt_idx, axis=1) 
         best_pred_idx = jnp.take_along_axis(assigned_query_idx, sort_perm, axis=1) # (B, M)
