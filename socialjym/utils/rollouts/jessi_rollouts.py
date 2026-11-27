@@ -125,7 +125,7 @@ def process_buffer_and_gae(
         adv_next = gae_carry
         mask = 1.0 - dones_ext[i+1].astype(jnp.float32)
         delta = rewards[i] + jnp.power(gamma,dt*vmax) * values_ext[i+1] * mask - values_ext[i]
-        advantage = delta + jnp.power(gamma*lambda_gae,dt*vmax) * adv_next * mask
+        advantage = delta + jnp.power(gamma,dt*vmax) * lambda_gae * adv_next * mask
         return advantage, advantage # Carry, Output
     n_steps = rewards.shape[0]
     _, advantages = lax.scan(_gae_step, jnp.zeros_like(values[0]), jnp.arange(n_steps)[::-1])

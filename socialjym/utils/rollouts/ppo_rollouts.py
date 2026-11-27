@@ -142,7 +142,7 @@ def ppo_rl_rollout(
                         values, rewards, dones, advantages = val
                         # Compute the advantage
                         delta = rewards[:,rt] + pow(policy.reward_function.gamma, policy.dt * policy.v_max) * values[:,rt+1] * (1 - dones[:,rt+1]) - values[:,rt]
-                        advantages = advantages.at[:,rt].set(delta + pow(policy.reward_function.gamma * lambda_gae, policy.dt * policy.v_max) * advantages[:,rt+1] * (1 - dones[:,rt+1]))
+                        advantages = advantages.at[:,rt].set(delta + pow(policy.reward_function.gamma, policy.dt * policy.v_max) * lambda_gae * advantages[:,rt+1] * (1 - dones[:,rt+1]))
                         return values, rewards, dones, advantages
                 _, _, _, advatages = lax.fori_loop(
                         0,

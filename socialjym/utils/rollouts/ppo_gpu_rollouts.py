@@ -142,7 +142,7 @@ def process_buffer_and_gae(
     rewards = history["rewards"]
     # Compute advantages with GAE (reverse scan over time)
     discount = pow(policy.reward_function.gamma, policy.dt * policy.v_max)
-    gae_discount = pow(policy.reward_function.gamma * lambda_gae, policy.dt * policy.v_max)
+    gae_discount = pow(policy.reward_function.gamma, policy.dt * policy.v_max) * lambda_gae # Only gamma is a discount per unit of time
     def _gae_step(adv_next, t):
         mask = 1 - dones_ext[t+1]
         delta = rewards[t] + discount * values_ext[t+1] * mask - values_ext[t]
