@@ -228,7 +228,7 @@ class SARLStar(SARL):
         infos,
         vnet_params,
         epsilon):
-        return vmap(SARL.act, in_axes=(None, 0, 0, 0, None, None))(
+        return vmap(SARLStar.act, in_axes=(None, 0, 0, 0, None, None))(
             self,
             keys, 
             obses, 
