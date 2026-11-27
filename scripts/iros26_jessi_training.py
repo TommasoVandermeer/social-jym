@@ -147,6 +147,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
         actor_params = pickle.load(f)['actor_params']
     dummy_policy_keys = random.split(random.PRNGKey(0), n_parallel_envs)
     dummy_env_keys = random.split(random.PRNGKey(0), n_parallel_envs)
+    def select_envs(mask, on_true, on_false):
+        # Per-environment selection between two pytrees with the environments on the first axis
+        return tree_map(lambda t, f: jnp.where(jnp.reshape(mask, (-1,) + (1,) * (t.ndim - 1)), t, f), on_true, on_false)
     def simulate_n_steps(n_steps):
         @loop_tqdm(n_steps//n_parallel_envs, desc="Simulating steps")
         @jit
@@ -165,14 +168,22 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
                 reset_if_done=True,
             )
             ## Simulate one step LASERNAV to update stacked observations
-            _, final_lasernav_obs, final_lasernav_info, (final_lasernav_reward, _), _, _ = laser_env.batch_step(
+            _, step_lasernav_obs, step_lasernav_info, (final_lasernav_reward, _), _, _ = laser_env.batch_step(
                 state,
                 lasernav_info,
                 action, 
                 reset_key,
                 dummy_env_keys, 
                 test=False,
-                reset_if_done=True,
+                reset_if_done=False,
+            )
+            ## Reset LASERNAV where SOCIALNAV was reset, with the same keys, so that both start the same episode
+            ## (their terminations differ: e.g. only LaserNav ends an episode on collisions with obstacles)
+            _, _, reset_lasernav_obs, reset_lasernav_info, _ = laser_env.batch_reset(reset_key)
+            final_lasernav_obs, final_lasernav_info = select_envs(
+                ~final_outcome["nothing"],
+                (reset_lasernav_obs, reset_lasernav_info),
+                (step_lasernav_obs, step_lasernav_info),
             )
             ## Save output data
             step_out_data = {
