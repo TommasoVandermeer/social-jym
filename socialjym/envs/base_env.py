@@ -1391,7 +1391,7 @@ class BaseEnv(ABC):
                     lambda _: disturbed_points.at[i].set(new_point),
                     lambda _: disturbed_points,
                     operand=None)
-                normalized_goal_point = random.uniform(noise_key, shape=(2,), minval=-1, maxval=1)
+                normalized_goal_point = random.uniform(goal_key, shape=(2,), minval=-1, maxval=1)
                 humans_goal = humans_goal.at[i].set(jnp.array([
                     -2.5 + room * 5 + normalized_goal_point[0] * 2.4, 
                     normalized_goal_point[1] * 2.4,
@@ -1967,8 +1967,8 @@ class BaseEnv(ABC):
                     new_room = random.bernoulli(key3)
                     case = jnp.argmax(jnp.array([
                         (goal[0] < 0) & ~(door_goal), # Left room
-                        goal[0] == 0 & ~(door_goal), # Door goal
-                        goal[0] > 0 & ~(door_goal), # Right room
+                        (goal[0] == 0) & ~(door_goal), # Door goal
+                        (goal[0] > 0) & ~(door_goal), # Right room
                         door_goal, # Set new goal as door
                     ]))
                     new_goal = lax.switch(
