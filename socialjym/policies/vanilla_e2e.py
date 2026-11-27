@@ -12,7 +12,7 @@ from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
-from socialjym.utils.networks import MLP, Network, variance_scaling, zeros
+from socialjym.utils.networks import MLP, Network, variance_scaling, zeros as zeros_init
 
 NETWORK_TYPES = ["MLP", "CNN", "Transformer"]
     
@@ -106,7 +106,7 @@ class MLPActorCritic(fnn.Module):
             critic_subnets = [MLP(**self.mlp_params, output_sizes=[100, 50, 1], name=f"critic_head_{i}") for i in range(self.critic_heads)]
             head_outputs = [head(inputs) for head in critic_subnets]
             state_values = jnp.concatenate(head_outputs, axis=-1)
-            log_sigmas = self.param("log_sigmas", zeros, (self.critic_heads,))
+            log_sigmas = self.param("log_sigmas", zeros_init, (self.critic_heads,))
         if not has_batch:
             sampled_actions = sampled_actions[0]
             state_values = state_values[0]
