@@ -1,55 +1,54 @@
 import jax.numpy as jnp
 from jax import jit, vmap, nn
 from functools import partial
-import haiku as hk
+from dataclasses import field
+import flax.linen as fnn
 from types import FunctionType
 
 from .cadrl import CADRL
+from socialjym.utils.networks import MLP, Network, variance_scaling
 
 MLP_1_PARAMS = {
     "output_sizes": [150, 100],
     "activation": nn.relu,
     "activate_final": True,
-    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "w_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
+    "b_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
 }
 MLP_2_PARAMS = {
     "output_sizes": [100, 50],
     "activation": nn.relu,
     "activate_final": False,
-    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "w_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
+    "b_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
 }
 MLP_3_PARAMS = {
     "output_sizes": [150, 100, 100, 1],
     "activation": nn.relu,
     "activate_final": False,
-    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "w_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
+    "b_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
 }
 ATTENTION_LAYER_PARAMS = {
     "output_sizes": [100, 100, 1],
     "activation": nn.relu,
     "activate_final": False,
-    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "w_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
+    "b_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
 }
 
-class ValueNetwork(hk.Module):
-    def __init__(
-            self,
-            mlp1_params:dict=MLP_1_PARAMS,
-            mlp2_params:dict=MLP_2_PARAMS,
-            mlp3_params:dict=MLP_3_PARAMS,
-            attention_layer_params:dict=ATTENTION_LAYER_PARAMS,
-            robot_state_size:int=6
-        ) -> None:
-        super().__init__()  
-        self.mlp1 = hk.nets.MLP(**mlp1_params, name="mlp1")
-        self.mlp2 = hk.nets.MLP(**mlp2_params, name="mlp2")
-        self.mlp3 = hk.nets.MLP(**mlp3_params, name="mlp3")
-        self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
-        self.robot_state_size = robot_state_size
+class ValueNetwork(fnn.Module):
+    mlp1_params: dict = field(default_factory=lambda: MLP_1_PARAMS)
+    mlp2_params: dict = field(default_factory=lambda: MLP_2_PARAMS)
+    mlp3_params: dict = field(default_factory=lambda: MLP_3_PARAMS)
+    attention_layer_params: dict = field(default_factory=lambda: ATTENTION_LAYER_PARAMS)
+    robot_state_size: int = 6
+
+    def setup(self) -> None:
+        self.mlp1 = MLP(**self.mlp1_params)
+        self.mlp2 = MLP(**self.mlp2_params)
+        self.mlp3 = MLP(**self.mlp3_params)
+        self.attention = MLP(**self.attention_layer_params)
 
     def __call__(
             self, 
@@ -118,10 +117,7 @@ class ValueNetwork(hk.Module):
 
         return state_value
 
-@hk.transform
-def value_network(x, mask=None, robot_state_size=6):
-    vnet = ValueNetwork(robot_state_size=robot_state_size)
-    return vnet(x, mask=mask)
+value_network = Network(ValueNetwork())
 
 class SARL(CADRL):
     def __init__(
@@ -170,7 +166,7 @@ class SARL(CADRL):
         # Re-parametrize observation, for each human: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
         vnet_inputs = self.batch_compute_vnet_input(next_obs[n_humans], next_obs[0:n_humans], info)
         # Compute the output of the value network (value of the state)
-        vnet_output = self.model.apply(vnet_params, None, vnet_inputs, mask=humans_mask)
+        vnet_output = self.model.apply(vnet_params, vnet_inputs, mask=humans_mask)
         # Compute the final value of the action
         value = reward + pow(self.reward_function.gamma,self.dt * self.v_max) * vnet_output
         return value, vnet_inputs

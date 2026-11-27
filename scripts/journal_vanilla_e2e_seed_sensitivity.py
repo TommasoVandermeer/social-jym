@@ -1,4 +1,5 @@
 from jax import random, jit, vmap, lax
+import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
@@ -118,7 +119,7 @@ for seed in range(n_seeds):
         actor_critic_params = policy.init_nn(random.PRNGKey(random_seed))
         # Count network parameters
         def count_params(actor_critic_params):
-            return sum(jnp.prod(jnp.array(p.shape)) for layer in actor_critic_params.values() for p in layer.values())
+            return sum(jnp.prod(jnp.array(p.shape)) for p in jax.tree_util.tree_leaves(actor_critic_params))
         n_params = count_params(actor_critic_params)
         print(f"# Controller network parameters: {n_params}")
         # TRAINING LOOP
@@ -239,7 +240,7 @@ for seed in range(n_seeds):
         actor_critic_params = policy.init_nn(random.PRNGKey(random_seed))
         # Count network parameters
         def count_params(actor_critic_params):
-            return sum(jnp.prod(jnp.array(p.shape)) for layer in actor_critic_params.values() for p in layer.values())
+            return sum(jnp.prod(jnp.array(p.shape)) for p in jax.tree_util.tree_leaves(actor_critic_params))
         n_params = count_params(actor_critic_params)
         print(f"# Controller network parameters: {n_params}")
         # TRAINING LOOP

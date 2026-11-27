@@ -219,7 +219,7 @@ class JESSI_MPPI(JESSI):
             # new_observation = observation.at[:, :3].set(prec_poses)
             # new_observation = new_observation.at[:, 11:].set(new_lidar_measurements)
             # perception_input, _ = self.compute_perception_input(new_observation)
-            # _, scan_embeddings, _, _ = self.perception.apply(perception_params, None, perception_input)
+            # _, scan_embeddings, _, _ = self.perception.apply(perception_params, perception_input)
             ## Faster method but not really accurate
             delta_theta = wrap_angle(pose[2] - ref_poses[0, 2])
             shift = jnp.round(delta_theta / jnp.deg2rad(self.angular_sectors_width_deg)).astype(int)
@@ -227,7 +227,6 @@ class JESSI_MPPI(JESSI):
             # Compute robot action
             action, _, _, _, _ = self.actor_critic.apply(
                 actor_critic_params, 
-                None, 
                 actor_input, 
                 scan_embeddings,
                 random_key=key2,
@@ -325,13 +324,13 @@ class JESSI_MPPI(JESSI):
         point_cloud = jnp.reshape(aligned_lidar_wf, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
         # Compute probabilistic humans states 
         perception_input, _ = self.compute_perception_input(obs)
-        perception_output, scan_embeddings, spatial_attn, temporal_attn = self.perception.apply(perception_params, None, perception_input)
+        perception_output, scan_embeddings, spatial_attn, temporal_attn = self.perception.apply(perception_params, perception_input)
         perception_output_rf = perception_output.copy() # Keep a copy of the perception output in the robot frame for debugging
         # Compute actor_distribution for visualization purposes
         action_space_params = self.bound_action_space(jnp.reshape(aligned_lidar_rf, (-1, 2)))
         robot_goal_rf = jnp.array([[jnp.cos(-robot_pose[2]), -jnp.sin(-robot_pose[2])], [jnp.sin(-robot_pose[2]), jnp.cos(-robot_pose[2])]]) @(robot_goal - robot_pose[:2])
         actor_input = self.compute_actor_input(None, perception_output, action_space_params, robot_goal_rf)
-        _, actor_distr, _, state_value, human_attn = self.actor_critic.apply(actor_critic_params, None, actor_input, scan_embeddings)
+        _, actor_distr, _, state_value, human_attn = self.actor_critic.apply(actor_critic_params, actor_input, scan_embeddings)
         # Probabilistic humans states in the world frame
         perception_output['pos_distrs'] = vmap(self.biv_gaussian.roto_translate, in_axes=(0, None))(
             perception_output['pos_distrs'], 

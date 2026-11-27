@@ -2,65 +2,50 @@ import jax.numpy as jnp
 from jax import nn, random, vmap, jit, lax, value_and_grad, debug
 from jax.tree_util import tree_map, tree_leaves
 from functools import partial
-import haiku as hk
+from dataclasses import field
+from typing import Optional
+import flax.linen as fnn
 from typing import Sequence
 import optax
 
-from socialjym.policies.jessi import JESSI, E2E, MultiHeadAttention
+from socialjym.policies.jessi import JESSI, E2E
+from socialjym.utils.networks import MLP, Linear, LayerNorm, MultiHeadAttention, Network, variance_scaling, constant
 from socialjym.utils.distributions.logistic_normal import LogisticNormal
 from jhsfm.hsfm import step as humans_step
 from jhsfm.utils import get_standard_humans_parameters as get_standard_humans_parameters
 from jhsfm.hsfm import get_linear_velocity
 
-class Actor(hk.Module):
-    def __init__(
-            self,
-            name: str,
-            n_detectable_humans: int,
-            v_max: float,
-            wheels_distance: float,
-            n_sectors: int,
-            mlp_params: dict = {
-                "activation": nn.relu,
-                "activate_final": False,
-                "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-                "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-            },
-            initial_concentration: float = 0.,
-            ablation_mode: str = None,
-    ) -> None:
-        super().__init__(name=name)
-        self.n_detectable_humans = n_detectable_humans
-        self.wheels_distance = wheels_distance
-        self.vmax = v_max
-        self.wmax = 2 * v_max / wheels_distance
-        self.wmin = -2 * v_max / wheels_distance
-        self.initial_concentration = initial_concentration
-        # Dimensions
-        self.n_sectors = n_sectors
-        self.n_outputs = 3 # Logistic-normal (3 alphas, 1 per vertex)
-        self.mlp_params = mlp_params
-        # Scan embedding reducer
-        self.scan_reducer = hk.Linear(1, name="scan_reducer")
-        # 2. Self Attention Mechanism
-        add_size = 22
-        self.attention = MultiHeadAttention(
-            num_heads=2,
-            key_size=(n_sectors + add_size)//2,
-            w_init=hk.initializers.VarianceScaling(1.0, "fan_avg", "uniform"),
-            name="hcg_self_attention"
-        )
-        self.layer_norm1 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-        self.att_ffn = hk.nets.MLP([n_sectors + add_size], activation=nn.gelu, activate_final=True)
-        self.layer_norm2 = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)
-        # 3. Final Output MLP
-        self.actor_head = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[100, 50, self.n_outputs], 
-            name="actor_head"
-        )
-        self.action_distribution = LogisticNormal()
+class Actor(fnn.Module):
+    n_detectable_humans: int
+    v_max: float
+    wheels_distance: float
+    n_sectors: int
+    mlp_params: dict = field(default_factory=lambda: {
+        "activation": nn.relu,
+        "activate_final": False,
+        "w_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
+        "b_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
+    })
+    initial_concentration: float = 0.
+    ablation_mode: Optional[int] = None
 
+    @property
+    def vmax(self) -> float:
+        return self.v_max
+
+    @property
+    def wmax(self) -> float:
+        return 2 * self.v_max / self.wheels_distance
+
+    @property
+    def wmin(self) -> float:
+        return -2 * self.v_max / self.wheels_distance
+
+    @property
+    def n_outputs(self) -> int:
+        return 3 # Logistic-normal (3 alphas, 1 per vertex)
+
+    @fnn.compact
     def __call__(
             self, 
             x: jnp.ndarray,
@@ -80,6 +65,24 @@ class Actor(hk.Module):
             sampled_actions: Sampled actions from the policy. Shape (2,) or (batch_size, 2)
             distributions: Dict containing the Dirichlet distribution parameters.
         """
+        n_sectors = self.n_sectors
+        scan_reducer = Linear(1, name="scan_reducer")
+        add_size = 22
+        attention = MultiHeadAttention(
+            num_heads=2,
+            key_size=(n_sectors + add_size)//2,
+            w_init=variance_scaling(1.0, "fan_avg", "uniform"),
+            name="hcg_self_attention"
+        )
+        layer_norm1 = LayerNorm(name="layer_norm")
+        att_ffn = MLP([n_sectors + add_size], activation=nn.gelu, activate_final=True, name="mlp")
+        layer_norm2 = LayerNorm(name="layer_norm_1")
+        actor_head = MLP(
+            **self.mlp_params,
+            output_sizes=[100, 50, self.n_outputs], 
+            name="actor_head"
+        )
+        action_distribution = LogisticNormal()
         random_key = kwargs.get("random_key", random.PRNGKey(0))
         has_batch = x.ndim == 3
         if not has_batch:
@@ -94,16 +97,16 @@ class Actor(hk.Module):
         action_history = x[:, 0, 22:]
         x = x[:, :, :22]
         ### CONTEXT EXTRACTION
-        scalar_scan = self.scan_reducer(y)  # (Batch, n_sectors, 1)
+        scalar_scan = scan_reducer(y)  # (Batch, n_sectors, 1)
         y = jnp.squeeze(scalar_scan, axis=-1) # (Batch, n_sectors)
         # SCENE-ATTENTION MECHANISM
         y_tiled = jnp.broadcast_to(y[:, None, :], (batch_size, self.n_detectable_humans, y.shape[-1]))
         embeddings = jnp.concatenate([x, y_tiled], axis=-1) # [Batch, N_Humans, 22 + n_sectors]
-        att_out, att_mtrx = self.attention(embeddings, embeddings, embeddings) # (Batch, N, 22 + n_sectors)
+        att_out, att_mtrx = attention(embeddings, embeddings, embeddings) # (Batch, N, 22 + n_sectors)
         # debug.print("Attention matrix shape: {s}", s=att_mtrx.shape) # (Batch, N, N)
-        att_embeddings = self.layer_norm1(embeddings + att_out) # (Batch, N, 22 + n_sectors)
-        ffn_out = self.att_ffn(att_embeddings)
-        att_embeddings = self.layer_norm2(att_embeddings + ffn_out)
+        att_embeddings = layer_norm1(embeddings + att_out) # (Batch, N, 22 + n_sectors)
+        ffn_out = att_ffn(att_embeddings)
+        att_embeddings = layer_norm2(att_embeddings + ffn_out)
         summed_embeddings = jnp.sum(att_embeddings * hcg_scores, axis=1) # (Batch, 22 + n_sectors)
         sum_of_weights = jnp.sum(hcg_scores, axis=1) # (Batch, 1)
         base_mean = summed_embeddings / (sum_of_weights + 1e-5)  # (Batch, 22 + n_sectors)
@@ -127,32 +130,25 @@ class Actor(hk.Module):
         v3 = jnp.stack([action_space_params[:, 0] * self.vmax, zeros], axis=-1)
         vertices = jnp.stack([v1, v2, v3], axis=1)  # Shape: (batch_size, 3, 2)
         distributions = {"vertices": vertices}
-        locs = self.actor_head(context)
-        raw_logscales_param = hk.get_parameter("raw_logscales", shape=[3], init=hk.initializers.Constant(jnp.arctanh(9/11)))
+        locs = actor_head(context)
+        raw_logscales_param = self.param("raw_logscales", constant(jnp.arctanh(9/11)), (3,))
         logscales_bounded = jnp.tanh(raw_logscales_param) * 11 - 9 # Bound logscales between [-20,2]
         logscales = jnp.broadcast_to(logscales_bounded, locs.shape)
         distributions["locs"] = locs
         distributions["log_scales"] = logscales
         ## Sample action
-        sampled_actions = vmap(self.action_distribution.sample)(distributions, keys)
+        sampled_actions = vmap(action_distribution.sample)(distributions, keys)
         if not has_batch:
             sampled_actions = sampled_actions[0]
             distributions = tree_map(lambda t: t[0], distributions)
         return sampled_actions, distributions, 0., 0.,  human_attention
 
-class Critic(hk.Module):
-    def __init__(
-            self,
-            embed_dim: int = 64,
-            num_heads: int = 4,
-            mlp_hidden_dims: Sequence[int] = (256, 128, 64),
-            name: str = None,
-    ):
-        super().__init__(name=name)
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.mlp_hidden_dims = mlp_hidden_dims
+class Critic(fnn.Module):
+    embed_dim: int = 64
+    num_heads: int = 4
+    mlp_hidden_dims: Sequence[int] = (256, 128, 64)
 
+    @fnn.compact
     def __call__(
             self,
             robot_data: jnp.ndarray, # (B, 12 + 2*n_actions_history,) --> e.g., n_actions_history=5 --> (B, 12 + 10,) = (B, 22,)
@@ -172,7 +168,7 @@ class Critic(hk.Module):
         obs_flat = jnp.reshape(static_obstacles_data, (static_obstacles_data.shape[0], static_obstacles_data.shape[1], -1))  # (B, n_obstacles * n_edges, 4)
         valid_obs_mask = jnp.all(jnp.isfinite(obs_flat), axis=-1)  
         safe_obs_flat = jnp.nan_to_num(obs_flat, nan=0.0, posinf=0.0, neginf=0.0)
-        obs_emb = hk.nets.MLP(
+        obs_emb = MLP(
             [self.embed_dim, self.embed_dim], 
             activation=nn.silu,
             name="obstacles_mlp"
@@ -184,26 +180,29 @@ class Critic(hk.Module):
         # 2. Humans processing: Robot-Human Cross-Attention (Q=Robot, K/V=Humans)
         valid_humans_mask = jnp.all(jnp.isfinite(humans_data), axis=-1)  
         safe_humans_data = jnp.nan_to_num(humans_data, nan=0.0, posinf=0.0, neginf=0.0)
-        robot_query = hk.Linear(self.embed_dim)(robot_data)[:, None, :]  # (B, 1, embed_dim)
-        humans_kv = hk.Linear(self.embed_dim)(safe_humans_data)  # (B, n_humans, embed_dim)
+        robot_query = Linear(self.embed_dim, name="linear")(robot_data)[:, None, :]  # (B, 1, embed_dim)
+        humans_kv = Linear(self.embed_dim, name="linear_1")(safe_humans_data)  # (B, n_humans, embed_dim)
         humans_kv = nn.silu(humans_kv)  # (B, n_humans, embed_dim)
-        norm_q = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(robot_query)  # (B, 1, embed_dim)
-        norm_kv = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(humans_kv)  # (B, n_humans, embed_dim)
+        norm_q = LayerNorm(name="layer_norm")(robot_query)  # (B, 1, embed_dim)
+        norm_kv = LayerNorm(name="layer_norm_1")(humans_kv)  # (B, n_humans, embed_dim)
         attn_mask = jnp.expand_dims(valid_humans_mask, axis=(1, 2))
-        humans_attn = hk.MultiHeadAttention(
+        humans_attn, _ = MultiHeadAttention(
             num_heads=self.num_heads,
             key_size=self.embed_dim // self.num_heads,
             model_size=self.embed_dim,
-            w_init=hk.initializers.VarianceScaling(),
+            w_init=variance_scaling(),
+            safe_mask=False,
+            name="multi_head_attention",
         )(query=norm_q, key=norm_kv, value=norm_kv, mask=attn_mask)  # (B, 1, embed_dim)
         humans_attn = jnp.nan_to_num(humans_attn, nan=0.0)
         humans_feat = jnp.squeeze(robot_query + humans_attn, axis=1)  # (B, embed_dim)
         # 3. Multimodal Fusion & Value Estimation
         fused_features = jnp.concatenate([robot_data, humans_feat, obstacles_feat], axis=-1)  # (B, D_robot + 2 * embed_dim)
-        value = hk.nets.MLP(
+        value = MLP(
             output_sizes=list(self.mlp_hidden_dims) + [1],
             activation=nn.silu,
             activate_final=False,
+            name="mlp",
         )(fused_features)  # (B, 1)
         value = jnp.squeeze(value, axis=-1)
         # END: deal with batch dimension
@@ -270,48 +269,33 @@ class JESSI_S2R(JESSI):
         )
         # Initialize Actor network
         self.actor_name = "actor_network"
-        @hk.transform
-        def actor_network(x, y, **kwargs) -> jnp.ndarray:
-            actor = Actor(
-                self.actor_name, 
-                self.n_detectable_humans, 
-                self.v_max, 
-                self.wheels_distance, 
-                n_sectors=self.n_sectors,
-            ) 
-            return actor(x, y, **kwargs)
-        self.actor = actor_network
+        self.actor = Network(Actor(
+            n_detectable_humans=self.n_detectable_humans, 
+            v_max=self.v_max, 
+            wheels_distance=self.wheels_distance, 
+            n_sectors=self.n_sectors,
+        ))
         # Initialize Critic network
         self.critic_name = "critic_network"
-        @hk.transform
-        def critic_network(robot_data, humans_data, static_obstacles_data, **kwargs) -> jnp.ndarray:
-            critic = Critic(
-            ) 
-            return critic(robot_data, humans_data, static_obstacles_data, **kwargs)
-        self.critic = critic_network
+        self.critic = Network(Critic())
         # Initialize E2E network
         self.e2e_name = "e2e"
-        @hk.transform
-        def e2e_network(x, y, stop_perception_gradient=False, only_perception=False, **kwargs) -> jnp.ndarray:
-            e2e = E2E(
-                Actor,
-                self.e2e_name,
-                self.perception_name,
-                self.actor_name,
-                self.lidar_angles_robot_frame,
-                n_detectable_humans=self.n_detectable_humans,
-                max_humans_velocity=self.max_humans_velocity,
-                max_lidar_distance=self.lidar_max_dist,
-                v_max=self.v_max,
-                wheels_distance=self.wheels_distance,
-                embed_dim=self.embedding_dim,
-                n_sectors=self.n_sectors,
-                beam_dropout_rate=self.beam_dropout_rate,
-                ablation_mode=self.ablation_mode,
-                legit=self.legit,
-            ) 
-            return e2e(x, y, stop_perception_gradient=stop_perception_gradient, only_perception=only_perception, **kwargs)
-        self.e2e = e2e_network
+        self.e2e = Network(E2E(
+            actor_critic_module=Actor,
+            perception_name=self.perception_name,
+            controller_name=self.actor_name,
+            lidar_angles_robot_frame=self.lidar_angles_robot_frame,
+            n_detectable_humans=self.n_detectable_humans,
+            max_humans_velocity=self.max_humans_velocity,
+            max_lidar_distance=self.lidar_max_dist,
+            v_max=self.v_max,
+            wheels_distance=self.wheels_distance,
+            embed_dim=self.embedding_dim,
+            n_sectors=self.n_sectors,
+            beam_dropout_rate=self.beam_dropout_rate,
+            ablation_mode=self.ablation_mode,
+            legit=self.legit,
+        ))
 
     @partial(jit, static_argnames=("self"))
     def init_nns(
@@ -529,7 +513,7 @@ class JESSI_S2R(JESSI):
         # Build static_obstacles_data input. (static_obstacles)
         static_obstacles_data = jnp.reshape(static_obstacles, (-1, 2, 2)) # Shape: (n_obstacles * n_edges, 2, 2) --> e.g., n_obstacles=5, n_edges=4 --> (20, 2, 2)
         ### Critic forward pass
-        value = self.critic.apply(critic_params, None, robot_data, humans_data, static_obstacles_data)
+        value = self.critic.apply(critic_params, robot_data, humans_data, static_obstacles_data)
         return value
 
     @partial(jit, static_argnames=("self"))
@@ -586,7 +570,6 @@ class JESSI_S2R(JESSI):
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
                     _, predicted_distr, _, _, _ = self.actor.apply(
                         current_actor_params, 
-                        None, 
                         input['actor_input'], 
                         input['scan_embedding']
                     )                    

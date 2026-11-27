@@ -1,4 +1,3 @@
-import haiku as hk
 import optax
 from typing import Callable
 from jax import jit, lax, random, vmap, debug, nn
@@ -67,9 +66,8 @@ def ppo_rl_rollout(
                                 actor_params["norm_state"] = updated_norm_state
                         actions, policy_keys, inputs, sampled_actions, distrs = policy.batch_act(policy_keys, obses, init_infos, actor_params, sample=True)
                         # Compute state values
-                        values = vmap(policy.critic.apply, in_axes=(None,None,0))(
+                        values = vmap(policy.critic.apply, in_axes=(None,0))(
                                 critic_params, 
-                                None, 
                                 inputs, 
                         ) 
                         states, obses, infos, (rewards, _), outcomes, reset_keys = env.batch_step(states, init_infos, actions, reset_keys, test=False, reset_if_done=True)
@@ -124,9 +122,8 @@ def ppo_rl_rollout(
                                 (n_parallel_envs, env.n_humans, policy.vnet_input_size)
                         )
                 # Compute the value of the last batch  
-                last_values = vmap(policy.critic.apply, in_axes=(None,None,0))(
+                last_values = vmap(policy.critic.apply, in_axes=(None,0))(
                         critic_params,
-                        None,
                         inputs,
                 )
                 last_dones = ~(outcomes["nothing"])

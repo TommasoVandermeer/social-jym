@@ -1,4 +1,4 @@
-import haiku as hk
+from socialjym.utils.networks import Network
 import optax
 import pickle
 from typing import Callable
@@ -128,7 +128,7 @@ def vnet_rl_wave(
     custom_data,
     policy:BasePolicy,
     env:BaseEnv,
-    model:hk.Transformed,
+    model:Network,
     optimizer:optax.GradientTransformation,
     replay_buffer:BaseVNetReplayBuffer,
     epsilon_decay_fn:Callable,
@@ -176,7 +176,7 @@ def vnet_rl_wave(
             def _add(args):
                 buffer_state, current_buffer_size = args
                 next_vnet_inputs = jnp.concatenate([vnet_inputs[1:], vnet_inputs[-1:]])
-                next_values = vmap(model.apply, in_axes=(None,None,0))(target_model_params, None, next_vnet_inputs)
+                next_values = vmap(model.apply, in_axes=(None,0))(target_model_params, next_vnet_inputs)
                 # Value of each next state: min over the humans' values for CADRL (as in CADRL._compute_action_value), no-op for SARL
                 next_values = jnp.min(jnp.reshape(next_values, (max_steps, -1)), axis=1)
                 targets = rewards + (1 - dones) * discount * next_values
@@ -226,7 +226,7 @@ def vnet_rl_rollout(
         initial_vnet_params: dict,
         train_episodes: int, # Number of episodes to train on, exploration episodes excluded
         random_seed: int,
-        model: hk.Transformed,
+        model: Network,
         optimizer: optax.GradientTransformation,
         buffer_state: dict,
         policy: BasePolicy,

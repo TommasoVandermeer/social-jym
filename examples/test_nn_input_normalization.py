@@ -1,4 +1,4 @@
-import haiku as hk
+import flax.linen as fnn
 from jax import random, vmap, jit
 import jax.numpy as jnp
 from jax.tree_util import tree_map
@@ -9,12 +9,13 @@ from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory
 
-# Define a simple function with BatchNorm
-def forward_fn(x, update_stats):
-    bn = hk.BatchNorm(create_scale=False, create_offset=False, decay_rate=0.5, eps=1e-3)
-    return bn(x, update_stats)
-# Transform the function into a Haiku module
-model = hk.transform_with_state(forward_fn)
+# Define a simple module with BatchNorm (the running statistics are in the "batch_stats" collection)
+class InputNormalizer(fnn.Module):
+    @fnn.compact
+    def __call__(self, x, update_stats):
+        bn = fnn.BatchNorm(use_running_average=not update_stats, momentum=0.5, epsilon=1e-3, use_bias=False, use_scale=False)
+        return bn(x)
+model = InputNormalizer()
 
 @jit
 def _normalize_and_clip_observation_and_update_state(
@@ -23,13 +24,13 @@ def _normalize_and_clip_observation_and_update_state(
     bound:float,
     ):
     # Apply the model (normalize the input)
-    norm_x, state = model.apply(
-        {},
-        state,
-        None,
+    norm_x, mutated = model.apply(
+        {"batch_stats": state},
         x,
         True,
+        mutable=["batch_stats"],
     )
+    state = mutated["batch_stats"]
     clipped_norm_x = jnp.clip(norm_x, -bound, bound)
     return clipped_norm_x, state
 
@@ -40,10 +41,8 @@ def _normalize_and_clip_observation(
     bound:float,
     ):
     # Apply the model (normalize the input)
-    norm_x, _ = model.apply(
-        {},
-        state,
-        None,
+    norm_x = model.apply(
+        {"batch_stats": state},
         x,
         False,
     )
@@ -83,11 +82,11 @@ initial_vnet_params = policy.model.init(random.key(random_seed), jnp.zeros((env_
 policy_key, reset_key = vmap(random.PRNGKey)(jnp.zeros(2, dtype=int) + random_seed) # We don't care if we generate two identical keys, they operate differently
 state, reset_key, obs, info, outcome = env.reset(reset_key)
 vnet_input = policy.batch_compute_vnet_input(obs[-1], obs[:-1], info)
-norm_params, norm_state = model.init(random.PRNGKey(0), vnet_input, update_stats=True)
+norm_state = model.init(random.PRNGKey(0), vnet_input, update_stats=True)["batch_stats"]
 all_normalized_inputs = jnp.zeros((n_steps,)+vnet_input.shape)
 all_inputs = jnp.zeros((n_steps,)+vnet_input.shape)
 for step in range(n_steps):
-    action, policy_key, vnet_input = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
+    action, policy_key, vnet_input, _ = policy.act(policy_key, obs, info, initial_vnet_params, 0.)
     state, obs, info, (reward, _), outcome, reset_key = env.step(state,info,action,test=True,reset_if_done=True,reset_key=reset_key)
     # Apply the model (normalize the input)
     clipped_norm_vnet_input, norm_state = _normalize_and_clip_observation_and_update_state(norm_state, vnet_input, bound=clip_obs_bound)

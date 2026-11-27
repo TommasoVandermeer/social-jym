@@ -113,7 +113,7 @@ def process_buffer_and_gae(
         last_obs, last_info['robot_goal']
     )
     _, _, _, _, _, last_values, _, _, _ = policy.e2e.apply(
-        network_params, None, perception_inputs, robot_state_inputs
+        network_params, perception_inputs, robot_state_inputs
     )
     rewards = history["rewards"]
     values = history["values"]
@@ -191,12 +191,12 @@ def train_one_epoch(
                 inputs1_f16 = inputs1.astype(jnp.bfloat16)
                 # Forward pass (For Actor/Critic)
                 (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0_f16, inputs1_f16, stop_perception_gradient=modular_training
+                    p, inputs0_f16, inputs1_f16, stop_perception_gradient=modular_training
                 )
             else:
                 # Forward pass (For Actor/Critic)
                 (safety_perc_dist, _, _, actor_dist, _, pred_val, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0, inputs1, stop_perception_gradient=modular_training
+                    p, inputs0, inputs1, stop_perception_gradient=modular_training
                 )
             # Cast back to higher precision for loss computation
             if multitask_training or modular_training:
@@ -267,7 +267,7 @@ def train_one_epoch(
                 inputs0_corrupt_f16 = inputs0_corrupt.astype(jnp.bfloat16)
                 # Forward pass through perception head
                 (perc_dist, _, _, _, _, _, _, _, _) = policy.e2e.apply(
-                    p, None, inputs0_corrupt_f16, inputs1, stop_perception_gradient=False, only_perception=True, perception_key=mask_drop_key
+                    p, inputs0_corrupt_f16, inputs1, stop_perception_gradient=False, only_perception=True, perception_key=mask_drop_key
                 )
                 # Compute perception loss
                 perc_dist = dist_to_f32(perc_dist)

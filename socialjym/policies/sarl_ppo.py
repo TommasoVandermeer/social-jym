@@ -1,7 +1,8 @@
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug, nn, value_and_grad
 from functools import partial
-import haiku as hk
+from dataclasses import field
+import flax.linen as fnn
 from types import FunctionType
 import optax
 
@@ -11,6 +12,7 @@ from socialjym.utils.distributions.gaussian import Gaussian
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from .sarl import SARL
 from .sarl import value_network as critic_network
+from socialjym.utils.networks import MLP, Linear, Network, orthogonal, constant
 
 EPSILON = 1e-5
 NORM_EPSILON = 1e-3
@@ -18,60 +20,57 @@ MLP_1_PARAMS = {
     "output_sizes": [150, 100],
     "activation": nn.tanh, # nn.relu
     "activate_final": True,
-    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
-    "b_init": hk.initializers.Constant(0.),
+    "w_init": orthogonal(scale=jnp.sqrt(2)),
+    "b_init": constant(0.),
 }
 MLP_2_PARAMS = {
     "output_sizes": [100, 50],
     "activation": nn.tanh, # nn.relu
     "activate_final": False,
-    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
-    "b_init": hk.initializers.Constant(0.),
+    "w_init": orthogonal(scale=jnp.sqrt(2)),
+    "b_init": constant(0.),
 }
 MLP_3_PARAMS = {
     "output_sizes": [150, 100, 100],
     "activation": nn.tanh, # nn.relu
     "activate_final": False,
-    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
-    "b_init": hk.initializers.Constant(0.),
+    "w_init": orthogonal(scale=jnp.sqrt(2)),
+    "b_init": constant(0.),
 }
 ATTENTION_LAYER_PARAMS = {
     "output_sizes": [100, 100, 1],
     "activation": nn.tanh, # nn.relu
     "activate_final": False,
-    "w_init": hk.initializers.Orthogonal(scale=jnp.sqrt(2)),
-    "b_init": hk.initializers.Constant(0.),
+    "w_init": orthogonal(scale=jnp.sqrt(2)),
+    "b_init": constant(0.),
 }
 
-class Actor(hk.Module):
-    def __init__(
-            self,
-            distribution:str,
-            v_max:float,
-            wheels_distance:float,
-            mlp1_params:dict=MLP_1_PARAMS,
-            mlp2_params:dict=MLP_2_PARAMS,
-            mlp4_params:dict=MLP_3_PARAMS,
-            attention_layer_params:dict=ATTENTION_LAYER_PARAMS,
-            robot_state_size:int=6,
-        ) -> None:
-        super().__init__() 
-        self.distr_id = DISTRIBUTIONS.index(distribution) 
-        self.mlp1 = hk.nets.MLP(**mlp1_params, name="mlp1")
-        self.mlp2 = hk.nets.MLP(**mlp2_params, name="mlp2")
-        self.mlp4 = hk.nets.MLP(**mlp4_params, name="mlp4")
-        self.vmax = v_max
-        self.wheels_distance = wheels_distance
+class Actor(fnn.Module):
+    distribution: str
+    v_max: float
+    wheels_distance: float
+    mlp1_params: dict = field(default_factory=lambda: MLP_1_PARAMS)
+    mlp2_params: dict = field(default_factory=lambda: MLP_2_PARAMS)
+    mlp4_params: dict = field(default_factory=lambda: MLP_3_PARAMS)
+    attention_layer_params: dict = field(default_factory=lambda: ATTENTION_LAYER_PARAMS)
+    robot_state_size: int = 6
+
+    def setup(self) -> None:
+        self.distr_id = DISTRIBUTIONS.index(self.distribution)
+        self.mlp1 = MLP(**self.mlp1_params)
+        self.mlp2 = MLP(**self.mlp2_params)
+        self.mlp4 = MLP(**self.mlp4_params)
+        self.vmax = self.v_max
         if self.distr_id == DISTRIBUTIONS.index('gaussian'):
             self.distr = Gaussian()
             n_outputs = 2
+            self.logsigmas = self.param("logsigmas", constant(0.), (2,))
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
             self.distr = Dirichlet(EPSILON)
             self.dirichlet_vertices = jnp.array([[0,2*self.vmax/self.wheels_distance],[0,-2*self.vmax/self.wheels_distance],[self.vmax,0]])
             n_outputs = 3
-        self.output_layer = hk.Linear(n_outputs, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
-        self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
-        self.robot_state_size = robot_state_size
+        self.output_layer = Linear(n_outputs, w_init=orthogonal(scale=0.01), b_init=constant(0.))
+        self.attention = MLP(**self.attention_layer_params)
 
     def __call__(
             self, 
@@ -118,7 +117,7 @@ class Actor(hk.Module):
             lower_bounds = jnp.array([0,-(2*self.vmax)/self.wheels_distance])
             upper_bounds = jnp.array([self.vmax,(2*self.vmax)/self.wheels_distance])
             means = lower_bounds + (jnp.tanh(means) + 1) / 2 * (upper_bounds - lower_bounds)
-            logsigmas = hk.get_parameter("logsigmas", shape=[2], init=hk.initializers.Constant(0.))
+            logsigmas = self.logsigmas
             distribution = {"means": means, "logsigmas": logsigmas}
         elif self.distr_id == DISTRIBUTIONS.index('dirichlet'):
             alphas = self.output_layer(mlp4_output)
@@ -165,11 +164,7 @@ class SARLPPO(SARL):
         if self.normalize_and_clip_obs:
             self.clip_obs_bound = clip_obs_bound
         self.critic = critic_network
-        @hk.transform
-        def actor_network(x:jnp.ndarray, **kwargs) -> jnp.ndarray:
-            actor = Actor(distribution=distribution, v_max=self.v_max, wheels_distance=self.wheels_distance)
-            return actor(x, **kwargs)
-        self.actor = actor_network
+        self.actor = Network(Actor(distribution=distribution, v_max=self.v_max, wheels_distance=self.wheels_distance))
 
     # Private methods
 
@@ -208,7 +203,7 @@ class SARLPPO(SARL):
                 old_value:float,
                 ) -> jnp.ndarray:
                 # Compute the prediction
-                prediction = self.critic.apply(current_critic_params, None, input)
+                prediction = self.critic.apply(current_critic_params, input)
                 # Compute the clipped prediction
                 clipped_prediction = jnp.clip(prediction, old_value - clip_range, old_value + clip_range)
                 # Compute the loss
@@ -236,7 +231,7 @@ class SARLPPO(SARL):
                 old_neglogpdf:jnp.ndarray,
             ) -> jnp.ndarray:
                 # Compute the prediction
-                _, distr = self.actor.apply(current_actor_params, None, input)
+                _, distr = self.actor.apply(current_actor_params, input)
                 # Compute the log probability of the action
                 neglogpdf = self.distr.neglogp(distr, sample_action)
                 # Compute policy ratio
@@ -325,7 +320,7 @@ class SARLPPO(SARL):
                 target:float, 
                 ) -> jnp.ndarray:
                 # Compute the prediction
-                prediction = self.critic.apply(current_critic_params, None, input)
+                prediction = self.critic.apply(current_critic_params, input)
                 # Compute the loss
                 return jnp.square(target - prediction)
             
@@ -349,7 +344,7 @@ class SARLPPO(SARL):
                 sample_action:jnp.ndarray,
             ) -> jnp.ndarray:
                 # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                _, distr = self.actor.apply(current_actor_params, None, input)
+                _, distr = self.actor.apply(current_actor_params, input)
                 # Get mean action
                 action = self.distr.mean(distr)
                 # if self.distr_id == DISTRIBUTIONS.index('gaussian'):
@@ -455,7 +450,6 @@ class SARLPPO(SARL):
         key, subkey = random.split(key)
         sampled_action, distr = self.actor.apply(
             actor_params, 
-            None, 
             input, 
             random_key=subkey
         )

@@ -1,4 +1,5 @@
 from jax import random, jit, vmap, lax
+import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
@@ -126,7 +127,7 @@ for seed in range(n_seeds):
         _, actor_critic_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
         # Count network parameters
         def count_params(actor_critic_params):
-            return sum(jnp.prod(jnp.array(p.shape)) for layer in actor_critic_params.values() for p in layer.values())
+            return sum(jnp.prod(jnp.array(p.shape)) for p in jax.tree_util.tree_leaves(actor_critic_params))
         n_params = count_params(actor_critic_params)
         print(f"# Controller network parameters: {n_params}")
         # TRAINING LOOP
@@ -221,7 +222,6 @@ for seed in range(n_seeds):
                 )
                 hcgs, scan_embeddings, _, _ = jessi.perception.apply(
                     encoder_params, 
-                    None, 
                     noisy_inputs["inputs"],
                 )
                 bounding_parameters = vmap(jessi.bound_action_space)(last_lidar_point_clouds)
@@ -337,14 +337,7 @@ for seed in range(n_seeds):
             il_actor_params = pickle.load(f)
         il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
         def label_params(params):
-            labels = {}
-            for module_name, module_params in params.items():
-                if jessi.perception_name in module_name.lower(): 
-                    label = 'perception'
-                elif jessi.actor_critic_name in module_name.lower():
-                    label = 'actor_critic'
-                labels[module_name] = {k: label for k in module_params.keys()}
-            return labels
+            return jessi.optimizer_labels(params)
         network_optimizer = optax.multi_transform(
             {
             'perception': optax.chain(
@@ -648,14 +641,7 @@ for seed in range(n_seeds):
         il_network_params = policy.merge_nns_params(il_encoder_params, il_actor_params)
         # Initialize RL optimizer
         def label_params(params):
-            labels = {}
-            for module_name, module_params in params.items():
-                if jessi.perception_name in module_name.lower(): 
-                    label = 'perception'
-                elif jessi.actor_critic_name in module_name.lower():
-                    label = 'actor_critic'
-                labels[module_name] = {k: label for k in module_params.keys()}
-            return labels
+            return jessi.optimizer_labels(params)
         network_optimizer = optax.multi_transform(
             {
             'perception': optax.chain(

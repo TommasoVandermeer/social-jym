@@ -123,14 +123,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
     with open(os.path.join(os.path.dirname(__file__), network_name), 'rb') as f:
         il_network_params, _, _ = pickle.load(f)
     def label_params(params):
-        labels = {}
-        for module_name, module_params in params.items():
-            if policy.perception_name in module_name.lower(): 
-                label = 'perception'
-            elif policy.actor_critic_name in module_name.lower():
-                label = 'actor_critic'
-            labels[module_name] = {k: label for k in module_params.keys()}
-        return labels
+        return policy.optimizer_labels(params)
     network_optimizer = optax.multi_transform(
         {
         'perception': optax.chain(

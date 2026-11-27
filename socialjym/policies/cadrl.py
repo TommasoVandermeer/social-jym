@@ -4,7 +4,6 @@ from jax import random, jit, vmap, lax, nn, value_and_grad, debug
 from jax_tqdm import loop_tqdm
 from jax.tree_util import tree_map
 from functools import partial
-import haiku as hk
 from types import FunctionType
 import optax
 import os
@@ -33,20 +32,18 @@ from socialjym.utils.animation import (
     action_distribution_grid,
 )
 from socialjym.policies.jessi import JESSI
+from socialjym.utils.networks import MLP, Network, variance_scaling
 from jhsfm.hsfm import get_linear_velocity
 
 VN_PARAMS = {
     "output_sizes": [150, 100, 100, 1],
     "activation": nn.relu,
     "activate_final": False,
-    "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-    "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
+    "w_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
+    "b_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
 }
 
-@hk.transform
-def value_network(x):
-    mlp = hk.nets.MLP(**VN_PARAMS)
-    return mlp(x)
+value_network = Network(MLP(**VN_PARAMS))
 
 class CADRL(BasePolicy):
     def __init__(
@@ -158,7 +155,7 @@ class CADRL(BasePolicy):
         # Re-parametrize observation, for each human: [dg,v_pref,theta,radius,vx,vy,px1,py1,vx1,vy1,radius1,da,radius_sum]
         vnet_inputs = self.batch_compute_vnet_input(next_obs[n_humans], next_obs[0:n_humans], info)
         # Compute the output of the value network (value of the state)
-        vnet_outputs = self.model.apply(vnet_params, None, vnet_inputs)
+        vnet_outputs = self.model.apply(vnet_params, vnet_inputs)
         if humans_mask is not None:
             vnet_outputs = jnp.where(jnp.expand_dims(humans_mask, axis=-1), vnet_outputs, jnp.full_like(vnet_outputs, jnp.inf)) # Mask the value of non visible humans (if any) so that they don't affect the final value of the action
         # Take the minimum among all outputs (representing the worst case scenario)
@@ -322,7 +319,7 @@ class CADRL(BasePolicy):
                 target:jnp.ndarray, 
                 ) -> jnp.ndarray:
                 # Compute the prediction
-                prediction = self.model.apply(current_vnet_params, None, vnet_input)
+                prediction = self.model.apply(current_vnet_params, vnet_input)
                 # Compute the loss
                 return jnp.square(target - prediction)
             
@@ -887,7 +884,7 @@ class CADRL(BasePolicy):
         humans_radius:float,
     ) -> jnp.ndarray:
         ## Identify visible humans with JESSI perception
-        hcgs, _, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        hcgs, _, _, _ = jessi.perception.apply(perception_params, jessi.compute_perception_input(lasernav_obs)[0])
         humans_mask = hcgs['weights'] > 0.5
         rc_humans_pos = hcgs['pos_distrs']['means']
         rc_humans_vel = hcgs['vel_distrs']['means']

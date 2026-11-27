@@ -16,6 +16,7 @@ from datetime import date
 
 from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS, ENVIRONMENTS, wrap_angle
 from socialjym.policies.base_policy import BasePolicy
+from socialjym.utils.networks import haiku_to_flax
 
 @jit
 def roto_translate_pose_and_vel(position, orientation, velocity, ref_position, ref_orientation):
@@ -1252,4 +1253,5 @@ def load_crowdnav_policy(
             else:
                 vnet_params[list(vnet_params.keys())[l//2]]["b"] = jnp.array(v.detach().cpu().numpy().T)
             l += 1
-    return vnet_params
+    # The parameters are built with Haiku module names and converted to Flax variables
+    return haiku_to_flax(vnet_params)

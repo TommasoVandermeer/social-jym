@@ -2,7 +2,8 @@ import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug, nn, value_and_grad
 from jax.tree_util import tree_map
 from functools import partial
-import haiku as hk
+from dataclasses import field
+import flax.linen as fnn
 from types import FunctionType
 import optax
 import os
@@ -20,29 +21,26 @@ from .sarl import ValueNetwork
 from .sarl_ppo import EPSILON, MLP_1_PARAMS, MLP_2_PARAMS, MLP_3_PARAMS, ATTENTION_LAYER_PARAMS
 from .jessi import JESSI
 from jhsfm.hsfm import get_linear_velocity
+from socialjym.utils.networks import MLP, Linear, Network, orthogonal, constant
 
-class Actor(hk.Module):
-    def __init__(
-            self,
-            v_max:float,
-            wheels_distance:float,
-            mlp1_params:dict=MLP_1_PARAMS,
-            mlp2_params:dict=MLP_2_PARAMS,
-            mlp4_params:dict=MLP_3_PARAMS,
-            attention_layer_params:dict=ATTENTION_LAYER_PARAMS,
-            robot_state_size:int=9,  # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
-        ) -> None:
-        super().__init__() 
-        self.mlp1 = hk.nets.MLP(**mlp1_params, name="mlp1")
-        self.mlp2 = hk.nets.MLP(**mlp2_params, name="mlp2")
-        self.mlp4 = hk.nets.MLP(**mlp4_params, name="mlp4")
-        self.vmax = v_max
-        self.wheels_distance = wheels_distance
+class Actor(fnn.Module):
+    v_max: float
+    wheels_distance: float
+    mlp1_params: dict = field(default_factory=lambda: MLP_1_PARAMS)
+    mlp2_params: dict = field(default_factory=lambda: MLP_2_PARAMS)
+    mlp4_params: dict = field(default_factory=lambda: MLP_3_PARAMS)
+    attention_layer_params: dict = field(default_factory=lambda: ATTENTION_LAYER_PARAMS)
+    robot_state_size: int = 9  # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
+
+    def setup(self) -> None:
+        self.mlp1 = MLP(**self.mlp1_params)
+        self.mlp2 = MLP(**self.mlp2_params)
+        self.mlp4 = MLP(**self.mlp4_params)
+        self.vmax = self.v_max
         self.distr = Dirichlet(EPSILON)
         n_outputs = 3
-        self.output_layer = hk.Linear(n_outputs, w_init=hk.initializers.Orthogonal(scale=0.01), b_init=hk.initializers.Constant(0.), name="output_layer")
-        self.attention = hk.nets.MLP(**attention_layer_params, name="attention")
-        self.robot_state_size = robot_state_size
+        self.output_layer = Linear(n_outputs, w_init=orthogonal(scale=0.01), b_init=constant(0.))
+        self.attention = MLP(**self.attention_layer_params)
 
     def __call__(
             self, 
@@ -133,16 +131,9 @@ class DIRSAFE(SARL):
         self.distr = Dirichlet(EPSILON)
         self.normalize_and_clip_obs =  False
         self.vnet_input_size = 16 # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma), 7 as the human state (px, py, vx, vy, radius, dg, da)
-        @hk.transform
-        def value_network(x, mask=None, robot_state_size=9):  # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
-            vnet = ValueNetwork(robot_state_size=robot_state_size)
-            return vnet(x, mask=mask)
-        self.critic = value_network
-        @hk.transform
-        def actor_network(x:jnp.ndarray, mask=None, **kwargs) -> jnp.ndarray:
-            actor = Actor(v_max=self.v_max, wheels_distance=self.wheels_distance, robot_state_size=6+3) # 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
-            return actor(x, mask=mask, **kwargs)
-        self.actor = actor_network
+        # robot_state_size: 6 as the standard SARL implementation, 3 as the additional action space parameters (alpha, beta, gamma)
+        self.critic = Network(ValueNetwork(robot_state_size=9))
+        self.actor = Network(Actor(v_max=self.v_max, wheels_distance=self.wheels_distance, robot_state_size=6+3))
 
     # Private methods
 
@@ -181,7 +172,7 @@ class DIRSAFE(SARL):
                 old_value:float,
                 ) -> jnp.ndarray:
                 # Compute the prediction
-                prediction = self.critic.apply(current_critic_params, None, input)
+                prediction = self.critic.apply(current_critic_params, input)
                 # Compute the clipped prediction
                 clipped_prediction = jnp.clip(prediction, old_value - clip_range, old_value + clip_range)
                 # Compute the loss
@@ -209,7 +200,7 @@ class DIRSAFE(SARL):
                 old_neglogpdf:jnp.ndarray,
             ) -> jnp.ndarray:
                 # Compute the prediction
-                _, distr = self.actor.apply(current_actor_params, None, input)
+                _, distr = self.actor.apply(current_actor_params, input)
                 # Compute the log probability of the action
                 neglogpdf = self.distr.neglogp(distr, sample_action)
                 # Compute policy ratio
@@ -298,7 +289,7 @@ class DIRSAFE(SARL):
                 target:float, 
                 ) -> jnp.ndarray:
                 # Compute the prediction
-                prediction = self.critic.apply(current_critic_params, None, input)
+                prediction = self.critic.apply(current_critic_params, input)
                 # Compute the loss
                 return jnp.square(target - prediction)
             
@@ -322,7 +313,7 @@ class DIRSAFE(SARL):
                 sample_action:jnp.ndarray,
             ) -> jnp.ndarray:
                 # Compute the prediction (here we should input a key but for now we work only with mean actions)
-                _, distr = self.actor.apply(current_actor_params, None, input)
+                _, distr = self.actor.apply(current_actor_params, input)
                 # Get mean action
                 action = self.distr.mean(distr)
                 # if self.distr_id == DISTRIBUTIONS.index('gaussian'):
@@ -600,7 +591,6 @@ class DIRSAFE(SARL):
         key, subkey = random.split(key)
         sampled_action, distr = self.actor.apply(
             actor_params, 
-            None, 
             input, 
             random_key=subkey
         )
@@ -723,7 +713,7 @@ class DIRSAFE(SARL):
         aligned_lidar = jessi.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[0]
         point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)
         ## Identify visible humans with JESSI perception
-        hcgs, _, _, _ = jessi.perception.apply(perception_params, None, jessi.compute_perception_input(lasernav_obs)[0])
+        hcgs, _, _, _ = jessi.perception.apply(perception_params, jessi.compute_perception_input(lasernav_obs)[0])
         humans_mask = hcgs['weights'] > 0.5
         rc_humans_pos = hcgs['pos_distrs']['means']
         rc_humans_vel = hcgs['vel_distrs']['means']
@@ -762,7 +752,6 @@ class DIRSAFE(SARL):
             key, subkey = random.split(key)
             sampled_action, distr = self.actor.apply(
                 actor_params, 
-                None, 
                 vnet_input, 
                 humans_mask, # Mask to consider only visible humans in the actor forward pass
                 random_key=subkey
@@ -773,7 +762,6 @@ class DIRSAFE(SARL):
             vnet_input, key = val
             sampled_action, distr = self.actor.apply(
                 actor_params, 
-                None, 
                 vnet_input, 
                 humans_mask, # Mask to consider only visible humans in the actor forward pass
             )

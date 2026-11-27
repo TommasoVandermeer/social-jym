@@ -1,4 +1,4 @@
-import haiku as hk
+from socialjym.utils.networks import Network
 import optax
 from typing import Callable
 from jax import jit, lax, random, vmap, debug
@@ -17,7 +17,7 @@ def vnet_rl_rollout(
         initial_vnet_params: dict,
         train_episodes: int, # Number of episodes to train on, exploration episodes excluded
         random_seed: int,
-        model: hk.Transformed,
+        model: Network,
         optimizer: optax.GradientTransformation,
         buffer_state: dict,
         policy: BasePolicy,
@@ -127,7 +127,7 @@ def vnet_rl_rollout(
                         lambda x: lax.fori_loop(
                                 0,
                                 episode_steps,
-                                lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], rewards[k] + (1 - dones[k]) * pow(policy.reward_function.gamma, policy.dt * policy.v_max) * jnp.squeeze(model.apply(target_model_params, None, vnet_inputs[k+1]))), buff[1]), buff[1]+1),
+                                lambda k, buff: (replay_buffer.add(buff[0], (vnet_inputs[k], rewards[k] + (1 - dones[k]) * pow(policy.reward_function.gamma, policy.dt * policy.v_max) * jnp.squeeze(model.apply(target_model_params, vnet_inputs[k+1]))), buff[1]), buff[1]+1),
                                 (x[0], x[1])),
                         lambda x: x,
                         (buffer_state, current_buffer_size))

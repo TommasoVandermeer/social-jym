@@ -3,7 +3,8 @@ from jax import random, jit, vmap, lax, nn, value_and_grad
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
 from functools import partial
-import haiku as hk
+from dataclasses import field
+import flax.linen as fnn
 import optax
 
 from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON
@@ -11,68 +12,43 @@ from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
+from socialjym.utils.networks import MLP, Network, variance_scaling, zeros
 
 NETWORK_TYPES = ["MLP", "CNN", "Transformer"]
     
-class MLPActorCritic(hk.Module):
-    def __init__(
-            self,
-            v_max: float,
-            wheels_distance: float,
-            critic_heads: int = 1,
-            mlp_params: dict = {
-                "activation": nn.relu,
-                "activate_final": False,
-                "w_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-                "b_init": hk.initializers.VarianceScaling(1/3, mode="fan_in", distribution="uniform"),
-            },
-            action_space_bounding:bool = False,
-    ) -> None:
-        super().__init__()
-        self.critic_heads = critic_heads
-        self.wheels_distance = wheels_distance
-        self.vmax = v_max
-        self.wmax = 2 * v_max / wheels_distance
-        self.wmin = -2 * v_max / wheels_distance
-        self.unbounded_action_vertices = jnp.array([
+class MLPActorCritic(fnn.Module):
+    v_max: float
+    wheels_distance: float
+    critic_heads: int = 1
+    mlp_params: dict = field(default_factory=lambda: {
+        "activation": nn.relu,
+        "activate_final": False,
+        "w_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
+        "b_init": variance_scaling(1/3, mode="fan_in", distribution="uniform"),
+    })
+    action_space_bounding: bool = False
+
+    @property
+    def vmax(self) -> float:
+        return self.v_max
+
+    @property
+    def wmax(self) -> float:
+        return 2 * self.v_max / self.wheels_distance
+
+    @property
+    def wmin(self) -> float:
+        return -2 * self.v_max / self.wheels_distance
+
+    @property
+    def unbounded_action_vertices(self) -> jnp.ndarray:
+        return jnp.array([
             [self.vmax, 0.],  # Forward
             [0., self.wmax],   # Rotate in place (left)
             [0., self.wmin],   # Rotate in place (right)
         ])  # Shape: (3, 2)
-        self.action_space_bounding = action_space_bounding
-        # Dimensions
-        self.n_outputs = 3  # Dirichlet distribution over 3 action vertices
-        self.mlp_params = mlp_params
-        # 2. Self Attention Mechanism
-        self.shared_backbone = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[128, 128],
-            name="shared_backbone"
-        )
-        # 3. Final Output MLP
-        self.actor_head = hk.nets.MLP(
-            **mlp_params,
-            output_sizes=[100, 50, self.n_outputs], 
-            name="actor_head"
-        )
-        if self.critic_heads == 1:
-            self.critic_head = hk.nets.MLP(
-                **mlp_params,
-                output_sizes=[100, 50, 1],
-                name="critic_head"
-            )
 
-        else:
-            self.critic_subnets = [
-                hk.nets.MLP(
-                    **mlp_params,
-                    output_sizes=[100, 50, 1],
-                    name=f"critic_head_{i}"
-                )
-                for i in range(critic_heads)
-            ]
-        self.dirichlet = Dirichlet()
-
+    @fnn.compact
     def __call__(
             self, 
             x: jnp.ndarray,
@@ -96,13 +72,17 @@ class MLPActorCritic(hk.Module):
         batch_size = x.shape[0]
         random_key = kwargs.get("random_key", random.PRNGKey(0))
         keys = random.split(random_key, batch_size)
+        n_outputs = 3  # Dirichlet distribution over 3 action vertices
+        dirichlet = Dirichlet()
+        shared_backbone = MLP(**self.mlp_params, output_sizes=[128, 128], name="shared_backbone")
+        actor_head = MLP(**self.mlp_params, output_sizes=[100, 50, n_outputs], name="actor_head")
         # Shared backbone
         x_flat = jnp.reshape(x, (batch_size, -1))
-        shared_features = self.shared_backbone(x_flat)
+        shared_features = shared_backbone(x_flat)
         inputs = jnp.concatenate([shared_features, y], axis=-1)  # Shape: (batch_size, feature_dim + 6) or (feature_dim + 6,)
         ### ACTOR
         ## Compute Dirichlet distribution parameters
-        alphas = nn.softplus(self.actor_head(inputs)) + 1  # (Batch, 3)
+        alphas = nn.softplus(actor_head(inputs)) + 1  # (Batch, 3)
         ## Compute dirchlet distribution vetices
         if self.action_space_bounding:
             action_space_params = y[:,-3:]  # Shape: (batch_size, 3) or (3,)
@@ -115,20 +95,18 @@ class MLPActorCritic(hk.Module):
             vertices = jnp.tile(self.unbounded_action_vertices, (batch_size, 1, 1))
         distributions = {"alphas": alphas, "vertices": vertices}
         ## Sample action
-        sampled_actions = vmap(self.dirichlet.sample)(distributions, keys)
+        sampled_actions = vmap(dirichlet.sample)(distributions, keys)
         ### CRITIC
         if self.critic_heads == 1:
-            state_values = self.critic_head(inputs) # (Batch, critic_heads)
+            critic_head = MLP(**self.mlp_params, output_sizes=[100, 50, 1], name="critic_head")
+            state_values = critic_head(inputs) # (Batch, critic_heads)
             state_values = jnp.squeeze(state_values, axis=-1) # (Batch,1) to (Batch,)
             log_sigmas = None
         else:
-            head_outputs = [head(inputs) for head in self.critic_subnets]
+            critic_subnets = [MLP(**self.mlp_params, output_sizes=[100, 50, 1], name=f"critic_head_{i}") for i in range(self.critic_heads)]
+            head_outputs = [head(inputs) for head in critic_subnets]
             state_values = jnp.concatenate(head_outputs, axis=-1)
-            log_sigmas = hk.get_parameter(
-                "log_sigmas", 
-                shape=[self.critic_heads], 
-                init=jnp.zeros
-            )
+            log_sigmas = self.param("log_sigmas", zeros, (self.critic_heads,))
         if not has_batch:
             sampled_actions = sampled_actions[0]
             state_values = state_values[0]
@@ -195,16 +173,12 @@ class VanillaE2E(BasePolicy):
         ])  # Shape: (3, 2)
         # Initialize Actor Critic network
         if self.network_type == NETWORK_TYPES.index("MLP"):
-             @hk.transform
-             def actor_critic_network(x, y, **kwargs) -> jnp.ndarray:
-                 actor_critic = MLPActorCritic(
-                    self.v_max, 
-                    self.wheels_distance, 
-                    critic_heads,
-                    action_space_bounding=self.action_space_bounding,
-                 ) 
-                 return actor_critic(x, y, **kwargs)
-             self.actor_critic = actor_critic_network
+             self.actor_critic = Network(MLPActorCritic(
+                self.v_max,
+                self.wheels_distance,
+                critic_heads,
+                action_space_bounding=self.action_space_bounding,
+             ))
         elif self.network_type == NETWORK_TYPES.index("CNN"):
              raise NotImplementedError("CNN network type not implemented yet")
         elif self.network_type == NETWORK_TYPES.index("Transformer"):
@@ -428,7 +402,6 @@ class VanillaE2E(BasePolicy):
         key, subkey = random.split(key)
         sampled_action, actor_distr, state_value, _ = self.actor_critic.apply(
             network_params, 
-            None, 
             aligned_lidar_readings,
             robot_state_input,
             random_key=subkey
@@ -486,7 +459,6 @@ class VanillaE2E(BasePolicy):
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
                     _, predicted_distr, predicted_state_value, _ = self.actor_critic.apply(
                         current_actor_params, 
-                        None, 
                         input['inputs0'], 
                         input['inputs1']
                     )                    

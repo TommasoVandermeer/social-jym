@@ -51,7 +51,7 @@ def collect_rollout_step(
             )
             actor_params = {**actor_params, "norm_state": norm_state}
         actions, new_p_keys, inputs, sampled_actions, distrs = policy.batch_act(p_keys, obses, infos, actor_params, sample=True)
-        values = vmap(policy.critic.apply, in_axes=(None,None,0))(critic_params, None, inputs)
+        values = vmap(policy.critic.apply, in_axes=(None,0))(critic_params, inputs)
         new_states, new_obses, new_infos, (rewards, _), new_outcomes, _ = env.batch_step(
             states, infos, actions, r_keys, test=False, reset_if_done=False
         )
@@ -131,7 +131,7 @@ def process_buffer_and_gae(
             policy.normalize_and_clip_inputs(jnp.reshape(inputs, (-1, policy.vnet_input_size)), actor_params["norm_state"]),
             inputs.shape,
         )
-    last_values = jnp.reshape(vmap(policy.critic.apply, in_axes=(None,None,0))(critic_params, None, inputs), (n_envs,))
+    last_values = jnp.reshape(vmap(policy.critic.apply, in_axes=(None,0))(critic_params, inputs), (n_envs,))
     values_ext = jnp.concatenate([history["values"], last_values[None,:]], axis=0)
     dones_ext = jnp.concatenate([history["dones"], ~(last_outcomes["nothing"])[None,:]], axis=0).astype(jnp.float32)
     rewards = history["rewards"]

@@ -117,7 +117,7 @@ def process_buffer_and_gae(
     rc_robot_goals = vmap(policy.robot_centric_goal)(last_obs, last_info['robot_goal'])
     aligned_lidar_scans, robot_state_inputs = vmap(policy.compute_actor_inputs)(last_obs, rc_robot_goals)
     _, _, last_values, _ = policy.actor_critic.apply(
-        network_params, None, aligned_lidar_scans, robot_state_inputs
+        network_params, aligned_lidar_scans, robot_state_inputs
     )
     rewards = history["rewards"]
     values = history["values"]
@@ -197,7 +197,7 @@ def train_one_epoch(
             inputs1_f16 = inputs1.astype(jnp.float16)
             # Forward pass (For Actor/Critic)
             (_, actor_dist, pred_val, critic_log_vars) = policy.actor_critic.apply(
-                p, None, inputs0_f16, inputs1_f16
+                p, inputs0_f16, inputs1_f16
             )
             # Cast back outputs to float32
             pred_val = pred_val.astype(jnp.float32)

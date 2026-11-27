@@ -89,10 +89,11 @@ The container supports GUI forwarding (matplotlib windows, notebooks, etc.) via 
 
 ## Reproducibility
 
-The code was moved from JAX 0.4.34 to JAX 0.12.1 (Python 3.13). The two versions differ in three ways:
+The code was moved from JAX 0.4.34 and Haiku to JAX 0.12.1 and Flax (Python 3.13). The two versions differ in four ways:
 
 - **Random numbers.** Since JAX 0.5 the default random number generator (`jax_threefry_partitionable=True`) produces different numbers from the same seed. Episodes, network initializations, action sampling and training runs therefore differ from those of JAX 0.4, and the results of the papers cannot be reproduced bit for bit with the current version. To reproduce them exactly, use the corresponding release (`dir-safe-icar25`, `jessi-iros26`) with its pinned dependencies. With the current version, results are expected to be statistically equivalent, not identical.
 - **Floating point.** XLA computes some functions (e.g. `exp`, `tanh`, `erf`) with slightly different rounding, a few units in the last place in float32. With the same random numbers, the policies and the environments match JAX 0.4.34 up to this rounding: the largest difference between actions is below 1e-3 (below 2e-5 for the learned policies), and all discrete outputs (PRNG keys, masks, episode outcomes) are identical. Rounding can still move a threshold event by one step or sub-step (e.g. a human reaching its goal), after which the two trajectories diverge, so long closed-loop episodes are not identical.
+- **Networks.** The networks are implemented with Flax (Linen) instead of Haiku. The layers in `socialjym.utils.networks` reproduce the computations of the Haiku layers, and parameters saved by Haiku-based versions are converted automatically when a network is applied (`haiku_to_flax`), giving the same outputs. New initializations differ from Haiku ones, because the random keys are used differently.
 - **Checkpoints.** Parameters and rollout outputs are now saved with numpy arrays (`socialjym.utils.aux_functions.tree_to_numpy`) instead of `jax.Array` objects, so that they do not depend on the JAX version. Older checkpoints that contain pickled `jax.Array` objects still load with JAX 0.12.1, but may not with later versions: convert them to numpy arrays while they still load.
 
 ## Project structure
