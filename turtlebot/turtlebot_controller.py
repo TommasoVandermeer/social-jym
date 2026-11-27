@@ -103,8 +103,8 @@ class TB4Controller(Node):
             ])
             initial_pose = jnp.array([17.62, 20.306, jnp.pi/2])
             inv_rotation_matrix = jnp.array([
-                [jnp.cos(-initial_pose[3]), jnp.sin(-initial_pose[3])],
-                [-jnp.sin(-initial_pose[3]), jnp.cos(-initial_pose[3])],
+                [jnp.cos(-initial_pose[2]), jnp.sin(-initial_pose[2])],
+                [-jnp.sin(-initial_pose[2]), jnp.cos(-initial_pose[2])],
             ])
             waypoints = (waypoints - initial_pose[:2][None,:]) @ inv_rotation_matrix
             # plt.scatter(waypoints[:,0], waypoints[:,1], marker="*", color="red", zorder=2)
@@ -261,6 +261,7 @@ class TB4Controller(Node):
                 obs=jnp.zeros((self.n_stack, self.lidar_num_rays + 11)),
                 info={"robot_goal": jnp.array([0.0, 0.0])},
                 u_mean=self.u_mean,
+                key=self.rng_key,
             )
             self.get_logger().info(f"MPPI act compilation ended in: {time.time() - init_time:.2f}s")
         elif planner == 'VANILLA-E2E':
