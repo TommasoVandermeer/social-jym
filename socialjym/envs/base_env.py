@@ -3,6 +3,7 @@ from functools import partial
 from jax import jit, vmap, lax, random, debug
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from jhsfm.hsfm import step as hsfm_humans_step
 from jsfm.sfm import step as sfm_humans_step
@@ -582,6 +583,42 @@ class BaseEnv(ABC):
         _, batch = lax.while_loop(_cond, _body, (0, batch))
         return batch
 
+    def _update_selected_envs(self, selected:jnp.ndarray, batch:tuple, fn) -> tuple:
+        """
+        Apply fn only to the environments of a batch where selected is True and write back its outputs.
+
+        This avoids computing fn for every environment, as lax.cond does when its predicate is batched by vmap
+        (e.g. the automatic reset of finished episodes). The selected environments are processed in chunks of
+        fixed size inside a while loop, so only ceil(n_selected / chunk) evaluations of fn (vmapped over the chunk) are done.
+
+        args:
+        - selected: (n_envs,) boolean mask of the environments to update.
+        - batch: pytree of arrays with leading dimension n_envs.
+        - fn: function mapping the batch of selected environments (pytree with leading dimension chunk) to its new values
+              (same pytree structure).
+
+        output:
+        - batch with the updated values for the selected environments.
+        """
+        n_envs = selected.shape[0]
+        chunk = max(1, -(-n_envs // 8))
+        n_chunks = -(-n_envs // chunk)
+        indexes = jnp.nonzero(selected, size=n_chunks * chunk, fill_value=n_envs)[0]
+        n_selected = jnp.sum(selected)
+        def _cond(val):
+            c, _ = val
+            return c * chunk < n_selected
+        def _body(val):
+            c, batch = val
+            chunk_indexes = lax.dynamic_slice(indexes, (c * chunk,), (chunk,))
+            valid = chunk_indexes < n_envs
+            new_values = fn(jax.tree_util.tree_map(lambda x: x[jnp.where(valid, chunk_indexes, 0)], batch))
+            target = jnp.where(valid, chunk_indexes, n_envs) # Out-of-bounds indexes are dropped
+            batch = jax.tree_util.tree_map(lambda x, y: x.at[target].set(y, mode="drop"), batch, new_values)
+            return c + 1, batch
+        _, batch = lax.while_loop(_cond, _body, (0, batch))
+        return batch
+
     @partial(jit, static_argnames=("self"))
     def _reset(self, key:jax.Array, scenarios_prob:jnp.ndarray | None=None, visibility_chance:float=0.) -> tuple[jnp.ndarray, jax.Array, dict]:
         key, scen_key, flip_key, noise_key = random.split(key, 4)
@@ -592,29 +629,38 @@ class BaseEnv(ABC):
             key, scen_key = random.split(key)
         else:
             scenario = self.scenario
-        full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, humans_delay = lax.switch(
-            scenario, 
-            [
-                self._generate_circular_crossing_episode, 
-                self._generate_parallel_traffic_episode,
-                self._generate_perpendicular_traffic_episode,
-                self._generate_robot_crowding_episode,
-                self._generate_delayed_circular_crossing_episode,
-                self._generate_circular_crossing_with_static_obstacles_episode,
-                self._generate_crowd_navigation_episode,
-                self._generate_corner_traffic_episode,
-                self._generate_door_crossing_episode,
-                self._generate_crowd_chasing_episode,
-                self._generate_l_turn_episode,
-                self._generate_narrow_passage_episode,
-                self._generate_slalom_episode,
-                self._generate_random_obstacle_episode,
-                self._generate_narrow_corridor_episode,
-                self._generate_random_room_episode,
-                self._generate_t_corridor_episode,
-            ], 
-            scen_key
-        )
+        scenario_generators = [
+            self._generate_circular_crossing_episode, 
+            self._generate_parallel_traffic_episode,
+            self._generate_perpendicular_traffic_episode,
+            self._generate_robot_crowding_episode,
+            self._generate_delayed_circular_crossing_episode,
+            self._generate_circular_crossing_with_static_obstacles_episode,
+            self._generate_crowd_navigation_episode,
+            self._generate_corner_traffic_episode,
+            self._generate_door_crossing_episode,
+            self._generate_crowd_chasing_episode,
+            self._generate_l_turn_episode,
+            self._generate_narrow_passage_episode,
+            self._generate_slalom_episode,
+            self._generate_random_obstacle_episode,
+            self._generate_narrow_corridor_episode,
+            self._generate_random_room_episode,
+            self._generate_t_corridor_episode,
+        ]
+        if self.scenario == SCENARIOS.index('hybrid_scenario'):
+            # Switch only over the generators of the subset (under vmap lax.switch computes every branch)
+            full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, humans_delay = lax.switch(
+                randint,
+                [scenario_generators[int(s)] for s in np.asarray(self.hybrid_scenario_subset)],
+                scen_key
+            )
+        else:
+            full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, humans_delay = lax.switch(
+                scenario, 
+                scenario_generators, 
+                scen_key
+            )
         if self.noisy_walls:
             key, subkey = random.split(key, 2)
             noisy_walls = generate_wall_noise(
