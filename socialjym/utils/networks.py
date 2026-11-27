@@ -218,6 +218,12 @@ class MultiHeadAttention(nn.Module):
     rows with no valid key get all-zero weights (`safe_mask=True`), or masked logits are set to -1e30
     (`safe_mask=False`, standard behaviour).
 
+    Sparse attention: if `pairs` = (query_indexes, key_indexes) is given (both [..., P], int), each query attends only
+    to the keys it is paired with. Pairs with a query index outside [0, T') are ignored, and the valid pairs must be
+    unique. The output equals the one obtained with the dense mask of the pairs (up to float rounding), but only P
+    logits are computed instead of T' * T. The attention weights are still returned as a dense [..., H, T', T] array
+    (computed only if used).
+
     Returns (output [..., T', model_size], attention weights [..., H, T', T]).
     """
     num_heads: int
@@ -237,19 +243,51 @@ class MultiHeadAttention(nn.Module):
             raise ValueError("Please provide a weight initializer: `w_init` or `w_init_scale`.")
         return variance_scaling(self.w_init_scale)
 
+    def _sparse_attention(self, query_heads: Array, key_heads: Array, value_heads: Array, pairs: tuple[Array, Array], dtype) -> tuple[Array, Array]:
+        """Attention over the (query, key) pairs only, with a softmax over the pairs of each query (segment softmax)."""
+        query_indexes, key_indexes = pairs
+        *leading_dims, n_queries, n_heads, _ = query_heads.shape
+        n_keys = key_heads.shape[-3]
+        scale = jnp.sqrt(self.key_size).astype(dtype)
+        def _single(q, k, v, q_idx, k_idx):
+            # q: [T', H, K], k: [T, H, K], v: [T, H, V], q_idx and k_idx: [P]
+            valid = (q_idx >= 0) & (q_idx < n_queries)
+            segments = jnp.where(valid, q_idx, n_queries) # Invalid pairs go to an extra segment, which is discarded
+            logits = jnp.sum(q[jnp.where(valid, q_idx, 0)] * k[k_idx], axis=-1) / scale # [P, H]
+            logits_max = jax.ops.segment_max(logits, segments, num_segments=n_queries + 1)
+            exp_logits = jnp.where(valid[:, None], jnp.exp(logits - logits_max[segments]), 0.0)
+            denominator = jax.ops.segment_sum(exp_logits, segments, num_segments=n_queries + 1)[segments]
+            weights = exp_logits / jnp.where(denominator > 0, denominator, 1.0) # [P, H]
+            attn = jax.ops.segment_sum(weights[:, :, None] * v[k_idx], segments, num_segments=n_queries + 1)[:n_queries] # [T', H, V]
+            dense_weights = jnp.zeros((n_heads, n_queries, n_keys), weights.dtype).at[:, segments, k_idx].add(weights.T, mode="drop")
+            return attn, dense_weights
+        n_leading = int(np.prod(leading_dims)) # Explicit (the pairs can be empty, e.g. at initialization)
+        flatten = lambda x, n: jnp.reshape(x, (n_leading, *x.shape[len(x.shape) - n:]))
+        attn, dense_weights = jax.vmap(_single)(
+            flatten(query_heads, 3), flatten(key_heads, 3), flatten(value_heads, 3), flatten(query_indexes, 1), flatten(key_indexes, 1),
+        )
+        return jnp.reshape(attn, (*leading_dims, *attn.shape[1:])), jnp.reshape(dense_weights, (*leading_dims, *dense_weights.shape[1:]))
+
     def _linear_projection(self, x: Array, head_size: int, name: str) -> Array:
         y = Linear(self.num_heads * head_size, with_bias=self.with_bias, w_init=self._w_init(), b_init=self.b_init, name=name)(x)
         *leading_dims, _ = x.shape
         return y.reshape((*leading_dims, self.num_heads, head_size))
 
     @nn.compact
-    def __call__(self, query: Array, key: Array, value: Array, mask: Optional[Array] = None) -> tuple[Array, Array]:
+    def __call__(self, query: Array, key: Array, value: Array, mask: Optional[Array] = None, pairs: Optional[tuple[Array, Array]] = None) -> tuple[Array, Array]:
         value_size = self.value_size or self.key_size
         model_size = self.model_size or self.key_size * self.num_heads
         *leading_dims, sequence_length, _ = query.shape
         query_heads = self._linear_projection(query, self.key_size, "query")  # [T', H, Q=K]
         key_heads = self._linear_projection(key, self.key_size, "key")  # [T, H, K]
         value_heads = self._linear_projection(value, value_size, "value")  # [T, H, V]
+        if pairs is not None:
+            if mask is not None:
+                raise ValueError("Give either mask or pairs, not both.")
+            attn, attn_weights = self._sparse_attention(query_heads, key_heads, value_heads, pairs, key.dtype)
+            attn = jnp.reshape(attn, (*leading_dims, sequence_length, -1))  # [T', H*V]
+            out = Linear(model_size, with_bias=self.with_bias, w_init=self._w_init(), b_init=self.b_init, name="linear")(attn)
+            return out, attn_weights
         attn_logits = jnp.einsum("...thd,...Thd->...htT", query_heads, key_heads)
         if self.safe_mask:
             attn_logits = attn_logits / jnp.sqrt(self.key_size).astype(key.dtype)

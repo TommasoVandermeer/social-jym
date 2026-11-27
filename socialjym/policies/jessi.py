@@ -97,32 +97,53 @@ class SpatialCNNEncoder(fnn.Module):
         return out, dummy_attn
 
 class AngularLocalCrossAttention(fnn.Module):
+    """
+    Cross-attention from n_sectors learnable sector queries to the beams of a scan: each sector attends only to the
+    beams whose attended sectors (beam_sectors, up to max_sector_attendance indexes per beam, -1 if none) include it.
+
+    With sparse_attention (default), the attention is computed only over the (sector, beam) pairs listed in
+    beam_sectors (at most max_sector_attendance * beams), instead of over all sectors x beams with a mask: the output
+    is the same up to float rounding.
+    """
     embed_dim: int
     n_sectors: int
     beam_dropout_rate: float = 0.0
+    sparse_attention: bool = True
 
     @fnn.compact
     def __call__(self, x_emb, beam_sectors, key=None):
-        target_indices = jnp.arange(self.n_sectors)
         spatial_latents = self.param("spatial_latents", truncated_normal(stddev=0.02), (self.n_sectors, self.embed_dim))
         attn = MultiHeadAttention(num_heads=4, key_size=self.embed_dim//4, w_init_scale=1.0, model_size=self.embed_dim, name="multi_head_attention")
         norm1 = LayerNorm(name="layer_norm")
         ffn = MLP([self.embed_dim], activation=nn.gelu, activate_final=True, name="mlp")
         norm2 = LayerNorm(name="layer_norm_1")
-        # x_emb: [B*T, Beams, D], beam_sectors: [B*T, Beams]
-        B_T = x_emb.shape[0]
+        # x_emb: [B*T, Beams, D], beam_sectors: [B*T, Beams, max_sector_attendance]
+        B_T, n_beams, _ = x_emb.shape
         # 1. Latent Queries
         q = jnp.broadcast_to(spatial_latents[None, ...], (B_T, self.n_sectors, self.embed_dim))
-        # 2. Cross Attention (mask shape # [B*T, 1, Target_Beams, Beams])
-        match_matrix = (beam_sectors[:, None, :, :] == target_indices[None, :, None, None])
-        mask_bool = jnp.any(match_matrix, axis=-1) # [B*T, Target_Beams, Beams]
         # Beam dropout (training only, i.e. when a key is given): each beam of each scan is hidden from all the
         # sectors with probability beam_dropout_rate. A sector whose beams are all dropped gets zero attention.
+        keep = None
         if key is not None and self.beam_dropout_rate > 0.0:
-            keep = random.bernoulli(key, p=1.0 - self.beam_dropout_rate, shape=(B_T, 1, x_emb.shape[1]))
-            mask_bool = mask_bool & keep
-        mask = mask_bool[:, None, :, :]
-        attn_out, attn_mtrx = attn(query=q, key=x_emb, value=x_emb, mask=mask)
+            keep = random.bernoulli(key, p=1.0 - self.beam_dropout_rate, shape=(B_T, 1, n_beams))
+        # 2. Cross Attention
+        if self.sparse_attention:
+            # Pairs (sector, beam): one per attended sector of each beam (beam_sectors holds distinct indexes or -1)
+            n_slots = beam_sectors.shape[-1]
+            sector_indexes = beam_sectors.astype(jnp.int32) # [B*T, Beams, Slots]
+            if keep is not None:
+                sector_indexes = jnp.where(keep[:, 0, :, None], sector_indexes, -1)
+            sector_indexes = jnp.reshape(sector_indexes, (B_T, n_beams * n_slots))
+            beam_indexes = jnp.broadcast_to(jnp.repeat(jnp.arange(n_beams), n_slots), (B_T, n_beams * n_slots))
+            attn_out, attn_mtrx = attn(query=q, key=x_emb, value=x_emb, pairs=(sector_indexes, beam_indexes))
+        else:
+            # Dense attention with mask shape [B*T, 1, Target_Beams, Beams]
+            target_indices = jnp.arange(self.n_sectors)
+            match_matrix = (beam_sectors[:, None, :, :] == target_indices[None, :, None, None])
+            mask_bool = jnp.any(match_matrix, axis=-1) # [B*T, Target_Beams, Beams]
+            if keep is not None:
+                mask_bool = mask_bool & keep
+            attn_out, attn_mtrx = attn(query=q, key=x_emb, value=x_emb, mask=mask_bool[:, None, :, :])
         q = norm1(q + attn_out)
         # 3. FFN
         ffn_out = ffn(q)
