@@ -298,15 +298,28 @@ class SocialNav(BaseEnv):
         test:bool=False,
         reset_if_done:bool=False,
     ):
-        return vmap(SocialNav.step, in_axes=(None, 0, 0, 0, None, None, 0))(
+        # Step without automatic reset (under vmap lax.cond would compute the reset for every environment)
+        new_states, obs, new_infos, rewards, outcomes, new_reset_keys = vmap(SocialNav.step, in_axes=(None, 0, 0, 0, None, None, 0))(
             self, 
             states, 
             infos, 
             actions, 
             test, 
-            reset_if_done,
+            False,
             reset_keys,
         )
+        if self.scenario != -1: # Custom scenario, no automatic reset
+            # Reset only the finished episodes, as step does with reset_if_done=True
+            def _reset_and_observe(batch):
+                _, _, _, keys = batch
+                r_states, r_keys, r_infos = vmap(self._reset)(keys)
+                return r_states, vmap(self._get_obs)(r_states, r_infos), r_infos, r_keys
+            new_states, obs, new_infos, new_reset_keys = self._update_selected_envs(
+                reset_if_done & (~outcomes["nothing"]),
+                (new_states, obs, new_infos, new_reset_keys),
+                _reset_and_observe,
+            )
+        return new_states, obs, new_infos, rewards, outcomes, new_reset_keys
 
     @partial(jit, static_argnames=("self"))
     def reset(self, key:jax.Array) -> tuple:

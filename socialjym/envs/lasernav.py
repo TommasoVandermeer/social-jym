@@ -427,18 +427,34 @@ class LaserNav(BaseEnv):
         scenarios_prob:jnp.ndarray | None=None,
         visibility_chance:float=0.,
     ):
-        return vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0, None, None))(
+        # Step without automatic reset (under vmap lax.cond would compute the reset for every environment)
+        new_states, new_obs, new_infos, rewards, outcomes, (new_reset_keys, new_env_keys) = vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0, None, None))(
             self, 
             states, 
             infos, 
             actions, 
             test, 
-            reset_if_done,
+            False,
             reset_keys,
             env_keys,
             scenarios_prob,
             visibility_chance,
         )
+        if self.scenario != -1: # Custom scenario, no automatic reset
+            # Reset only the finished episodes, as step does with reset_if_done=True (the observation of the new
+            # episode is computed with the action and the environment key of the step)
+            def _reset_and_observe(batch):
+                _, _, _, keys, batch_actions, batch_env_keys = batch
+                r_states, r_keys, r_infos = vmap(lambda k: self._reset(k, scenarios_prob=scenarios_prob, visibility_chance=visibility_chance))(keys)
+                r_obs, r_infos["humans_visibility_mask"], r_infos["obstacles_visibility_mask"] = vmap(self._get_obs)(r_states, r_infos, batch_actions, batch_env_keys)
+                r_infos["previous_obs"] = r_obs
+                return r_states, r_obs, r_infos, r_keys, batch_actions, batch_env_keys
+            new_states, new_obs, new_infos, new_reset_keys, _, _ = self._update_selected_envs(
+                reset_if_done & (~outcomes["nothing"]),
+                (new_states, new_obs, new_infos, new_reset_keys, actions, new_env_keys),
+                _reset_and_observe,
+            )
+        return new_states, new_obs, new_infos, rewards, outcomes, (new_reset_keys, new_env_keys)
     
     @partial(jit, static_argnames=("self"))
     def reset(self, key:jax.Array, scenarios_prob:jnp.ndarray | None=None, visibility_chance:float=0.) -> tuple:

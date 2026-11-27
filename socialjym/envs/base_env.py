@@ -546,6 +546,42 @@ class BaseEnv(ABC):
 
     # --- Private methods --- #
 
+    def _update_selected_envs(self, selected:jnp.ndarray, batch:tuple, fn) -> tuple:
+        """
+        Apply fn only to the environments of a batch where selected is True and write back its outputs.
+
+        This avoids computing fn for every environment, as lax.cond does when its predicate is batched by vmap
+        (e.g. the automatic reset of finished episodes). The selected environments are processed in chunks of
+        fixed size inside a while loop, so only ceil(n_selected / chunk) evaluations of fn (vmapped over the chunk) are done.
+
+        args:
+        - selected: (n_envs,) boolean mask of the environments to update.
+        - batch: pytree of arrays with leading dimension n_envs.
+        - fn: function mapping the batch of selected environments (pytree with leading dimension chunk) to its new values
+              (same pytree structure).
+
+        output:
+        - batch with the updated values for the selected environments.
+        """
+        n_envs = selected.shape[0]
+        chunk = max(1, -(-n_envs // 8))
+        n_chunks = -(-n_envs // chunk)
+        indexes = jnp.nonzero(selected, size=n_chunks * chunk, fill_value=n_envs)[0]
+        n_selected = jnp.sum(selected)
+        def _cond(val):
+            c, _ = val
+            return c * chunk < n_selected
+        def _body(val):
+            c, batch = val
+            chunk_indexes = lax.dynamic_slice(indexes, (c * chunk,), (chunk,))
+            valid = chunk_indexes < n_envs
+            new_values = fn(jax.tree_util.tree_map(lambda x: x[jnp.where(valid, chunk_indexes, 0)], batch))
+            target = jnp.where(valid, chunk_indexes, n_envs) # Out-of-bounds indexes are dropped
+            batch = jax.tree_util.tree_map(lambda x, y: x.at[target].set(y, mode="drop"), batch, new_values)
+            return c + 1, batch
+        _, batch = lax.while_loop(_cond, _body, (0, batch))
+        return batch
+
     @partial(jit, static_argnames=("self"))
     def _reset(self, key:jax.Array, scenarios_prob:jnp.ndarray | None=None, visibility_chance:float=0.) -> tuple[jnp.ndarray, jax.Array, dict]:
         key, scen_key, flip_key, noise_key = random.split(key, 4)
