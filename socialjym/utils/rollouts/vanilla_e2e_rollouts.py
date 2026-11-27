@@ -44,19 +44,13 @@ def collect_rollout_step(
             states[:,-1,4], 
             infos["robot_goal"],
         )
-        humans_visibility, _ = env.batch_object_visibility(
-            rc_humans_positions, infos["humans_parameters"][:,:,0], rc_obstacles
-        )
-        humans_in_range = env.batch_humans_inside_lidar_range(
-            rc_humans_positions, infos["humans_parameters"][:,:,0]
-        )
         rewards_matrix = jnp.stack([reward_terms[g] for g in env.reward_function.unique_gammas], axis=-1) # Shape: (n_envs, n_gammas)
         step_data = {
             "inputs0": inputs0,
             "inputs1": inputs1,
             "gt_poses": rc_humans_positions,
             "gt_vels": rc_humans_velocities,
-            "gt_mask": humans_visibility & humans_in_range,
+            "gt_mask": infos["humans_visibility_mask"], # Hit by at least one ray of the LiDAR scan in obses
             "values": values,
             "actions": sampled_actions,
             "rewards": rewards_matrix,

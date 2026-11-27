@@ -1711,12 +1711,6 @@ class JESSI(BasePolicy):
                 state[-1,4], 
                 info["robot_goal"],
             )
-            humans_visibility, _ = env.object_visibility(
-                rc_humans_positions, info["humans_parameters"][:,0], rc_obstacles
-            )
-            humans_in_range = env.humans_inside_lidar_range(
-                rc_humans_positions, info["humans_parameters"][:,0]
-            )
             perception_distrs = tree_map(
                 lambda x, y: x.at[steps].set(y),
                 perception_distrs,
@@ -1726,7 +1720,7 @@ class JESSI(BasePolicy):
                 lambda x, y: x.at[steps].set(y),
                 gt_targets,
                 {
-                    "gt_mask": humans_visibility & humans_in_range,
+                    "gt_mask": info["humans_visibility_mask"], # Hit by at least one ray of the LiDAR scan in obs (as in training)
                     "gt_poses": rc_humans_positions,
                     "gt_vels": rc_humans_velocities,
                 },
@@ -2215,16 +2209,10 @@ class JESSI(BasePolicy):
                 robot_orientations,
                 goals,
             )
-            humans_visibility_mask, _ = lasernav_env.batch_object_visibility(
-                rc_humans_positions, 
-                humans_radii, 
-                rc_static_obstacles
+            # Visibility = hit by at least one LiDAR ray, as in the LaserNav observations
+            humans_visibility_mask = lasernav_env.lidar_humans_visibility(
+                jnp.hstack((robot_positions, robot_orientations.reshape(-1,1))), humans_positions, humans_radii, static_obstacles, humans_leg_states, humans_leg_radii,
             )
-            humans_in_range = lasernav_env.batch_humans_inside_lidar_range(
-                rc_humans_positions,
-                humans_radii,
-            )
-            humans_visibility_mask = humans_visibility_mask & humans_in_range
         else:
             assert observations is not None, "Either states or observations must be given"
             robot_poses = observations[:,0,:3]
@@ -2524,16 +2512,10 @@ class JESSI(BasePolicy):
                 robot_poses[:,2],
                 goals,
             )
-            humans_visibility_mask, _ = lasernav_env.batch_object_visibility(
-                rc_humans_positions, 
-                humans_radii, 
-                rc_static_obstacles
+            # Visibility = hit by at least one LiDAR ray, as in the LaserNav observations
+            humans_visibility_mask = lasernav_env.lidar_humans_visibility(
+                robot_poses, humans_poses[:,:,:2], humans_radii, static_obstacles, humans_leg_states, humans_leg_radii,
             )
-            humans_in_range = lasernav_env.batch_humans_inside_lidar_range(
-                rc_humans_positions,
-                humans_radii,
-            )
-            humans_visibility_mask = humans_visibility_mask & humans_in_range
         else:
             assert observations is not None, "Either states or observations must be given"
             robot_poses = observations[:,0,:3]

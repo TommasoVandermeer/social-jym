@@ -2452,6 +2452,33 @@ class BaseEnv(ABC):
             batch_radii
         )
 
+    def lidar_humans_visibility(self, robot_poses, humans_positions, humans_radii, static_obstacles, humans_leg_states=None, humans_leg_radii=None):
+        """
+        Visibility of the humans as in the LaserNav observations: a human is visible if at least one LiDAR ray hits it
+        (one of its legs with leg dynamics). Not jitted: the optional leg arguments decide the computation.
+
+        args:
+        - robot_poses (T, 3): robot poses (x, y, theta), the LiDAR being at the robot position.
+        - humans_positions (T, n_humans, 2): humans positions.
+        - humans_radii (T, n_humans): humans radii.
+        - static_obstacles (T, n_obstacles, n_segments, 2, 2): static obstacles.
+        - humans_leg_states (T, n_humans, 6): humans legs states (lx, ly, ltheta, rx, ry, rtheta), needed with leg dynamics.
+        - humans_leg_radii (T, n_humans): humans legs radii, needed with leg dynamics.
+
+        output:
+        - humans_visibility_mask (T, n_humans): boolean mask of the humans hit by at least one ray.
+        """
+        if self.leg_dynamics and (humans_leg_states is None or humans_leg_radii is None):
+            raise ValueError("With leg dynamics, the humans visibility needs the humans legs states and radii")
+        if humans_leg_states is None:
+            humans_leg_positions = jnp.zeros(humans_positions.shape[:-1] + (4,)) # Unused without leg dynamics
+            humans_leg_radii = jnp.zeros(humans_radii.shape)
+        else:
+            humans_leg_positions = jnp.asarray(humans_leg_states)[..., jnp.array([0,1,3,4])]
+        return vmap(lambda pose, hp, hlp, hr, hlr, obs: self.get_lidar_measurements(pose[:2], pose[2], hp, hlp, hr, hlr, obs)[1])(
+            jnp.asarray(robot_poses), jnp.asarray(humans_positions), humans_leg_positions, jnp.asarray(humans_radii), jnp.asarray(humans_leg_radii), jnp.asarray(static_obstacles),
+        )
+
     @partial(jit, static_argnames=("self"))
     def robot_centric_transform(
         self, 

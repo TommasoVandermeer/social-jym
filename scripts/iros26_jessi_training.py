@@ -24,7 +24,6 @@ from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward as SocialNavDummyReward
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
-from jhsfm.hsfm import vectorized_compute_edge_closest_point
 
 def count_params(params):
     return sum(jnp.prod(jnp.array(p.shape)) for p in jax.tree_util.tree_leaves(params))
@@ -199,6 +198,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
                 "robot_goals": info["robot_goal"],
                 "static_obstacles": info["static_obstacles"][:,-1],
                 "rewards": final_lasernav_reward,
+                # Visibility = hit by at least one LiDAR ray (of the scan in lasernav_observations)
+                "humans_visibility": lasernav_info["humans_visibility_mask"],
+                "obstacles_visibility": lasernav_info["obstacles_visibility_mask"],
             }
             data = tree_map(lambda x, y: x.at[i].set(y), data, step_out_data)
             return data, final_state, final_obs, final_info, final_outcome, final_reset_key, final_lasernav_obs, final_lasernav_info
@@ -220,6 +222,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
             "robot_goals": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,2)),
             "static_obstacles": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,n_obstacles,1,2,2)),
             "rewards": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs)),
+            "humans_visibility": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs, n_humans)),
+            "obstacles_visibility": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs, n_obstacles, 1)),
         }
         # Step loop
         data, _, _, _, _, _, _, _ = lax.fori_loop(
@@ -267,8 +271,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
             "robot_orientations": raw_data["robot_orientations"],
             "rc_robot_goals": jnp.zeros((n_steps, 2)),
             "rc_obstacles": jnp.zeros((n_steps, n_obstacles, 1, 2, 2)),
-            "humans_visibility": jnp.zeros((n_steps, n_humans)),
-            "obstacles_visibility": jnp.zeros((n_steps, n_obstacles, 1)),
+            "humans_visibility": raw_data["humans_visibility"],
+            "obstacles_visibility": raw_data["obstacles_visibility"],
         }
         # Compute robot-centered simulation
         robot_centric_data["rc_humans_positions"], robot_centric_data["rc_humans_orientations"], \
@@ -282,39 +286,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'final_hcg_trainin
             raw_data['robot_orientations'],
             raw_data["robot_goals"],
         )
-        # Compute humans and obstacles visibility
-        robot_centric_data["humans_visibility"], robot_centric_data["obstacles_visibility"] = laser_env.batch_object_visibility(
-            robot_centric_data['rc_humans_positions'],
-            robot_centric_data['humans_radii'],
-            robot_centric_data['rc_obstacles'],
-        )
-        # Assert if humans and obstacles are closer than visibility_threshold_from_grid to the robot
-        @jit
-        def _object_is_in_lidar_range(humans_positions, humans_radii, static_obstacles):
-            # Humans
-            @jit
-            def is_human_inside_lidar_range(position, radius):
-                return jnp.linalg.norm(position) - radius <= lidar_max_dist
-            humans_inside_mask = vmap(is_human_inside_lidar_range, in_axes=(0,0))(humans_positions, humans_radii)
-            # Obstacles
-            @jit
-            def batch_obstacles_is_inside_lidar_range(obstacles):
-                return vmap(vectorized_compute_edge_closest_point, in_axes=(None,0))(
-                    jnp.array([0.,0.]),
-                    obstacles
-                )[1] <= lidar_max_dist
-            obstacles_inside_mask = batch_obstacles_is_inside_lidar_range(static_obstacles)
-            return humans_inside_mask, obstacles_inside_mask
-        @jit
-        def batch_object_is_inside_grid(batch_humans_positions, humans_radii, batch_static_obstacles):
-            return vmap(_object_is_in_lidar_range, in_axes=(0, 0, 0))(batch_humans_positions, humans_radii, batch_static_obstacles)
-        humans_inside_mask, obstacles_inside_mask = batch_object_is_inside_grid(
-            robot_centric_data['rc_humans_positions'],
-            robot_centric_data['humans_radii'],
-            robot_centric_data['rc_obstacles'],
-        )
-        robot_centric_data["humans_visibility"] = robot_centric_data["humans_visibility"] & humans_inside_mask
-        robot_centric_data["obstacles_visibility"] = robot_centric_data["obstacles_visibility"] & obstacles_inside_mask
+        # Humans and obstacles visibility: hit by at least one LiDAR ray (computed by LaserNav in the raw data)
         ## DEBUG: Plot frames stream for visual inspection
         # Plot robot-centric simulation
         fig, ax = plt.subplots(figsize=(8,8))
