@@ -7,6 +7,7 @@ import optax
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import pickle
+from socialjym.utils.aux_functions import tree_to_numpy
 from decimal import Decimal
 
 from socialjym.envs.socialnav import SocialNav
@@ -188,7 +189,7 @@ for trial in range(n_trials):
 
 ### SAVE Hyperparameters tuning output
 with open(os.path.join(os.path.dirname(__file__),"hpt_out.pkl"), 'wb') as f:
-    pickle.dump(hpt_out, f)
+    pickle.dump(tree_to_numpy(hpt_out), f)
 
 ### LOAD Hyperparameters tuning output
 with open(os.path.join(os.path.dirname(__file__),"hpt_out.pkl"), 'rb') as f:

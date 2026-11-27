@@ -5,6 +5,7 @@ from jax_tqdm import loop_tqdm
 import matplotlib.pyplot as plt
 import os
 import pickle
+from socialjym.utils.aux_functions import tree_to_numpy
 import optax
 from matplotlib import rc, rcParams
 rc('font', weight='regular', size=20)
@@ -356,7 +357,7 @@ for embeddings_dim in network_embeddings_dims:
         print(f"\nTraining completed in {n_epochs} epochs. - Best val loss: {early_stopping_info['best_val_loss']}\n")
         # Save trained parameters
         with open(os.path.join(os.path.dirname(__file__), f"{perception_nn_name}_{embeddings_dim}.pkl"), 'wb') as f:
-            pickle.dump(params, f)
+            pickle.dump(tree_to_numpy(params), f)
         ## TEST
         n_train_batches = n_train_data // perception_batch_size
         test_losses = jnp.zeros((1, int(n_test_data // perception_batch_size)))
@@ -560,7 +561,7 @@ for embeddings_dim in network_embeddings_dims:
         )
         # Save trained parameters
         with open(os.path.join(os.path.dirname(__file__), f"{policy_nn_name}_{embeddings_dim}.pkl"), 'wb') as f:
-            pickle.dump(actor_critic_params, f)
+            pickle.dump(tree_to_numpy(actor_critic_params), f)
         # FREE MEMORY
         del controller_dataset
         # Plot training loss
@@ -694,7 +695,7 @@ for embeddings_dim in network_embeddings_dims:
         rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)
         # Save RL rollout output
         with open(os.path.join(os.path.dirname(__file__), f"{multitask_network_name}_{embeddings_dim}.pkl"), 'wb') as f:
-            pickle.dump(rl_out, f)
+            pickle.dump(tree_to_numpy(rl_out), f)
         final_params, _, metrics = rl_out
         processed_metrics = {}
         for key, value in metrics.items():

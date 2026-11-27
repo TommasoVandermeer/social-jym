@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import lax, jit, random, vmap, debug
 from jax_tqdm import loop_tqdm
@@ -1169,6 +1170,17 @@ def animate_trajectory(
     fig.canvas.mpl_connect('button_press_event', toggle_pause)
     plt.show()
 
+def tree_to_numpy(tree):
+    """
+    Return a copy of `tree` where every jax.Array leaf is replaced by the equivalent numpy array
+    (same dtype, shape and values). Containers and non-array leaves are left unchanged.
+
+    Use it before pickling parameters or rollout outputs: a pickled jax.Array is rebuilt through
+    JAX internals and may not load with a different JAX version, while numpy arrays load with any
+    version. Haiku, optax and the policies accept numpy arrays as parameters.
+    """
+    return jax.tree_util.tree_map(lambda x: np.asarray(x) if isinstance(x, jax.Array) else x, tree)
+
 def save_policy_params(
     policy_name:str,
     policy_params: dict, 
@@ -1189,12 +1201,12 @@ def save_policy_params(
         filename = f"{filename}.pkl"
         
     with open(os.path.join(path, filename), 'wb') as f:
-        pkl.dump({
+        pkl.dump(tree_to_numpy({
             "policy_name": policy_name,
             "policy_params": policy_params,
             "train_env_params": {k: train_env_params[k] for k in set(list(train_env_params.keys())) - set(['reward_function'])},
             "reward_params": reward_params,
-            "hyperparameters": hyperparameters}, f)
+            "hyperparameters": hyperparameters}), f)
 
 def load_socialjym_policy(
     path:str, 

@@ -8,6 +8,7 @@ from matplotlib.lines import Line2D
 import os
 import pickle
 
+from socialjym.utils.aux_functions import tree_to_numpy
 from socialjym.envs.socialnav import SocialNav
 from socialjym.policies.cadrl import CADRL
 from socialjym.policies.sarl import SARL
@@ -191,7 +192,7 @@ for seed in range(n_seeds):
     rl_model_params = rl_out['model_params']
     returns_during_rl[seed] = rl_out['returns']  
     with open(os.path.join(os.path.dirname(__file__),f"rl_model_params_{seed}.pkl"), 'wb') as f:
-        pickle.dump(rl_model_params, f)
+        pickle.dump(tree_to_numpy(rl_model_params), f)
 
     # Execute tests to evaluate return after RL
     for test, n_humans in enumerate(n_humans_for_tests):

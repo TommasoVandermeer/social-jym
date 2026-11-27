@@ -6,6 +6,7 @@ import optax
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import pickle
+from socialjym.utils.aux_functions import tree_to_numpy
 import math
 
 from socialjym.envs.socialnav import SocialNav
@@ -196,7 +197,7 @@ figure.savefig(os.path.join(os.path.dirname(__file__),"loss_curves_during_il.eps
 plt.close(figure)
 ## Save IL rollout output
 with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'wb') as f:
-    pickle.dump(il_out, f)
+    pickle.dump(tree_to_numpy(il_out), f)
 
 # Load IL rollout output
 with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:
@@ -270,7 +271,7 @@ rl_out = ppo_rl_rollout(**rl_rollout_params)
 
 # Save RL rollout output
 with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'wb') as f:
-    pickle.dump(rl_out, f)
+    pickle.dump(tree_to_numpy(rl_out), f)
 
 # Load RL rollout output
 with open(os.path.join(os.path.dirname(__file__),"rl_out.pkl"), 'rb') as f:

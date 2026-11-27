@@ -5,6 +5,7 @@ from jax_tqdm import loop_tqdm
 import matplotlib.pyplot as plt
 import os
 import pickle
+from socialjym.utils.aux_functions import tree_to_numpy
 import optax
 import pandas as pd
 import scipy.stats as stats
@@ -265,7 +266,7 @@ for seed in range(n_seeds):
         )
         # Save trained parameters
         with open(os.path.join(base_dir, policy_nn_name), 'wb') as f:
-            pickle.dump(actor_critic_params, f)
+            pickle.dump(tree_to_numpy(actor_critic_params), f)
         # FREE MEMORY
         del controller_dataset
         # Plot training loss
@@ -399,7 +400,7 @@ for seed in range(n_seeds):
         rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)
         # Save RL rollout output
         with open(os.path.join(base_dir,multitask_network_name), 'wb') as f:
-            pickle.dump(rl_out, f)
+            pickle.dump(tree_to_numpy(rl_out), f)
         final_params, _, metrics = rl_out
         processed_metrics = {}
         for key, value in metrics.items():
@@ -710,7 +711,7 @@ for seed in range(n_seeds):
         rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)
         # Save RL rollout output
         with open(os.path.join(base_dir,modular_network_name), 'wb') as f:
-            pickle.dump(rl_out, f)
+            pickle.dump(tree_to_numpy(rl_out), f)
         final_params, _, metrics = rl_out
         processed_metrics = {}
         for key, value in metrics.items():
@@ -993,7 +994,7 @@ for seed in range(n_seeds):
         rl_out = jessi_multitask_rl_rollout(**rl_rollout_params)
         # Save RL rollout output
         with open(os.path.join(base_dir,policy_network_name), 'wb') as f:
-            pickle.dump(rl_out, f)
+            pickle.dump(tree_to_numpy(rl_out), f)
         final_params, _, metrics = rl_out
         processed_metrics = {}
         for key, value in metrics.items():

@@ -4,6 +4,7 @@ from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
 import os
 import pickle
+from socialjym.utils.aux_functions import tree_to_numpy
 import optax
 import pandas as pd
 import scipy.stats as stats
@@ -172,7 +173,7 @@ for seed in range(n_seeds):
         plt.close(figure)
         ## Save IL rollout output
         with open(os.path.join(base_dir, il_network_name), 'wb') as f:
-            pickle.dump(il_out, f)
+            pickle.dump(tree_to_numpy(il_out), f)
     else:
         # Load trained parameters
         with open(os.path.join(base_dir, il_network_name), 'rb') as f:
@@ -270,7 +271,7 @@ for seed in range(n_seeds):
         rl_out = ppo_rl_rollout(**rl_rollout_params)
         # Save RL rollout output
         with open(os.path.join(base_dir,rl_network_name), 'wb') as f:
-            pickle.dump(rl_out, f)
+            pickle.dump(tree_to_numpy(rl_out), f)
         # Load RL rollout output
         with open(os.path.join(base_dir,rl_network_name), 'rb') as f:
             rl_out = pickle.load(f)
