@@ -188,8 +188,9 @@ class CADRL(BasePolicy):
         # human_obs = human_obs.at[2:4].set(human_obs[2:4] + random.normal(key3, (2,), dtype=jnp.float32) * (self.velocity_noise_sigma_percentage * jnp.abs(human_obs[2:4])))
         
         ## Add noise
-        human_obs = human_obs.at[0:2].set(human_obs[0:2] + random.normal(key, (2,), dtype=jnp.float32) * (self.noise_sigma_percentage * jnp.abs(human_obs[0:2] - robot_pos)))
-        human_obs = human_obs.at[2:4].set(human_obs[2:4] + random.normal(key, (2,), dtype=jnp.float32) * (self.noise_sigma_percentage * jnp.abs(human_obs[2:4])))
+        position_key, velocity_key = random.split(key)
+        human_obs = human_obs.at[0:2].set(human_obs[0:2] + random.normal(position_key, (2,), dtype=jnp.float32) * (self.noise_sigma_percentage * jnp.abs(human_obs[0:2] - robot_pos)))
+        human_obs = human_obs.at[2:4].set(human_obs[2:4] + random.normal(velocity_key, (2,), dtype=jnp.float32) * (self.noise_sigma_percentage * jnp.abs(human_obs[2:4])))
         return human_obs
 
     @partial(jit, static_argnames=("self"))
