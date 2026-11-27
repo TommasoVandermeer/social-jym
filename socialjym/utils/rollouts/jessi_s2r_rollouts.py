@@ -683,7 +683,7 @@ def jessi_s2r_rl_rollout(
         logs["successes_per_scenario"] = {k: logs["successes_per_scenario"][k] + [success_per_scenario[k]] for k in logs["successes_per_scenario"]}
         logs["episodes_per_scenario"] = {k: logs["episodes_per_scenario"][k] + [episodes_per_scenario[k]] for k in logs["episodes_per_scenario"]}
         # G. EMA UPDATE and CURRICULUM UTILS
-        batch_scenario_success_rate = jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)])
+        batch_scenario_success_rate = jnp.array([success_rate_per_scenario[k] for k in success_rate_per_scenario]) # Same order as hybrid_scenario_subset (and scenarios_prob)
         batch_success_rate = logs['successes'][-1]/max(logs['episodes'][-1], 1)
         ema_success, scenario_ema_success = update_ema(ema_success, batch_success_rate, scenario_ema_success, batch_scenario_success_rate)
         worst_3_scenarios_success_rate = jnp.mean(jnp.sort(batch_scenario_success_rate)[:3])

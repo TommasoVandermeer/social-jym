@@ -545,6 +545,6 @@ def jessi_multitask_rl_rollout(
             f"| Loss: {logs['losses'][-1]:.4f} | Grad Norm: {grad_norm:.4f} | Approx KL: {logs['approx_kl'][-1]:.4f} | Clip frac: {logs['clip_frac'][-1]:.4f} | Explained Var: {logs['explained_var'][-1]:.4f} \n",
         )
         # H. UPDATE SCENARIO PROBS
-        scenarios_prob = get_dynamic_probabilities(jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)]))
+        scenarios_prob = get_dynamic_probabilities(jnp.array([success_rate_per_scenario[k] for k in success_rate_per_scenario])) # Same order as hybrid_scenario_subset (and scenarios_prob)
     return best_params, device_get(params), logs 
              
