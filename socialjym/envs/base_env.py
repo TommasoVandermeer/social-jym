@@ -564,7 +564,7 @@ class BaseEnv(ABC):
 
     # --- Private methods --- #
 
-    def _update_selected_envs(self, selected:jnp.ndarray, batch:tuple, fn) -> tuple:
+    def update_selected_envs(self, selected:jnp.ndarray, batch:tuple, fn) -> tuple:
         """
         Apply fn only to the environments of a batch where selected is True and write back its outputs.
 

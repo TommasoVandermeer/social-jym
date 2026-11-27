@@ -414,7 +414,7 @@ class LaserNav(BaseEnv):
         new_info["previous_obs"] = new_obs
         return new_state, new_obs, new_info, (reward, reward_terms), outcome, (reset_key, new_env_key)
 
-    @partial(jit, static_argnames=("self"))
+    @partial(jit, static_argnames=("self", "return_final"))
     def batch_step(
         self, 
         states:jnp.ndarray, 
@@ -426,7 +426,13 @@ class LaserNav(BaseEnv):
         reset_if_done:bool=False,
         scenarios_prob:jnp.ndarray | None=None,
         visibility_chance:float=0.,
+        return_final:bool=False,
     ):
+        """
+        Steps a batch of environments (see step). If return_final is True, it also returns, as last output, the
+        (states, obs, infos) reached by the step before the automatic reset: for the finished episodes they are the
+        final ones (e.g. to bootstrap the value of truncated episodes), for the others they equal the outputs.
+        """
         # Step without automatic reset (under vmap lax.cond would compute the reset for every environment)
         new_states, new_obs, new_infos, rewards, outcomes, (new_reset_keys, new_env_keys) = vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0, None, None))(
             self, 
@@ -440,6 +446,7 @@ class LaserNav(BaseEnv):
             scenarios_prob,
             visibility_chance,
         )
+        final = (new_states, new_obs, new_infos)
         if self.scenario != -1: # Custom scenario, no automatic reset
             # Reset only the finished episodes, as step does with reset_if_done=True (the observation of the new
             # episode is computed with the action and the environment key of the step)
@@ -449,11 +456,13 @@ class LaserNav(BaseEnv):
                 r_obs, r_infos["humans_visibility_mask"], r_infos["obstacles_visibility_mask"] = vmap(self._get_obs)(r_states, r_infos, batch_actions, batch_env_keys)
                 r_infos["previous_obs"] = r_obs
                 return r_states, r_obs, r_infos, r_keys, batch_actions, batch_env_keys
-            new_states, new_obs, new_infos, new_reset_keys, _, _ = self._update_selected_envs(
+            new_states, new_obs, new_infos, new_reset_keys, _, _ = self.update_selected_envs(
                 reset_if_done & (~outcomes["nothing"]),
                 (new_states, new_obs, new_infos, new_reset_keys, actions, new_env_keys),
                 _reset_and_observe,
             )
+        if return_final:
+            return new_states, new_obs, new_infos, rewards, outcomes, (new_reset_keys, new_env_keys), final
         return new_states, new_obs, new_infos, rewards, outcomes, (new_reset_keys, new_env_keys)
     
     @partial(jit, static_argnames=("self"))

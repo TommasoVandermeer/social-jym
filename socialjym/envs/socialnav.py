@@ -288,7 +288,7 @@ class SocialNav(BaseEnv):
         # TODO: Filter obstacles based on the robot position and grid cell decomposition of static obstacles
         return new_state, self._get_obs(new_state, new_info), new_info, (reward, reward_terms), outcome, reset_key
 
-    @partial(jit, static_argnames=("self"))
+    @partial(jit, static_argnames=("self", "return_final"))
     def batch_step(
         self, 
         states:jnp.ndarray, 
@@ -297,7 +297,13 @@ class SocialNav(BaseEnv):
         reset_keys:jnp.ndarray, # This is moved upwards because a default value cannot be given.
         test:bool=False,
         reset_if_done:bool=False,
+        return_final:bool=False,
     ):
+        """
+        Steps a batch of environments (see step). If return_final is True, it also returns, as last output, the
+        (states, obs, infos) reached by the step before the automatic reset: for the finished episodes they are the
+        final ones (e.g. to bootstrap the value of truncated episodes), for the others they equal the outputs.
+        """
         # Step without automatic reset (under vmap lax.cond would compute the reset for every environment)
         new_states, obs, new_infos, rewards, outcomes, new_reset_keys = vmap(SocialNav.step, in_axes=(None, 0, 0, 0, None, None, 0))(
             self, 
@@ -308,17 +314,20 @@ class SocialNav(BaseEnv):
             False,
             reset_keys,
         )
+        final = (new_states, obs, new_infos)
         if self.scenario != -1: # Custom scenario, no automatic reset
             # Reset only the finished episodes, as step does with reset_if_done=True
             def _reset_and_observe(batch):
                 _, _, _, keys = batch
                 r_states, r_keys, r_infos = vmap(self._reset)(keys)
                 return r_states, vmap(self._get_obs)(r_states, r_infos), r_infos, r_keys
-            new_states, obs, new_infos, new_reset_keys = self._update_selected_envs(
+            new_states, obs, new_infos, new_reset_keys = self.update_selected_envs(
                 reset_if_done & (~outcomes["nothing"]),
                 (new_states, obs, new_infos, new_reset_keys),
                 _reset_and_observe,
             )
+        if return_final:
+            return new_states, obs, new_infos, rewards, outcomes, new_reset_keys, final
         return new_states, obs, new_infos, rewards, outcomes, new_reset_keys
 
     @partial(jit, static_argnames=("self"))
