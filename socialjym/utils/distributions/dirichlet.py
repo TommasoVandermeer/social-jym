@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug
 from functools import partial
@@ -20,7 +21,7 @@ class Dirichlet(BaseDistribution):
         self.epsilon = epsilon
     
     @partial(jit, static_argnames=("self"))
-    def entropy(self, distribution:dict) -> float:
+    def entropy(self, distribution:dict) -> jnp.ndarray:
         alphas = distribution["alphas"]
         concentration = jnp.sum(alphas)
         lnB = jnp.sum(gammaln(alphas)) - gammaln(jnp.sum(alphas))
@@ -32,7 +33,7 @@ class Dirichlet(BaseDistribution):
         return vmap(Dirichlet.entropy, in_axes=(None,0))(self, distributions)
 
     @partial(jit, static_argnames=("self"))
-    def sample(self, distribution:dict, key:random.PRNGKey):
+    def sample(self, distribution:dict, key:jax.Array):
         alphas = distribution["alphas"]
         vertices = distribution["vertices"]
         # Sample from dirichlet distribution
@@ -110,7 +111,7 @@ class Dirichlet(BaseDistribution):
         return vmap(Dirichlet.std, in_axes=(None,0))(self, distributions)
 
     @partial(jit, static_argnames=("self"))
-    def is_in_support(self, distribution:dict, action:jnp.ndarray) -> bool:
+    def is_in_support(self, distribution:dict, action:jnp.ndarray) -> jnp.ndarray:
         vertices = distribution["vertices"]
         sample = jnp.linalg.solve(jnp.vstack((vertices.T,jnp.ones((len(vertices),)))), jnp.append(action, 1.))
         return jnp.all(sample >= 0) & jnp.isclose(jnp.sum(sample), 1.0)

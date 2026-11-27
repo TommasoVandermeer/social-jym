@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug
 from jax.tree_util import tree_map
@@ -12,6 +13,7 @@ from jhsfm.hsfm import vectorized_compute_obstacle_closest_point
 from socialjym.utils.global_planners.base_global_planner import GLOBAL_PLANNERS
 from socialjym.utils.global_planners.a_star import AStarPlanner
 from socialjym.utils.global_planners.dijkstra import DijkstraPlanner
+from socialjym.utils.rewards.base_reward import BaseReward
 
 # IMPLEMENTATION OF SARL*
 # @inproceedings{li2019sarl,
@@ -26,7 +28,7 @@ from socialjym.utils.global_planners.dijkstra import DijkstraPlanner
 class SARLStar(SARL):
     def __init__(
             self, 
-            reward_function:FunctionType, 
+            reward_function:BaseReward, 
             grid_size:jnp.ndarray,
             use_planner=True,
             planner="A*", # "A*" or "Dijkstra"
@@ -100,7 +102,7 @@ class SARLStar(SARL):
         return vmap(SARLStar._is_action_safe, in_axes=(None, None, None, 0))(self, obs, info, self.action_space)
 
     @partial(jit, static_argnames=("self"))
-    def _is_action_safe_from_lidar(self, point_cloud:jnp.ndarray, obs:jnp.ndarray, action:jnp.ndarray) -> bool:
+    def _is_action_safe_from_lidar(self, point_cloud:jnp.ndarray, obs:jnp.ndarray, action:jnp.ndarray) -> jnp.ndarray:
         """
         For a given action, simulate the robot's movement and check if it collides with any obstacle using the lidar point cloud.
         """
@@ -146,7 +148,7 @@ class SARLStar(SARL):
         )
 
     @partial(jit, static_argnames=("self"))
-    def _is_cell_occupied_from_lidar(self, point_cloud:jnp.ndarray, cell_center:jnp.ndarray, cell_size:float, epsilon=1e-5) -> bool:
+    def _is_cell_occupied_from_lidar(self, point_cloud:jnp.ndarray, cell_center:jnp.ndarray, cell_size:float, epsilon=1e-5) -> jnp.ndarray:
         """
         Check if a cell is free by checking if any point in the point cloud is within the cell. 
         The cell is considered occupied if there is at least one point in the point cloud that is within the cell.
@@ -164,7 +166,7 @@ class SARLStar(SARL):
     # Public methods
 
     @partial(jit, static_argnames=("self"))
-    def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, vnet_params:dict, epsilon:float) -> jnp.ndarray:
+    def act(self, key:jax.Array, obs:jnp.ndarray, info:dict, vnet_params:dict, epsilon:float) -> tuple:
         
         @jit
         def _random_action(val):
@@ -243,13 +245,13 @@ class SARLStar(SARL):
         self, 
         jessi:JESSI,
         perception_params:dict,
-        key:random.PRNGKey,
+        key:jax.Array,
         lasernav_obs:jnp.ndarray, # LaserNav observations
         info:dict,
         vnet_params:dict, 
         epsilon:float,
         humans_radius:float,
-    ) -> jnp.ndarray:
+    ) -> tuple:
         ## Compute aligned point_cloud
         aligned_lidar = jessi.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[1]
         point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)

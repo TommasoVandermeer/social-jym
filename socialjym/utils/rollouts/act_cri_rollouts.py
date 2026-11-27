@@ -8,6 +8,11 @@ import pickle
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.utils.replay_buffers.base_act_cri_buffer import BaseACBuffer
+from typing import TYPE_CHECKING, cast
+if TYPE_CHECKING:
+    from socialjym.policies.sarl_ppo import SARLPPO
+    from socialjym.policies.dir_safe import DIRSAFE
+    from socialjym.envs.socialnav import SocialNav
 
 
 def actor_critic_il_rollout(
@@ -19,13 +24,13 @@ def actor_critic_il_rollout(
         critic_optimizer: optax.GradientTransformation,
         buffer_state: dict,
         current_buffer_size: int,
-        policy: BasePolicy,
-        env: BaseEnv,
+        policy: "SARLPPO | DIRSAFE",
+        env: "SocialNav",
         replay_buffer: BaseACBuffer,
         buffer_capacity: int,
         num_epochs: int,
         batch_size: int,
-        custom_episodes: str = None,
+        custom_episodes: str | None = None,
 ) -> dict:
         policies = ["SARL-PPO", "DIRSAFE"]
         assert policy.name in policies, "This function is only compatible with the Actor-Critic policies."
@@ -155,11 +160,11 @@ def actor_critic_il_rollout(
         if policy.normalize_and_clip_obs:
                 norm_state = initial_actor_params["norm_state"]
                 inputs = buffer_state["inputs"][:actual_buffer_size].reshape((actual_buffer_size * env.n_humans, policy.vnet_input_size))
-                updated_norm_state = policy.update_norm_state(
+                updated_norm_state = cast("SARLPPO", policy).update_norm_state(
                         inputs,
                         norm_state,
                 )
-                normalized_inputs = policy.normalize_and_clip_inputs(
+                normalized_inputs = cast("SARLPPO", policy).normalize_and_clip_inputs(
                         inputs,
                         updated_norm_state,
                 )

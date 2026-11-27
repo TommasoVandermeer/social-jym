@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter, writers
 import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon
 from matplotlib.text import Text
 from matplotlib.transforms import Bbox
 
@@ -22,8 +23,8 @@ class TrajectoryAnimator:
         sim_rows:int=1,
         sim_cols:int=1,
         left:float=0.05,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         ylabel_pad:float=-13,
         xlabel_only_bottom_row:bool=False,
     ) -> None:
@@ -74,7 +75,7 @@ class TrajectoryAnimator:
         edgecolor:str,
         facecolor:str,
         adaptive_xticks:bool=False,
-        title:str=None
+        title:str | None=None
     ) -> None:
         """Static part of the action space axes: labels, ticks, grid and feasible (triangular) action space."""
         ax = self.action_ax
@@ -84,18 +85,18 @@ class TrajectoryAnimator:
         ax.set_ylim(-2*v_max/wheels_distance - 0.3, 2*v_max/wheels_distance + 0.3)
         if (not adaptive_xticks) or (v_max % 0.2 == 0):
             ax.set_xticks(jnp.arange(0, v_max+0.2, 0.2))
-            ax.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.2)] + [r"$\overline{v}$"])
+            ax.set_xticklabels([str(round(i,1)) for i in jnp.arange(0, v_max, 0.2)] + [r"$\overline{v}$"])
         elif v_max % 0.1 == 0:
             ax.set_xticks(jnp.arange(0, v_max+0.1, 0.1))
-            ax.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.1)] + [r"$\overline{v}$"])
+            ax.set_xticklabels([str(round(i,1)) for i in jnp.arange(0, v_max, 0.1)] + [r"$\overline{v}$"])
         else:
             ax.set_xticks(jnp.array([0.,v_max]))
-            ax.set_xticklabels([round(0.0,1)] + [r"$\overline{v}$"])
+            ax.set_xticklabels([str(round(0.0,1))] + [r"$\overline{v}$"])
         ax.set_yticks(jnp.arange(-2,3,1).tolist() + [2*v_max/wheels_distance,-2*v_max/wheels_distance])
         ax.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
         ax.grid()
         ax.add_patch(
-            plt.Polygon(
+            Polygon(
                 [
                     [0,2*v_max/wheels_distance],
                     [0,-2*v_max/wheels_distance],
@@ -141,9 +142,9 @@ class TrajectoryAnimator:
         """Full (non-blitted) draw of one frame. Returns the RGBA buffer of the figure (used to compare with the old animations)."""
         self.update(frame)
         self.fig.canvas.draw()
-        return np.asarray(self.fig.canvas.buffer_rgba()).copy()
+        return np.asarray(self.fig.canvas.buffer_rgba()).copy() # pyright: ignore[reportAttributeAccessIssue] (Agg-based canvas)
 
-    def run(self, save_video:bool=False, save_path:str=None, dpi:int=300, speed:float=1., blit:bool=True) -> None:
+    def run(self, save_video:bool=False, save_path:str | None=None, dpi:int=300, speed:float=1., blit:bool=True) -> None:
         """Save the video (if requested) and then show the animation, looping, in real time (or speed times faster)."""
         self._anim = FuncAnimation(
             self.fig,
@@ -159,6 +160,7 @@ class TrajectoryAnimator:
             if not writers.is_available('ffmpeg'):
                 raise RuntimeError("ffmpeg is needed to save the video, but it is not installed")
             writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
+            assert save_path is not None, "save_path must be given to save the video"
             self._anim.save(save_path, writer=writer_video, dpi=dpi)
             self._frame = 0
         if blit:

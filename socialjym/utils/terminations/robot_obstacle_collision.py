@@ -19,7 +19,7 @@ class InstantRobotObstacleCollision(BaseTermination):
         robot_pos:jnp.ndarray, 
         robot_radius:jnp.ndarray,
         obstacles:jnp.ndarray,
-    ) -> tuple[bool, dict]:
+    ) -> tuple:
         """
         Computes whether a collision between the robot and any obstacle has occurred at a specific instant.
 

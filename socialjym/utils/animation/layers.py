@@ -6,10 +6,15 @@ the frame index as first dimension (see preprocessing.py).
 """
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Polygon
 import matplotlib.colors as mcolors
 from matplotlib.collections import LineCollection, EllipseCollection, PolyCollection
 
 from socialjym.utils.animation.preprocessing import heading_points
+
+def _point(xy) -> tuple[float, float]:
+    """(x, y) of a 2-element array as a tuple of floats (as expected by matplotlib patches)."""
+    return float(xy[0]), float(xy[1])
 
 class Layer:
     """
@@ -26,7 +31,7 @@ class Layer:
     def update(self, frame:int) -> list:
         return self.artists
 
-    def datalim_points(self, frame:int) -> np.ndarray:
+    def datalim_points(self, frame:int) -> np.ndarray | None:
         return None
 
 class LineLayer(Layer):
@@ -50,7 +55,7 @@ class ScatterLayer(Layer):
     If values (n_steps, n_points) are given they are colormapped and the color limits are rescaled at each frame to the shown
     values, as plt.scatter(c=values) does.
     """
-    def __init__(self, ax, offsets:np.ndarray, mask:np.ndarray=None, values:np.ndarray=None, **kwargs) -> None:
+    def __init__(self, ax, offsets:np.ndarray, mask:np.ndarray | None=None, values:np.ndarray | None=None, **kwargs) -> None:
         super().__init__(ax)
         self.offsets = offsets
         self.mask = mask
@@ -84,7 +89,7 @@ class PolygonLayer(Layer):
     def __init__(self, ax, vertices:np.ndarray, **kwargs) -> None:
         super().__init__(ax)
         self.vertices = vertices
-        self.polygon = plt.Polygon(vertices[0], closed=True, **kwargs)
+        self.polygon = Polygon(vertices[0], closed=True, **kwargs)
         ax.add_patch(self.polygon)
         self.artists = [self.polygon]
 
@@ -100,7 +105,7 @@ class LinesLayer(Layer):
     Many polylines (n_steps, n_lines, n_points, 2) drawn as one LineCollection (e.g. LiDAR rays, sampled trajectories).
     Optional per-frame mask (n_steps, n_lines), RGBA colors (n_steps, n_lines, 4) and linewidths (n_steps, n_lines).
     """
-    def __init__(self, ax, segments:np.ndarray, mask:np.ndarray=None, colors:np.ndarray=None, linewidths:np.ndarray=None, **kwargs) -> None:
+    def __init__(self, ax, segments:np.ndarray, mask:np.ndarray | None=None, colors:np.ndarray | None=None, linewidths:np.ndarray | None=None, **kwargs) -> None:
         super().__init__(ax)
         self.segments = segments
         self.mask = mask
@@ -127,7 +132,7 @@ class LinesLayer(Layer):
 
 class EllipsesLayer(Layer):
     """Ellipses with centers (n_steps, n, 2), widths, heights and angles in degrees (n_steps, n), drawn as one EllipseCollection."""
-    def __init__(self, ax, centers:np.ndarray, widths:np.ndarray, heights:np.ndarray, angles:np.ndarray, mask:np.ndarray=None, **kwargs) -> None:
+    def __init__(self, ax, centers:np.ndarray, widths:np.ndarray, heights:np.ndarray, angles:np.ndarray, mask:np.ndarray | None=None, **kwargs) -> None:
         super().__init__(ax)
         self.centers, self.widths, self.heights, self.angles = centers, widths, heights, angles
         self.mask = mask
@@ -142,7 +147,7 @@ class EllipsesLayer(Layer):
         self.collection.set_widths(self.widths[frame][shown])
         self.collection.set_heights(self.heights[frame][shown])
         self.collection.set_angles(self.angles[frame][shown])
-        self.collection.set_visible(np.any(shown))
+        self.collection.set_visible(bool(np.any(shown)))
         return self.artists
 
     def datalim_points(self, frame:int) -> np.ndarray:
@@ -159,7 +164,7 @@ class EllipsesLayer(Layer):
 
 class ArrowsLayer(Layer):
     """One FancyArrow per object, from origins (n_steps, n, 2) along deltas (n_steps, n, 2). Masked-out arrows are hidden."""
-    def __init__(self, ax, origins:np.ndarray, deltas:np.ndarray, mask:np.ndarray=None, **kwargs) -> None:
+    def __init__(self, ax, origins:np.ndarray, deltas:np.ndarray, mask:np.ndarray | None=None, **kwargs) -> None:
         super().__init__(ax)
         self.origins, self.deltas, self.mask = origins, deltas, mask
         self.artists = [ax.arrow(origins[0,i,0], origins[0,i,1], deltas[0,i,0], deltas[0,i,1], **kwargs) for i in range(origins.shape[1])]
@@ -172,13 +177,13 @@ class ArrowsLayer(Layer):
                 arrow.set_visible(self.mask[frame,i])
         return self.artists
 
-    def datalim_points(self, frame:int) -> np.ndarray:
+    def datalim_points(self, frame:int) -> np.ndarray | None:
         shown_arrows = [arrow.get_xy() for arrow in self.artists if arrow.get_visible()]
         return np.concatenate(shown_arrows) if shown_arrows else None
 
 class TextsLayer(Layer):
     """One Text per object, with positions (n_steps, n, 2) and strings (n_steps, n). Masked-out texts are hidden."""
-    def __init__(self, ax, positions:np.ndarray, strings:np.ndarray, mask:np.ndarray=None, **kwargs) -> None:
+    def __init__(self, ax, positions:np.ndarray, strings:np.ndarray, mask:np.ndarray | None=None, **kwargs) -> None:
         super().__init__(ax)
         self.positions, self.strings, self.mask = positions, strings, mask
         self.artists = [ax.text(positions[0,i,0], positions[0,i,1], strings[0][i], **kwargs) for i in range(positions.shape[1])]
@@ -194,14 +199,14 @@ class TextsLayer(Layer):
 
 class RobotLayer(Layer):
     """Robot body and heading (and goal, if given)."""
-    def __init__(self, ax, robot_poses:np.ndarray, robot_radius:float, robot_goals:np.ndarray=None) -> None:
+    def __init__(self, ax, robot_poses:np.ndarray, robot_radius:float, robot_goals:np.ndarray | None=None) -> None:
         super().__init__(ax)
         self.robot_poses = robot_poses
         self.heads = heading_points(robot_poses, robot_radius)
         self.robot_goals = robot_goals
-        self.head = plt.Circle(self.heads[0], 0.1, color='black', zorder=1)
+        self.head = Circle(self.heads[0], 0.1, color='black', zorder=1)
         ax.add_patch(self.head)
-        self.body = plt.Circle(robot_poses[0,:2], robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+        self.body = Circle(_point(robot_poses[0,:2]), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
         ax.add_patch(self.body)
         self.artists = [self.head, self.body]
         if robot_goals is not None:
@@ -210,7 +215,7 @@ class RobotLayer(Layer):
 
     def update(self, frame:int) -> list:
         self.head.set_center(self.heads[frame])
-        self.body.set_center(self.robot_poses[frame,:2])
+        self.body.set_center(_point(self.robot_poses[frame,:2]))
         if self.robot_goals is not None:
             self.goal.set_data([self.robot_goals[frame,0]], [self.robot_goals[frame,1]])
         return self.artists
@@ -232,11 +237,11 @@ class HumansLayer(Layer):
         ax,
         humans_poses:np.ndarray,
         humans_radii:np.ndarray,
-        humans_velocities:np.ndarray=None,
-        visibility:np.ndarray=None,
-        static:np.ndarray=None,
-        legs_states:np.ndarray=None,
-        legs_radii:np.ndarray=None,
+        humans_velocities:np.ndarray | None=None,
+        visibility:np.ndarray | None=None,
+        static:np.ndarray | None=None,
+        legs_states:np.ndarray | None=None,
+        legs_radii:np.ndarray | None=None,
     ) -> None:
         super().__init__(ax)
         n_humans = humans_poses.shape[1]
@@ -253,16 +258,17 @@ class HumansLayer(Layer):
         self.static_bodies, self.parts, self.arrows = {}, {}, {}
         for h in range(n_humans):
             if self.static[h]:
-                self.static_bodies[h] = plt.Circle(humans_poses[0,h,:2], humans_radii[0,h], edgecolor='black', facecolor='black', alpha=1., fill=True, zorder=1)
+                self.static_bodies[h] = Circle(_point(humans_poses[0,h,:2]), humans_radii[0,h], edgecolor='black', facecolor='black', alpha=1., fill=True, zorder=1)
                 ax.add_patch(self.static_bodies[h])
                 self.artists.append(self.static_bodies[h])
             else:
                 parts = {}
                 if self.legs:
-                    parts['l_leg'] = plt.Circle(legs_states[0,h,0:2], legs_radii[0,h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
-                    parts['r_leg'] = plt.Circle(legs_states[0,h,3:5], legs_radii[0,h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
-                parts['head'] = plt.Circle(self.heads[0,h], 0.1, color='black', alpha=0.6, zorder=1)
-                parts['body'] = plt.Circle(humans_poses[0,h,:2], humans_radii[0,h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                    assert legs_states is not None and legs_radii is not None
+                    parts['l_leg'] = Circle(_point(legs_states[0,h,0:2]), legs_radii[0,h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                    parts['r_leg'] = Circle(_point(legs_states[0,h,3:5]), legs_radii[0,h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                parts['head'] = Circle(_point(self.heads[0,h]), 0.1, color='black', alpha=0.6, zorder=1)
+                parts['body'] = Circle(_point(humans_poses[0,h,:2]), humans_radii[0,h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
                 for part in parts.values():
                     ax.add_patch(part)
                     self.artists.append(part)
@@ -286,26 +292,28 @@ class HumansLayer(Layer):
 
     def update(self, frame:int) -> list:
         for h, body in self.static_bodies.items():
-            body.set_center(self.poses[frame,h,:2])
+            body.set_center(_point(self.poses[frame,h,:2]))
             body.set_radius(self.radii[frame,h])
         for h, parts in self.parts.items():
             visible = True if self.visibility is None else bool(self.visibility[frame,h])
             color = 'blue' if visible else 'grey'
             alpha = 0.6 if visible else 0.3
             if self.legs:
+                assert self.legs_states is not None and self.legs_radii is not None
                 for leg, idxs in (('l_leg', slice(0,2)), ('r_leg', slice(3,5))):
-                    parts[leg].set_center(self.legs_states[frame,h,idxs])
+                    parts[leg].set_center(_point(self.legs_states[frame,h,idxs]))
                     parts[leg].set_radius(self.legs_radii[frame,h])
                     parts[leg].set_facecolor(color)
                     parts[leg].set_alpha(alpha)
             body_alpha = 0.3 if self.legs else alpha
-            parts['head'].set_center(self.heads[frame,h])
+            parts['head'].set_center(_point(self.heads[frame,h]))
             parts['head'].set_alpha(body_alpha)
-            parts['body'].set_center(self.poses[frame,h,:2])
+            parts['body'].set_center(_point(self.poses[frame,h,:2]))
             parts['body'].set_radius(self.radii[frame,h])
             parts['body'].set_facecolor(color)
             parts['body'].set_alpha(body_alpha)
             if h in self.arrows:
+                assert self.velocities is not None # Arrows are created only if the velocities are given
                 self.arrows[h].set_data(x=self.poses[frame,h,0], y=self.poses[frame,h,1], dx=self.velocities[frame,h,0], dy=self.velocities[frame,h,1])
                 self.arrows[h].set_facecolor(color)
                 self.arrows[h].set_edgecolor(color)
@@ -320,6 +328,7 @@ class HumansLayer(Layer):
             *circle_extents(self.poses[frame,moving,:2], self.radii[frame,moving]),
         ]
         if self.legs:
+            assert self.legs_states is not None and self.legs_radii is not None
             points += [
                 *circle_extents(self.legs_states[frame,moving,0:2], self.legs_radii[frame,moving]),
                 *circle_extents(self.legs_states[frame,moving,3:5], self.legs_radii[frame,moving]),
@@ -355,13 +364,13 @@ class ObstaclesLayer(Layer):
 
 class GridCellsLayer(Layer):
     """Square grid cells (n_rows, n_cols, 2) of the given size, red where occupied (n_steps, n_rows, n_cols)."""
-    def __init__(self, ax, grid_cells:np.ndarray, grid_cells_size:float, occupancy_grids:np.ndarray=None) -> None:
+    def __init__(self, ax, grid_cells:np.ndarray, grid_cells_size:float, occupancy_grids:np.ndarray | None=None) -> None:
         super().__init__(ax)
         self.occupancy_grids = occupancy_grids
         centers = grid_cells.reshape(-1, 2)
         corners = np.array([[-1,-1],[1,-1],[1,1],[-1,1]]) * grid_cells_size / 2
         self.cells_corners = centers[:,None,:] + corners[None]
-        self.collection = PolyCollection(self.cells_corners, facecolors='white', edgecolors='black', alpha=0.5, zorder=0)
+        self.collection = PolyCollection(self.cells_corners, facecolors='white', edgecolors='black', alpha=0.5, zorder=0) # pyright: ignore[reportArgumentType] (an (N, 4, 2) array of vertices is accepted)
         ax.add_collection(self.collection, autolim=False)
         self.artists = [self.collection]
         self.update(0)
@@ -369,7 +378,7 @@ class GridCellsLayer(Layer):
     def update(self, frame:int) -> list:
         if self.occupancy_grids is not None:
             occupied = np.asarray(self.occupancy_grids[frame]).reshape(-1).astype(bool)
-            self.collection.set_facecolor(np.where(occupied, 'red', 'white'))
+            self.collection.set_facecolor(np.where(occupied, 'red', 'white')) # pyright: ignore[reportArgumentType] (an array of colors is accepted)
         return self.artists
 
     def datalim_points(self, frame:int) -> np.ndarray:
@@ -379,16 +388,17 @@ def scene_layers(
     ax,
     robot_poses:np.ndarray,
     robot_radius:float,
-    robot_goals:np.ndarray=None,
-    humans_poses:np.ndarray=None,
-    humans_velocities:np.ndarray=None,
-    humans_radii:np.ndarray=None,
-    static_obstacles:np.ndarray=None,
+    robot_goals:np.ndarray | None=None,
+    humans_poses:np.ndarray | None=None,
+    humans_velocities:np.ndarray | None=None,
+    humans_radii:np.ndarray | None=None,
+    static_obstacles:np.ndarray | None=None,
     **humans_kwargs,
 ) -> list:
     """Humans, robot, goal and static obstacles of one simulation axes (in the drawing order of the old animate methods)."""
     layers = []
     if humans_poses is not None:
+        assert humans_radii is not None, "humans_radii must be given with humans_poses"
         layers.append(HumansLayer(ax, humans_poses, humans_radii, humans_velocities, **humans_kwargs))
     layers.append(RobotLayer(ax, robot_poses, robot_radius, robot_goals))
     if static_obstacles is not None:
@@ -426,5 +436,5 @@ def circle_extents(centers:np.ndarray, radii) -> tuple:
     radii = np.broadcast_to(np.asarray(radii, dtype=float), centers.shape[:1])[:,None]
     return centers - radii, centers + radii
 
-def rgba(color, alpha:float=None) -> np.ndarray:
+def rgba(color, alpha:float | None=None) -> np.ndarray:
     return np.array(mcolors.to_rgba(color, alpha))

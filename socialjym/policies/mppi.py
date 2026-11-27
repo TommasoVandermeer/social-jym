@@ -7,6 +7,7 @@ from functools import partial
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Polygon
 from matplotlib.patches import Ellipse
 import os
 
@@ -15,7 +16,7 @@ from socialjym.policies.dwa import DWA
 from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
 from socialjym.envs.socialnav import SocialNav
-from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
+from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics, pause_on_click
 from socialjym.utils.animation import (
     TrajectoryAnimator, 
     LinesLayer, 
@@ -31,6 +32,9 @@ from socialjym.utils.animation import (
     gaussian_ellipses,
 )
 from jhsfm.hsfm import get_linear_velocity
+from typing import TYPE_CHECKING, cast
+if TYPE_CHECKING:
+    from socialjym.policies.dra_mppi import DRAMPPI
 
 class MPPI(DWA):
     def __init__(
@@ -217,7 +221,7 @@ class MPPI(DWA):
         elif self.name == "DRA-MPPI":
             assert isinstance(env, SocialNav), "Environment must be an instance of SocialNav"
         assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "MPPI policy can only be evaluated on unicycle kinematics"
-        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.robot_dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
         assert env.lidar_angular_range == self.lidar_angular_range, f"Environment LiDAR angular range (lidar_angular_range={env.lidar_angular_range}) must be equal to policy LiDAR angular range (lidar_angular_range={self.lidar_angular_range}) for evaluation"
         assert env.lidar_max_dist == self.lidar_max_dist, f"Environment LiDAR max distance (lidar_max_dist={env.lidar_max_dist}) must be equal to policy LiDAR max distance (lidar_max_dist={self.lidar_max_dist}) for evaluation"
         assert env.lidar_num_rays == self.lidar_num_rays, f"Environment LiDAR number of rays (lidar_num_rays={env.lidar_num_rays}) must be equal to policy LiDAR number of rays (lidar_num_rays={self.lidar_num_rays}) for evaluation"
@@ -261,7 +265,7 @@ class MPPI(DWA):
                 while_val_init = (state, obs, info, init_outcome, self.init_u_mean(), policy_key, env_key, 0, all_actions, all_states)
                 _, _, end_info, outcome, _, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
             elif self.name == "DRA-MPPI":
-                u_mean_init, beta_init = self.init_u_mean_and_beta()
+                u_mean_init, beta_init = cast("DRAMPPI", self).init_u_mean_and_beta()
                 while_val_init = (state, obs, info, init_outcome, u_mean_init, beta_init, policy_key, env_key, 0, all_actions, all_states)
                 _, _, end_info, outcome, _, _, _, _, episode_steps, all_actions, all_states = lax.while_loop(lambda x: x[3]["nothing"] == True, _while_body, while_val_init)
             ## Update metrics
@@ -312,8 +316,8 @@ class MPPI(DWA):
         point_clouds=None, # Shape: (num_steps, lidar_n_stack_to_use, lidar_num_rays, 2)
         humans_distributions=None, # DRA-MPPI Shape: Dict {'means': (num_steps, horizon, n_humans, 2), 'logsigmas': (num_steps, horizon, n_humans, 2), 'correlation': (num_steps, horizon, n_humans)}
         perception_distributions=None, # JESSI Shape: Dict {'pos_distrs': {'means': (num_steps, horizon, n_humans, 2), 'logsigmas': (num_steps, horizon, n_humans, 2), 'correlation': (num_steps, horizon, n_humans)}, 'vel_distrs': {'means': (num_steps, horizon, n_humans, 2), 'logsigmas': (num_steps, horizon, n_humans, 2), 'correlation': (num_steps, horizon, n_humans)}, 'weights': (num_steps, n_humans)}
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
     ):
         # Validate input args
@@ -372,9 +376,9 @@ class MPPI(DWA):
                 ax.set_aspect('equal', adjustable='datalim')
                 # Plot humans
                 for h in range(len(humans_poses[frame])):
-                    head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
+                    head = Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
                     ax.add_patch(head)
-                    circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                    circle = Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
                     ax.add_patch(circle)
                 # Plot human velocities
                 for h in range(len(humans_poses[frame])):
@@ -392,9 +396,9 @@ class MPPI(DWA):
                     )
                 # Plot robot
                 robot_position = robot_poses[frame,:2]
-                head = plt.Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
+                head = Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
                 ax.add_patch(head)
-                circle = plt.Circle((robot_position[0], robot_position[1]), self.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+                circle = Circle((robot_position[0], robot_position[1]), self.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
                 ax.add_patch(circle)
                 # Plot robot goal
                 ax.plot(
@@ -473,15 +477,15 @@ class MPPI(DWA):
                         mean = distrs['means'][t,h]
                         if jnp.any(jnp.isnan(mean)): continue
                         d = tree_map(lambda x: x[t, h], distrs)
-                        cov_matrix = self.biv_gaussian.covariance(d)
+                        cov_matrix = cast("DRAMPPI", self).biv_gaussian.covariance(d) # Only DRA-MPPI predicts humans distributions
                         eigenvalues, eigenvectors = jnp.linalg.eigh(cov_matrix)
                         angle = jnp.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
                         width, height = 2 * jnp.sqrt(eigenvalues)
                         ellipse = Ellipse(
                             xy=mean,
-                            width=width,
-                            height=height,
-                            angle=jnp.degrees(angle),
+                            width=float(width),
+                            height=float(height),
+                            angle=float(jnp.degrees(angle)),
                             edgecolor='blue',
                             facecolor='lightblue',
                             alpha=0.5,
@@ -495,16 +499,16 @@ class MPPI(DWA):
             axs[1].plot(robot_chosen_trajectories[frame][:,0], robot_chosen_trajectories[frame][:,1], color='blue', alpha=1, linewidth=3, zorder=30)
             # AX :,2: Feasible and bounded action space + action space distribution and action taken
             axs[2].set_xlabel("$v$ (m/s)")
-            axs[2].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
+            axs[2].set_ylabel("$\\omega$ (rad/s)", labelpad=-15)
             axs[2].set_xlim(-0.1, self.v_max + 0.1)
             axs[2].set_ylim(-2*self.v_max/self.wheels_distance - 0.3, 2*self.v_max/self.wheels_distance + 0.3)
             axs[2].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
-            axs[2].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
+            axs[2].set_xticklabels([str(round(i,1)) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
             axs[2].set_yticks(jnp.arange(-2,3,1).tolist() + [2*self.v_max/self.wheels_distance,-2*self.v_max/self.wheels_distance])
             axs[2].set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
             axs[2].grid()
             axs[2].add_patch(
-                plt.Polygon(
+                Polygon(
                     [   
                         [0,2*self.v_max/self.wheels_distance],
                         [0,-2*self.v_max/self.wheels_distance],
@@ -527,17 +531,12 @@ class MPPI(DWA):
                 s=5,
             )
             axs[2].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51) # Action taken
-        anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
+        anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps) # pyright: ignore[reportArgumentType] (the return value of the frame function is used only with blit=True)
         if save_video:
             save_path = os.path.join(os.path.dirname(__file__), f'{self.name}_trajectory.mp4')
             writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
             anim.save(save_path, writer=writer_video, dpi=300)
-        anim.paused = False
-        def toggle_pause(self, *args, **kwargs):
-            if anim.paused: anim.resume()
-            else: anim.pause()
-            anim.paused = not anim.paused
-        fig.canvas.mpl_connect('button_press_event', toggle_pause)
+        pause_on_click(fig, anim)
         plt.show()
 
     def animate_lasernav_trajectory(
@@ -552,8 +551,8 @@ class MPPI(DWA):
         static_obstacles,
         humans_radii,
         lasernav_env:LaserNav,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
     ):
         robot_positions = states[:,-1,:2]
@@ -637,10 +636,10 @@ class MPPI(DWA):
         point_clouds=None, # Shape: (num_steps, lidar_n_stack_to_use, lidar_num_rays, 2)
         humans_distributions=None, # DRA-MPPI Shape: Dict {'means': (num_steps, horizon, n_humans, 2), 'logsigmas': (num_steps, horizon, n_humans, 2), 'correlation': (num_steps, horizon, n_humans)}
         perception_distributions=None, # JESSI Shape: Dict {'pos_distrs': {'means': (num_steps, n_humans, 2), ...}, 'vel_distrs': {'means': (num_steps, n_humans, 2), ...}, 'weights': (num_steps, n_humans)} (world frame)
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
-        save_path:str=None, # (optional) path of the saved video (default: same as animate_trajectory)
+        save_path:str | None=None, # (optional) path of the saved video (default: same as animate_trajectory)
         dpi:int=300, # dpi of the saved video
         speed:float=1., # playback speed (1 = real time)
         blit:bool=True, # if False, the whole figure is redrawn at each frame (slower, but zooming while playing works fine)
@@ -664,7 +663,7 @@ class MPPI(DWA):
         n_steps = len(robot_poses)
         first_sampled_actions = self._first_sampled_actions(robot_poses, robot_trajectories)
         if humans_distributions is not None:
-            humans_ellipses = gaussian_ellipses(humans_distributions, self.biv_gaussian)
+            humans_ellipses = gaussian_ellipses(humans_distributions, cast("DRAMPPI", self).biv_gaussian) # Only DRA-MPPI predicts humans distributions
         (
             robot_poses, robot_actions, robot_chosen_trajectories, robot_trajectories, robot_trajectories_costs, robot_goals, 
             humans_poses, humans_velocities, humans_radii, static_obstacles, first_sampled_actions,
@@ -727,10 +726,10 @@ class MPPI(DWA):
         static_obstacles,
         humans_radii,
         lasernav_env:LaserNav,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
-        save_path:str=None,
+        save_path:str | None=None,
         dpi:int=300,
         speed:float=1.,
         blit:bool=True,

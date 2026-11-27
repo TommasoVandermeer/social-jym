@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import nn, random, vmap, jit, lax, value_and_grad, debug
 from jax.tree_util import tree_map, tree_leaves
@@ -50,7 +51,7 @@ class Actor(fnn.Module):
             self, 
             x: jnp.ndarray,
             y: jnp.ndarray,
-            **kwargs: dict,
+            **kwargs,
     ) -> tuple:
         """
         Args:
@@ -154,7 +155,7 @@ class Critic(fnn.Module):
             robot_data: jnp.ndarray, # (B, 12 + 2*n_actions_history,) --> e.g., n_actions_history=5 --> (B, 12 + 10,) = (B, 22,)
             humans_data: jnp.ndarray, # (B, n_humans, 11 + horizon_length*6) --> e.g., n_humans=5, horizon_length=20 --> (B, 5, 11 + 120) = (B, 5, 131)
             static_obstacles_data: jnp.ndarray, # (B, n_obstacles * n_edges, 2, 2) --> e.g., n_obstacles=5, n_edges=4 --> (B, 20, 2, 2)
-            **kwargs: dict,
+            **kwargs,
     ) -> jnp.ndarray:
         # START: deal with batch dimension
         has_batch = robot_data.ndim == 2
@@ -300,7 +301,7 @@ class JESSI_S2R(JESSI):
     @partial(jit, static_argnames=("self"))
     def init_nns(
         self, 
-        key:random.PRNGKey, 
+        key:jax.Array, 
     ) -> tuple:
         # Perception input is shaped (self.n_stack, self.lidar_num_rays, 7)
         # Actor input is shaped (n_detectable_humans, 22 + 2*n_actions_history) and (self.n_sectors, self.embedding_dim))
@@ -434,7 +435,7 @@ class JESSI_S2R(JESSI):
     @partial(jit, static_argnames=("self"))
     def critic_forward(
         self,
-        random_key:random.PRNGKey,
+        random_key:jax.Array,
         critic_params:dict,
         state:jnp.ndarray,
         actions_history:jnp.ndarray,
@@ -519,7 +520,7 @@ class JESSI_S2R(JESSI):
     @partial(jit, static_argnames=("self"))
     def batch_critic_forward(
         self,
-        random_keys:random.PRNGKey,
+        random_keys:jax.Array,
         critic_params:dict,
         states:jnp.ndarray,
         actions_histories:jnp.ndarray,
@@ -543,12 +544,12 @@ class JESSI_S2R(JESSI):
         self, 
         actor_params:dict,
         actor_optimizer:optax.GradientTransformation, 
-        actor_opt_state: jnp.ndarray, 
-        critic_key:random.PRNGKey,
+        actor_opt_state: optax.OptState, 
+        critic_key:jax.Array,
         critic_params:dict,
         critic_optimizer:optax.GradientTransformation, 
-        critic_opt_state: jnp.ndarray, 
-        experiences:dict[str:jnp.ndarray], 
+        critic_opt_state: optax.OptState, 
+        experiences:dict[str, jnp.ndarray], 
         beta_entropy:float=0.01,
     ) -> tuple:
         def _compute_actor_loss_and_gradients(

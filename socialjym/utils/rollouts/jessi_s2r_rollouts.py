@@ -14,6 +14,8 @@ from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.base_env import SCENARIOS
 from socialjym.envs.lasernav import LaserNav
 from socialjym.policies.jessi_s2r import JESSI_S2R
+from socialjym.utils.distributions.logistic_normal import LogisticNormal
+from typing import cast
 
 
 TRAINING_TYPES = ["multitask", "modular", "policy"]
@@ -286,7 +288,7 @@ def train_one_epoch(
             clip_frac = jnp.mean(jnp.abs(ratio - 1.0) > clip_range)
             # Entropy
             locs_entropy = jnp.mean(policy.action_distribution.batch_entropy(actor_dist))
-            weight_entropy = jnp.mean(policy.action_distribution.batch_weight_entropy(actor_dist))
+            weight_entropy = jnp.mean(cast(LogisticNormal, policy.action_distribution).batch_weight_entropy(actor_dist)) # JESSI-S2R uses the logistic-normal distribution
             entropy_loss = -beta_entropy * (locs_entropy + 10 * weight_entropy)
             max_weight = jnp.mean(jnp.max(nn.softmax(actor_dist["locs"]), axis=-1)) # Diagnostic measure
             policy_loss = actor_loss + entropy_loss
@@ -506,7 +508,7 @@ def jessi_s2r_rl_rollout(
     beta_entropy,
     lambda_gae,
     training_type:str = "multitask",
-    target_kl:float = None,
+    target_kl:float | None = None,
     safety_loss:bool = False,
     debugging:bool = False,
 ):
@@ -515,7 +517,7 @@ def jessi_s2r_rl_rollout(
     assert mini_batch_size % micro_batch_size == 0, "Mini-batch size must be divisible by micro-batch size."
     assert total_batch_size % mini_batch_size == 0, "Total batch size must be divisible by mini-batch size."
     assert micro_batch_size % device_count() == 0, "Micro-batch size must be divisible by number of devices."
-    training_type = TRAINING_TYPES.index(training_type)
+    training_type_index = TRAINING_TYPES.index(training_type)
     n_steps = total_batch_size // n_parallel_envs
     n_minibatches = total_batch_size // mini_batch_size
     n_micro_splits = mini_batch_size // micro_batch_size
@@ -614,7 +616,7 @@ def jessi_s2r_rl_rollout(
                 critic_optimizer=critic_network_optimizer,
                 clip_range=clip_range, 
                 compute_safety_loss=safety_loss,
-                training_type=training_type,
+                training_type=training_type_index,
             )
             abstract_train_out = eval_shape(
                 train_pure,

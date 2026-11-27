@@ -1,0 +1,6 @@
+{
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.13",
+  "extraPaths": ["JHSFM", "JSFM", "JORCA"],
+  "exclude": ["**/__pycache__", "**/.git", "build", "docker"]
+}

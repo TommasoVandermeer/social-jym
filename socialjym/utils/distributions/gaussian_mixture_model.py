@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax
 from jax.scipy.special import logsumexp
@@ -32,14 +33,14 @@ class GMM(BaseDistribution):
 
     @partial(jit, static_argnames=("self"))
     def var(self, distribution:dict) -> jnp.ndarray:
-        pass
+        raise NotImplementedError("var is not implemented for Gaussian mixture models")
 
     @partial(jit, static_argnames=("self"))
     def entropy(self, distribution:dict) -> float:
-        pass
+        raise NotImplementedError("entropy is not implemented for Gaussian mixture models")
 
     @partial(jit, static_argnames=("self"))
-    def sample(self, distribution:dict, key:random.PRNGKey):
+    def sample(self, distribution:dict, key:jax.Array):
         means = distribution["means"]
         variance = jnp.exp(distribution["logvariances"])
         weights = distribution["weights"]
@@ -159,14 +160,14 @@ class BivariateGMM(BaseDistribution):
 
     @partial(jit, static_argnames=("self"))
     def var(self, distribution:dict) -> jnp.ndarray:
-        pass
+        raise NotImplementedError("var is not implemented for Gaussian mixture models")
 
     @partial(jit, static_argnames=("self"))
     def entropy(self, distribution:dict) -> float:
-        pass
+        raise NotImplementedError("entropy is not implemented for Gaussian mixture models")
 
     @partial(jit, static_argnames=("self"))
-    def cholesky_factors(self, distribution:dict) -> float:
+    def cholesky_factors(self, distribution:dict) -> jnp.ndarray:
         logsigmas = distribution["logsigmas"]  + self.epsilon # shape: (n_components, 2)   
         correlations = distribution["correlations"]  # shape: (n_components,)
         return vmap(
@@ -178,7 +179,7 @@ class BivariateGMM(BaseDistribution):
         return vmap(lambda L: L @ L.T, in_axes=0)(self.cholesky_factors(distribution))  # shape: (n_components, 2, 2) 
 
     @partial(jit, static_argnames=("self"))
-    def sample(self, distribution:dict, key:random.PRNGKey):
+    def sample(self, distribution:dict, key:jax.Array):
         means = distribution["means"]
         covariances = self.covariances(distribution)
         weights = distribution["weights"]

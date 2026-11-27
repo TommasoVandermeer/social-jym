@@ -9,6 +9,11 @@ from socialjym.envs.base_env import BaseEnv
 from socialjym.utils.distributions.base_distribution import DISTRIBUTIONS
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.utils.replay_buffers.ppo_replay_buffer import PPOBuffer
+from typing import TYPE_CHECKING, cast
+if TYPE_CHECKING:
+    from socialjym.policies.sarl_ppo import SARLPPO
+    from socialjym.policies.dir_safe import DIRSAFE
+    from socialjym.envs.socialnav import SocialNav
 
 
 def ppo_rl_rollout(
@@ -21,8 +26,8 @@ def ppo_rl_rollout(
         critic_optimizer: optax.GradientTransformation,
         buffer_state: dict,
         buffer_capacity: int,
-        policy: BasePolicy,
-        env: BaseEnv,
+        policy: "SARLPPO | DIRSAFE",
+        env: "SocialNav",
         replay_buffer: PPOBuffer,
         clip_range: float,
         n_epochs: int,
@@ -59,7 +64,7 @@ def ppo_rl_rollout(
                                         obses[:,:-1], 
                                         init_infos,
                                 ),
-                                updated_norm_state = policy.update_norm_state(
+                                updated_norm_state = cast("SARLPPO", policy).update_norm_state(
                                         jnp.reshape(*ins, (n_parallel_envs * env.n_humans, policy.vnet_input_size)),
                                         norm_state,
                                 )
@@ -118,7 +123,7 @@ def ppo_rl_rollout(
                 )
                 if policy.normalize_and_clip_obs:
                         inputs = jnp.reshape(
-                                policy.normalize_and_clip_inputs(jnp.reshape(inputs, (n_parallel_envs * env.n_humans, policy.vnet_input_size)), actor_params["norm_state"]), 
+                                cast("SARLPPO", policy).normalize_and_clip_inputs(jnp.reshape(inputs, (n_parallel_envs * env.n_humans, policy.vnet_input_size)), actor_params["norm_state"]), 
                                 (n_parallel_envs, env.n_humans, policy.vnet_input_size)
                         )
                 # Compute the value of the last batch  

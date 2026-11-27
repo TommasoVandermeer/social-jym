@@ -9,6 +9,11 @@ from tqdm import tqdm
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.utils.replay_buffers.base_act_cri_buffer import BaseACBuffer
+from typing import TYPE_CHECKING, cast
+if TYPE_CHECKING:
+    from socialjym.policies.sarl_ppo import SARLPPO
+    from socialjym.policies.dir_safe import DIRSAFE
+    from socialjym.envs.socialnav import SocialNav
 
 
 def _select_envs(mask, on_true, on_false):
@@ -21,8 +26,8 @@ def simulate_il_episodes(
     obses,
     infos,
     outcomes,
-    policy:BasePolicy,
-    env:BaseEnv,
+    policy: "SARLPPO | DIRSAFE",
+    env: "SocialNav",
     max_steps:int,
 ):
     """
@@ -58,7 +63,7 @@ def simulate_il_episodes(
 def compute_il_targets(
     rewards,
     lengths,
-    policy:BasePolicy,
+    policy: "SARLPPO | DIRSAFE",
 ):
     """
     Discounted return from each step k of each episode: sum_{j=k}^{L-1} gamma^((j-k) dt v_max) r_j.
@@ -113,8 +118,8 @@ def collect_il_chunk(
     buffer_state,
     buffer_size,
     custom_data,
-    policy:BasePolicy,
-    env:BaseEnv,
+    policy: "SARLPPO | DIRSAFE",
+    env: "SocialNav",
     replay_buffer:BaseACBuffer,
     max_steps:int,
     stored_steps:int,
@@ -151,7 +156,7 @@ def train_il_epoch(
     critic_params,
     actor_opt_state,
     critic_opt_state,
-    policy:BasePolicy,
+    policy: "SARLPPO | DIRSAFE",
     actor_optimizer:optax.GradientTransformation,
     critic_optimizer:optax.GradientTransformation,
     replay_buffer:BaseACBuffer,
@@ -189,14 +194,14 @@ def actor_critic_il_rollout(
         actor_optimizer: optax.GradientTransformation,
         critic_optimizer: optax.GradientTransformation,
         buffer_state: dict,
-        current_buffer_size: int,
-        policy: BasePolicy,
-        env: BaseEnv,
+        current_buffer_size: int | jnp.ndarray,
+        policy: "SARLPPO | DIRSAFE",
+        env: "SocialNav",
         replay_buffer: BaseACBuffer,
         buffer_capacity: int,
         num_epochs: int,
         batch_size: int,
-        custom_episodes: str = None,
+        custom_episodes: str | None = None,
         n_parallel_envs: int = 1000,
 ) -> dict:
     """
@@ -252,11 +257,11 @@ def actor_critic_il_rollout(
     if policy.normalize_and_clip_obs:
         norm_state = initial_actor_params["norm_state"]
         inputs = buffer_state["inputs"][:actual_buffer_size].reshape((actual_buffer_size * env.n_humans, policy.vnet_input_size))
-        updated_norm_state = policy.update_norm_state(
+        updated_norm_state = cast("SARLPPO", policy).update_norm_state(
             inputs,
             norm_state,
         )
-        normalized_inputs = policy.normalize_and_clip_inputs(
+        normalized_inputs = cast("SARLPPO", policy).normalize_and_clip_inputs(
             inputs,
             updated_norm_state,
         )

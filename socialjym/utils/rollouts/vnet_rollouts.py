@@ -11,6 +11,10 @@ import os
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.utils.replay_buffers.base_vnet_replay_buffer import BaseVNetReplayBuffer
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from socialjym.policies.cadrl import CADRL
+    from socialjym.envs.socialnav import SocialNav
 
 
 def vnet_rl_rollout(
@@ -20,8 +24,8 @@ def vnet_rl_rollout(
         model: Network,
         optimizer: optax.GradientTransformation,
         buffer_state: dict,
-        policy: BasePolicy,
-        env: BaseEnv,
+        policy: "CADRL",
+        env: "SocialNav",
         replay_buffer: BaseVNetReplayBuffer,
         buffer_size: int,
         current_buffer_size: int,
@@ -31,7 +35,7 @@ def vnet_rl_rollout(
         epsilon_end: float,
         decay_rate: float,
         target_update_interval: int = 50,
-        custom_episodes: str = None,
+        custom_episodes: str | None = None,
         exploration_episodes: int = 0, # Number of episodes to explore before starting training
         debugging: bool = False,
 ) -> dict:
@@ -232,13 +236,13 @@ def vnet_il_rollout(
         optimizer: optax.GradientTransformation,
         buffer_state: dict,
         current_buffer_size: int,
-        policy: BasePolicy,
-        env: BaseEnv,
+        policy: "CADRL",
+        env: "SocialNav",
         replay_buffer: BaseVNetReplayBuffer,
         buffer_size: int,
         num_epochs: int,
         batch_size: int,
-        custom_episodes: str = None,
+        custom_episodes: str | None = None,
 ) -> dict:
         
         # If policy is CADRL, the number of humans in the training environment must be 1

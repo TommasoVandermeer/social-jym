@@ -4,6 +4,13 @@ import jax.numpy as jnp
 from functools import partial
 
 class BasePolicy(ABC):
+    # Attributes set by every policy (declared here for type checking)
+    name: str
+    v_max: float
+    dt: float
+    kinematics: int
+    wheels_distance: float
+
     def __init__(self) -> None:
         pass
 
@@ -93,11 +100,11 @@ class BasePolicy(ABC):
     # Public methods
 
     @abstractmethod
-    def act(self):
+    def act(self, *args, **kwargs) -> tuple:
         pass
 
     @abstractmethod
-    def evaluate(self):
+    def evaluate(self, *args, **kwargs):
         pass
 
     @partial(jit, static_argnames=("self","n_edges"))

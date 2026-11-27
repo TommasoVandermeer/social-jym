@@ -1,9 +1,11 @@
+import jax
 import jax.numpy as jnp
 from jax import random, jit, lax, debug, vmap
 from functools import partial
 from types import FunctionType
 
 from .base_env import BaseEnv, SCENARIOS, ENVIRONMENTS, is_multiple
+from socialjym.utils.rewards.base_reward import BaseReward
 
 class LaserNav(BaseEnv):
     """
@@ -24,7 +26,7 @@ class LaserNav(BaseEnv):
             scenario:str, 
             n_humans:int, 
             n_obstacles:int,
-            reward_function:FunctionType,
+            reward_function:BaseReward,
             robot_visible=False, 
             circle_radius=7, 
             traffic_height=3, 
@@ -148,7 +150,7 @@ class LaserNav(BaseEnv):
         humans_delay:jnp.ndarray,
         is_x_flipped:bool,
         is_y_flipped:bool,
-        noise_key:random.PRNGKey,
+        noise_key:jax.Array,
         visibility_chance:float,
     ) -> dict:
         """
@@ -222,8 +224,8 @@ class LaserNav(BaseEnv):
         lidar_timestamp:float,
         odom_timestamp:float,
         control_timestamp:float,
-        noise_key:random.PRNGKey,
-    ) -> jnp.ndarray:
+        noise_key:jax.Array,
+    ) -> tuple:
         """
         Given the current state, the additional information about the environment,
         this function computes the current observation of the state.
@@ -272,7 +274,7 @@ class LaserNav(BaseEnv):
         return current_obs, humans_visibility_mask, obstacles_visibility_mask
 
     @partial(jit, static_argnames=("self"))
-    def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def _get_obs(self, state:jnp.ndarray, info:dict, action:jnp.ndarray, noise_key:jax.Array) -> tuple:
         """
         Given the current state, the additional information about the environment,
         this function computes the observation of the current state (which is a stack of the last n_stack observations).
@@ -317,11 +319,11 @@ class LaserNav(BaseEnv):
         action:jnp.ndarray, 
         test:bool=False,
         reset_if_done:bool=False,
-        reset_key:random.PRNGKey=random.PRNGKey(0),
-        env_key:random.PRNGKey=random.PRNGKey(0),
-        scenarios_prob:jnp.ndarray=None,
+        reset_key:jax.Array=random.PRNGKey(0),
+        env_key:jax.Array=random.PRNGKey(0),
+        scenarios_prob:jnp.ndarray | None=None,
         visibility_chance:float=0.,
-    )-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
+    )-> tuple:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
         this function computes the next state, the observation, the reward, and whether the episode is done.
@@ -422,7 +424,7 @@ class LaserNav(BaseEnv):
         env_keys:jnp.ndarray,
         test:bool=False,
         reset_if_done:bool=False,
-        scenarios_prob:jnp.ndarray=None,
+        scenarios_prob:jnp.ndarray | None=None,
         visibility_chance:float=0.,
     ):
         return vmap(LaserNav.step, in_axes=(None, 0, 0, 0, None, None, 0, 0, None, None))(
@@ -439,7 +441,7 @@ class LaserNav(BaseEnv):
         )
     
     @partial(jit, static_argnames=("self"))
-    def reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None, visibility_chance:float=0.) -> tuple:
+    def reset(self, key:jax.Array, scenarios_prob:jnp.ndarray | None=None, visibility_chance:float=0.) -> tuple:
         initial_state, key, info = self._reset(key, scenarios_prob=scenarios_prob, visibility_chance=visibility_chance)
         return \
             initial_state, \
@@ -453,7 +455,7 @@ class LaserNav(BaseEnv):
         return vmap(LaserNav.reset, in_axes=(None,0))(self, keys)
 
     @partial(jit, static_argnames=("self"))
-    def reset_custom_episode(self, key:random.PRNGKey, custom_episode:dict) -> tuple:
+    def reset_custom_episode(self, key:jax.Array, custom_episode:dict) -> tuple:
         """
         Resets the environment to a user-specified episode (custom scenario, scenario index -1).
 

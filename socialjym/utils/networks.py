@@ -8,7 +8,7 @@ outputs. Parameters saved by the Haiku-based versions are converted automaticall
 """
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import flax.linen as nn
 import jax
@@ -79,7 +79,7 @@ def variance_scaling(scale: float = 1., mode: str = "fan_in", distribution: str 
     return init
 
 
-def orthogonal(scale: float = 1., axis: int = -1) -> Initializer:
+def orthogonal(scale: float | Array = 1., axis: int = -1) -> Initializer:
     def init(key, shape, dtype=jnp.float32):
         if len(shape) < 2:
             raise ValueError("Orthogonal initializer requires at least a 2D shape.")
@@ -165,8 +165,8 @@ class LayerNorm(nn.Module):
         mean = jnp.mean(inputs, axis=-1, keepdims=True)
         variance = jnp.var(inputs, axis=-1, keepdims=True)
         param_shape = (inputs.shape[-1],)
-        scale = self.param("scale", ones, param_shape, inputs.dtype) if self.create_scale else np.array(1., dtype=inputs.dtype)
-        offset = self.param("bias", zeros, param_shape, inputs.dtype) if self.create_offset else np.array(0., dtype=inputs.dtype)
+        scale = self.param("scale", ones, param_shape, inputs.dtype) if self.create_scale else jnp.asarray(1., dtype=inputs.dtype)
+        offset = self.param("bias", zeros, param_shape, inputs.dtype) if self.create_offset else jnp.asarray(0., dtype=inputs.dtype)
         eps = lax.convert_element_type(self.eps, variance.dtype)
         inv = scale * lax.rsqrt(variance + eps)
         return inv * (inputs - mean) + offset
@@ -330,7 +330,7 @@ class Network:
         """Initialize the parameters. `key` is a PRNG key or an integer seed (as accepted by Haiku)."""
         if jnp.ndim(key) == 0 and jnp.issubdtype(jnp.result_type(key), jnp.integer):
             key = jax.random.PRNGKey(key)
-        return dict(self.module.init(key, *args, **kwargs))
+        return dict(self.module.init(cast(Array, key), *args, **kwargs))
 
     def apply(self, params: Any, *args: Any, **kwargs: Any) -> Any:
         return self.module.apply(as_flax_variables(params), *args, **kwargs)

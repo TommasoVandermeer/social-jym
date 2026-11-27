@@ -1,4 +1,6 @@
+import jax
 import jax.numpy as jnp
+from typing import Any
 import numpy as np
 from jax import random, jit, vmap, lax, nn, value_and_grad, debug
 from jax_tqdm import loop_tqdm
@@ -10,12 +12,13 @@ import os
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Polygon, Rectangle
 
 from .base_policy import BasePolicy
 from socialjym.envs.base_env import EPSILON, ROBOT_KINEMATICS, SCENARIOS, HUMAN_POLICIES, wrap_angle
 from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
-from socialjym.utils.aux_functions import initialize_metrics_dict, compute_episode_metrics, print_average_metrics
+from socialjym.utils.aux_functions import initialize_metrics_dict, compute_episode_metrics, print_average_metrics, pause_on_click
 from socialjym.utils.animation import (
     TrajectoryAnimator,
     GridCellsLayer,
@@ -34,6 +37,7 @@ from socialjym.utils.animation import (
 from socialjym.policies.jessi import JESSI
 from socialjym.utils.networks import MLP, Network, variance_scaling
 from jhsfm.hsfm import get_linear_velocity
+from socialjym.utils.rewards.base_reward import BaseReward
 
 VN_PARAMS = {
     "output_sizes": [150, 100, 100, 1],
@@ -46,9 +50,13 @@ VN_PARAMS = {
 value_network = Network(MLP(**VN_PARAMS))
 
 class CADRL(BasePolicy):
+    # Used by animate_trajectory, set by the actor-critic subclasses (distr) or by the caller (lidar_angles_robot_frame, to draw lidar_scans)
+    distr: Any
+    lidar_angles_robot_frame: jnp.ndarray
+
     def __init__(
             self, 
-            reward_function:FunctionType, 
+            reward_function:BaseReward, 
             v_max:float = 1., 
             dt:float = 0.25, 
             wheels_distance:float = 0.7, 
@@ -144,7 +152,7 @@ class CADRL(BasePolicy):
         return action_space
 
     @partial(jit, static_argnames=("self"))
-    def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray=None) -> jnp.ndarray:
+    def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray | None=None) -> tuple:
         n_humans = len(next_obs) - 1
         # Compute instantaneous reward
         current_obs = current_obs.at[-1,2:4].set(action)
@@ -165,11 +173,11 @@ class CADRL(BasePolicy):
         return value, vnet_inputs
         
     @partial(jit, static_argnames=("self"))
-    def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray=None) -> jnp.ndarray:
+    def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray | None=None) -> jnp.ndarray:
         return vmap(CADRL._compute_action_value, in_axes=(None,None,None,None,0,None,None))(self, next_obs, current_obs, info, action, vnet_params, humans_mask)
     
     @partial(jit, static_argnames=("self"))
-    def _add_noise_to_human_obs(self, human_obs:jnp.ndarray, robot_pos:jnp.ndarray, key:random.PRNGKey) -> jnp.ndarray:
+    def _add_noise_to_human_obs(self, human_obs:jnp.ndarray, robot_pos:jnp.ndarray, key:jax.Array) -> jnp.ndarray:
         # ## Add noise to human position
         # key1, key2, key3 = random.split(key, 3)
         # r = jnp.linalg.norm(human_obs[0:2] - robot_pos) * (1. + random.normal(key1, (1,), dtype=jnp.float32)[0] * self.position_noise_sigma_percentage_radius)
@@ -185,7 +193,7 @@ class CADRL(BasePolicy):
         return human_obs
 
     @partial(jit, static_argnames=("self"))
-    def _batch_add_noise_to_human_obs(self, obs:jnp.ndarray, key:random.PRNGKey) -> jnp.ndarray:
+    def _batch_add_noise_to_human_obs(self, obs:jnp.ndarray, key:jax.Array) -> jnp.ndarray:
         keys = random.split(key, len(obs)-1)
         noisy_obs = obs.at[:-1].set(vmap(CADRL._add_noise_to_human_obs, in_axes=(None,0,None,0))(self, obs[:-1], obs[-1,0:2], keys))
         return noisy_obs
@@ -252,7 +260,7 @@ class CADRL(BasePolicy):
         return vmap(CADRL._propagate_human_obs, in_axes=(None, 0))(self, obs)
 
     @partial(jit, static_argnames=("self"))
-    def act(self, key:random.PRNGKey, obs:jnp.ndarray, info:dict, vnet_params:dict, epsilon:float) -> jnp.ndarray:
+    def act(self, key:jax.Array, obs:jnp.ndarray, info:dict, vnet_params:dict, epsilon:float) -> tuple:
         
         @jit
         def _random_action(val):
@@ -302,7 +310,7 @@ class CADRL(BasePolicy):
     def _compute_loss_and_gradients(
         self, 
         current_vnet_params:dict,  
-        experiences:dict[str:jnp.ndarray],
+        experiences:dict[str, jnp.ndarray],
         # Experiences: {"vnet_inputs":jnp.ndarray, "targets":jnp.ndarray,}
     ) -> tuple:
         @jit
@@ -341,7 +349,7 @@ class CADRL(BasePolicy):
     def batch_compute_loss_and_gradients(
         self, 
         current_vnet_params:dict, 
-        experiences:dict[str:jnp.ndarray],
+        experiences:dict[str, jnp.ndarray],
         # Experiences: {"vnet_inputs":jnp.ndarray, "targets":jnp.ndarray,}
     ) -> tuple:
         return vmap(CADRL._compute_loss_and_gradients, in_axes=(None, None, 0))(self, current_vnet_params, experiences)
@@ -351,8 +359,8 @@ class CADRL(BasePolicy):
         self, 
         current_vnet_params:dict, 
         optimizer:optax.GradientTransformation, 
-        optimizer_state: jnp.ndarray, 
-        experiences:dict[str:jnp.ndarray],
+        optimizer_state: optax.OptState, 
+        experiences:dict[str, jnp.ndarray],
         # Experiences: {"vnet_inputs":jnp.ndarray, "targets":jnp.ndarray,}
     ) -> tuple:
         # Compute loss and gradients
@@ -375,7 +383,7 @@ class CADRL(BasePolicy):
         """
         assert isinstance(env, SocialNav), "Environment must be an instance of SocialNav"
         assert env.kinematics == self.kinematics, "Policy kinematics must match environment kinematics"
-        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.robot_dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
         time_limit = env.reward_function.time_limit
         @loop_tqdm(n_trials)
         @jit
@@ -454,8 +462,8 @@ class CADRL(BasePolicy):
         occupancy_grids=None, # (optional) occupancy grids (if not None, they will be visualized in the animation)
         grid_cells=None, # (optional) grid cells (if not None, they will be visualized in the animation)
         grid_cells_size=None, # (optional) size of each grid cell (if not None, it will be visualized in the animation)
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
         p_visualization_threshold_dir:float=0.05,
     ):
@@ -496,9 +504,9 @@ class CADRL(BasePolicy):
                 ax.set_aspect('equal', adjustable='datalim')
                 # Plot humans
                 for h in range(len(humans_poses[frame])):
-                    head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
+                    head = Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
                     ax.add_patch(head)
-                    circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                    circle = Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
                     ax.add_patch(circle)
                 # Plot human velocities
                 for h in range(len(humans_poses[frame])):
@@ -516,9 +524,9 @@ class CADRL(BasePolicy):
                     )
                 # Plot robot
                 robot_position = robot_poses[frame,:2]
-                head = plt.Circle((robot_position[0] + robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
+                head = Circle((robot_position[0] + robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
                 ax.add_patch(head)
-                circle = plt.Circle((robot_position[0], robot_position[1]), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+                circle = Circle((robot_position[0], robot_position[1]), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
                 ax.add_patch(circle)
                 # Plot robot goal
                 ax.plot(
@@ -542,7 +550,7 @@ class CADRL(BasePolicy):
                         cell = grid_cells[i,j]
                         cell_occupancy = occupancy_grids[frame][i,j] if occupancy_grids is not None else 0
                         cell_color = 'red' if cell_occupancy else 'white'
-                        rect = plt.Rectangle((cell[0]-grid_cells_size/2, cell[1]-grid_cells_size/2), grid_cells_size, grid_cells_size, facecolor=cell_color, edgecolor='black', alpha=0.5, zorder=0)
+                        rect = Rectangle((cell[0]-grid_cells_size/2, cell[1]-grid_cells_size/2), grid_cells_size, grid_cells_size, facecolor=cell_color, edgecolor='black', alpha=0.5, zorder=0)
                         axs[0].add_patch(rect)
             if lidar_scans is not None:
                 lidar_scan = lidar_scans[frame]
@@ -577,10 +585,10 @@ class CADRL(BasePolicy):
                             zorder=20,
                         )
                         axs[0].arrow(
-                            pos_world_frame[0],
-                            pos_world_frame[1],
-                            vel_world_frame[0],
-                            vel_world_frame[1],
+                            float(pos_world_frame[0]),
+                            float(pos_world_frame[1]),
+                            float(vel_world_frame[0]),
+                            float(vel_world_frame[1]),
                             head_width=0.3,
                             head_length=0.3,
                             fc='red',
@@ -590,16 +598,16 @@ class CADRL(BasePolicy):
                         )
             # AX :,2: Feasible and bounded action space + action space distribution and action taken
             axs[1].set_xlabel("$v$ (m/s)")
-            axs[1].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
+            axs[1].set_ylabel("$\\omega$ (rad/s)", labelpad=-15)
             axs[1].set_xlim(-0.1, self.v_max + 0.1)
             axs[1].set_ylim(-2*self.v_max/self.wheels_distance - 0.3, 2*self.v_max/self.wheels_distance + 0.3)
             axs[1].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
-            axs[1].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
+            axs[1].set_xticklabels([str(round(i,1)) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
             axs[1].set_yticks(jnp.arange(-2,3,1).tolist() + [2*self.v_max/self.wheels_distance,-2*self.v_max/self.wheels_distance])
             axs[1].set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
             axs[1].grid()
             axs[1].add_patch(
-                plt.Polygon(
+                Polygon(
                     [   
                         [0,2*self.v_max/self.wheels_distance],
                         [0,-2*self.v_max/self.wheels_distance],
@@ -630,7 +638,7 @@ class CADRL(BasePolicy):
             if action_distrs is not None:
                 bounded_action_space_vertices = action_distrs["vertices"][frame]
                 axs[1].add_patch(
-                    plt.Polygon(
+                    Polygon(
                         [   
                             bounded_action_space_vertices[0],
                             bounded_action_space_vertices[1],
@@ -651,17 +659,12 @@ class CADRL(BasePolicy):
                 corresponding_colors = test_action_p[test_action_p > p_visualization_threshold_dir]
                 axs[1].scatter(points_high_p[:, 0], points_high_p[:, 1], c=corresponding_colors, cmap='viridis', s=7, zorder=50)
             axs[1].plot(robot_actions[frame,0], robot_actions[frame,1], marker='^',markersize=9,color='blue',zorder=51) # Action taken
-        anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
+        anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps) # pyright: ignore[reportArgumentType] (the return value of the frame function is used only with blit=True)
         if save_video:
             save_path = os.path.join(os.path.dirname(__file__), f'{self.name}_trajectory.mp4')
             writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
             anim.save(save_path, writer=writer_video, dpi=300)
-        anim.paused = False
-        def toggle_pause(self, *args, **kwargs):
-            if anim.paused: anim.resume()
-            else: anim.pause()
-            anim.paused = not anim.paused
-        fig.canvas.mpl_connect('button_press_event', toggle_pause)
+        pause_on_click(fig, anim)
         plt.show()
 
     def animate_socialnav_trajectory(
@@ -670,16 +673,16 @@ class CADRL(BasePolicy):
         actions,
         goals,
         humans_radii,
-        socialnav_env:SocialNav,
-        action_values:jnp.ndarray=None,
-        action_distrs:jnp.ndarray=None,
-        perception_distrs:dict=None,
+        socialnav_env:SocialNav | LaserNav,
+        action_values:jnp.ndarray | None=None,
+        action_distrs:jnp.ndarray | None=None,
+        perception_distrs:dict | None=None,
         static_obstacles=None,
         occupancy_grids=None,
         grid_cells=None,
         grid_cells_size=None,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
     ):
         robot_positions = states[:,-1,:2]
@@ -734,12 +737,12 @@ class CADRL(BasePolicy):
         occupancy_grids=None, # (optional) occupancy grids (if not None, they will be visualized in the animation)
         grid_cells=None, # (optional) grid cells (if not None, they will be visualized in the animation)
         grid_cells_size=None, # (optional) size of each grid cell (if not None, it will be visualized in the animation)
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
         p_visualization_threshold_dir:float=0.05,
         lidar_angles_robot_frame=None, # (optional) angles of the LiDAR rays, needed to visualize lidar_scans (CADRL has no LiDAR)
-        save_path:str=None, # (optional) path of the saved video (default: same as animate_trajectory)
+        save_path:str | None=None, # (optional) path of the saved video (default: same as animate_trajectory)
         dpi:int=300, # dpi of the saved video
         speed:float=1., # playback speed (1 = real time)
         blit:bool=True, # if False, the whole figure is redrawn at each frame (slower, but zooming while playing works fine)
@@ -827,18 +830,18 @@ class CADRL(BasePolicy):
         actions,
         goals,
         humans_radii,
-        socialnav_env:SocialNav,
-        action_values:jnp.ndarray=None,
-        action_distrs:jnp.ndarray=None,
-        perception_distrs:dict=None,
+        socialnav_env:SocialNav | LaserNav,
+        action_values:jnp.ndarray | None=None,
+        action_distrs:jnp.ndarray | None=None,
+        perception_distrs:dict | None=None,
         static_obstacles=None,
         occupancy_grids=None,
         grid_cells=None,
         grid_cells_size=None,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
-        save_path:str=None,
+        save_path:str | None=None,
         dpi:int=300,
         speed:float=1.,
         blit:bool=True,
@@ -876,13 +879,13 @@ class CADRL(BasePolicy):
         self, 
         jessi:JESSI,
         perception_params:dict,
-        key:random.PRNGKey,
+        key:jax.Array,
         lasernav_obs:jnp.ndarray, # LaserNav observations
         info:dict,
         vnet_params:dict, 
         epsilon:float,
         humans_radius:float,
-    ) -> jnp.ndarray:
+    ) -> tuple:
         ## Identify visible humans with JESSI perception
         hcgs, _, _, _ = jessi.perception.apply(perception_params, jessi.compute_perception_input(lasernav_obs)[0])
         humans_mask = hcgs['weights'] > 0.5
@@ -981,7 +984,7 @@ class CADRL(BasePolicy):
         """
         assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
         assert env.kinematics == self.kinematics, "Policy kinematics must match environment kinematics"
-        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.robot_dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
         time_limit = env.reward_function.time_limit
         @loop_tqdm(n_trials)
         @jit

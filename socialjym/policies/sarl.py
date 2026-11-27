@@ -7,6 +7,7 @@ from types import FunctionType
 
 from .cadrl import CADRL
 from socialjym.utils.networks import MLP, Network, variance_scaling
+from socialjym.utils.rewards.base_reward import BaseReward
 
 MLP_1_PARAMS = {
     "output_sizes": [150, 100],
@@ -53,7 +54,7 @@ class ValueNetwork(fnn.Module):
     def __call__(
             self, 
             x: jnp.ndarray,
-            mask: jnp.ndarray = None
+            mask: jnp.ndarray | None = None
         ) -> jnp.ndarray:
         """
         Computes the value of the state given the input x of shape (# of humans, length of reparametrized state)
@@ -122,7 +123,7 @@ value_network = Network(ValueNetwork())
 class SARL(CADRL):
     def __init__(
             self, 
-            reward_function:FunctionType, 
+            reward_function:BaseReward, 
             v_max=1., 
             dt=0.25, 
             wheels_distance=0.7, 
@@ -155,7 +156,7 @@ class SARL(CADRL):
     # Private methods
 
     @partial(jit, static_argnames=("self"))
-    def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray=None) -> jnp.ndarray:
+    def _compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray | None=None) -> tuple:
         n_humans = len(next_obs) - 1
         # Compute instantaneous reward
         current_obs = current_obs.at[-1,2:4].set(action)
@@ -172,7 +173,7 @@ class SARL(CADRL):
         return value, vnet_inputs
     
     @partial(jit, static_argnames=("self"))
-    def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray=None) -> jnp.ndarray:
+    def _batch_compute_action_value(self, next_obs:jnp.ndarray, current_obs:jnp.ndarray, info:dict, action:jnp.ndarray, vnet_params:dict, humans_mask:jnp.ndarray | None=None) -> jnp.ndarray:
         return vmap(SARL._compute_action_value, in_axes=(None,None,None,None,0,None,None))(self, next_obs, current_obs, info, action, vnet_params, humans_mask)
 
     # Public methods

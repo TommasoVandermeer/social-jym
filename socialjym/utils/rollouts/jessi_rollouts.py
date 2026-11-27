@@ -380,7 +380,7 @@ def jessi_multitask_rl_rollout(
     beta_entropy,
     lambda_gae,
     training_type:str = "multitask",
-    target_kl:float = None,
+    target_kl:float | None = None,
     safety_loss:bool = False,
     debugging:bool = False,
 ):
@@ -389,7 +389,7 @@ def jessi_multitask_rl_rollout(
     assert mini_batch_size % micro_batch_size == 0, "Mini-batch size must be divisible by micro-batch size."
     assert total_batch_size % mini_batch_size == 0, "Total batch size must be divisible by mini-batch size."
     assert micro_batch_size % device_count() == 0, "Micro-batch size must be divisible by number of devices."
-    training_type = TRAINING_TYPES.index(training_type)
+    training_type_index = TRAINING_TYPES.index(training_type)
     n_steps = total_batch_size // n_parallel_envs
     n_minibatches = total_batch_size // mini_batch_size
     n_micro_splits = mini_batch_size // micro_batch_size
@@ -473,7 +473,7 @@ def jessi_multitask_rl_rollout(
                 clip_range=clip_range, 
                 beta_entropy=beta_entropy,
                 compute_safety_loss=safety_loss,
-                training_type=training_type,
+                training_type=training_type_index,
             )
             abstract_train_out = eval_shape(
                 train_pure,

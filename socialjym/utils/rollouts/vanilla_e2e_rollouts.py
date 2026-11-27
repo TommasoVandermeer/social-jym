@@ -329,7 +329,7 @@ def vanilla_e2e_rl_rollout(
     n_epochs,
     beta_entropy,
     lambda_gae,
-    target_kl:float = None,
+    target_kl:float | None = None,
     debugging:bool = False,
 ):
     assert total_batch_size % n_parallel_envs == 0, "Total batch size must be divisible by number of parallel envs."

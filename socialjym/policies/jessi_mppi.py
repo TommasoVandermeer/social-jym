@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug, ops
 from jax.tree_util import tree_map
@@ -307,12 +308,12 @@ class JESSI_MPPI(JESSI):
     @partial(jit, static_argnames=("self"))
     def act(
         self, 
-        key:random.PRNGKey,
+        key:jax.Array,
         obs:jnp.ndarray, 
         info:dict, 
         perception_params:dict,
         actor_critic_params:dict,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple:
         # Split key
         key, subkey = random.split(key)
         # Extract robot goal from info

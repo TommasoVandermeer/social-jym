@@ -1,9 +1,11 @@
+import jax
 import jax.numpy as jnp
 from jax import random, jit, lax, debug, vmap
 from functools import partial
 from types import FunctionType
 
 from .base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS, ENVIRONMENTS, wrap_angle
+from socialjym.utils.rewards.base_reward import BaseReward
 
 class SocialNav(BaseEnv):
     """
@@ -19,7 +21,7 @@ class SocialNav(BaseEnv):
             humans_dt:float, 
             scenario:str, 
             n_humans:int, 
-            reward_function:FunctionType,
+            reward_function:BaseReward,
             n_obstacles:int = 0,
             humans_policy='hsfm', 
             robot_visible=False, 
@@ -135,7 +137,7 @@ class SocialNav(BaseEnv):
     # --- Public methods ---
 
     @partial(jit, static_argnames=("self"))
-    def imitation_learning_step(self, state:jnp.ndarray, info:dict)-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
+    def imitation_learning_step(self, state:jnp.ndarray, info:dict)-> tuple:
         """
         Given an environment state and a dictionary containing additional information about the environment
         this function computes the next state, the observation, the reward, and whether the episode is done.
@@ -208,8 +210,8 @@ class SocialNav(BaseEnv):
         action:jnp.ndarray, 
         test:bool=False,
         reset_if_done:bool=False,
-        reset_key:random.PRNGKey=random.PRNGKey(0),
-    )-> tuple[jnp.ndarray, jnp.ndarray, dict, float, bool]:
+        reset_key:jax.Array=random.PRNGKey(0),
+    )-> tuple:
         """
         Given an environment state, a dictionary containing additional information about the environment, and an action,
         this function computes the next state, the observation, the reward, and whether the episode is done.
@@ -307,7 +309,7 @@ class SocialNav(BaseEnv):
         )
 
     @partial(jit, static_argnames=("self"))
-    def reset(self, key:random.PRNGKey) -> tuple:
+    def reset(self, key:jax.Array) -> tuple:
         """
         Given a PRNG key, this function resets the environment to start a new episode returning a stochastic initial state.
 
@@ -340,7 +342,7 @@ class SocialNav(BaseEnv):
         return vmap(SocialNav.reset, in_axes=(None,0))(self, keys)
 
     @partial(jit, static_argnames=("self"))
-    def reset_custom_episode(self, key:random.PRNGKey, custom_episode:dict) -> tuple:
+    def reset_custom_episode(self, key:jax.Array, custom_episode:dict) -> tuple:
         """
         Given a custom episode data, this function resets the environment to start a new episode with the given data.
 

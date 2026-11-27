@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from functools import partial
 from jax import jit, vmap, random, lax, debug
 from jax.tree_util import tree_map
+import jax
 import jax.numpy as jnp
 
 class BaseVNetReplayBuffer(ABC):
@@ -46,7 +47,7 @@ class BaseVNetReplayBuffer(ABC):
         return vmap(BaseVNetReplayBuffer.iterate, in_axes=(None, None, None, 0))(self, buffer_state, current_buffer_size, iterations)
 
     @partial(jit, static_argnames=("self"))
-    def shuffle(self, buffer_state: dict, key: random.PRNGKey, times: int = 1) -> dict:
+    def shuffle(self, buffer_state: dict, key: jax.Array, times: int = 1) -> tuple:
             
             @partial(vmap, in_axes=(0, None))
             def shuffle_batch(indexes, buffer):

@@ -1,3 +1,4 @@
+from typing import cast
 from jax import jit, lax
 import jax.numpy as jnp
 from functools import partial
@@ -33,7 +34,7 @@ class DummyReward(BaseReward):
         obs:jnp.ndarray, 
         info:dict, 
         dt:float
-    ) -> tuple[float, dict]:
+    ) -> tuple:
         """
         Given a state and a dictionary containing additional information about the environment,
         this function computes the reward of the current state and wether the episode is finished or not.
@@ -96,4 +97,4 @@ class DummyReward(BaseReward):
             "failure": collision,
             "timeout": timeout & (~(collision)) & (~(reached_goal))
         }
-        return 0., outcome, {self.gamma: 0.}
+        return 0., outcome, {cast(float, self.gamma): 0.}

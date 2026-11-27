@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from functools import partial
 from jax import jit, vmap, lax, random, debug
+import jax
 import jax.numpy as jnp
 
 from jhsfm.hsfm import step as hsfm_humans_step
@@ -71,7 +72,7 @@ def wrap_angle(theta:float) -> float:
     return wrapped_theta
 
 @jit
-def is_multiple(number:float, dividend:float, tolerance:float=1e-7) -> bool:
+def is_multiple(number:float, dividend:float, tolerance:float=1e-7) -> jnp.ndarray:
     """
     Checks if a number (also a float) is a multiple of another number within a given tolerance error.
     """
@@ -138,7 +139,7 @@ def thicken_obstacles(obstacles, thickness):
 
 @partial(jit, static_argnames=("N", "max_attempts"))
 def generate_wall_noise(
-    key: random.PRNGKey,
+    key: jax.Array,
     obstacles: jnp.ndarray,    # Shape: (O, 1, 2, 2)
     robot_position: jnp.ndarray, # Shape: (2,)
     robot_goal: jnp.ndarray,     # Shape: (2,)
@@ -309,7 +310,7 @@ class BaseEnv(ABC):
             assert grid_cell_size > 0, "There should be at least one obstacle (also padding obstacles) to enable grid map computation."
         assert humans_dt <= robot_dt, "The humans' time step must be less or equal than the robot's time step."
         assert is_multiple(robot_dt, humans_dt), "The robot's time step must be a multiple of the humans' time step."
-        if scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or (scenario == SCENARIOS.index('hybrid_scenario') and SCENARIOS.index('circular_crossing_with_static_obstacles') in hybrid_scenario_subset):
+        if scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') or (scenario == SCENARIOS.index('hybrid_scenario') and SCENARIOS.index('circular_crossing_with_static_obstacles') in list(hybrid_scenario_subset)):
             assert n_humans > ccso_n_static_humans, "The number of static humans must be less than the total number of humans."
         assert tau_action_0 >= 0., "Time constant of first order system for action 0 should be greater or equal to zero."
         assert tau_action_1 >= 0., "Time constant of first order system for action 1 should be greater or equal to zero."
@@ -532,21 +533,21 @@ class BaseEnv(ABC):
     # --- Abstract methods --- #
 
     @abstractmethod
-    def _get_obs(self, state):
+    def _get_obs(self, state, *args, **kwargs):
         pass
 
     @abstractmethod
-    def reset(self, key):
+    def reset(self, key, *args, **kwargs) -> tuple:
         pass
 
     @abstractmethod
-    def step(self, env_state, action):
+    def step(self, *args, **kwargs) -> tuple:
         pass
 
     # --- Private methods --- #
 
     @partial(jit, static_argnames=("self"))
-    def _reset(self, key:random.PRNGKey, scenarios_prob:jnp.ndarray=None, visibility_chance:float=0.) -> tuple[jnp.ndarray, random.PRNGKey, dict]:
+    def _reset(self, key:jax.Array, scenarios_prob:jnp.ndarray | None=None, visibility_chance:float=0.) -> tuple[jnp.ndarray, jax.Array, dict]:
         key, scen_key, flip_key, noise_key = random.split(key, 4)
         if self.scenario == SCENARIOS.index('hybrid_scenario'):
             # Randomly choose a scenario between all then ones included in the hybrid_scenario subset
@@ -627,8 +628,8 @@ class BaseEnv(ABC):
         robot_goal:jnp.ndarray,
         static_obstacles:jnp.ndarray,
         robot_goal_list:jnp.ndarray,
-        key:random.PRNGKey
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, bool, bool]:
+        key:jax.Array
+    ) -> tuple:
         """
         Randomly flips the environment along the x-axis and y-axis with 50% probability.
 
@@ -695,7 +696,7 @@ class BaseEnv(ABC):
         humans_delay:jnp.ndarray,
         is_x_flipped:bool,
         is_y_flipped:bool,
-        noise_key:random.PRNGKey,
+        noise_key:jax.Array,
         visibility_chance:float=0.,
     ) -> dict:
         """
@@ -760,7 +761,7 @@ class BaseEnv(ABC):
         return info
 
     @partial(jit, static_argnames=("self"))
-    def _init_obstacles(self, key:random.PRNGKey, scenario:int) -> jnp.ndarray:
+    def _init_obstacles(self, key:jax.Array, scenario:int) -> jnp.ndarray:
         if self.n_obstacles == 0:
             return jnp.full((1, 1, 2, 2), jnp.nan)
         else:
@@ -789,7 +790,7 @@ class BaseEnv(ABC):
         return self.robot_goals_per_scenario[scenario][0]
 
     @partial(jit, static_argnames=("self"))
-    def _generate_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_circular_crossing_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
@@ -851,7 +852,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
     
     @partial(jit, static_argnames=("self"))
-    def _generate_delayed_circular_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_delayed_circular_crossing_episode(self, key:jax.Array) -> tuple:
         key, subkey = random.split(key)
         full_state, humans_goal, _, humans_parameters, _, _ = self._generate_circular_crossing_episode(key)
         robot_goal = self._init_robot_goal(SCENARIOS.index('delayed_circular_crossing'))
@@ -860,7 +861,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, humans_delay
 
     @partial(jit, static_argnames=("self"))
-    def _generate_parallel_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_parallel_traffic_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
@@ -925,7 +926,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _generate_perpendicular_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_perpendicular_traffic_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
@@ -989,7 +990,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _generate_robot_crowding_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_robot_crowding_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
@@ -1054,7 +1055,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _generate_circular_crossing_with_static_obstacles_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_circular_crossing_with_static_obstacles_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
@@ -1067,7 +1068,7 @@ class BaseEnv(ABC):
                 idx:int, 
                 radius:float, 
                 max_vel:float, 
-                key:random.PRNGKey
+                key:jax.Array
             ) -> jnp.ndarray:
             parameters = lax.cond(
                 idx < (self.ccso_n_static_humans),
@@ -1177,7 +1178,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _generate_crowd_navigation_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_crowd_navigation_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
@@ -1210,7 +1211,7 @@ class BaseEnv(ABC):
         positions, key = lax.fori_loop(0, self.n_humans, _fori_body, (positions, key))
         
         @jit 
-        def _goal_comp(position:jnp.ndarray, subkey:random.PRNGKey) -> jnp.ndarray:
+        def _goal_comp(position:jnp.ndarray, subkey:jax.Array) -> jnp.ndarray:
             position_angle = jnp.atan2(position[1], position[0])
             new_angle = wrap_angle(random.uniform(subkey, shape=(), minval=position_angle-jnp.pi/4, maxval=position_angle+jnp.pi/4))
             new_distance = random.uniform(subkey, shape=(1,), minval=0., maxval=self.circle_radius)
@@ -1252,7 +1253,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
     
     @partial(jit, static_argnames=("self"))
-    def _generate_corner_traffic_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_corner_traffic_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
@@ -1316,7 +1317,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _generate_door_crossing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_door_crossing_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
@@ -1386,7 +1387,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _generate_crowd_chasing_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_crowd_chasing_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_goal = jnp.zeros((self.n_humans, 2))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
@@ -1446,7 +1447,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _generate_l_turn_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_l_turn_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
         # Humans (Randomly generate the humans' positions far away)
@@ -1471,7 +1472,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _generate_narrow_passage_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_narrow_passage_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
         # Humans (Randomly generate the humans' positions far away)
@@ -1498,7 +1499,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, humans_delay
     
     @partial(jit, static_argnames=("self"))
-    def _generate_slalom_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_slalom_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
         # Humans (Randomly generate the humans' positions far away)
@@ -1524,7 +1525,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
     
     @partial(jit, static_argnames=("self"))
-    def _generate_random_obstacle_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_random_obstacle_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
         # Humans (Randomly generate the humans' positions far away)
@@ -1564,7 +1565,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
     
     @partial(jit, static_argnames=("self"))
-    def _generate_narrow_corridor_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_narrow_corridor_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
         # Humans (Randomly generate the humans' positions far away)
@@ -1593,7 +1594,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _generate_random_room_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_random_room_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
         # Humans (Randomly generate the humans' positions far away)
@@ -1620,7 +1621,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _generate_t_corridor_episode(self, key:random.PRNGKey) -> tuple[jnp.ndarray, dict]:
+    def _generate_t_corridor_episode(self, key:jax.Array) -> tuple:
         full_state = jnp.zeros((self.n_humans+1, 6))
         humans_parameters = self.get_standard_humans_parameters(self.n_humans)
         # Humans (Randomly generate the humans' positions far away)
@@ -1654,7 +1655,7 @@ class BaseEnv(ABC):
         return full_state, humans_goal, robot_goal, humans_parameters, static_obstacles, jnp.zeros((self.n_humans,))
 
     @partial(jit, static_argnames=("self"))
-    def _human_ray_intersect(self, direction:jnp.ndarray, human_position:jnp.ndarray, lidar_position:jnp.ndarray, human_radius:float) -> float:
+    def _human_ray_intersect(self, direction:jnp.ndarray, human_position:jnp.ndarray, lidar_position:jnp.ndarray, human_radius:float) -> jnp.ndarray:
         s = lidar_position - human_position
         b = jnp.dot(s, direction)
         c = jnp.dot(s, s) - human_radius**2
@@ -1665,7 +1666,7 @@ class BaseEnv(ABC):
         return jnp.where(valid_intersection, t, self.lidar_max_dist)    
     
     @partial(jit, static_argnames=("self"))
-    def _batch_human_ray_intersect(self, direction:jnp.ndarray, human_positions:jnp.ndarray, lidar_position:jnp.ndarray, human_radiuses:float) -> jnp.ndarray:
+    def _batch_human_ray_intersect(self, direction:jnp.ndarray, human_positions:jnp.ndarray, lidar_position:jnp.ndarray, human_radiuses:float) -> tuple:
         humans_distances = vmap(BaseEnv._human_ray_intersect, in_axes=(None,None,0,None,0))(self, direction, human_positions, lidar_position, human_radiuses)
         shortest_distance_index = jnp.nanargmin(humans_distances)
         return humans_distances[shortest_distance_index], shortest_distance_index
@@ -1698,13 +1699,13 @@ class BaseEnv(ABC):
         )
     
     @partial(jit, static_argnames=("self"))
-    def _obstacle_ray_intersect(self, direction:jnp.ndarray, obstacle:jnp.ndarray, lidar_position:jnp.ndarray) -> float:
+    def _obstacle_ray_intersect(self, direction:jnp.ndarray, obstacle:jnp.ndarray, lidar_position:jnp.ndarray) -> tuple:
         distances = vmap(BaseEnv._segment_ray_intersect, in_axes=(None,0,0,None,None))(self, obstacle[:,0,:], obstacle[:,1,:], lidar_position, direction)
         shortest_distance_index = jnp.nanargmin(distances)
         return distances[shortest_distance_index], shortest_distance_index
 
     @partial(jit, static_argnames=("self"))
-    def _batch_obstacle_ray_intersect(self, direction:jnp.ndarray, obstacles:jnp.ndarray, lidar_position:jnp.ndarray) -> float:
+    def _batch_obstacle_ray_intersect(self, direction:jnp.ndarray, obstacles:jnp.ndarray, lidar_position:jnp.ndarray) -> tuple:
         distances, collision_idxs = vmap(BaseEnv._obstacle_ray_intersect, in_axes=(None,None,0,None))(self, direction, obstacles, lidar_position)
         shortest_distance_index = jnp.nanargmin(distances)
         return distances[shortest_distance_index], jnp.array([shortest_distance_index, collision_idxs[shortest_distance_index]])
@@ -2217,7 +2218,7 @@ class BaseEnv(ABC):
         human_legs_radii:jnp.ndarray,
         static_obstacles:jnp.ndarray,
         noise_key=random.PRNGKey(0)
-    ) -> jnp.ndarray:
+    ) -> tuple:
         """
         Given the current state of the environment, the robot orientation and the additional information about the environment,
         this function computes the lidar measurements of the robot. The lidar measurements are given as a set of distances and angles (in the global frame) for each ray.
@@ -2268,7 +2269,7 @@ class BaseEnv(ABC):
         return lidar_output, humans_visibility_mask, obstacles_visibility_mask
     
     @partial(jit, static_argnames=("self"))
-    def add_lidar_noise(self, measurements:jnp.ndarray, noise_key:random.PRNGKey) -> jnp.ndarray:
+    def add_lidar_noise(self, measurements:jnp.ndarray, noise_key:jax.Array) -> jnp.ndarray:
         """
         Add noise and salt-and-pepper to the given lidar measurements.
 

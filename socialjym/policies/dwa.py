@@ -6,13 +6,14 @@ from functools import partial
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Polygon
 import os
 
 from socialjym.envs.base_env import SCENARIOS, ROBOT_KINEMATICS, HUMAN_POLICIES
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
-from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics
+from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics, pause_on_click
 from socialjym.utils.animation import (
     TrajectoryAnimator,
     LinesLayer,
@@ -319,7 +320,7 @@ class DWA(BasePolicy):
         """
         assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
         assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "DWA policy can only be evaluated on unicycle kinematics"
-        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.robot_dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
         assert env.lidar_angular_range == self.lidar_angular_range, f"Environment LiDAR angular range (lidar_angular_range={env.lidar_angular_range}) must be equal to policy LiDAR angular range (lidar_angular_range={self.lidar_angular_range}) for evaluation"
         assert env.lidar_max_dist == self.lidar_max_dist, f"Environment LiDAR max distance (lidar_max_dist={env.lidar_max_dist}) must be equal to policy LiDAR max distance (lidar_max_dist={self.lidar_max_dist}) for evaluation"
         assert env.lidar_num_rays == self.lidar_num_rays, f"Environment LiDAR number of rays (lidar_num_rays={env.lidar_num_rays}) must be equal to policy LiDAR number of rays (lidar_num_rays={self.lidar_num_rays}) for evaluation"
@@ -396,8 +397,8 @@ class DWA(BasePolicy):
         humans_velocities, # vx, vy (in global frame)
         humans_radii,
         static_obstacles,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
     ):
         # Validate input args
@@ -454,9 +455,9 @@ class DWA(BasePolicy):
                 ax.set_aspect('equal', adjustable='datalim')
                 # Plot humans
                 for h in range(len(humans_poses[frame])):
-                    head = plt.Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
+                    head = Circle((humans_poses[frame][h,0] + jnp.cos(humans_poses[frame][h,2]) * humans_radii[frame][h], humans_poses[frame][h,1] + jnp.sin(humans_poses[frame][h,2]) * humans_radii[frame][h]), 0.1, color='black', alpha=0.6, zorder=1)
                     ax.add_patch(head)
-                    circle = plt.Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                    circle = Circle((humans_poses[frame][h,0], humans_poses[frame][h,1]), humans_radii[frame][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
                     ax.add_patch(circle)
                 # Plot human velocities
                 for h in range(len(humans_poses[frame])):
@@ -474,9 +475,9 @@ class DWA(BasePolicy):
                     )
                 # Plot robot
                 robot_position = robot_poses[frame,:2]
-                head = plt.Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
+                head = Circle((robot_position[0] + self.robot_radius * jnp.cos(robot_poses[frame,2]), robot_position[1] + self.robot_radius * jnp.sin(robot_poses[frame,2])), 0.1, color='black', zorder=1)
                 ax.add_patch(head)
-                circle = plt.Circle((robot_position[0], robot_position[1]), self.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+                circle = Circle((robot_position[0], robot_position[1]), self.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
                 ax.add_patch(circle)
                 # Plot robot goal
                 ax.plot(
@@ -535,16 +536,16 @@ class DWA(BasePolicy):
                     axs[1].plot(trajectory[:,0], trajectory[:,1], color=color, alpha=alpha, linewidth=s, zorder=10)
             # AX :,2: Feasible and bounded action space + action space distribution and action taken
             axs[2].set_xlabel("$v$ (m/s)")
-            axs[2].set_ylabel("$\omega$ (rad/s)", labelpad=-15)
+            axs[2].set_ylabel("$\\omega$ (rad/s)", labelpad=-15)
             axs[2].set_xlim(-0.1, self.v_max + 0.1)
             axs[2].set_ylim(-2*self.v_max/self.wheels_distance - 0.3, 2*self.v_max/self.wheels_distance + 0.3)
             axs[2].set_xticks(jnp.arange(0, self.v_max+0.2, 0.2))
-            axs[2].set_xticklabels([round(i,1) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
+            axs[2].set_xticklabels([str(round(i,1)) for i in jnp.arange(0, self.v_max, 0.2)] + [r"$\overline{v}$"])
             axs[2].set_yticks(jnp.arange(-2,3,1).tolist() + [2*self.v_max/self.wheels_distance,-2*self.v_max/self.wheels_distance])
             axs[2].set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
             axs[2].grid()
             axs[2].add_patch(
-                plt.Polygon(
+                Polygon(
                     [   
                         [0,2*self.v_max/self.wheels_distance],
                         [0,-2*self.v_max/self.wheels_distance],
@@ -573,17 +574,12 @@ class DWA(BasePolicy):
                 min_cost_box_action = feasible_actions[jnp.nanargmin(feasible_actions_cost)]
                 axs[2].plot(min_cost_box_action[0], min_cost_box_action[1], marker='^',markersize=9,color='darkorange',zorder=50) # Best action in the box action space
                 axs[2].plot([robot_actions[frame,0], min_cost_box_action[0]], [robot_actions[frame,1], min_cost_box_action[1]], color='darkorange', linestyle='--', zorder=49) # Line between best box action and action taken
-        anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps)
+        anim = FuncAnimation(fig, animate, interval=self.dt*1000, frames=n_steps) # pyright: ignore[reportArgumentType] (the return value of the frame function is used only with blit=True)
         if save_video:
             save_path = os.path.join(os.path.dirname(__file__), f'{self.name}_trajectory.mp4')
             writer_video = FFMpegWriter(fps=int(1/self.dt), bitrate=1800)
             anim.save(save_path, writer=writer_video, dpi=300)
-        anim.paused = False
-        def toggle_pause(self, *args, **kwargs):
-            if anim.paused: anim.resume()
-            else: anim.pause()
-            anim.paused = not anim.paused
-        fig.canvas.mpl_connect('button_press_event', toggle_pause)
+        pause_on_click(fig, anim)
         plt.show()
 
     def animate_lasernav_trajectory(
@@ -596,8 +592,8 @@ class DWA(BasePolicy):
         static_obstacles,
         humans_radii,
         lasernav_env:LaserNav,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
     ):
         robot_positions = states[:,-1,:2]
@@ -641,10 +637,10 @@ class DWA(BasePolicy):
         humans_velocities, # vx, vy (in global frame)
         humans_radii,
         static_obstacles,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
-        save_path:str=None, # (optional) path of the saved video (default: same as animate_trajectory)
+        save_path:str | None=None, # (optional) path of the saved video (default: same as animate_trajectory)
         dpi:int=300, # dpi of the saved video
         speed:float=1., # playback speed (1 = real time)
         blit:bool=True, # if False, the whole figure is redrawn at each frame (slower, but zooming while playing works fine)
@@ -742,10 +738,10 @@ class DWA(BasePolicy):
         static_obstacles,
         humans_radii,
         lasernav_env:LaserNav,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
-        save_path:str=None,
+        save_path:str | None=None,
         dpi:int=300,
         speed:float=1.,
         blit:bool=True,

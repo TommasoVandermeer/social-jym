@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax
 from functools import partial
@@ -15,7 +16,7 @@ class Gaussian(BaseDistribution):
         self.name="gaussian"
     
     @partial(jit, static_argnames=("self"))
-    def entropy(self, distribution:dict) -> float:
+    def entropy(self, distribution:dict) -> jnp.ndarray:
         logsigmas = distribution["logsigmas"]
         return .5 * jnp.log(2*jnp.pi*jnp.exp(1)) * len(logsigmas)  + jnp.sum(logsigmas)
 
@@ -24,7 +25,7 @@ class Gaussian(BaseDistribution):
         return vmap(Gaussian.entropy, in_axes=(None,0))(self, distributions)
 
     @partial(jit, static_argnames=("self"))
-    def sample(self, distribution:dict, key:random.PRNGKey):
+    def sample(self, distribution:dict, key:jax.Array):
         means = distribution["means"]
         sigmas = jnp.exp(distribution["logsigmas"])
         return means + sigmas * random.normal(key, shape=(len(means),))
@@ -197,7 +198,7 @@ class Gaussian(BaseDistribution):
         return jnp.exp(distributions["logsigmas"])
     
     @partial(jit, static_argnames=("self"))
-    def is_in_support(self, distribution:dict, action:jnp.ndarray) -> bool:
+    def is_in_support(self, distribution:dict, action:jnp.ndarray) -> jnp.ndarray:
         vertices = distribution["vertices"]
         sample = jnp.linalg.solve(jnp.vstack((vertices.T,jnp.ones((len(vertices),)))), jnp.append(action, 1.))
         return jnp.all(sample >= 0) & jnp.isclose(jnp.sum(sample), 1.0)
@@ -216,7 +217,7 @@ class BivariateGaussian(BaseDistribution):
         self.epsilon = epsilon
     
     @partial(jit, static_argnames=("self"))
-    def cholesky(self, distribution:dict) -> float:
+    def cholesky(self, distribution:dict) -> jnp.ndarray:
         logsigmas = distribution["logsigmas"]  + self.epsilon # shape: (2,)  
         sigmas = jnp.exp(logsigmas)  # shape: (2,) 
         correlation = distribution["correlation"]  # shape: (1,)
@@ -234,7 +235,7 @@ class BivariateGaussian(BaseDistribution):
         return jnp.diag(self.covariance(distribution))
 
     @partial(jit, static_argnames=("self"))
-    def entropy(self, distribution:dict) -> float:
+    def entropy(self, distribution:dict) -> jnp.ndarray:
         logsigmas = distribution["logsigmas"]
         correlation = distribution["correlation"]
         return 0.5 * jnp.log((2 * jnp.pi * jnp.exp(1))**2 * jnp.exp(2 * jnp.sum(logsigmas)) * (1 - correlation**2 + self.epsilon))
@@ -276,13 +277,13 @@ class BivariateGaussian(BaseDistribution):
         return vmap(BivariateGaussian.p, in_axes=(None, None, 0))(self, distribution, samples)
     
     @partial(jit, static_argnames=("self"))
-    def sample(self, distribution:dict, key:random.PRNGKey):
+    def sample(self, distribution:dict, key:jax.Array):
         means = distribution["means"]
         covariance = self.covariance(distribution)
         return random.multivariate_normal(key, means, covariance)
 
     @partial(jit, static_argnames=("self"))
-    def mahalanobis(self, distribution:dict, sample:jnp.ndarray) -> float:
+    def mahalanobis(self, distribution:dict, sample:jnp.ndarray) -> jnp.ndarray:
         """
         Computes the Mahalanobis distance: sqrt((x-mu)^T * Sigma^-1 * (x-mu))
         Efficiently implemented using the Cholesky factor L, avoiding explicit matrix inversion.

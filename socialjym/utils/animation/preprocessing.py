@@ -3,6 +3,7 @@ Quantities needed by the animations, computed ONCE for all the frames of an epis
 The animation loop then only indexes numpy arrays: no JAX dispatch, no recompilation and no per-element Python math at each frame.
 """
 import numpy as np
+from numpy.typing import ArrayLike
 import jax.numpy as jnp
 from jax import jit, vmap
 from jax.tree_util import tree_map
@@ -49,7 +50,7 @@ def robot_to_world(points:np.ndarray, robot_poses:np.ndarray, translate:bool=Tru
         world_points = world_points + robot_poses[:,None,:2]
     return world_points
 
-def lidar_ray_segments(robot_poses:np.ndarray, lidar_scans:np.ndarray, lidar_angles_robot_frame:np.ndarray) -> np.ndarray:
+def lidar_ray_segments(robot_poses:np.ndarray, lidar_scans:np.ndarray, lidar_angles_robot_frame:ArrayLike) -> np.ndarray:
     """Segments (n_steps, n_rays, 2, 2) going from the robot position to each LiDAR reading."""
     angles = robot_poses[:,2:3] + np.asarray(lidar_angles_robot_frame)[None,:]
     origins = np.broadcast_to(robot_poses[:,None,:2], angles.shape + (2,))

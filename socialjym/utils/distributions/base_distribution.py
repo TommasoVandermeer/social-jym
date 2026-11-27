@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from jax import random
+import jax
 import jax.numpy as jnp
 from functools import partial
 from jax import jit
@@ -21,7 +22,7 @@ class BaseDistribution(ABC):
         pass
 
     @abstractmethod
-    def sample(self, distribution:dict, key:random.PRNGKey):
+    def sample(self, distribution:dict, key:jax.Array):
         pass
 
     @abstractmethod
@@ -33,7 +34,7 @@ class BaseDistribution(ABC):
         pass
 
     @abstractmethod
-    def var(self, distribution:dict):
+    def var(self, distribution:dict) -> jnp.ndarray:
         pass
 
     @partial(jit, static_argnames=("self"))

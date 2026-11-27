@@ -9,6 +9,11 @@ from tqdm import tqdm
 from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.utils.replay_buffers.ppo_replay_buffer import PPOBuffer
+from typing import TYPE_CHECKING, cast
+if TYPE_CHECKING:
+    from socialjym.policies.sarl_ppo import SARLPPO
+    from socialjym.policies.dir_safe import DIRSAFE
+    from socialjym.envs.socialnav import SocialNav
 
 
 def _select_envs(mask, on_true, on_false):
@@ -28,8 +33,8 @@ def collect_rollout_step(
     env_state,
     policy_keys,
     reset_keys,
-    policy:BasePolicy,
-    env:BaseEnv,
+    policy: "SARLPPO | DIRSAFE",
+    env: "SocialNav",
     n_steps:int,
 ):
     # Finished episodes are reset with initial states generated once per rollout (reset pool). The env auto-reset
@@ -45,7 +50,7 @@ def collect_rollout_step(
         # Update the running normalization state with the pre-step inputs
         if policy.normalize_and_clip_obs:
             raw_inputs = vmap(policy.batch_compute_vnet_input, in_axes=(0,0,0))(obses[:,-1], obses[:,:-1], infos)
-            norm_state = policy.update_norm_state(
+            norm_state = cast("SARLPPO", policy).update_norm_state(
                 jnp.reshape(raw_inputs, (n_envs * env.n_humans, policy.vnet_input_size)),
                 actor_params["norm_state"],
             )
@@ -120,7 +125,7 @@ def process_buffer_and_gae(
     last_infos,
     last_outcomes,
     history,
-    policy:BasePolicy,
+    policy: "SARLPPO | DIRSAFE",
     lambda_gae:float,
 ):
     n_steps, n_envs = history["values"].shape
@@ -128,7 +133,7 @@ def process_buffer_and_gae(
     inputs = vmap(policy.batch_compute_vnet_input, in_axes=(0,0,0))(last_obses[:,-1], last_obses[:,:-1], last_infos)
     if policy.normalize_and_clip_obs:
         inputs = jnp.reshape(
-            policy.normalize_and_clip_inputs(jnp.reshape(inputs, (-1, policy.vnet_input_size)), actor_params["norm_state"]),
+            cast("SARLPPO", policy).normalize_and_clip_inputs(jnp.reshape(inputs, (-1, policy.vnet_input_size)), actor_params["norm_state"]),
             inputs.shape,
         )
     last_values = jnp.reshape(vmap(policy.critic.apply, in_axes=(None,0))(critic_params, inputs), (n_envs,))
@@ -165,7 +170,7 @@ def train_epochs(
     actor_opt_state,
     critic_opt_state,
     buffer,
-    policy:BasePolicy,
+    policy: "SARLPPO | DIRSAFE",
     actor_optimizer:optax.GradientTransformation,
     critic_optimizer:optax.GradientTransformation,
     n_epochs:int,
@@ -229,8 +234,8 @@ def ppo_update(
     upd_idx,
     runner_state,
     aux_data,
-    policy:BasePolicy,
-    env:BaseEnv,
+    policy: "SARLPPO | DIRSAFE",
+    env: "SocialNav",
     actor_optimizer:optax.GradientTransformation,
     critic_optimizer:optax.GradientTransformation,
     n_steps:int,
@@ -302,8 +307,8 @@ def ppo_rl_rollout(
         critic_optimizer: optax.GradientTransformation,
         buffer_state: dict,
         buffer_capacity: int,
-        policy: BasePolicy,
-        env: BaseEnv,
+        policy: "SARLPPO | DIRSAFE",
+        env: "SocialNav",
         replay_buffer: PPOBuffer,
         clip_range: float,
         n_epochs: int,

@@ -21,7 +21,7 @@ class LogisticNormal(BaseDistribution):
         self.epsilon = epsilon
     
     @partial(jit, static_argnames=("self"))
-    def entropy(self, distribution:dict) -> float:
+    def entropy(self, distribution:dict) -> jnp.ndarray:
         """
         Computes the entropy of the latent Gaussian distribution as a surrogate 
         for the Logistic-Normal entropy, which has no closed-form solution.
@@ -36,7 +36,7 @@ class LogisticNormal(BaseDistribution):
         return vmap(LogisticNormal.entropy, in_axes=(None, 0))(self, distributions)
 
     @partial(jit, static_argnames=("self"))
-    def weight_entropy(self, distribution:dict) -> float:
+    def weight_entropy(self, distribution:dict) -> jnp.ndarray:
         """
         Computes the entropy of the latent Gaussian distribution as a surrogate 
         for the Logistic-Normal entropy, which has no closed-form solution.
@@ -50,7 +50,7 @@ class LogisticNormal(BaseDistribution):
         return vmap(LogisticNormal.weight_entropy, in_axes=(None, 0))(self, distributions)
 
     @partial(jit, static_argnames=("self"))
-    def sample(self, distribution:dict, key:random.PRNGKey):
+    def sample(self, distribution:dict, key:jax.Array):
         """
         Returns LATENT z. 
         """
@@ -130,7 +130,7 @@ class LogisticNormal(BaseDistribution):
         return jnp.sqrt(vmap(LogisticNormal.var, in_axes=(None, 0))(self, distributions))
 
     @partial(jit, static_argnames=("self"))
-    def is_in_support(self, distribution:dict, action:jnp.ndarray) -> bool:
+    def is_in_support(self, distribution:dict, action:jnp.ndarray) -> jnp.ndarray:
         vertices = distribution["vertices"]
         M = jnp.vstack((vertices.T, jnp.ones((len(vertices),))))
         y = jnp.append(action, 1.0)

@@ -1,7 +1,7 @@
 from jax import jit, lax, vmap
 import jax.numpy as jnp
 from functools import partial
-from typing import Union
+from typing import Union, cast
 
 from socialjym.utils.aux_functions import binary_to_decimal
 from socialjym.utils.rewards.base_reward import BaseReward
@@ -121,7 +121,7 @@ class Reward1(BaseReward):
         action:jnp.ndarray,
         info:dict, 
         dt:float
-    ) -> tuple[float, dict]:
+    ) -> tuple:
         """
         Given a state and a dictionary containing additional information about the environment,
         this function computes the reward of the current state and wether the episode is finished or not.
@@ -258,7 +258,7 @@ class Reward1(BaseReward):
             rotation_reward = 0.
         reward = goal_reward + collision_human_reward + collision_obstacle_reward + discomfort_reward + progress_reward + rotation_reward
         if self.multi_gamma:
-            reward_terms = {g: 0.0 for g in self.unique_gammas}
+            reward_terms: dict = {g: 0.0 for g in self.unique_gammas}
             if self.target_reached_reward:
                 reward_terms[self.g_goal] += goal_reward
             if self.collision_with_humans_penalty_reward:
@@ -272,5 +272,5 @@ class Reward1(BaseReward):
             if self.high_rotation_penalty_reward:
                 reward_terms[self.g_rot] += rotation_reward
         else:
-            reward_terms = {self.gamma: reward}
+            reward_terms = {cast(float, self.gamma): reward} # Single discount: gamma is a scalar
         return reward, outcome, reward_terms, {}

@@ -12,6 +12,10 @@ from socialjym.envs.base_env import BaseEnv
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.utils.replay_buffers.base_vnet_replay_buffer import BaseVNetReplayBuffer
 from socialjym.utils.rollouts.act_cri_gpu_rollouts import simulate_il_episodes, compute_il_targets
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from socialjym.policies.cadrl import CADRL
+    from socialjym.envs.socialnav import SocialNav
 
 
 def _select_envs(mask, on_true, on_false):
@@ -80,8 +84,8 @@ def simulate_rl_episodes(
     obses,
     infos,
     outcomes,
-    policy:BasePolicy,
-    env:BaseEnv,
+    policy: "CADRL",
+    env: "SocialNav",
     max_steps:int,
 ):
     """
@@ -126,8 +130,8 @@ def vnet_rl_wave(
     random_seed,
     training_state,
     custom_data,
-    policy:BasePolicy,
-    env:BaseEnv,
+    policy: "CADRL",
+    env: "SocialNav",
     model:Network,
     optimizer:optax.GradientTransformation,
     replay_buffer:BaseVNetReplayBuffer,
@@ -229,18 +233,18 @@ def vnet_rl_rollout(
         model: Network,
         optimizer: optax.GradientTransformation,
         buffer_state: dict,
-        policy: BasePolicy,
-        env: BaseEnv,
+        policy: "CADRL",
+        env: "SocialNav",
         replay_buffer: BaseVNetReplayBuffer,
         buffer_size: int,
-        current_buffer_size: int,
+        current_buffer_size: int | jnp.ndarray,
         num_batches: int,
         epsilon_decay_fn: Callable,
         epsilon_start: float,
         epsilon_end: float,
         decay_rate: float,
         target_update_interval: int = 50,
-        custom_episodes: str = None,
+        custom_episodes: str | None = None,
         exploration_episodes: int = 0, # Number of episodes to explore before starting training
         debugging: bool = False,
         n_parallel_envs: int = 50,
@@ -322,8 +326,8 @@ def collect_vnet_il_chunk(
     buffer_state,
     buffer_size,
     custom_data,
-    policy:BasePolicy,
-    env:BaseEnv,
+    policy: "CADRL",
+    env: "SocialNav",
     replay_buffer:BaseVNetReplayBuffer,
     max_steps:int,
     stored_steps:int,
@@ -355,7 +359,7 @@ def train_vnet_il_epoch(
     buffer_size,
     model_params,
     optimizer_state,
-    policy:BasePolicy,
+    policy: "CADRL",
     optimizer:optax.GradientTransformation,
     replay_buffer:BaseVNetReplayBuffer,
     optimization_steps:int,
@@ -378,14 +382,14 @@ def vnet_il_rollout(
         random_seed: int,
         optimizer: optax.GradientTransformation,
         buffer_state: dict,
-        current_buffer_size: int,
-        policy: BasePolicy,
-        env: BaseEnv,
+        current_buffer_size: int | jnp.ndarray,
+        policy: "CADRL",
+        env: "SocialNav",
         replay_buffer: BaseVNetReplayBuffer,
         buffer_size: int,
         num_epochs: int,
         batch_size: int,
-        custom_episodes: str = None,
+        custom_episodes: str | None = None,
         n_parallel_envs: int = 1000,
 ) -> dict:
     """

@@ -6,6 +6,7 @@ from tqdm import tqdm
 from functools import partial
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Polygon, Rectangle
 import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
 from matplotlib.animation import FuncAnimation, FFMpegWriter
@@ -17,6 +18,11 @@ from datetime import date
 from socialjym.envs.base_env import BaseEnv, SCENARIOS, HUMAN_POLICIES, ROBOT_KINEMATICS, ENVIRONMENTS, wrap_angle
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.utils.networks import haiku_to_flax
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from socialjym.envs.socialnav import SocialNav
+
+ArrayType = np.ndarray | jax.Array # Plotting functions accept numpy and jax arrays
 
 @jit
 def roto_translate_pose_and_vel(position, orientation, velocity, ref_position, ref_orientation):
@@ -65,7 +71,7 @@ def linear_decay(start:float, end:float, current_iteration:int, decay_rate:float
     return value
 
 @jit
-def binary_to_decimal(binary:jnp.array) -> int:
+def binary_to_decimal(binary:jnp.ndarray) -> int:
     decimal = lax.fori_loop(
         0,
         len(binary),
@@ -278,7 +284,7 @@ def compute_episode_metrics(
     )
     return metrics
 
-def decimal_to_binary(decimal:int, n_bits:int) -> jnp.array:
+def decimal_to_binary(decimal:int, n_bits:int) -> jnp.ndarray:
     binary = jnp.zeros((n_bits,), dtype=bool)
     for bit in range(n_bits):
         binary = binary.at[n_bits - bit - 1].set(bool(decimal % 2))
@@ -288,15 +294,15 @@ def decimal_to_binary(decimal:int, n_bits:int) -> jnp.array:
 def plot_state(
         ax:Axes, 
         time:float, 
-        full_state:jnp.ndarray, 
+        full_state:ArrayType, 
         humans_policy:str, 
-        scenario:int, 
-        humans_radiuses:np.ndarray, 
+        scenario:int | None, 
+        humans_radiuses:ArrayType, 
         robot_radius:float, 
         plot_time=True,
         kinematics:str='holonomic',
-        xlims:list=None,
-        ylims:list=None,
+        xlims:list | None=None,
+        ylims:list | None=None,
     ) -> None:
     """
     Plots a given single state of the environment.
@@ -318,26 +324,26 @@ def plot_state(
     # Humans
     for h in range(len(full_state)-1): 
         if humans_policy == 'hsfm':
-            head = plt.Circle((full_state[h,0] + np.cos(full_state[h,4]) * humans_radiuses[h], full_state[h,1] + np.sin(full_state[h,4]) * humans_radiuses[h]), 0.1, color='black', zorder=1)
+            head = Circle((float(full_state[h,0] + np.cos(full_state[h,4]) * humans_radiuses[h]), float(full_state[h,1] + np.sin(full_state[h,4]) * humans_radiuses[h])), 0.1, color='black', zorder=1)
             if not (scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') and np.all(full_state[h,2:4]==0)): 
                 ax.add_patch(head)
         if scenario == SCENARIOS.index('circular_crossing_with_static_obstacles') and np.all(full_state[h,2:4]==0):
             facecolor = 'black'
         else:
             facecolor = 'blue'
-        circle = plt.Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor='black', facecolor=facecolor, fill=True, zorder=1)
+        circle = Circle((float(full_state[h,0]), float(full_state[h,1])),float(humans_radiuses[h]), edgecolor='black', facecolor=facecolor, fill=True, zorder=1)
         ax.add_patch(circle)
         if plot_time: 
-            ax.text(full_state[h,0],full_state[h,1], f"{num}", color='black', va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
+            ax.text(float(full_state[h,0]),float(full_state[h,1]), f"{num}", color='black', va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=1, weight='bold')
     # Robot
     if kinematics == 'unicycle':
-        head = plt.Circle((full_state[-1,0] + np.cos(full_state[-1,4]) * robot_radius, full_state[-1,1] + np.sin(full_state[-1,4]) * robot_radius), 0.1, color='black', zorder=1)
+        head = Circle((float(full_state[-1,0] + np.cos(full_state[-1,4]) * robot_radius), float(full_state[-1,1] + np.sin(full_state[-1,4]) * robot_radius)), 0.1, color='black', zorder=1)
         ax.add_patch(head)
-    circle = plt.Circle((full_state[-1,0],full_state[-1,1]), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+    circle = Circle((float(full_state[-1,0]), float(full_state[-1,1])), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
     ax.add_patch(circle)
     # Time/Label
     if plot_time: 
-        ax.text(full_state[-1,0],full_state[-1,1], f"{num}", color="black", va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=3, weight='bold')
+        ax.text(float(full_state[-1,0]),float(full_state[-1,1]), f"{num}", color="black", va="center", ha="center", size=10 if (time).is_integer() else 6, zorder=3, weight='bold')
     # Set axis limits and labels
     if scenario is None:
         ax.set_aspect('equal', adjustable='box')
@@ -345,7 +351,7 @@ def plot_state(
     else:
         ax.set(xlabel='X',ylabel='Y',xlim=[-10,10],ylim=[-10,10])
 
-def plot_trajectory(ax:Axes, agents_positions:jnp.ndarray, humans_goal:jnp.ndarray, robot_goal:jnp.ndarray):
+def plot_trajectory(ax:Axes, agents_positions:ArrayType, humans_goal:ArrayType, robot_goal:ArrayType):
     colors = list(mcolors.TABLEAU_COLORS.values())
     n_agents = len(agents_positions[0])
     for h in range(n_agents): 
@@ -353,7 +359,7 @@ def plot_trajectory(ax:Axes, agents_positions:jnp.ndarray, humans_goal:jnp.ndarr
         if h < n_agents - 1: ax.scatter(humans_goal[h,0], humans_goal[h,1], marker="*", color=colors[h%len(colors)], zorder=2)
         else: ax.scatter(robot_goal[0], robot_goal[1], marker="*", color="red", zorder=2)
 
-def plot_lidar_measurements(ax:Axes, lidar_measurements:jnp.ndarray, robot_state:jnp.ndarray, robot_radius:float):
+def plot_lidar_measurements(ax:Axes, lidar_measurements:ArrayType, robot_state:ArrayType, robot_radius:float):
     for i in range(len(lidar_measurements)):
         ax.plot(
             [robot_state[0], robot_state[0] + lidar_measurements[i,0] * jnp.cos(lidar_measurements[i,1])], 
@@ -365,14 +371,14 @@ def plot_lidar_measurements(ax:Axes, lidar_measurements:jnp.ndarray, robot_state
 def test_k_trials(
     k: int, 
     random_seed: int, 
-    env: BaseEnv, 
+    env: "SocialNav", 
     policy: BasePolicy, 
     model_params: dict, 
     time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
     personal_space:float=0.5,
-    custom_episodes:dict=None,
+    custom_episodes:dict | None=None,
     print_avg_metrics:bool=True
-) -> tuple:
+) -> dict:
     """
     This function tests a policy in a given environment for k trials and outputs a series of metrics.
 
@@ -396,7 +402,7 @@ def test_k_trials(
         imitation_learning = False
         actor_critic_policy = (policy.name == "SARL-PPO") or (policy.name == "DIRSAFE")
 
-    if policy.name == "SARL*" and policy.use_planner:
+    if policy.name == "SARL*" and getattr(policy, "use_planner"):
         assert env.grid_map_computation, "SARL* policy requires the environment to compute the grid map."
 
     # Since jax does not allow to loop over a dict, we have to decompose it in singular jax numpy arrays
@@ -513,14 +519,14 @@ def test_k_trials(
 def test_k_custom_trials(
     k: int, 
     random_seed: int, 
-    env: BaseEnv, 
+    env: "SocialNav", 
     policy: BasePolicy, 
     model_params: dict, 
     time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
     custom_episodes:dict,
     personal_space:float=0.5,
     print_avg_metrics:bool=True
-) -> tuple:
+) -> dict:
     """
     This function tests a policy in a given environment for k trials and outputs a series of metrics.
 
@@ -698,13 +704,13 @@ def interpolate_humans_boundaries(humans_pose, humans_radiuses, points_per_human
 def test_k_trials_sfm(
     k: int,
     random_seed: int, 
-    env: BaseEnv, 
+    env: "SocialNav", 
     time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
     robot_vmax:float=1.0,
     robot_wheels_distance:float=0.7,
     personal_space:float=0.5,
     print_avg_metrics:bool=True
-) -> tuple:
+) -> dict:
     """
     This function tests the SFM policy in a given environment for k trials and outputs a series of metrics.
 
@@ -849,13 +855,13 @@ def test_k_trials_sfm(
 def test_k_trials_hsfm(
     k: int,
     random_seed: int, 
-    env: BaseEnv, 
+    env: "SocialNav", 
     time_limit: float, # WARNING: This does not effectively modifies the max length of a trial, it is just used to shape array sizes for data storage
     robot_vmax:float=1.0,
     robot_wheels_distance:float=0.7,
     personal_space:float=0.5,
     print_avg_metrics:bool=True
-) -> tuple:
+) -> dict:
     """
     This function tests the HSFM policy in a given environment for k trials and outputs a series of metrics.
 
@@ -1006,23 +1012,23 @@ def test_k_trials_hsfm(
     return metrics
 
 def animate_trajectory(
-    states:jnp.ndarray, 
-    humans_radiuses:np.ndarray, 
+    states:ArrayType, 
+    humans_radiuses:ArrayType, 
     robot_radius:float, 
     humans_policy:str,
-    robot_goal:np.ndarray,
-    scenario:int,
+    robot_goal:ArrayType,
+    scenario:int | None,
     robot_dt:float=0.25,
-    static_obstacles:jnp.ndarray=None,
-    lidar_measurements:jnp.ndarray=None,
+    static_obstacles:ArrayType | None=None,
+    lidar_measurements:ArrayType | None=None,
     kinematics:str='holonomic',
-    action_space_params:jnp.ndarray=None,
+    action_space_params:ArrayType | None=None,
     action_space_aside:bool=False,
-    vmax:float=None,
-    wheels_distance:float=None,
+    vmax:float | None=None,
+    wheels_distance:float | None=None,
     save:bool=False,
-    save_path:str=None,
-    figsize:tuple=None,
+    save_path:str | None=None,
+    figsize:tuple | None=None,
     ) -> None:
 
     if action_space_params is not None:
@@ -1041,6 +1047,7 @@ def animate_trajectory(
     
     if action_space_params is not None and action_space_aside:
         fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=300, gridspec_kw={'width_ratios': [4, 1]})
+        assert isinstance(axes, np.ndarray) # Axes array (for type checking)
         fig.subplots_adjust(right=0.95, left=0.1, bottom=0.1, top=0.85)
         ax = axes[0]
     else:
@@ -1098,13 +1105,14 @@ def animate_trajectory(
                 for o in static_obstacles: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
         if action_space_params is not None and frame < len(action_space_params):
             new_alpha, new_beta, new_gamma = action_space_params[frame]
+            assert vmax is not None and wheels_distance is not None # Checked at the beginning of animate_trajectory
             if not action_space_aside:
-                ax.add_artist(plt.Rectangle(
-                    (states[frame,-1,0] - robot_radius, states[frame,-1,1] - new_alpha*robot_dt**2*new_gamma*vmax/(4*wheels_distance) - robot_radius), 
-                    new_alpha*vmax*robot_dt + 2 * robot_radius, 
-                    2*robot_radius + (new_alpha*robot_dt**2*vmax/(4*wheels_distance) * (new_beta + new_gamma)), 
+                ax.add_artist(Rectangle(
+                    (float(states[frame,-1,0] - robot_radius), float(states[frame,-1,1] - new_alpha*robot_dt**2*new_gamma*vmax/(4*wheels_distance) - robot_radius)), 
+                    float(new_alpha*vmax*robot_dt + 2 * robot_radius), 
+                    float(2*robot_radius + (new_alpha*robot_dt**2*vmax/(4*wheels_distance) * (new_beta + new_gamma))), 
                     rotation_point=(float(states[frame,-1,0]), float(states[frame,-1,1])), 
-                    angle=jnp.rad2deg(states[frame,-1,4]), 
+                    angle=float(jnp.rad2deg(states[frame,-1,4])), 
                     color='green', 
                     fill=False, 
                     zorder=3, 
@@ -1114,7 +1122,7 @@ def animate_trajectory(
             else:
                 axes[1].clear()
                 axes[1].set_xlabel("$v$ (m/s)")
-                axes[1].set_ylabel("$\omega$ (rad/s)")
+                axes[1].set_ylabel("$\\omega$ (rad/s)")
                 axes[1].set_xlim(-0.1, vmax + 0.1)
                 axes[1].set_ylim(-2*vmax/wheels_distance - 0.3, 2*vmax/wheels_distance + 0.3)
                 axes[1].set_xticks(jnp.arange(0, vmax+0.2, 0.2))
@@ -1123,7 +1131,7 @@ def animate_trajectory(
                 axes[1].set_yticklabels([round(i) for i in np.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
                 axes[1].grid()
                 axes[1].add_patch(
-                    plt.Polygon(
+                    Polygon(
                         [   
                             [0,2*vmax/wheels_distance],
                             [0,-2*vmax/wheels_distance],
@@ -1139,7 +1147,7 @@ def animate_trajectory(
                     ),
                 )
                 axes[1].add_patch(
-                    plt.Polygon(
+                    Polygon(
                         [   
                             [0,(2*vmax/wheels_distance)*new_beta],
                             [0,(-2*vmax/wheels_distance)*new_gamma],
@@ -1156,20 +1164,27 @@ def animate_trajectory(
                 )
                 axes[1].legend(fontsize=7, bbox_to_anchor=(0.95, 1.12))
 
-    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(states))
+    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(states)) # pyright: ignore[reportArgumentType] (the return value of animate is used only with blit=True)
     
     if save:
         writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
+        assert save_path is not None
         anim.save(save_path, writer=writer_video, dpi=300)
 
-    anim.paused = False
-    def toggle_pause(self, *args, **kwargs):
-        if anim.paused: anim.resume()
-        else: anim.pause()
-        anim.paused = not anim.paused
-
-    fig.canvas.mpl_connect('button_press_event', toggle_pause)
+    pause_on_click(fig, anim)
     plt.show()
+
+def pause_on_click(fig, anim) -> None:
+    """
+    Pause and resume the matplotlib animation `anim` when the figure `fig` is clicked.
+    """
+    paused = False
+    def toggle_pause(*args, **kwargs):
+        nonlocal paused
+        if paused: anim.resume()
+        else: anim.pause()
+        paused = not paused
+    fig.canvas.mpl_connect('button_press_event', toggle_pause)
 
 def tree_to_numpy(tree):
     """
@@ -1219,9 +1234,9 @@ def load_socialjym_policy(
 
 def load_crowdnav_policy(
         policy_name:str,
-        path:str) -> tuple:
+        path:str) -> dict:
     
-    import torch
+    import torch # pyright: ignore[reportMissingImports] (optional dependency)
 
     ## Get Value Network Parameters (weights and biases)
     vnet_params = {}

@@ -1,7 +1,7 @@
 from jax import jit, lax
 import jax.numpy as jnp
 from functools import partial
-from typing import Union
+from typing import Union, cast
 
 from socialjym.utils.rewards.base_reward import BaseReward
 from socialjym.envs.base_env import ROBOT_KINEMATICS
@@ -65,7 +65,7 @@ class Reward1(BaseReward):
         obs:jnp.ndarray, 
         info:dict, 
         dt:float
-    ) -> tuple[float, dict]:
+    ) -> tuple:
         """
         Given a state and a dictionary containing additional information about the environment,
         this function computes the reward of the current state and wether the episode is finished or not.
@@ -131,12 +131,12 @@ class Reward1(BaseReward):
         discomfort_reward = lax.cond(discomfort, lambda: - 0.5 * dt * (self.discomfort_distance - min_distance), lambda: 0.) # Penalty for getting too close to humans
         reward = goal_reward + collision_reward + discomfort_reward
         if self.multi_gamma:
-            reward_terms = {g: 0.0 for g in self.unique_gammas}
+            reward_terms: dict = {g: 0.0 for g in self.unique_gammas}
             reward_terms[self.g_goal] += goal_reward
             reward_terms[self.g_coll] += collision_reward
             reward_terms[self.g_disc] += discomfort_reward
         else:
-            reward_terms = {self.gamma: reward}
+            reward_terms = {cast(float, self.gamma): reward} # Single discount: gamma is a scalar
         # Compute outcome 
         outcome = {
             "nothing": ~((collision) | (reached_goal) | (timeout)),

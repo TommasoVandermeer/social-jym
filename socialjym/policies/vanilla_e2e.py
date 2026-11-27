@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, nn, value_and_grad
 from jax.tree_util import tree_map
@@ -53,7 +54,7 @@ class MLPActorCritic(fnn.Module):
             self, 
             x: jnp.ndarray,
             y: jnp.ndarray,
-            **kwargs: dict,
+            **kwargs,
     ) -> tuple:
         """
         Args:
@@ -221,8 +222,8 @@ class VanillaE2E(BasePolicy):
     @partial(jit, static_argnames=("self"))
     def init_nn(
         self, 
-        key:random.PRNGKey, 
-    ) -> tuple:
+        key:jax.Array, 
+    ) -> dict:
         # Inputs are shaped:
         # x: (self.n_stack, self.lidar_num_rays, 2)
         # y: (6,) or (6 + 3,) depending on whether action space bounding is enabled
@@ -385,12 +386,12 @@ class VanillaE2E(BasePolicy):
     @partial(jit, static_argnames=("self"))
     def act(
         self, 
-        key:random.PRNGKey, 
+        key:jax.Array, 
         obs:jnp.ndarray, 
         info:dict,
         network_params:dict,
         sample:bool = False,
-    ) -> jnp.ndarray:
+    ) -> tuple:
         # Compute robot_centric robot goal
         rc_robot_goal = self.robot_centric_goal(obs, info['robot_goal'])
         # Compute encoder input and last lidar point cloud (for action bounding)
@@ -432,8 +433,8 @@ class VanillaE2E(BasePolicy):
         self, 
         actor_critic_params:dict,
         actor_critic_optimizer:optax.GradientTransformation, 
-        actor_critic_opt_state: jnp.ndarray, 
-        experiences:dict[str:jnp.ndarray], 
+        actor_critic_opt_state: optax.OptState, 
+        experiences:dict[str, jnp.ndarray], 
     ) -> tuple:
         @jit
         def _compute_loss_and_gradients(
@@ -447,7 +448,7 @@ class VanillaE2E(BasePolicy):
                 inputs:jnp.ndarray,
                 expert_actions:jnp.ndarray,
                 returns:jnp.ndarray,
-                ) -> jnp.ndarray:
+                ) -> tuple:
                 
                 @partial(vmap, in_axes=(None, 0, 0, 0))
                 def _loss_function(
@@ -455,7 +456,7 @@ class VanillaE2E(BasePolicy):
                     input:jnp.ndarray,
                     expert_action:jnp.ndarray,
                     returnn:jnp.ndarray,
-                    ) -> jnp.ndarray:
+                    ) -> tuple:
                     # Compute the prediction (here we should input a key but for now we work only with mean actions)
                     _, predicted_distr, predicted_state_value, _ = self.actor_critic.apply(
                         current_actor_params, 
@@ -520,7 +521,7 @@ class VanillaE2E(BasePolicy):
         """
         assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
         assert env.kinematics == ROBOT_KINEMATICS.index('unicycle'), "VanillaE2E policy can only be evaluated on unicycle kinematics"
-        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.robot_dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
         assert env.lidar_angular_range == self.lidar_angular_range, f"Environment LiDAR angular range (lidar_angular_range={env.lidar_angular_range}) must be equal to policy LiDAR angular range (lidar_angular_range={self.lidar_angular_range}) for evaluation"
         assert env.lidar_max_dist == self.lidar_max_dist, f"Environment LiDAR max distance (lidar_max_dist={env.lidar_max_dist}) must be equal to policy LiDAR max distance (lidar_max_dist={self.lidar_max_dist}) for evaluation"
         assert env.lidar_num_rays == self.lidar_num_rays, f"Environment LiDAR number of rays (lidar_num_rays={env.lidar_num_rays}) must be equal to policy LiDAR number of rays (lidar_num_rays={self.lidar_num_rays}) for evaluation"

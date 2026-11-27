@@ -19,7 +19,7 @@ class InstantRobotHumanCollision(BaseTermination):
         robot_radius:jnp.ndarray,
         human_poses:jnp.ndarray,
         human_radii:jnp.ndarray
-    ) -> tuple[bool, dict]:
+    ) -> tuple:
         """
         Computes whether a collision between the robot and any human has occurred at a specific instant.
 
@@ -56,7 +56,7 @@ class IntervalRobotHumanCollision(BaseTermination):
         human_poses:jnp.ndarray,
         next_human_poses:jnp.ndarray,
         human_radii:jnp.ndarray
-    ) -> tuple[bool, dict]:
+    ) -> tuple:
         """
         Computes whether a collision between the robot and any human has occurred at a specific instant.
 

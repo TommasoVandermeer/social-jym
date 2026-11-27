@@ -1,5 +1,6 @@
 from jax import jit, lax, vmap, debug, random
 from jax_tqdm import loop_tqdm
+import jax
 import jax.numpy as jnp
 from functools import partial
 import scipy.interpolate as interpolate
@@ -426,9 +427,9 @@ class DRAMPPI(MPPI):
         static_obstacles,
         humans_radii,
         humans_distributions,
-        socialnav_env:SocialNav,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        socialnav_env:SocialNav | LaserNav,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
     ):
         robot_positions = states[:,-1,:2]
@@ -496,11 +497,11 @@ class DRAMPPI(MPPI):
         static_obstacles,
         humans_radii,
         humans_distributions,
-        socialnav_env:SocialNav,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        socialnav_env:SocialNav | LaserNav,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
-        save_path:str=None,
+        save_path:str | None=None,
         dpi:int=300,
         speed:float=1.,
         blit:bool=True,
@@ -535,7 +536,7 @@ class DRAMPPI(MPPI):
         self, 
         jessi:JESSI,
         perception_params:dict,
-        key:random.PRNGKey,
+        key:jax.Array,
         lasernav_obs:jnp.ndarray, 
         info:dict, 
         u_mean:jnp.ndarray, 
@@ -618,8 +619,8 @@ class DRAMPPI(MPPI):
         humans_distributions,
         perception_distributions,
         lasernav_env:LaserNav,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
     ):
         robot_positions = states[:,-1,:2]
@@ -686,10 +687,10 @@ class DRAMPPI(MPPI):
         humans_distributions,
         perception_distributions,
         lasernav_env:LaserNav,
-        x_lims:jnp.ndarray=None,
-        y_lims:jnp.ndarray=None,
+        x_lims:jnp.ndarray | None=None,
+        y_lims:jnp.ndarray | None=None,
         save_video:bool=False,
-        save_path:str=None,
+        save_path:str | None=None,
         dpi:int=300,
         speed:float=1.,
         blit:bool=True,
@@ -732,7 +733,7 @@ class DRAMPPI(MPPI):
         """
         assert isinstance(env, LaserNav), "Environment must be an instance of LaserNav"
         assert env.kinematics == self.kinematics, "Policy kinematics must match environment kinematics"
-        assert env.robot_dt == self.dt, f"Environment time step (dt={env.dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
+        assert env.robot_dt == self.dt, f"Environment time step (dt={env.robot_dt}) must be equal to policy time step (dt={self.dt}) for evaluation"
         time_limit = env.reward_function.time_limit
         @loop_tqdm(n_trials)
         @jit

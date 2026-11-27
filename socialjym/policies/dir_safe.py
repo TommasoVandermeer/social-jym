@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug, nn, value_and_grad
 from jax.tree_util import tree_map
@@ -22,6 +23,7 @@ from .sarl_ppo import EPSILON, MLP_1_PARAMS, MLP_2_PARAMS, MLP_3_PARAMS, ATTENTI
 from .jessi import JESSI
 from jhsfm.hsfm import get_linear_velocity
 from socialjym.utils.networks import MLP, Linear, Network, orthogonal, constant
+from socialjym.utils.rewards.base_reward import BaseReward
 
 class Actor(fnn.Module):
     v_max: float
@@ -45,9 +47,9 @@ class Actor(fnn.Module):
     def __call__(
             self, 
             x: jnp.ndarray,
-            mask: jnp.ndarray = None,
-            **kwargs:dict,
-        ) -> jnp.ndarray:
+            mask: jnp.ndarray | None = None,
+            **kwargs,
+        ) -> tuple:
         """
         Computes the action given the re-parametrized state x.
         """
@@ -101,7 +103,7 @@ class Actor(fnn.Module):
 class DIRSAFE(SARL):
     def __init__(
             self, 
-            reward_function:FunctionType, 
+            reward_function:BaseReward, 
             v_max:float=1., 
             dt:float=0.25, 
             wheels_distance:float=0.7, 
@@ -142,7 +144,7 @@ class DIRSAFE(SARL):
         self, 
         current_critic_params:dict, 
         current_actor_params:dict, 
-        experiences:dict[str:jnp.ndarray],
+        experiences:dict[str, jnp.ndarray],
         current_beta_entropy:float,
         clip_range:float,
         debugging:bool=False,
@@ -168,8 +170,8 @@ class DIRSAFE(SARL):
             def _rl_loss_function(
                 current_critic_params:dict,
                 input:jnp.ndarray,
-                target:float, 
-                old_value:float,
+                target: jnp.ndarray, 
+                old_value: jnp.ndarray,
                 ) -> jnp.ndarray:
                 # Compute the prediction
                 prediction = self.critic.apply(current_critic_params, input)
@@ -189,7 +191,7 @@ class DIRSAFE(SARL):
             advantages:jnp.ndarray,  
             old_neglogpdfs:jnp.ndarray,
             beta_entropy:float = 0.0001,
-        ) -> jnp.ndarray:
+        ) -> tuple:
             
             @partial(vmap, in_axes=(None, 0, 0, 0, 0))
             def _rl_loss_function(
@@ -198,7 +200,7 @@ class DIRSAFE(SARL):
                 sample_action:jnp.ndarray,
                 advantage:jnp.ndarray, 
                 old_neglogpdf:jnp.ndarray,
-            ) -> jnp.ndarray:
+            ) -> tuple:
                 # Compute the prediction
                 _, distr = self.actor.apply(current_actor_params, input)
                 # Compute the log probability of the action
@@ -266,7 +268,7 @@ class DIRSAFE(SARL):
         self, 
         current_critic_params:dict, 
         current_actor_params:dict, 
-        experiences:dict[str:jnp.ndarray],
+        experiences:dict[str, jnp.ndarray],
     ) -> tuple:
         
         # Experiences: {
@@ -286,7 +288,7 @@ class DIRSAFE(SARL):
             def _il_loss_function(
                 current_critic_params:dict,
                 input:jnp.ndarray,
-                target:float, 
+                target: jnp.ndarray, 
                 ) -> jnp.ndarray:
                 # Compute the prediction
                 prediction = self.critic.apply(current_critic_params, input)
@@ -396,7 +398,7 @@ class DIRSAFE(SARL):
     @partial(jit, static_argnames=("self"))
     def init_nns(
         self, 
-        key:random.PRNGKey, 
+        key:jax.Array, 
         obs:jnp.ndarray, 
         info:dict,
     ) -> tuple:
@@ -575,12 +577,12 @@ class DIRSAFE(SARL):
     @partial(jit, static_argnames=("self"))
     def act(
         self, 
-        key:random.PRNGKey, 
+        key:jax.Array, 
         obs:jnp.ndarray, 
         info:dict, 
         actor_params:dict, 
         sample:bool = False,
-    ) -> jnp.ndarray:
+    ) -> tuple:
         # Add noise to human observations
         if self.noise:
             key, subkey = random.split(key)
@@ -621,10 +623,10 @@ class DIRSAFE(SARL):
         critic_params:dict, 
         actor_params:dict,
         actor_optimizer:optax.GradientTransformation, 
-        actor_opt_state: jnp.ndarray, 
+        actor_opt_state: optax.OptState, 
         critic_optimizer:optax.GradientTransformation,
-        critic_opt_state: jnp.ndarray,
-        experiences:dict[str:jnp.ndarray], 
+        critic_opt_state: optax.OptState,
+        experiences:dict[str, jnp.ndarray], 
         beta_entropy:float,
         clip_range:float,
         debugging:bool=False,
@@ -664,10 +666,10 @@ class DIRSAFE(SARL):
         critic_params:dict, 
         actor_params:dict,
         actor_optimizer:optax.GradientTransformation, 
-        actor_opt_state: jnp.ndarray, 
+        actor_opt_state: optax.OptState, 
         critic_optimizer:optax.GradientTransformation,
-        critic_opt_state: jnp.ndarray,
-        experiences:dict[str:jnp.ndarray], 
+        critic_opt_state: optax.OptState,
+        experiences:dict[str, jnp.ndarray], 
     ) -> tuple:
         # Compute loss and gradients for actor and critic
         critic_loss, critic_grads, actor_loss, actor_grads, entropy_loss = self._compute_il_loss_and_gradients(
@@ -702,13 +704,13 @@ class DIRSAFE(SARL):
         self, 
         jessi:JESSI,
         perception_params:dict,
-        key:random.PRNGKey, 
+        key:jax.Array, 
         lasernav_obs:jnp.ndarray, 
         info:dict, 
         actor_params:dict, 
         humans_radius:float,
         sample:bool = False,
-    ) -> jnp.ndarray:
+    ) -> tuple:
         ## Compute aligned point_cloud
         aligned_lidar = jessi.align_lidar(lasernav_obs[:self.lidar_n_stack_to_use])[0]
         point_cloud = jnp.reshape(aligned_lidar, (-1, 2))  # Shape: (lidar_n_stack_to_use * lidar_num_rays, 2)

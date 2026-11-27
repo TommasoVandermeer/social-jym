@@ -1,7 +1,7 @@
 from jax import jit, lax, vmap, debug
 import jax.numpy as jnp
 from functools import partial
-from typing import Union
+from typing import Union, cast
 
 from socialjym.utils.aux_functions import binary_to_decimal
 from socialjym.utils.rewards.base_reward import BaseReward
@@ -232,7 +232,7 @@ class Reward2(BaseReward):
             rotation_reward = 0.
         reward = goal_reward + collision_reward + discomfort_reward + progress_reward + time_reward + rotation_reward
         if self.multi_gamma:
-            reward_terms = {g: 0.0 for g in self.unique_gammas}
+            reward_terms: dict = {g: 0.0 for g in self.unique_gammas}
             if self.target_reached_reward:
                 reward_terms[self.g_goal] += goal_reward
             if self.collision_penalty_reward:
@@ -246,7 +246,7 @@ class Reward2(BaseReward):
             if self.high_rotation_penalty_reward:
                 reward_terms[self.g_rot] += rotation_reward
         else:
-            reward_terms = {self.gamma: reward}
+            reward_terms = {cast(float, self.gamma): reward} # Single discount: gamma is a scalar
         ### COMPUTE OUTCOME ###
         outcome = {
             "nothing": ~((collision) | (reached_goal) | (timeout)),

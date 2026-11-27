@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import random, jit, vmap, lax, debug, nn, value_and_grad
 from functools import partial
@@ -13,6 +14,7 @@ from socialjym.utils.distributions.dirichlet import Dirichlet
 from .sarl import SARL
 from .sarl import value_network as critic_network
 from socialjym.utils.networks import MLP, Linear, Network, orthogonal, constant
+from socialjym.utils.rewards.base_reward import BaseReward
 
 EPSILON = 1e-5
 NORM_EPSILON = 1e-3
@@ -75,8 +77,8 @@ class Actor(fnn.Module):
     def __call__(
             self, 
             x: jnp.ndarray,
-            **kwargs:dict,
-        ) -> jnp.ndarray:
+            **kwargs,
+        ) -> tuple:
         """
         Computes the value of the state given the input x of shape (# of humans, length of reparametrized state)
         """
@@ -131,7 +133,7 @@ class Actor(fnn.Module):
 class SARLPPO(SARL):
     def __init__(
             self, 
-            reward_function:FunctionType, 
+            reward_function:BaseReward, 
             normalize_and_clip_obs:bool=False,
             clip_obs_bound:float=10.,
             distribution:str='gaussian',
@@ -173,7 +175,7 @@ class SARLPPO(SARL):
         self, 
         current_critic_params:dict, 
         current_actor_params:dict, 
-        experiences:dict[str:jnp.ndarray],
+        experiences:dict[str, jnp.ndarray],
         current_beta_entropy:float,
         clip_range:float,
         debugging:bool=False,
@@ -199,8 +201,8 @@ class SARLPPO(SARL):
             def _rl_loss_function(
                 current_critic_params:dict,
                 input:jnp.ndarray,
-                target:float, 
-                old_value:float,
+                target: jnp.ndarray, 
+                old_value: jnp.ndarray,
                 ) -> jnp.ndarray:
                 # Compute the prediction
                 prediction = self.critic.apply(current_critic_params, input)
@@ -220,7 +222,7 @@ class SARLPPO(SARL):
             advantages:jnp.ndarray,  
             old_neglogpdfs:jnp.ndarray,
             beta_entropy:float = 0.0001,
-        ) -> jnp.ndarray:
+        ) -> tuple:
             
             @partial(vmap, in_axes=(None, 0, 0, 0, 0))
             def _rl_loss_function(
@@ -229,7 +231,7 @@ class SARLPPO(SARL):
                 sample_action:jnp.ndarray,
                 advantage:jnp.ndarray, 
                 old_neglogpdf:jnp.ndarray,
-            ) -> jnp.ndarray:
+            ) -> tuple:
                 # Compute the prediction
                 _, distr = self.actor.apply(current_actor_params, input)
                 # Compute the log probability of the action
@@ -297,7 +299,7 @@ class SARLPPO(SARL):
         self, 
         current_critic_params:dict, 
         current_actor_params:dict, 
-        experiences:dict[str:jnp.ndarray],
+        experiences:dict[str, jnp.ndarray],
     ) -> tuple:
         
         # Experiences: {
@@ -317,7 +319,7 @@ class SARLPPO(SARL):
             def _il_loss_function(
                 current_critic_params:dict,
                 input:jnp.ndarray,
-                target:float, 
+                target: jnp.ndarray, 
                 ) -> jnp.ndarray:
                 # Compute the prediction
                 prediction = self.critic.apply(current_critic_params, input)
@@ -377,7 +379,7 @@ class SARLPPO(SARL):
     @partial(jit, static_argnames=("self"))
     def init_nns(
         self, 
-        key:random.PRNGKey, 
+        key:jax.Array, 
         obs:jnp.ndarray, 
         info:dict,
     ) -> tuple:
@@ -398,7 +400,7 @@ class SARLPPO(SARL):
         self,
         inputs:jnp.ndarray,
         norm_state:dict,
-    ) -> tuple:
+    ) -> dict:
         ## Update normalization state
         batch_mean = jnp.mean(inputs, axis=0)
         batch_var = jnp.var(inputs, axis=0)
@@ -430,12 +432,12 @@ class SARLPPO(SARL):
     @partial(jit, static_argnames=("self"))
     def act(
         self, 
-        key:random.PRNGKey, 
+        key:jax.Array, 
         obs:jnp.ndarray, 
         info:dict, 
         actor_params:dict, 
         sample:bool = False,
-    ) -> jnp.ndarray:
+    ) -> tuple:
         
         # Add noise to human observations
         if self.noise:
@@ -482,10 +484,10 @@ class SARLPPO(SARL):
         critic_params:dict, 
         actor_params:dict,
         actor_optimizer:optax.GradientTransformation, 
-        actor_opt_state: jnp.ndarray, 
+        actor_opt_state: optax.OptState, 
         critic_optimizer:optax.GradientTransformation,
-        critic_opt_state: jnp.ndarray,
-        experiences:dict[str:jnp.ndarray], 
+        critic_opt_state: optax.OptState,
+        experiences:dict[str, jnp.ndarray], 
         beta_entropy:float,
         clip_range:float,
         debugging:bool=False,
@@ -525,10 +527,10 @@ class SARLPPO(SARL):
         critic_params:dict, 
         actor_params:dict,
         actor_optimizer:optax.GradientTransformation, 
-        actor_opt_state: jnp.ndarray, 
+        actor_opt_state: optax.OptState, 
         critic_optimizer:optax.GradientTransformation,
-        critic_opt_state: jnp.ndarray,
-        experiences:dict[str:jnp.ndarray], 
+        critic_opt_state: optax.OptState,
+        experiences:dict[str, jnp.ndarray], 
     ) -> tuple:
         # Compute loss and gradients for actor and critic
         critic_loss, critic_grads, actor_loss, actor_grads, entropy_loss = self._compute_il_loss_and_gradients(
