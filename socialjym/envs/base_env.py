@@ -850,9 +850,9 @@ class BaseEnv(ABC):
             @jit 
             def _while_body(while_val:tuple):
                 disturbed_points, key, valid = while_val
-                key, subkey = random.split(key)
-                new_angle = random.uniform(subkey, shape=(1,), minval=0, maxval=2*jnp.pi)
-                disturbance = random.uniform(subkey, shape=(1,), minval=-0.1, maxval=0.5)
+                key, angle_key, disturbance_key = random.split(key, 3)
+                new_angle = random.uniform(angle_key, shape=(1,), minval=0, maxval=2*jnp.pi)
+                disturbance = random.uniform(disturbance_key, shape=(1,), minval=-0.1, maxval=0.5)
                 new_point = jnp.squeeze((self.circle_radius + disturbance) * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
                 differences = jnp.linalg.norm(disturbed_points - new_point, axis=1)
                 valid = jnp.all(differences >= (2 * (jnp.max(humans_parameters[:, 0]) + 0.1)))
@@ -1258,9 +1258,10 @@ class BaseEnv(ABC):
         
         @jit 
         def _goal_comp(position:jnp.ndarray, subkey:jax.Array) -> jnp.ndarray:
+            angle_key, distance_key = random.split(subkey)
             position_angle = jnp.atan2(position[1], position[0])
-            new_angle = wrap_angle(random.uniform(subkey, shape=(), minval=position_angle-jnp.pi/4, maxval=position_angle+jnp.pi/4))
-            new_distance = random.uniform(subkey, shape=(1,), minval=0., maxval=self.circle_radius)
+            new_angle = wrap_angle(random.uniform(angle_key, shape=(), minval=position_angle-jnp.pi/4, maxval=position_angle+jnp.pi/4))
+            new_distance = random.uniform(distance_key, shape=(1,), minval=0., maxval=self.circle_radius)
             return jnp.squeeze(new_distance * jnp.array([jnp.cos(new_angle), jnp.sin(new_angle)]))
         key, subkey = random.split(key)
         subkeys = random.split(subkey, num=self.n_humans)
