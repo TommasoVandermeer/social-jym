@@ -25,6 +25,7 @@ from socialjym.policies.jessi import JESSI
 from socialjym.policies.dwa import DWA
 from socialjym.policies.mppi import MPPI
 from socialjym.policies.vanilla_e2e import VanillaE2E
+from socialjym.envs.base_env import lidar_ray_angles
 
 PLANNERS = [
     'JESSI',
@@ -508,7 +509,7 @@ class TB4Controller(Node):
         if self.diagnostics:
             ranges = np.array(self.latest_scan.ranges)
             shifted_cleaned = self.clean_and_shift_scan(ranges)
-            angles = jnp.linspace( - self.policy.lidar_angular_range/2,  + self.policy.lidar_angular_range/2, len(shifted_cleaned))
+            angles = lidar_ray_angles(self.policy.lidar_angular_range, len(shifted_cleaned))
             scan_x = shifted_cleaned * jnp.cos(angles)
             scan_y = shifted_cleaned * jnp.sin(angles)
             self.scan_plot.set_data(scan_x, scan_y)
@@ -519,7 +520,7 @@ class TB4Controller(Node):
             self.get_logger().info("🔧 Aligning waypoints with Hough Transform of LiDAR scan...")
             ranges = np.array(self.latest_scan.ranges)
             shifted_cleaned = self.clean_and_shift_scan(ranges)
-            angles = jnp.linspace( - self.policy.lidar_angular_range/2,  + self.policy.lidar_angular_range/2, len(shifted_cleaned))
+            angles = lidar_ray_angles(self.policy.lidar_angular_range, len(shifted_cleaned))
             scan_x = shifted_cleaned * jnp.cos(angles)
             scan_y = shifted_cleaned * jnp.sin(angles)
             if self.alignement == "hough": alignement_error = self.compute_alignment_angle_hough(scan_x, scan_y)
@@ -678,8 +679,9 @@ class TB4Controller(Node):
         # Ranges cleaning and shifting (TB4 ranges start on the right)
         ranges = np.array(self.latest_scan.ranges)
         shifted_cleaned = self.clean_and_shift_scan(ranges)
-        # Ranges resampling (from self.original_num_rays to self.lidar_num_rays)
-        x_old_indices = np.linspace(0, len(ranges) - 1, self.lidar_num_rays).round().astype(int)
+        # Ranges resampling (from self.original_num_rays to self.lidar_num_rays): the scan covers a full turn,
+        # so the rays are spaced by 2*pi/lidar_num_rays (as in socialjym.envs.base_env.lidar_ray_angles)
+        x_old_indices = np.round(np.arange(self.lidar_num_rays) * len(ranges) / self.lidar_num_rays).astype(int) % len(ranges)
         lidar_scan = shifted_cleaned[x_old_indices]
         lidar_scan = np.clip(lidar_scan, 0, self.lidar_max_dist)
 

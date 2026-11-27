@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Polygon
 import os
 
-from socialjym.envs.base_env import SCENARIOS, ROBOT_KINEMATICS, HUMAN_POLICIES
+from socialjym.envs.base_env import SCENARIOS, ROBOT_KINEMATICS, HUMAN_POLICIES, lidar_ray_angles
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
@@ -85,7 +85,7 @@ class DWA(BasePolicy):
         self.lidar_num_rays = lidar_num_rays
         self.use_box_action_space = use_box_action_space
         if lidar_angles_robot_frame is None:
-            self.lidar_angles_robot_frame = jnp.linspace(-lidar_angular_range/2, lidar_angular_range/2, lidar_num_rays)
+            self.lidar_angles_robot_frame = lidar_ray_angles(lidar_angular_range, lidar_num_rays)
         else:
             assert len(lidar_angles_robot_frame) == lidar_num_rays, "Length of lidar_angles_robot_frame must be equal to lidar_num_rays"
             self.lidar_angles_robot_frame = lidar_angles_robot_frame

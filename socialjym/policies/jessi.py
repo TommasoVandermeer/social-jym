@@ -26,7 +26,7 @@ from socialjym.utils.distributions.logistic_normal import LogisticNormal
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.utils.networks import MLP, Linear, LayerNorm, Conv1D, MultiHeadAttention, Network, as_flax_variables, is_haiku_params, variance_scaling, truncated_normal, constant
 from jhsfm.hsfm import get_linear_velocity
-from socialjym.envs.base_env import wrap_angle
+from socialjym.envs.base_env import wrap_angle, lidar_ray_angles
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import top_k_small, compute_episode_metrics, initialize_metrics_dict, print_average_metrics, pause_on_click
 from socialjym.utils.animation import (
@@ -618,7 +618,7 @@ class JESSI(BasePolicy):
         self.lidar_max_dist = lidar_max_dist
         self.lidar_num_rays = lidar_num_rays
         if lidar_angles_robot_frame is None:
-            self.lidar_angles_robot_frame = jnp.linspace(-lidar_angular_range/2, lidar_angular_range/2, lidar_num_rays)
+            self.lidar_angles_robot_frame = lidar_ray_angles(lidar_angular_range, lidar_num_rays)
         else:
             assert len(lidar_angles_robot_frame) == lidar_num_rays, "Length of lidar_angles_robot_frame must be equal to lidar_num_rays"
             self.lidar_angles_robot_frame = lidar_angles_robot_frame

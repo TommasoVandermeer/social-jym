@@ -54,6 +54,23 @@ ENVIRONMENTS = [
 ]
 EPSILON = 1e-5 # Small value to avoid math overflow
 
+def lidar_ray_angles(angular_range:float, num_rays:int, center=0.) -> jnp.ndarray:
+    """
+    Angles of the LiDAR rays, evenly spaced in [center - angular_range/2, center + angular_range/2].
+    For a full turn (angular_range >= 2*pi) the last ray would coincide with the first one, so the rays are
+    spaced by angular_range/num_rays and the upper end is excluded. For a partial range both ends are included.
+
+    args:
+    - angular_range: angular range covered by the rays (must be a concrete value, not a tracer).
+    - num_rays: number of rays.
+    - center: angle of the center of the range (e.g. the LiDAR yaw).
+
+    output:
+    - angles (num_rays,): angles of the rays.
+    """
+    full_turn = float(angular_range) >= 2 * jnp.pi - 1e-6
+    return jnp.linspace(center - angular_range/2, center + angular_range/2, num_rays, endpoint=not full_turn)
+
 @jit
 def wrap_angle(theta:float) -> float:
     """
@@ -2288,7 +2305,7 @@ class BaseEnv(ABC):
         - human_visibility_mask (self.n_humans,): boolean jnp.ndarray indicating which humans are visible by the LiDAR (i.e. at least one ray collides with them).
         - obstacles_visibility_mask (self.n_obstacles, m): boolean jnp.ndarray indicating which static obstacle segments are visible by the LiDAR (i.e. at least one ray collides with them).
         """
-        angles = jnp.linspace(lidar_yaw - self.lidar_angular_range/2, lidar_yaw + self.lidar_angular_range/2, self.lidar_num_rays)
+        angles = lidar_ray_angles(self.lidar_angular_range, self.lidar_num_rays, center=lidar_yaw)
         if self.leg_dynamics:
             # To compute the LiDAR measurements with leg dynamics, we treat the legs as separate entities that can occlude the rays. Therefore, we need to reshape the human legs positions and radii to be fed into the ray casting function as if they were humans.
             human_positions = jnp.reshape(human_legs_positions, (self.n_humans*2, 2))

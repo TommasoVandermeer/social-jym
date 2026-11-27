@@ -27,6 +27,7 @@ from jax import random, vmap
 import matplotlib.pyplot as plt
 
 from socialjym.envs.lasernav import LaserNav
+from socialjym.envs.base_env import lidar_ray_angles
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward
 from socialjym.utils.aux_functions import plot_state, plot_lidar_measurements, animate_trajectory
 
@@ -148,7 +149,7 @@ LRANGE = env.lidar_angular_range
 
 def _lidar_from_obs(o, robot_yaw):
     dists = jnp.asarray(o[0, 11:])
-    angles = jnp.linspace(robot_yaw - LRANGE / 2, robot_yaw + LRANGE / 2, NRAYS)
+    angles = lidar_ray_angles(LRANGE, NRAYS, center=robot_yaw)
     return jnp.stack((dists, angles), axis=-1)
 
 

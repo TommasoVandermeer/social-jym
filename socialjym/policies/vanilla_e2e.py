@@ -8,7 +8,7 @@ from dataclasses import field
 import flax.linen as fnn
 import optax
 
-from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON
+from socialjym.envs.base_env import ROBOT_KINEMATICS, SCENARIOS, EPSILON, lidar_ray_angles
 from socialjym.utils.distributions.dirichlet import Dirichlet
 from socialjym.policies.base_policy import BasePolicy
 from socialjym.envs.lasernav import LaserNav
@@ -156,7 +156,7 @@ class VanillaE2E(BasePolicy):
         self.lidar_max_dist = lidar_max_dist
         self.lidar_num_rays = lidar_num_rays
         if lidar_angles_robot_frame is None:
-            self.lidar_angles_robot_frame = jnp.linspace(-lidar_angular_range/2, lidar_angular_range/2, lidar_num_rays)
+            self.lidar_angles_robot_frame = lidar_ray_angles(lidar_angular_range, lidar_num_rays)
         else:
             assert len(lidar_angles_robot_frame) == lidar_num_rays, "Length of lidar_angles_robot_frame must be equal to lidar_num_rays"
             self.lidar_angles_robot_frame = lidar_angles_robot_frame

@@ -5,7 +5,7 @@ from jax.tree_util import tree_map
 from functools import partial
 
 from socialjym.policies.jessi import JESSI
-from socialjym.envs.base_env import wrap_angle
+from socialjym.envs.base_env import wrap_angle, lidar_ray_angles
 from socialjym.utils.distributions.gaussian import BivariateGaussian
 
 class JESSI_MPPI(JESSI):
@@ -155,8 +155,7 @@ class JESSI_MPPI(JESSI):
     @partial(jit, static_argnames=("self"))
     def reproject_scan(self, old_scan, old_pose, new_pose):
         num_rays = old_scan.shape[0]
-        fov = self.lidar_angular_range
-        angles = jnp.linspace(-fov/2, fov/2, num_rays)
+        angles = lidar_ray_angles(self.lidar_angular_range, num_rays)
         x_local = old_scan * jnp.cos(angles)
         y_local = old_scan * jnp.sin(angles)
         local_pc = jnp.stack([x_local, y_local], axis=-1)
@@ -168,9 +167,10 @@ class JESSI_MPPI(JESSI):
         new_local_pc = (global_pc - new_pose[:2]) @ R_new_inv.T
         dists = jnp.linalg.norm(new_local_pc, axis=-1)
         new_angles = jnp.arctan2(new_local_pc[:, 1], new_local_pc[:, 0])
-        min_angle = -fov / 2.0
-        angle_res = fov / num_rays
-        bin_idx = jnp.floor((new_angles - min_angle) / angle_res).astype(jnp.int32)
+        # Each point goes to the nearest ray (with a full turn, the angle wraps around)
+        bin_idx = jnp.round((new_angles - angles[0]) / (angles[1] - angles[0])).astype(jnp.int32)
+        if float(self.lidar_angular_range) >= 2 * jnp.pi - 1e-6:
+            bin_idx = bin_idx % num_rays
         valid_mask = (bin_idx >= 0) & (bin_idx < num_rays)
         safe_bin_idx = jnp.where(valid_mask, bin_idx, num_rays)
         safe_dists = jnp.where(valid_mask, dists, jnp.inf)

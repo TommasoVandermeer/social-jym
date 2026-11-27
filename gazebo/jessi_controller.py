@@ -119,8 +119,9 @@ class JessiController(Node):
         shift_rad = tb4_angle_min - jessi_angle_min
         shift_bins = int(round(shift_rad / angular_res_tb4))
         shifted_cleaned = np.roll(cleaned, shift_bins)
-        # Ranges resampling (from self.original_num_rays to self.lidar_num_rays)
-        indices = np.round(np.linspace(0, tb4_num_rays - 1, self.lidar_num_rays)).astype(int)
+        # Ranges resampling (from self.original_num_rays to self.lidar_num_rays): the scan covers a full turn,
+        # so the rays are spaced by 2*pi/lidar_num_rays (as in socialjym.envs.base_env.lidar_ray_angles)
+        indices = np.round(np.arange(self.lidar_num_rays) * tb4_num_rays / self.lidar_num_rays).astype(int) % tb4_num_rays
         lidar_scan = shifted_cleaned[indices]
 
         # Odometry
