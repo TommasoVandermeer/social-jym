@@ -12,6 +12,7 @@ from jax.experimental import mesh_utils
 
 from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.base_env import SCENARIOS
+from socialjym.utils.aux_functions import top_k_small
 from socialjym.envs.lasernav import LaserNav
 from socialjym.policies.jessi import JESSI
 
@@ -255,7 +256,7 @@ def train_one_epoch(
                     sector_dirs = policy.sectors_latent_vecs       # (S, 2), [sin, cos]
                     cos_diffs = beam_dirs @ sector_dirs.T         # (B, T, L, S)
                     k = inputs0.shape[-1] - 7
-                    top_cos, top_indices = lax.top_k(cos_diffs, k)
+                    top_cos, top_indices = top_k_small(cos_diffs, k)
                     attended_sectors = jnp.where(top_cos >= policy.sectors_threshold,top_indices,-1)
                     inputs0 = inputs0.at[..., 7:].set(attended_sectors.astype(inputs0.dtype))
                     # Rotate GT

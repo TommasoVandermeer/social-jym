@@ -28,7 +28,7 @@ from socialjym.utils.networks import MLP, Linear, LayerNorm, Conv1D, MultiHeadAt
 from jhsfm.hsfm import get_linear_velocity
 from socialjym.envs.base_env import wrap_angle
 from socialjym.envs.lasernav import LaserNav
-from socialjym.utils.aux_functions import compute_episode_metrics, initialize_metrics_dict, print_average_metrics, pause_on_click
+from socialjym.utils.aux_functions import top_k_small, compute_episode_metrics, initialize_metrics_dict, print_average_metrics, pause_on_click
 from socialjym.utils.animation import (
     TrajectoryAnimator, 
     LinesLayer, 
@@ -1178,7 +1178,7 @@ class JESSI(BasePolicy):
             # Sector attendance
             beam_dir = jnp.array([sin_current_theta, cos_current_theta])
             cos_diffs = jnp.dot(self.sectors_latent_vecs, beam_dir)
-            top_cos, top_indices = lax.top_k(cos_diffs, int(self.max_sector_attendance))
+            top_cos, top_indices = top_k_small(cos_diffs, int(self.max_sector_attendance))
             attended_sectors = jnp.where(top_cos >= self.sectors_threshold, top_indices, -1)
             attended_sectors = attended_sectors.astype(jnp.int32)
             return jnp.array([

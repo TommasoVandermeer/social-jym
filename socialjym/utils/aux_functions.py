@@ -24,6 +24,22 @@ if TYPE_CHECKING:
 
 ArrayType = np.ndarray | jax.Array # Plotting functions accept numpy and jax arrays
 
+def top_k_small(x:jax.Array, k:int) -> tuple:
+    """
+    Same output as lax.top_k (values and int32 indices along the last axis, ties broken by the lowest index),
+    computed with k argmax passes. On GPU, lax.top_k is very slow for many short rows, which is the case of
+    the LiDAR beams sector attendance (about 150x slower than this for 150k rows of 60 elements).
+    Intended for small k.
+    """
+    positions = jnp.arange(x.shape[-1])
+    values, indices = [], []
+    for _ in range(k):
+        idx = jnp.argmax(x, axis=-1)
+        values.append(jnp.take_along_axis(x, idx[..., None], axis=-1)[..., 0])
+        indices.append(idx.astype(jnp.int32))
+        x = jnp.where(positions == idx[..., None], -jnp.inf, x)
+    return jnp.stack(values, axis=-1), jnp.stack(indices, axis=-1)
+
 @jit
 def roto_translate_pose_and_vel(position, orientation, velocity, ref_position, ref_orientation):
     """Roto-translate a 2D pose and a velocity to a given reference pose."""
