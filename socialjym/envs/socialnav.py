@@ -404,10 +404,14 @@ class SocialNav(BaseEnv):
             full_state,
             humans_goal=humans_goal,
             robot_goal=robot_goal,
+            robot_goal_list=self.robot_goals_per_scenario[custom_episode["scenario"]],
             humans_parameters=humans_parameters,
             static_obstacles=static_obstacles,
             current_scenario=custom_episode["scenario"],
             humans_delay=jnp.zeros((self.n_humans,)),
+            noise_key=random.PRNGKey(0),
+            is_x_flipped=False,
+            is_y_flipped=False,
         )
         return full_state, key, self._get_obs(full_state, info), info, {"success": False, "failure": False, "timeout": False, "nothing": True}
         

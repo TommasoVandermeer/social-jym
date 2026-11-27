@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import numpy as np
 from jax import random, jit, vmap, lax, nn, value_and_grad, debug
 from jax_tqdm import loop_tqdm
 from jax.tree_util import tree_map
@@ -16,6 +17,21 @@ from socialjym.envs.base_env import EPSILON, ROBOT_KINEMATICS, SCENARIOS, HUMAN_
 from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.aux_functions import initialize_metrics_dict, compute_episode_metrics, print_average_metrics
+from socialjym.utils.animation import (
+    TrajectoryAnimator,
+    GridCellsLayer,
+    LinesLayer,
+    ScatterLayer,
+    PolygonLayer,
+    LineLayer,
+    scene_layers,
+    perception_points_layers,
+    to_numpy,
+    states_to_scene,
+    robot_to_world,
+    lidar_ray_segments,
+    action_distribution_grid,
+)
 from socialjym.policies.jessi import JESSI
 from jhsfm.hsfm import get_linear_velocity
 
@@ -702,6 +718,158 @@ class CADRL(BasePolicy):
             x_lims=x_lims,
             y_lims=y_lims,
             save_video=save_video,
+        )
+
+    def animate_trajectory_fast(
+        self,
+        robot_radius:float,
+        robot_poses, # x, y, theta
+        robot_actions,
+        robot_goals,
+        humans_poses, # x, y, theta
+        humans_velocities, # vx, vy (in global frame)
+        humans_radii,
+        robot_actions_values=None, # (optional) values of the robot's actions (if not None, they will be visualized in the animation)
+        action_distrs=None, # (optional) distribution of the robot's actions (if not None, it will be visualized in the animation)
+        perception_distrs=None, # (optional) distribution of the robot's perception of humans' positions and velocities (if not None, it will be visualized in the animation)
+        lidar_scans=None, # (optional) distance readings of the LiDAR sensor (if not None, it will be visualized in the animation)
+        static_obstacles=None, # (optional) positions and radii of static obstacles (if not None, they will be visualized in the animation)
+        occupancy_grids=None, # (optional) occupancy grids (if not None, they will be visualized in the animation)
+        grid_cells=None, # (optional) grid cells (if not None, they will be visualized in the animation)
+        grid_cells_size=None, # (optional) size of each grid cell (if not None, it will be visualized in the animation)
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+        p_visualization_threshold_dir:float=0.05,
+        lidar_angles_robot_frame=None, # (optional) angles of the LiDAR rays, needed to visualize lidar_scans (CADRL has no LiDAR)
+        save_path:str=None, # (optional) path of the saved video (default: same as animate_trajectory)
+        dpi:int=300, # dpi of the saved video
+        speed:float=1., # playback speed (1 = real time)
+        blit:bool=True, # if False, the whole figure is redrawn at each frame (slower, but zooming while playing works fine)
+    ):
+        """
+        Same animation of animate_trajectory, but much faster: everything is computed once for all frames and the artists
+        are created once and only moved at each frame (see socialjym/utils/animation).
+        """
+        # Validate input args
+        assert \
+            len(robot_poses) == \
+            len(robot_actions) == \
+            len(robot_goals) == \
+            len(humans_poses) == \
+            len(humans_velocities) == \
+            len(humans_radii), "All input lists must have the same length"
+        robot_poses, robot_actions, robot_goals, humans_poses, humans_velocities, humans_radii = to_numpy(
+            (robot_poses, robot_actions, robot_goals, humans_poses, humans_velocities, humans_radii)
+        )
+        n_steps = len(robot_poses)
+        anim = TrajectoryAnimator(n_steps, self.dt, x_lims=x_lims, y_lims=y_lims)
+        # AX 0: Simulation (+ occupancy grid, LiDAR ranges and perceived humans)
+        ax = anim.sim_axs[0]
+        anim.add(*scene_layers(
+            ax,
+            robot_poses,
+            robot_radius,
+            robot_goals,
+            humans_poses,
+            humans_velocities,
+            humans_radii,
+            static_obstacles=to_numpy(static_obstacles) if static_obstacles is not None else None,
+        ))
+        if (grid_cells is not None) and (grid_cells_size is not None):
+            anim.add(GridCellsLayer(ax, np.asarray(grid_cells), grid_cells_size, np.asarray(occupancy_grids) if occupancy_grids is not None else None))
+        if lidar_scans is not None:
+            if lidar_angles_robot_frame is None:
+                lidar_angles_robot_frame = getattr(self, 'lidar_angles_robot_frame', None)
+            assert lidar_angles_robot_frame is not None, "lidar_angles_robot_frame must be provided to visualize lidar_scans"
+            anim.add(LinesLayer(ax, lidar_ray_segments(robot_poses, np.asarray(lidar_scans), lidar_angles_robot_frame), color="black", linewidth=0.5, zorder=0))
+        if perception_distrs is not None:
+            perception_distrs = to_numpy(perception_distrs)
+            anim.add(*perception_points_layers(
+                ax,
+                robot_to_world(perception_distrs['pos_distrs']['means'], robot_poses),
+                robot_to_world(perception_distrs['vel_distrs']['means'], robot_poses, translate=False),
+                perception_distrs['weights'] > 0.5,
+            ))
+        # AX 1: Feasible and bounded action space + action space distribution and action taken
+        anim.setup_action_space(self.v_max, self.wheels_distance, edgecolor='black', facecolor='white')
+        if robot_actions_values is not None:
+            feasible_actions_idx = np.where(np.asarray(self.action_space) > -np.inf)[0]
+            feasible_actions = np.asarray(self.action_space)[feasible_actions_idx]
+            anim.add(ScatterLayer(
+                anim.action_ax,
+                np.broadcast_to(feasible_actions, (n_steps,) + feasible_actions.shape),
+                values=np.asarray(robot_actions_values)[:,feasible_actions_idx],
+                cmap='Reds',
+                s=20,
+                alpha=0.7,
+                label='Feasible actions',
+                zorder=3,
+            ))
+        if action_distrs is not None:
+            anim.add(PolygonLayer(anim.action_ax, np.asarray(action_distrs["vertices"]), fill=True, edgecolor='green', facecolor='lightgreen', linewidth=2, zorder=3))
+            test_action_samples = self._build_action_space(unicycle_triangle_samples=35)
+            test_action_p, high_p_mask = action_distribution_grid(self.distr, action_distrs, test_action_samples, p_visualization_threshold_dir)
+            anim.add(ScatterLayer(
+                anim.action_ax,
+                np.broadcast_to(np.asarray(test_action_samples), (n_steps,) + test_action_samples.shape),
+                mask=high_p_mask,
+                values=test_action_p,
+                cmap='viridis',
+                s=7,
+                zorder=50,
+            ))
+        anim.add(LineLayer(anim.action_ax, robot_actions, marker='^', markersize=9, color='blue', zorder=51)) # Action taken
+        if save_path is None:
+            save_path = os.path.join(os.path.dirname(__file__), f'{self.name}_trajectory.mp4')
+        anim.run(save_video=save_video, save_path=save_path, dpi=dpi, speed=speed, blit=blit)
+
+    def animate_socialnav_trajectory_fast(
+        self,
+        states,
+        actions,
+        goals,
+        humans_radii,
+        socialnav_env:SocialNav,
+        action_values:jnp.ndarray=None,
+        action_distrs:jnp.ndarray=None,
+        perception_distrs:dict=None,
+        static_obstacles=None,
+        occupancy_grids=None,
+        grid_cells=None,
+        grid_cells_size=None,
+        x_lims:jnp.ndarray=None,
+        y_lims:jnp.ndarray=None,
+        save_video:bool=False,
+        save_path:str=None,
+        dpi:int=300,
+        speed:float=1.,
+        blit:bool=True,
+    ):
+        """Same animation of animate_socialnav_trajectory, but much faster (see animate_trajectory_fast)."""
+        robot_poses, humans_poses, humans_velocities = states_to_scene(states, socialnav_env.humans_policy)
+        self.animate_trajectory_fast(
+            socialnav_env.robot_radius,
+            robot_poses,
+            actions,
+            goals,
+            humans_poses,
+            humans_velocities,
+            humans_radii,
+            robot_actions_values=action_values,
+            perception_distrs=perception_distrs,
+            action_distrs=action_distrs,
+            static_obstacles=static_obstacles,
+            occupancy_grids=occupancy_grids,
+            grid_cells=grid_cells,
+            grid_cells_size=grid_cells_size,
+            x_lims=x_lims,
+            y_lims=y_lims,
+            save_video=save_video,
+            save_path=save_path,
+            dpi=dpi,
+            speed=speed,
+            blit=blit,
         )
 
     # LaserNav methods

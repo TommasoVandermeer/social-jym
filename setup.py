@@ -40,6 +40,7 @@ setup(
     ],
     # Only CUDA 12 is offered: jax 0.4.30/0.4.34 provide no cuda11 or cuda13 extra
     # (CUDA 13 wheels need jax>=0.8, which conflicts with the pins above).
+    # GPUs newer than Hopper (e.g. RTX 50xx) are supported through docker/ptxas_wrapper.sh.
     extras_require={
         'cuda12': [
             'jax[cuda12]==0.4.30; python_version == "3.10"',

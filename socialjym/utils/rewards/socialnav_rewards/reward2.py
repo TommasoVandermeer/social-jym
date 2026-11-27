@@ -29,10 +29,10 @@ class Reward2(BaseReward):
         goal_reward: float=1., 
         collision_penalty: float=-0.25, 
         discomfort_distance: float=0.2, 
-        progress_to_goal_weight: float=0.15,
+        progress_to_goal_weight: float=0.03,
         time_penalty: float=0.01,
-        angular_speed_bound: float=2.,
-        angular_speed_penalty_weight: float=0.1,
+        angular_speed_bound: float=1.,
+        angular_speed_penalty_weight: float=0.0075,
     ) -> None:
         super().__init__(gamma)
         # Check input parameters

@@ -1,11 +1,11 @@
 # Build with:
 #   CPU:  docker build --build-arg JAX_VARIANT=cpu -t social-jym:cpu -f docker/Dockerfile .
 #   GPU:  docker build --build-arg JAX_VARIANT=gpu -t social-jym:gpu -f docker/Dockerfile .
-# (run from the repository root)
+#   GPU newer than Hopper (compute capability >= 10, e.g. Blackwell RTX 50xx):
+#         docker build --build-arg JAX_VARIANT=gpu --build-arg PTXAS_WRAPPER=true -t social-jym:gpu-blackwell -f docker/Dockerfile .
+# (run from the repository root; docker/run.sh picks the right one automatically)
 
 FROM ubuntu:22.04
-
-ARG JAX_VARIANT=cpu
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC \
@@ -49,6 +49,11 @@ WORKDIR /opt/social-jym
 
 COPY . .
 
+# Build args are declared here (not at the top) so that CPU and GPU images share the ROS layers above
+ARG JAX_VARIANT=cpu
+# Set to true by docker/run.sh when the host GPU is newer than Hopper (see docker/ptxas_wrapper.sh)
+ARG PTXAS_WRAPPER=false
+
 RUN pip3 install --upgrade pip && \
     if [ "$JAX_VARIANT" = "gpu" ]; then \
         pip3 install \
@@ -74,6 +79,13 @@ RUN pip3 install --upgrade pip && \
             "scipy==1.14.0"; \
     fi && \
     pip3 install -e JHSFM -e JSFM -e JORCA -e .
+
+# Let jax 0.4.30 compile for GPUs newer than Hopper (e.g. Blackwell RTX 50xx) by wrapping ptxas
+RUN if [ "$JAX_VARIANT" = "gpu" ] && [ "$PTXAS_WRAPPER" = "true" ]; then \
+        PTXAS_DIR="$(python3 -c 'import nvidia.cuda_nvcc as m; print(m.__path__[0])')/bin" && \
+        mv "$PTXAS_DIR/ptxas" "$PTXAS_DIR/ptxas.real" && \
+        install -m 755 docker/ptxas_wrapper.sh "$PTXAS_DIR/ptxas"; \
+    fi
 
 RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 

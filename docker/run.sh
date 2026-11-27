@@ -34,9 +34,18 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
+PTXAS_WRAPPER=false
 if [ "$GPU" = true ]; then
     IMAGE_NAME="social-jym:gpu"
     JAX_VARIANT="gpu"
+    # GPUs newer than Hopper (compute capability >= 10, e.g. Blackwell RTX 50xx) are unknown to jax 0.4.30:
+    # they need a separate image with a ptxas wrapper (see docker/ptxas_wrapper.sh)
+    GPU_CC_MAJOR=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | cut -d. -f1 | sort -n | tail -n 1)
+    if [ -n "$GPU_CC_MAJOR" ] && [ "$GPU_CC_MAJOR" -ge 10 ]; then
+        PTXAS_WRAPPER=true
+        IMAGE_NAME="social-jym:gpu-blackwell"
+        echo "Detected a GPU with compute capability $GPU_CC_MAJOR.x: using the image with the ptxas wrapper"
+    fi
 else
     IMAGE_NAME="social-jym:cpu"
     JAX_VARIANT="cpu"
@@ -47,6 +56,7 @@ if [ "$BUILD" = true ] || ! docker image inspect "$IMAGE_NAME" > /dev/null 2>&1;
     echo "Building $IMAGE_NAME..."
     docker build \
         --build-arg JAX_VARIANT="$JAX_VARIANT" \
+        --build-arg PTXAS_WRAPPER="$PTXAS_WRAPPER" \
         -t "$IMAGE_NAME" \
         -f "$SCRIPT_DIR/Dockerfile" \
         "$REPO_ROOT"
@@ -75,7 +85,30 @@ else
 fi
 
 if [ "$GPU" = true ]; then
-    DOCKER_ARGS+=(--gpus all)
+    # Use nvidia-container-toolkit when Docker can (--gpus, or its CDI devices), otherwise pass the GPU by hand
+    GPU_ARGS=()
+    for candidate in "--gpus all" "--device nvidia.com/gpu=all"; do
+        if docker run --rm $candidate --entrypoint true "$IMAGE_NAME" > /dev/null 2>&1; then
+            read -ra GPU_ARGS <<< "$candidate"
+            break
+        fi
+    done
+    if [ ${#GPU_ARGS[@]} -gt 0 ]; then
+        DOCKER_ARGS+=("${GPU_ARGS[@]}")
+    else
+        echo "Note: Docker cannot attach the GPU (nvidia-container-toolkit missing, or Docker not restarted after installing it): passing it manually"
+        # Same as nvidia-container-toolkit would do: device nodes + host driver libraries
+        for dev in /dev/nvidia[0-9]* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
+            [ -e "$dev" ] && DOCKER_ARGS+=(--device "$dev")
+        done
+        LDCONFIG=$(command -v ldconfig || echo /sbin/ldconfig)
+        for lib in libcuda.so.1 libnvidia-ptxjitcompiler.so.1 libnvidia-nvvm.so.4 libnvidia-ml.so.1; do
+            lib_path=$("$LDCONFIG" -p | awk -v l="$lib" '$1 == l && /x86-64/ {print $NF; exit}')
+            [ -n "$lib_path" ] && DOCKER_ARGS+=(-v "$(readlink -f "$lib_path")":/usr/local/nvidia/lib64/"$lib":ro)
+        done
+        NVIDIA_SMI=$(command -v nvidia-smi) && DOCKER_ARGS+=(-v "$NVIDIA_SMI":/usr/local/bin/nvidia-smi:ro)
+        DOCKER_ARGS+=(-e LD_LIBRARY_PATH=/usr/local/nvidia/lib64)
+    fi
 fi
 
 echo "=========================================================="

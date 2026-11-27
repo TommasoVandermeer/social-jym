@@ -104,7 +104,7 @@ def actor_critic_il_rollout(
                 # Update buffer state
                 @jit
                 def _compute_state_value_for_body(j:int, t:int, value:float):
-                        value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
+                        value += pow(policy.reward_function.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
                         return value 
                 buffer_state, current_buffer_size = lax.cond(
                         outcome["success"], # Add only experiences of successful episodes
