@@ -18,9 +18,9 @@ An environment based on JAX to train mobile robots within crowded environments. 
 
 ## Installation
 
-### Option 1: Virtual environment (tested on Debian 13 with Python 3.13)
+### Option 1: Virtual environment (tested on Debian 13 with Python 3.13 and 3.14)
 
-With Python 3.13 the package installs JAX 0.12.1. With Python 3.10 it installs the previous versions (JAX 0.4.30), which are used by the Docker image: recent JAX versions require Python 3.12 or newer. See [Reproducibility](#reproducibility) for the differences.
+With Python 3.13 or 3.14 the package installs JAX 0.12.1 (on Python 3.14, pandas and matplotlib are built from source). With Python 3.10 it installs the previous versions (JAX 0.4.30), which are used by the Docker image: recent JAX versions require Python 3.12 or newer. See [Reproducibility](#reproducibility) for the differences.
 
 Create a virtual environment.
 ```

@@ -1,13 +1,14 @@
 import sys
 from setuptools import setup, find_packages
 
-if sys.version_info[:2] not in [(3, 10), (3, 13)]:
+if sys.version_info[:2] not in [(3, 10), (3, 13), (3, 14)]:
     error_msg = (
         "\n" + "="*60 + "\n"
         "INSTALLATION ERROR\n"
         "The package 'socialjym' supports EXCLUSIVELY:\n"
         "  - Python 3.10\n"
         "  - Python 3.13\n"
+        "  - Python 3.14\n"
         f"You are trying to install using Python {sys.version_info.major}.{sys.version_info.minor}\n"
         "Installation aborted."
         "\n" + "="*60 + "\n"
@@ -26,13 +27,13 @@ setup(
         'scikit-learn==1.7.2; python_version == "3.10"',
         'flax==0.10.2; python_version == "3.10"',
         'optax==0.2.4; python_version == "3.10"',
-        # Python 3.13
-        'jax==0.12.1; python_version == "3.13"',
-        'jaxlib==0.12.1; python_version == "3.13"',
-        'scipy==1.18.1; python_version == "3.13"',
-        'scikit-learn==1.9.0; python_version == "3.13"',
-        'flax==0.12.12; python_version == "3.13"',
-        'optax==0.2.9; python_version == "3.13"',
+        # Python 3.13 and 3.14
+        'jax==0.12.1; python_version >= "3.13"',
+        'jaxlib==0.12.1; python_version >= "3.13"',
+        'scipy==1.18.1; python_version >= "3.13"',
+        'scikit-learn==1.9.0; python_version >= "3.13"',
+        'flax==0.12.12; python_version >= "3.13"',
+        'optax==0.2.9; python_version >= "3.13"',
         # Common dependencies
         'jax_tqdm==0.2.2',
         'matplotlib==3.9.1',
@@ -45,10 +46,10 @@ setup(
     extras_require={
         'cuda12': [
             'jax[cuda12]==0.4.30; python_version == "3.10"',
-            'jax[cuda12]==0.12.1; python_version == "3.13"',
+            'jax[cuda12]==0.12.1; python_version >= "3.13"',
         ],
         'cuda13': [
-            'jax[cuda13]==0.12.1; python_version == "3.13"',
+            'jax[cuda13]==0.12.1; python_version >= "3.13"',
         ],
     }
 )
