@@ -200,6 +200,8 @@ class DRAMPPI(MPPI):
         )
         distances = jnp.linalg.norm(closest_points - robot_pose[:2], axis=1)
         min_distance = jnp.nanmin(distances)
+        # If all obstacles are dummy (NaN), the clearance is infinite and the cost is zero
+        min_distance = jnp.where(jnp.isnan(min_distance), jnp.inf, min_distance)
         clearance_cost = lax.cond(
             min_distance - self.robot_radius <= 0,
             lambda: 1_000_000.,  # Collision, assign infinite cost
