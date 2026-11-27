@@ -253,13 +253,12 @@ def train_one_epoch(
 
         def micro_batch_loss_fn(p, u_mb, micro_batch_key):
             inputs0, inputs1 = u_mb["inputs0"], u_mb["inputs1"]
-            # Lowe input precision to save memory
+            # Inputs are kept in float32: the parameters are float32, so a lower precision input only adds noise
+            # (the ratio of the PPO loss would differ from 1 before any update) without saving activation memory
             if multitask_training or modular_training:
-                inputs0_f16 = inputs0.astype(jnp.bfloat16)
-                inputs1_f16 = inputs1.astype(jnp.bfloat16)
                 # Actor forward pass 
                 (safety_perc_dist, _, _, actor_dist, _, __build_class__, _, _, _) = policy.e2e.apply(
-                    p, inputs0_f16, inputs1_f16, stop_perception_gradient=modular_training
+                    p, inputs0, inputs1, stop_perception_gradient=modular_training
                 )
             else:
                 # Actor forward pass
@@ -323,11 +322,10 @@ def train_one_epoch(
                     gt_dict['gt_vels'] = gt_dict['gt_vels'] @ rot_mat.T
                     return inputs0, gt_dict
                 inputs0_corrupt, gt_dict = augment_data(inputs0, gt_dict, augment_key)
-                # Cast corrupted input to float16 to save memory during forward pass
-                inputs0_corrupt_f16 = inputs0_corrupt.astype(jnp.bfloat16)
+                # Forward pass on the corrupted input (kept in float32, see above)
                 # Forward pass through perception head
                 (perc_dist, _, _, _, _, _, _, _, _) = policy.e2e.apply(
-                    p, inputs0_corrupt_f16, inputs1, stop_perception_gradient=False, only_perception=True, perception_key=mask_drop_key
+                    p, inputs0_corrupt, inputs1, stop_perception_gradient=False, only_perception=True, perception_key=mask_drop_key
                 )
                 # Compute perception loss
                 perc_dist = dist_to_f32(perc_dist)
