@@ -475,15 +475,17 @@ def update_ema(
     scenario_batch_success,
     alpha=0.08,
 ):
-    # Success
+    # Success (initialized with the first batch)
     if ema_success is None:
-        return batch_success
-    new_ema_success = (1.0 - alpha) * ema_success + alpha * batch_success
-    # Scenario success
+        new_ema_success = batch_success
+    else:
+        new_ema_success = (1.0 - alpha) * ema_success + alpha * batch_success
+    # Scenario success (initialized with the first batch)
     scenario_batch_success = jnp.asarray(scenario_batch_success, dtype=jnp.float32)
     if scenario_ema_success is None:
-        return scenario_batch_success.copy()
-    new_scenario_ema_success = (1.0 - alpha) * scenario_ema_success + alpha * scenario_batch_success
+        new_scenario_ema_success = scenario_batch_success.copy()
+    else:
+        new_scenario_ema_success = (1.0 - alpha) * scenario_ema_success + alpha * scenario_batch_success
     return new_ema_success, new_scenario_ema_success
 
 def jessi_s2r_rl_rollout(

@@ -481,7 +481,7 @@ else:
 ### PRE-TRAIN PERCEPTION NETWORK
 if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name)):
     # Initialize network
-    params, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
+    params, _, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
     # Count network parameters
     def count_params(params):
         return sum(jnp.prod(jnp.array(p.shape)) for layer in params.values() for p in layer.values())

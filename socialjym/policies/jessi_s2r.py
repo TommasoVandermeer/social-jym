@@ -376,8 +376,14 @@ class JESSI_S2R(JESSI):
         output:
         - new_humans_state: shape is (n_humans, 6) where each row is (px, py, bvx, bvy, theta, omega)
         """
+        # Every human sees (and is repulsed by) every other human, as in the environments
+        humans_visibility = jnp.fill_diagonal(
+            jnp.ones((humans_state.shape[0], humans_state.shape[0]), dtype=jnp.bool),
+            jnp.zeros((humans_state.shape[0],), dtype=jnp.bool),
+            inplace=False,
+        )
         def scan_step(state, _):
-            new_state = humans_step(state, humans_goal, humans_parameters, obstacles, self.humans_dt)
+            new_state = humans_step(state, humans_visibility, humans_goal, humans_parameters, obstacles, self.humans_dt)
             return new_state, new_state
         new_humans_state, _ = lax.scan(
             f=scan_step,
