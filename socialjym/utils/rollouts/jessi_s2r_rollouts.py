@@ -681,13 +681,13 @@ def jessi_s2r_rl_rollout(
         logs["episodes_per_scenario"] = {k: logs["episodes_per_scenario"][k] + [episodes_per_scenario[k]] for k in logs["episodes_per_scenario"]}
         # G. EMA UPDATE and CURRICULUM UTILS
         batch_scenario_success_rate = jnp.array([success_rate_per_scenario[k] for k in sorted(success_rate_per_scenario)])
-        batch_success_rate = logs['successes'][-1]/logs['episodes'][-1]
+        batch_success_rate = logs['successes'][-1]/max(logs['episodes'][-1], 1)
         ema_success, scenario_ema_success = update_ema(ema_success, batch_success_rate, scenario_ema_success, batch_scenario_success_rate)
         worst_3_scenarios_success_rate = jnp.mean(jnp.sort(batch_scenario_success_rate)[:3])
         # H. PRINT LOGS
         print(
             f"\nUpd {update}:\n",
-            f"| Ret: {logs['returns'][-1]:.3f} | EMA Succ: {ema_success:.3f} | Succ: {batch_success_rate:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
+            f"| Ret: {logs['returns'][-1]:.3f} | EMA Succ: {ema_success:.3f} | Succ: {batch_success_rate:.3f} | Fail: {logs['failures'][-1]/max(logs['episodes'][-1], 1):.3f} (hum {int(n_coll_hum)/max(logs['episodes'][-1], 1):.2f}, obs {int(n_coll_obs)/max(logs['episodes'][-1], 1):.2f}) | Timeouts: {logs['timeouts'][-1]/max(logs['episodes'][-1], 1):.3f}\n",
             f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
             f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
             f"| EMA-SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {scenario_ema_success[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n" if scenario_ema_success is not None else "",

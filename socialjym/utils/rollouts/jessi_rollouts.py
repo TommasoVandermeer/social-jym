@@ -536,7 +536,7 @@ def jessi_multitask_rl_rollout(
         # G. PRINT LOGS
         print(
             f"Upd {update}:\n",
-            f"| Ret: {logs['returns'][-1]:.3f} | Succ: {logs['successes'][-1]/logs['episodes'][-1]:.3f} | Fail: {logs['failures'][-1]/logs['episodes'][-1]:.3f} (hum {int(n_coll_hum)/logs['episodes'][-1]:.2f}, obs {int(n_coll_obs)/logs['episodes'][-1]:.2f}) | Timeouts: {logs['timeouts'][-1]/logs['episodes'][-1]:.3f}\n",
+            f"| Ret: {logs['returns'][-1]:.3f} | Succ: {logs['successes'][-1]/max(logs['episodes'][-1], 1):.3f} | Fail: {logs['failures'][-1]/max(logs['episodes'][-1], 1):.3f} (hum {int(n_coll_hum)/max(logs['episodes'][-1], 1):.2f}, obs {int(n_coll_obs)/max(logs['episodes'][-1], 1):.2f}) | Timeouts: {logs['timeouts'][-1]/max(logs['episodes'][-1], 1):.3f}\n",
             f"| Action Stds: {logs['stds'][-1]} | Time to Goal: {logs['times_to_goal'][-1]:.2f}\n",
             f"| SR x scenario - " + ", ".join([f"{scenarios_labels[k]}: {success_rate_per_scenario[k]:.2f}" for k in logs['successes_per_scenario']]) + "\n",
             f"| Scenario Probs - " + ", ".join([f"{scenarios_labels[k]}: {scenarios_prob[i]:.2f}" for i, k in enumerate(logs['successes_per_scenario'])]) + "\n",
