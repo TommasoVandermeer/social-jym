@@ -185,17 +185,20 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_percep
         actor_params = pickle.load(f)['actor_params']
     dummy_policy_keys = random.split(random.PRNGKey(0), n_parallel_envs)
     dummy_env_keys = random.split(random.PRNGKey(0), n_parallel_envs)
+    def select_envs(mask, on_true, on_false):
+        # Per-environment selection between two pytrees with the environments on the first axis
+        return tree_map(lambda t, f: jnp.where(jnp.reshape(mask, (-1,) + (1,) * (t.ndim - 1)), t, f), on_true, on_false)
     def simulate_n_steps(n_steps):
         @loop_tqdm(n_steps//n_parallel_envs, desc="Simulating steps")
         @jit
         def _simulate_steps_with_lidar(i:int, for_val:tuple):
             ## Retrieve data from the tuple
-            data, state, info, reset_key, lasernav_obs, lasernav_info = for_val
+            data, state, info, outcome, reset_key, lasernav_obs, lasernav_info = for_val
             ## Compute robot action
             obs = vmap(env._get_obs, in_axes=(0, 0))(state, info)
             action, _, _, _, _ = dir_safe.batch_act(dummy_policy_keys, obs, info, actor_params, sample=False)
             ## Simulate one step SOCIALNAV
-            _, _, final_info, _, _, final_reset_key = env.batch_step(
+            _, _, final_info, _, final_outcome, final_reset_key = env.batch_step(
                 state,
                 info,
                 action, 
@@ -204,14 +207,22 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_percep
                 reset_if_done=True,
             )
             ## Simulate one step LASERNAV to update stacked observations
-            final_state, final_lasernav_obs, final_lasernav_info, (final_lasernav_reward, _), _, _ = laser_env.batch_step(
+            step_state, step_lasernav_obs, step_lasernav_info, (final_lasernav_reward, _), _, _ = laser_env.batch_step(
                 state,
                 lasernav_info,
                 action, 
                 reset_key,
                 dummy_env_keys, 
                 test=False,
-                reset_if_done=True,
+                reset_if_done=False,
+            )
+            ## Reset LASERNAV where SOCIALNAV was reset, with the same keys, so that both start the same episode
+            ## (their terminations differ: e.g. only LaserNav ends an episode on collisions with obstacles)
+            reset_state, _, reset_lasernav_obs, reset_lasernav_info, _ = laser_env.batch_reset(reset_key)
+            final_state, final_lasernav_obs, final_lasernav_info = select_envs(
+                ~final_outcome["nothing"],
+                (reset_state, reset_lasernav_obs, reset_lasernav_info),
+                (step_state, step_lasernav_obs, step_lasernav_info),
             )
             ## Compute action space parameters
             lidar_measurements = lasernav_obs[:,0,11:]  # Shape: (batch_size, lidar_num_rays)
@@ -250,7 +261,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_percep
                 "action_space_params": action_space_parameters,
             }
             data = tree_map(lambda x, y: x.at[i].set(y), data, step_out_data)
-            return data, final_state, final_info, final_reset_key, final_lasernav_obs, final_lasernav_info
+            return data, final_state, final_info, final_outcome, final_reset_key, final_lasernav_obs, final_lasernav_info
         # Initialize first episode
         reset_keys = random.split(random.PRNGKey(random_seed), n_parallel_envs)
         state, reset_key, _, info, outcome = env.batch_reset(reset_keys)
@@ -288,11 +299,11 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'jessi_s2r_percep
             "action_space_params": jnp.zeros((n_steps//n_parallel_envs,n_parallel_envs,3)),
         }
         # Step loop
-        data, _, _, _, _, _ = lax.fori_loop(
+        data, _, _, _, _, _, _ = lax.fori_loop(
             0,
             n_steps // n_parallel_envs,
             _simulate_steps_with_lidar,
-            (data, state, info, reset_key, lasernav_obs, lasernav_info)
+            (data, state, info, outcome, reset_key, lasernav_obs, lasernav_info)
         )
         data["episode_starts"] = data["episode_starts"].at[0,:].set(True)  # First step is always episode start
         # Compute returns
