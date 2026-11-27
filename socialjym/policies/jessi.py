@@ -115,7 +115,12 @@ class AngularLocalCrossAttention(fnn.Module):
         q = jnp.broadcast_to(spatial_latents[None, ...], (B_T, self.n_sectors, self.embed_dim))
         # 2. Cross Attention (mask shape # [B*T, 1, Target_Beams, Beams])
         match_matrix = (beam_sectors[:, None, :, :] == target_indices[None, :, None, None])
-        mask_bool = jnp.any(match_matrix, axis=-1)
+        mask_bool = jnp.any(match_matrix, axis=-1) # [B*T, Target_Beams, Beams]
+        # Beam dropout (training only, i.e. when a key is given): each beam of each scan is hidden from all the
+        # sectors with probability beam_dropout_rate. A sector whose beams are all dropped gets zero attention.
+        if key is not None and self.beam_dropout_rate > 0.0:
+            keep = random.bernoulli(key, p=1.0 - self.beam_dropout_rate, shape=(B_T, 1, x_emb.shape[1]))
+            mask_bool = mask_bool & keep
         mask = mask_bool[:, None, :, :]
         attn_out, attn_mtrx = attn(query=q, key=x_emb, value=x_emb, mask=mask)
         q = norm1(q + attn_out)
