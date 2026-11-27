@@ -4,9 +4,8 @@ import jax.numpy as jnp
 from jax import lax, jit, vmap, debug
 from functools import partial
 import time
-from shapely.geometry import LineString, box
-from shapely.affinity import rotate, translate
-
+from shapely.geometry import LineString, box # pyright: ignore[reportMissingModuleSource] (optional dependency: pip install shapely)
+from shapely.affinity import rotate, translate # pyright: ignore[reportMissingModuleSource] (optional dependency: pip install shapely)
 vmax = 1.
 wheels_distance = 0.7
 samples = 205

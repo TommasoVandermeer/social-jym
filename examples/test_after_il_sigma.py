@@ -9,6 +9,7 @@ import pickle
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.sarl_ppo import SARLPPO
+from socialjym.utils.networks import as_flax_variables
 
 ### Hyperparameters
 random_seed = 0
@@ -45,26 +46,22 @@ policy = SARLPPO(env.reward_function, dt=env_params['robot_dt'], kinematics=kine
 with open(os.path.join(os.path.dirname(__file__),"il_out.pkl"), 'rb') as f:
     il_out = pickle.load(f)
 actor_params = il_out['actor_params']
-print("Logsigma parameter: ", actor_params['actor']['logsigma'])
-print("Sigma: ", jnp.exp(actor_params['actor']['logsigma']))
+logsigmas = as_flax_variables(actor_params)["params"]["logsigmas"] # Works also with parameters saved by Haiku-based versions
+print("Logsigmas parameter: ", logsigmas)
+print("Sigmas: ", jnp.exp(logsigmas))
 
 ### Watch n_samples action sampled from actor output at the initial state
 n_samples = 1_000
 state, reset_key, obs, info, outcome = env.reset(random.PRNGKey(random_seed))
 mean_action, _, _, sampled_action, distrs = policy.act(random.PRNGKey(random_seed), obs, info, actor_params, False)
 # Print pdf value of mean action
-pdf_mean_action = jnp.exp(-policy._compute_neg_log_pdf_value(distrs["mu1"], distrs["mu2"], distrs["logsigma"], sampled_action))
-print(f"Probability of mean action: {pdf_mean_action}\nMeans: [{distrs['mu1']}, {distrs['mu2']}]\nSampled action: [{sampled_action[0]}, {sampled_action[1]}]")
+pdf_mean_action = jnp.exp(-policy.distr.neglogp(distrs, sampled_action))
+print(f"Probability of mean action: {pdf_mean_action}\nMeans: {distrs['means']}\nSampled action: [{sampled_action[0]}, {sampled_action[1]}]")
 keys = random.split(random.PRNGKey(random_seed), n_samples)
-actions, sampled_actions = policy.batch_sample_action(
-    distrs["mu1"],
-    distrs["mu2"],
-    jnp.exp(distrs["logsigma"]),
-    keys,
-)
+actions = policy.distr.batch_sample(distrs, keys) # SARL-PPO bounds the means of the Gaussian, not the sampled actions
 # Action samples in the (v,omega) space
 figure, ax = plt.subplots(figsize=(10,10))
-figure.suptitle(f'{n_samples} actor outputs at the initial state - Sigma {jnp.exp(distrs["logsigma"])}')
+figure.suptitle(f'{n_samples} actor outputs at the initial state - Sigmas {jnp.exp(distrs["logsigmas"])}')
 # ax.axis('equal')
 ax.plot(actions[:,0], actions[:,1], 'o')
 if kinematics == 'unicycle':
@@ -80,7 +77,7 @@ plt.show()
 # Distribution of each action component
 figure, ax = plt.subplots(1,2, figsize=(10,10))
 assert isinstance(ax, np.ndarray) # Axes array (for type checking)
-figure.suptitle(f'{n_samples} actor outputs at the initial state - Sigma {jnp.exp(distrs["logsigma"])}')
+figure.suptitle(f'{n_samples} actor outputs at the initial state - Sigmas {jnp.exp(distrs["logsigmas"])}')
 ax[0].hist(actions[:,0], bins=100, density=True)
 ax[1].hist(actions[:,1], bins=100, density=True)
 ax[0].axvline(mean_action[0], color='red', linestyle='dashed', linewidth=2)
@@ -96,7 +93,7 @@ plt.show()
 if kinematics == 'unicycle':
     figure, ax = plt.subplots(1,2, figsize=(10,10))
     assert isinstance(ax, np.ndarray) # Axes array (for type checking)
-    figure.suptitle(f'{n_samples} actor outputs at the initial state - Sigma {jnp.exp(distrs["logsigma"])}')
+    figure.suptitle(f'{n_samples} actor outputs at the initial state - Sigmas {jnp.exp(distrs["logsigmas"])}')
     v_right = (2 * actions[:,0] + actions[:,1] * policy.wheels_distance) / 2
     v_left = (2 * actions[:,0] - actions[:,1] * policy.wheels_distance) / 2
     mean_action_v_right = (2 * mean_action[0] + mean_action[1] * policy.wheels_distance) / 2

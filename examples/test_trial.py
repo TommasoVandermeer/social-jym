@@ -81,7 +81,7 @@ if policy == 'dir-safe':
         all_robot_goals = jnp.vstack((all_robot_goals, jnp.array([info['robot_goal']])))
 elif policy == 'dwa':
     try:
-        import dwa
+        import dwa # pyright: ignore[reportMissingImports] (optional dependency: pip install dynamic-window-approach)
     except ImportError:
         raise ImportError("DWA package is not installed. Please install it to use this function.\nYou can install it with 'pip3 install dynamic-window-approach'.\n Checkout https://github.com/goktug97/DynamicWindowApproach")
     ## Initialize DWA config

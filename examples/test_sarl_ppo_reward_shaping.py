@@ -120,7 +120,7 @@ def _fori_body(i:int, for_val:tuple):
     @jit
     def _compute_state_value_for_body(j:int, t:int, tup:tuple):
         value, rewards = tup
-        value += pow(policy.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
+        value += pow(policy.reward_function.gamma, (j-t) * policy.dt * policy.v_max) * rewards[j]
         return value, rewards
     metrics["returns0"] = metrics["returns0"].at[i].set(lax.fori_loop(0, episode_steps, lambda rr, x: _compute_state_value_for_body(rr, 0, x), (0., all_rewards_0))[0])
     metrics["returns1"] = metrics["returns1"].at[i].set(lax.fori_loop(0, episode_steps, lambda rr, x: _compute_state_value_for_body(rr, 0, x), (0., all_rewards_1))[0])

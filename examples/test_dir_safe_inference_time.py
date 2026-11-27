@@ -11,7 +11,7 @@ from socialjym.policies.dir_safe import DIRSAFE
 from socialjym.utils.aux_functions import interpolate_humans_boundaries, interpolate_obstacle_segments
 
 try:
-    import dwa
+    import dwa # pyright: ignore[reportMissingImports] (optional dependency: pip install dynamic-window-approach)
 except ImportError:
     raise ImportError("DWA package is not installed. Please install it to use this function.\nYou can install it with 'pip3 install dynamic-window-approach'.\n Checkout https://github.com/goktug97/DynamicWindowApproach")
 

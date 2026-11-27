@@ -2,8 +2,7 @@ from typing import cast
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, CheckButtons
-from shapely.geometry import Polygon
-
+from shapely.geometry import Polygon # pyright: ignore[reportMissingModuleSource] (optional dependency: pip install shapely)
 v_max = 0.45
 wheels_distance = 0.235
 w_max = (2 * v_max) / wheels_distance
@@ -175,8 +174,7 @@ plt.show()
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, CheckButtons
-from shapely.geometry import Polygon
-
+from shapely.geometry import Polygon # pyright: ignore[reportMissingModuleSource] (optional dependency: pip install shapely)
 v_max = 0.45
 wheels_distance = 0.235
 w_max = (2 * v_max) / wheels_distance
