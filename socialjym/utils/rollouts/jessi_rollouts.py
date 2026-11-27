@@ -37,8 +37,17 @@ def collect_rollout_step(
         actions, new_p_keys, inputs0, inputs1, _, sampled_actions, _, actor_distrs, values, _, _, _ = policy.batch_act(
             p_keys, obses, infos, network_params, sample=True
         )
-        new_states, new_obses, new_infos, (rewards, _), new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
-            states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True, scenarios_prob=scenarios_prob
+        new_states, new_obses, new_infos, (rewards, _), new_outcomes, (new_r_keys, new_e_keys), (_, final_obses, final_infos) = env.batch_step(
+            states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True, scenarios_prob=scenarios_prob, return_final=True
+        )
+        # Value of the state reached by the episodes that timed out (a truncation, bootstrapped in the GAE), computed
+        # on the observation before the automatic reset and only for those episodes
+        def _final_values(batch):
+            f_obses, f_goals, _ = batch
+            perception_inputs, robot_state_inputs = vmap(policy.compute_e2e_input)(f_obses, f_goals)
+            return f_obses, f_goals, policy.e2e.apply(network_params, perception_inputs, robot_state_inputs)[5]
+        _, _, timeout_values = env.update_selected_envs(
+            new_outcomes["timeout"], (final_obses, final_infos["robot_goal"], jnp.zeros_like(values)), _final_values
         )
         rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(
             states[:,:-1,:2], 
@@ -61,6 +70,7 @@ def collect_rollout_step(
             "actions": sampled_actions,
             "rewards": rewards,
             "dones": ~(outcomes["nothing"]),
+            "timeout_values": timeout_values, # V(final state) for timed-out episodes, 0 otherwise
             "neglogpdfs": policy.action_distribution.batch_neglogp(actor_distrs, sampled_actions),
             "stds": policy.action_distribution.batch_std(actor_distrs)
         }
@@ -119,12 +129,15 @@ def process_buffer_and_gae(
     rewards = history["rewards"]
     values = history["values"]
     dones = history["dones"]
+    timeout_values = history["timeout_values"]
     values_ext = jnp.concatenate([values, last_values[None, :]], axis=0)
     dones_ext = jnp.concatenate([dones, last_dones[None, :]], axis=0)
     def _gae_step(gae_carry, i):
         adv_next = gae_carry
         mask = 1.0 - dones_ext[i+1].astype(jnp.float32)
-        delta = rewards[i] + jnp.power(gamma,dt*vmax) * values_ext[i+1] * mask - values_ext[i]
+        # Terminal states (success, collisions) have no future value; timed-out episodes are truncated, so they
+        # bootstrap from the value of their final state (the advantages still do not propagate across episodes)
+        delta = rewards[i] + jnp.power(gamma,dt*vmax) * (values_ext[i+1] * mask + timeout_values[i]) - values_ext[i]
         advantage = delta + jnp.power(gamma,dt*vmax) * lambda_gae * adv_next * mask
         return advantage, advantage # Carry, Output
     n_steps = rewards.shape[0]

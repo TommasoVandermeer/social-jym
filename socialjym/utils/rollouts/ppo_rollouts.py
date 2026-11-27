@@ -54,7 +54,7 @@ def ppo_rl_rollout(
                 @jit
                 def _step_fori_body(step:int, val:tuple):
                         # Retrieve data from the tuple
-                        actor_params, critic_params, states, obses, init_infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds = val
+                        actor_params, critic_params, states, obses, init_infos, init_outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds, batch_timeout_values = val
                         ## Step
                         # Update state of Batch Norm layer
                         if policy.normalize_and_clip_obs:
@@ -75,7 +75,20 @@ def ppo_rl_rollout(
                                 critic_params, 
                                 inputs, 
                         ) 
-                        states, obses, infos, (rewards, _), outcomes, reset_keys = env.batch_step(states, init_infos, actions, reset_keys, test=False, reset_if_done=True)
+                        states, obses, infos, (rewards, _), outcomes, reset_keys, (_, final_obses, final_infos) = env.batch_step(states, init_infos, actions, reset_keys, test=False, reset_if_done=True, return_final=True)
+                        # Value of the state reached by the episodes that timed out (a truncation, bootstrapped in the GAE),
+                        # computed before the automatic reset and only for those episodes
+                        def _final_values(batch):
+                                f_obses, f_infos, _ = batch
+                                f_inputs = vmap(policy.batch_compute_vnet_input, in_axes=(0,0,0))(f_obses[:,-1], f_obses[:,:-1], f_infos)
+                                if policy.normalize_and_clip_obs:
+                                        f_inputs = jnp.reshape(
+                                                cast("SARLPPO", policy).normalize_and_clip_inputs(jnp.reshape(f_inputs, (-1, policy.vnet_input_size)), actor_params["norm_state"]),
+                                                f_inputs.shape,
+                                        )
+                                return f_obses, f_infos, jnp.reshape(vmap(policy.critic.apply, in_axes=(None,0))(critic_params, f_inputs), (-1,))
+                        _, _, timeout_values = env.update_selected_envs(outcomes["timeout"], (final_obses, final_infos, jnp.zeros((n_parallel_envs,))), _final_values)
+                        batch_timeout_values = batch_timeout_values.at[:,step].set(timeout_values)
                         ## Save data to later add to the buffer
                         batch_inputs = batch_inputs.at[:,step].set(inputs)
                         batch_values = batch_values.at[:,step].set(jnp.squeeze(values))
@@ -91,7 +104,7 @@ def ppo_rl_rollout(
                         returns = returns.at[:].set(returns + (~outcomes["nothing"]) * init_infos['return'] + jnp.power(policy.reward_function.gamma, (init_infos['step']+1) * policy.dt * policy.v_max) * rewards)  
                         episode_count += jnp.sum(~(outcomes["nothing"]))
                         batch_stds = batch_stds.at[:,step,:].set(policy.distr.batch_std(distrs))
-                        return (actor_params, critic_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds)
+                        return (actor_params, critic_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, successes, failures, timeouts, returns, batch_stds, batch_timeout_values)
                 batch_inputs = jnp.zeros((n_parallel_envs, n_steps, env.n_humans, policy.vnet_input_size))
                 batch_values = jnp.zeros((n_parallel_envs, n_steps))
                 batch_actions = jnp.zeros((n_parallel_envs, n_steps, 2))
@@ -99,8 +112,9 @@ def ppo_rl_rollout(
                 batch_dones = jnp.zeros((n_parallel_envs, n_steps))
                 batch_neglogpdfs = jnp.zeros((n_parallel_envs, n_steps))
                 batch_stds = jnp.zeros((n_parallel_envs, n_steps, 2)) # (WARNING: could be state dependent or not)
-                val_init = (actor_params, critic_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, 0, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, 0, 0, 0, jnp.zeros(n_parallel_envs,), batch_stds)
-                actor_params, critic_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, succ_count, fail_count, timeo_count, cum_rewards, batch_stds = lax.fori_loop(
+                batch_timeout_values = jnp.zeros((n_parallel_envs, n_steps)) # V(final state) for timed-out episodes, 0 otherwise
+                val_init = (actor_params, critic_params, states, obses, infos, init_outcomes, policy_keys, reset_keys, 0, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, 0, 0, 0, jnp.zeros(n_parallel_envs,), batch_stds, batch_timeout_values)
+                actor_params, critic_params, states, obses, infos, outcomes, policy_keys, reset_keys, episode_count, batch_inputs, batch_values, batch_actions, batch_rewards, batch_dones, batch_neglogpdfs, succ_count, fail_count, timeo_count, cum_rewards, batch_stds, batch_timeout_values = lax.fori_loop(
                         0,
                         n_steps, 
                         _step_fori_body, 
@@ -141,7 +155,9 @@ def ppo_rl_rollout(
                         # Retrieve data from the tuple
                         values, rewards, dones, advantages = val
                         # Compute the advantage
-                        delta = rewards[:,rt] + pow(policy.reward_function.gamma, policy.dt * policy.v_max) * values[:,rt+1] * (1 - dones[:,rt+1]) - values[:,rt]
+                        # Terminal states (success, collisions) have no future value; timed-out episodes are truncated, so they
+                        # bootstrap from the value of their final state (the advantages still do not propagate across episodes)
+                        delta = rewards[:,rt] + pow(policy.reward_function.gamma, policy.dt * policy.v_max) * (values[:,rt+1] * (1 - dones[:,rt+1]) + batch_timeout_values[:,rt]) - values[:,rt]
                         advantages = advantages.at[:,rt].set(delta + pow(policy.reward_function.gamma, policy.dt * policy.v_max) * lambda_gae * advantages[:,rt+1] * (1 - dones[:,rt+1]))
                         return values, rewards, dones, advantages
                 _, _, _, advatages = lax.fori_loop(

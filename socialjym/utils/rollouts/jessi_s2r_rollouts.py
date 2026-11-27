@@ -68,8 +68,42 @@ def collect_rollout_step(
             inputs1[:,0,:3], # Action space parameters
         )
         # Environment
-        new_states, new_obses, new_infos, (rewards, _), new_outcomes, (new_r_keys, new_e_keys) = env.batch_step(
-            states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True, scenarios_prob=scenarios_prob, visibility_chance=visibility
+        new_states, new_obses, new_infos, (rewards, _), new_outcomes, (new_r_keys, new_e_keys), (final_states, final_obses, final_infos) = env.batch_step(
+            states, infos, actions, reset_keys=r_keys, env_keys=e_keys, test=False, reset_if_done=True, scenarios_prob=scenarios_prob, visibility_chance=visibility, return_final=True
+        )
+        # Value of the state reached by the episodes that timed out (a truncation, bootstrapped in the GAE), computed
+        # on the state and observation before the automatic reset and only for those episodes
+        def _final_values(batch):
+            f_states, f_obses, f_infos, f_keys, _ = batch
+            _, f_robot_state_inputs = vmap(policy.compute_e2e_input)(f_obses, f_infos["robot_goal"])
+            n = len(f_infos["robot_goal"])
+            f_values = policy.batch_critic_forward(
+                f_keys,
+                critic_network_params,
+                f_states,
+                f_obses[:, :policy.n_actions_history,6:8],
+                {k: f_infos[k] for k in ("humans_goal", "humans_parameters", "static_obstacles")}, # Environment params
+                {
+                    "robot_goal": f_infos["robot_goal"],
+                    "robot_radius": jnp.full((n,), policy.robot_radius),
+                    "v_max": jnp.full((n,), policy.v_max),
+                    "wheels_distance": jnp.full((n,), policy.wheels_distance),
+                    "wheels_max_linear_acceleration": jnp.full((n,), env.wheels_max_linear_acceleration),
+                    "robot_delay": f_infos["robot_delay"],
+                }, # Robot params
+                f_robot_state_inputs[:,0,:3], # Action space parameters
+            )
+            return f_states, f_obses, f_infos, f_keys, f_values
+        _, _, _, _, timeout_values = env.update_selected_envs(
+            new_outcomes["timeout"],
+            (
+                final_states,
+                final_obses,
+                {k: final_infos[k] for k in ("humans_goal", "humans_parameters", "static_obstacles", "robot_goal", "robot_delay")},
+                vmap(lambda k: random.fold_in(k, 1))(c_keys),
+                jnp.zeros_like(values),
+            ),
+            _final_values,
         )
         rc_humans_positions, _, rc_humans_velocities, rc_obstacles, _ = env.batch_robot_centric_transform(
             states[:,:-1,:2], 
@@ -96,6 +130,7 @@ def collect_rollout_step(
             "actions": sampled_actions,
             "rewards": rewards,
             "dones": ~(outcomes["nothing"]),
+            "timeout_values": timeout_values, # V(final state) for timed-out episodes, 0 otherwise
             "neglogpdfs": policy.action_distribution.batch_neglogp(actor_distrs, sampled_actions),
             "stds": policy.action_distribution.batch_std(actor_distrs)
         }
@@ -178,13 +213,16 @@ def process_buffer_and_gae(
     rewards = history["rewards"]
     values = history["values"]
     dones = history["dones"]
+    timeout_values = history["timeout_values"]
     values_ext = jnp.concatenate([values, last_values[None, :]], axis=0)
     dones_ext = jnp.concatenate([dones, last_dones[None, :]], axis=0)
     gamma_step = gamma ** (dt * vmax)
     def _gae_step(gae_carry, i):
         adv_next = gae_carry
         mask = 1.0 - dones_ext[i+1].astype(jnp.float32)
-        delta = rewards[i] + gamma_step * values_ext[i+1] * mask - values_ext[i]
+        # Terminal states (success, collisions) have no future value; timed-out episodes are truncated, so they
+        # bootstrap from the value of their final state (the advantages still do not propagate across episodes)
+        delta = rewards[i] + gamma_step * (values_ext[i+1] * mask + timeout_values[i]) - values_ext[i]
         advantage = delta + gamma_step * lambda_gae * adv_next * mask
         return advantage, advantage # Carry, Output
     n_steps = rewards.shape[0]

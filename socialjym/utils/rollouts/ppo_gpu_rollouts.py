@@ -60,6 +60,18 @@ def collect_rollout_step(
         new_states, new_obses, new_infos, (rewards, _), new_outcomes, _ = env.batch_step(
             states, infos, actions, r_keys, test=False, reset_if_done=False
         )
+        # Value of the state reached by the episodes that timed out (a truncation, bootstrapped in the GAE), computed
+        # before the reset and only for those episodes
+        def _final_values(batch):
+            f_obses, f_infos, _ = batch
+            f_inputs = vmap(policy.batch_compute_vnet_input, in_axes=(0,0,0))(f_obses[:,-1], f_obses[:,:-1], f_infos)
+            if policy.normalize_and_clip_obs:
+                f_inputs = jnp.reshape(
+                    cast("SARLPPO", policy).normalize_and_clip_inputs(jnp.reshape(f_inputs, (-1, policy.vnet_input_size)), actor_params["norm_state"]),
+                    f_inputs.shape,
+                )
+            return f_obses, f_infos, jnp.reshape(vmap(policy.critic.apply, in_axes=(None,0))(critic_params, f_inputs), (-1,))
+        _, _, timeout_values = env.update_selected_envs(new_outcomes["timeout"], (new_obses, new_infos, jnp.zeros((n_envs,))), _final_values)
         # Reset finished episodes from the pool (refilled only if an env finishes twice in the same rollout)
         new_dones = ~(new_outcomes["nothing"])
         pool, pool_used, r_keys = lax.cond(
@@ -76,6 +88,7 @@ def collect_rollout_step(
             "actions": sampled_actions,
             "rewards": rewards,
             "dones": ~(outcomes["nothing"]), # Dones are computed with the pre-step outcomes (episode starts)
+            "timeout_values": timeout_values, # V(final state) for timed-out episodes, 0 otherwise
             "neglogpdfs": policy.distr.batch_neglogp(distrs, sampled_actions),
             "stds": policy.distr.batch_std(distrs),
         }
@@ -145,7 +158,9 @@ def process_buffer_and_gae(
     gae_discount = pow(policy.reward_function.gamma, policy.dt * policy.v_max) * lambda_gae # Only gamma is a discount per unit of time
     def _gae_step(adv_next, t):
         mask = 1 - dones_ext[t+1]
-        delta = rewards[t] + discount * values_ext[t+1] * mask - values_ext[t]
+        # Terminal states (success, collisions) have no future value; timed-out episodes are truncated, so they
+        # bootstrap from the value of their final state (the advantages still do not propagate across episodes)
+        delta = rewards[t] + discount * (values_ext[t+1] * mask + history["timeout_values"][t]) - values_ext[t]
         advantage = delta + gae_discount * adv_next * mask
         return advantage, advantage
     _, advantages = lax.scan(_gae_step, jnp.zeros((n_envs,)), jnp.arange(n_steps)[::-1])
