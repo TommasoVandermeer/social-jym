@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Rectangle
 import jax.numpy as jnp
 from jax import lax, jit, vmap, debug
 from functools import partial
@@ -318,25 +319,25 @@ print(f"New alpha (for collision avoidance): {new_alpha}")
 print(f"New beta (for collision avoidance): {new_beta}")
 print(f"New gamma (for collision avoidance): {new_gamma}")
 # Plotting the feasible region
-plt.gca().add_artist(plt.Circle((robot_pose[0], robot_pose[1]), robot_radius, color='black', fill=False, zorder=3, linewidth=2))
-plt.gca().add_artist(plt.Circle((robot_pose[0] + jnp.cos(robot_pose[2]) * robot_radius, robot_pose[1] + jnp.sin(robot_pose[2]) * robot_radius), robot_radius/10, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
-plt.gca().add_artist(plt.Rectangle(
-    (robot_pose[0] - robot_radius, robot_pose[1] - dt**2*vmax/(4*wheels_distance) - robot_radius), 
+plt.gca().add_artist(Circle((float(robot_pose[0]), float(robot_pose[1])), robot_radius, color='black', fill=False, zorder=3, linewidth=2))
+plt.gca().add_artist(Circle((float(robot_pose[0] + jnp.cos(robot_pose[2]) * robot_radius), float(robot_pose[1] + jnp.sin(robot_pose[2]) * robot_radius)), robot_radius/10, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
+plt.gca().add_artist(Rectangle(
+    (float(robot_pose[0] - robot_radius), float(robot_pose[1] - dt**2*vmax/(4*wheels_distance) - robot_radius)), 
     vmax*dt + 2 * robot_radius,
     2*robot_radius + (dt**2*vmax/(4*wheels_distance) * (2)), 
     rotation_point=(float(robot_pose[0]), float(robot_pose[1])), 
-    angle=jnp.rad2deg(robot_pose[2]), 
+    angle=float(jnp.rad2deg(robot_pose[2])), 
     color='red', 
     fill=False, 
     zorder=3, 
     linewidth=2
 ))
-plt.gca().add_artist(plt.Rectangle(
-    (robot_pose[0] - robot_radius, robot_pose[1] - new_alpha*dt**2*new_gamma*vmax/(4*wheels_distance) - robot_radius), 
+plt.gca().add_artist(Rectangle(
+    (float(robot_pose[0] - robot_radius), float(robot_pose[1] - new_alpha*dt**2*new_gamma*vmax/(4*wheels_distance) - robot_radius)), 
     new_alpha*vmax*dt + 2 * robot_radius, 
     2*robot_radius + (new_alpha*dt**2*vmax/(4*wheels_distance) * (new_beta + new_gamma)), 
     rotation_point=(float(robot_pose[0]), float(robot_pose[1])), 
-    angle=jnp.rad2deg(robot_pose[2]), 
+    angle=float(jnp.rad2deg(robot_pose[2])), 
     color='green', 
     fill=False, 
     zorder=3, 

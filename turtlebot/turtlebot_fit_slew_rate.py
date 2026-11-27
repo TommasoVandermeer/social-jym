@@ -61,7 +61,7 @@ def fit_slew_rate_with_delay(pkl_filename, axis='linear'):
     def optimize_amax_for_given_delay(delay):
         shifted_cmd_t = cmd_t + delay
         
-        cmd_interp_func = interp1d(shifted_cmd_t, cmd_v, kind='previous', bounds_error=False, fill_value=(0.0, cmd_v[-1]))
+        cmd_interp_func = interp1d(shifted_cmd_t, cmd_v, kind='previous', bounds_error=False, fill_value=(0.0, cmd_v[-1])) # pyright: ignore[reportArgumentType] (fill_value=(below, above) is accepted)
         u_sync_delayed = cmd_interp_func(odom_t)
         
         def loss_function(params):
@@ -108,9 +108,10 @@ def fit_slew_rate_with_delay(pkl_filename, axis='linear'):
     plt.figure(figsize=(14, 6))
     plt.subplots_adjust(left=0.1, right=0.9, bottom=0.15)
     
-    cmd_interp_original = interp1d(cmd_t, cmd_v, kind='previous', bounds_error=False, fill_value=(cmd_v[0], cmd_v[-1]))
+    cmd_interp_original = interp1d(cmd_t, cmd_v, kind='previous', bounds_error=False, fill_value=(cmd_v[0], cmd_v[-1])) # pyright: ignore[reportArgumentType] (fill_value=(below, above) is accepted)
     plt.step(odom_t, cmd_interp_original(odom_t), label='Ref', where='post', color='green', alpha=0.7, linestyle='--')
     
+    assert best_u_sync is not None
     plt.step(odom_t, best_u_sync, label=f'Delayed ref ({best_delay:.2f}s)', where='post', color='gray', alpha=0.7, linestyle=':')
     
     plt.plot(odom_t, odom_v, label='State', color='blue', linewidth=2)

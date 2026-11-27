@@ -2,6 +2,7 @@ import jax.numpy as jnp
 from jax import vmap
 import os
 import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon
 
 from socialjym.utils.distributions.gaussian import Gaussian
 
@@ -36,7 +37,7 @@ bounded_actions = vmap(distr.bound_action_safety, in_axes=(0,None))(unbounded_ac
 figure, ax = plt.subplots(1,1, figsize=(10, 3))
 figure.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.25)
 ax.add_patch(
-    plt.Polygon(
+    Polygon(
         [   
             [w_max,0],
             [-w_max,0],
@@ -57,9 +58,9 @@ ax.set_yticklabels(["0", r"$\overline{v}$"])
 ax.set_ylim(-2, v_max + 2)
 ax.set_xlim(-w_max - 2, w_max + 2)
 ax.set_ylabel("$v$ (m/s)", labelpad=-15)
-ax.set_xlabel("$\omega$ (rad/s)", labelpad=-5)
+ax.set_xlabel("$\\omega$ (rad/s)", labelpad=-5)
 ax.plot([-10, 10], [0, 0], color='black', linewidth=3, zorder=5)
-ax.text(0, 0.1, "$v \geq 0$", zorder=5, verticalalignment='bottom', horizontalalignment='center')
+ax.text(0, 0.1, "$v \\geq 0$", zorder=5, verticalalignment='bottom', horizontalalignment='center')
 ax.plot([-(w_max)*2, w_max], [-v_max, 2], color='black', linewidth=3, zorder=5)
 # ax.text(-2.5 , L, r"$\omega \leq \frac{\overline{\omega}}{\overline{v}}v - \overline{\omega}$", zorder=5, verticalalignment='center', horizontalalignment='left')
 ax.text(-2.5 , L, r"$\omega \geq \frac{2(v-\overline{v})}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')

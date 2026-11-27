@@ -153,6 +153,7 @@ for seed in range(n_seeds):
         il_out = actor_critic_il_rollout(**il_rollout_params)
         ### Plot losses during IL
         figure, ax = plt.subplots(2,1,figsize=(10,10))
+        assert isinstance(ax, np.ndarray) # Axes array (for type checking)
         ax[0].set(
             xlabel='Epoch', 
             ylabel='Loss', 
@@ -296,7 +297,7 @@ for seed in range(n_seeds):
         font = {'weight' : 'regular',
                 'size'   : 18}
         rc('font', **font)
-        figure, ax = plt.subplots(4,2,figsize=(15,15))
+        figure, ax = plt.subplots(4,2,figsize=(15,15), squeeze=False)
         figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95, right=0.95, left=0.1, wspace=0.35)
         # Plot returns during RL
         ax[0,0].grid()

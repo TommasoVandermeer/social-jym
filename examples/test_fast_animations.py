@@ -1,3 +1,4 @@
+from typing import Any
 """
 Check that the new *_fast animate methods of the policies draw the same frames of the old animate methods, and measure their speed.
 
@@ -96,7 +97,7 @@ def lasernav_env(**kwargs):
     env_params.update(kwargs)
     return LaserNav(**env_params)
 
-def simulate(env, act, n_steps=N_STEPS, seed=RANDOM_SEED):
+def simulate(env, act, n_steps=N_STEPS, seed=RANDOM_SEED) -> dict[str, Any]:
     """
     Simulate up to n_steps with act(obs, info, step) -> (action, outputs_dict). Returns a dict with the stacked data of the steps
     (states, observations, goals, static obstacles, humans radii, legs if any, actions and policy outputs), aligned as in the examples.
@@ -368,7 +369,7 @@ CASES = {
 
 class _CapturedFuncAnimation:
     """Replaces FuncAnimation in the module of the old animate method: keeps the figure and the frame function, shows nothing."""
-    captured = None
+    captured: tuple[Any, Any, Any] | None = None
     def __init__(self, fig, func, **kwargs):
         _CapturedFuncAnimation.captured = (fig, func, kwargs.get('frames'))
     def save(self, *args, **kwargs):
@@ -381,7 +382,9 @@ def capture_old_animation(policy, method_name, args, kwargs, module):
         getattr(policy, method_name)(*args, **kwargs)
     finally:
         module.FuncAnimation, plt.show = original_func_animation, original_show
-    return _CapturedFuncAnimation.captured
+    captured = _CapturedFuncAnimation.captured
+    assert captured is not None, "The old method did not create an animation"
+    return captured
 
 def capture_new_animation(policy, method_name, args, kwargs):
     captured = {}
@@ -401,7 +404,7 @@ def render_old_frame(fig, func, frame):
 ### DATA COMPARISON (on the artists where the per-frame logic was vectorized: action space scatters, trajectories, ellipses)
 
 def _shown_scatters(ax):
-    return sorted([c for c in ax.collections if isinstance(c, PathCollection) and c.get_visible() and len(c.get_offsets()) > 0], key=lambda c: c.get_zorder())
+    return sorted([c for c in ax.collections if isinstance(c, PathCollection) and c.get_visible() and len(np.asarray(c.get_offsets())) > 0], key=lambda c: c.get_zorder())
 
 def compare_frame_data(old_fig, animator, frame):
     """Compare the data of the old artists (just drawn at frame) with the new ones (just updated to frame). Returns a list of errors."""
@@ -415,7 +418,7 @@ def compare_frame_data(old_fig, animator, frame):
     for old_sc, new_sc in zip(old_scatters, new_scatters):
         if not np.allclose(old_sc.get_offsets(), new_sc.get_offsets(), atol=1e-5):
             errors.append(f"action space: different scatter points (zorder {old_sc.get_zorder()})")
-        elif old_sc.get_array() is not None and not (np.allclose(old_sc.get_array(), new_sc.get_array(), rtol=1e-4) and np.allclose(old_sc.get_clim(), new_sc.get_clim(), rtol=1e-4)):
+        elif old_sc.get_array() is not None and not (np.allclose(np.asarray(old_sc.get_array()), np.asarray(new_sc.get_array()), rtol=1e-4) and np.allclose(old_sc.get_clim(), new_sc.get_clim(), rtol=1e-4)):
             errors.append(f"action space: different scatter values or color limits (zorder {old_sc.get_zorder()})")
     for i, (old_ax, new_ax) in enumerate(zip(old_axs[:-1], new_axs[:-1])):
         # Sampled trajectories (zorder 10): old Line2Ds vs new LineCollection
@@ -426,7 +429,7 @@ def compare_frame_data(old_fig, animator, frame):
             errors.append(f"axes {i}: {len(old_lines)} trajectories vs {len(new_segments)}")
         elif len(old_lines) > 0:
             new_colors = np.concatenate([np.broadcast_to(c.get_colors(), (len(c.get_segments()), 4)) for c in new_collections])
-            new_widths = np.concatenate([np.broadcast_to(c.get_linewidths(), (len(c.get_segments()),)) for c in new_collections])
+            new_widths = np.concatenate([np.broadcast_to(c.get_linewidths(), (len(c.get_segments()),)) for c in new_collections]) # pyright: ignore[reportAttributeAccessIssue] (LineCollection.get_linewidths exists)
             for j, line in enumerate(old_lines):
                 if not np.allclose(line.get_xydata(), new_segments[j], atol=1e-4):
                     errors.append(f"axes {i}: different trajectory {j}")
@@ -435,7 +438,7 @@ def compare_frame_data(old_fig, animator, frame):
                     errors.append(f"axes {i}: different style of trajectory {j}")
                     break
         # Gaussian ellipses: old Ellipse patches vs new EllipseCollections (angles modulo 180 degrees)
-        old_ellipses = np.array([[*e.get_center(), e.get_width(), e.get_height(), e.get_angle()] for e in old_ax.patches if type(e) is Ellipse]).reshape(-1, 5)
+        old_ellipses = np.array([[*e.get_center(), e.get_width(), e.get_height(), e.get_angle()] for e in old_ax.patches if type(e) is Ellipse]).reshape(-1, 5) # pyright: ignore[reportGeneralTypeIssues] (get_center returns (x, y))
         new_ellipses = []
         for layer in animator.layers:
             if isinstance(layer, EllipsesLayer) and layer.ax is new_ax:

@@ -4,6 +4,7 @@ Only tracks explicitly selected by the user are maintained. This prevents map
 artifacts and unrelated moving objects from creating false human tracks.
 """
 
+from typing import Any
 import argparse
 import json
 import math
@@ -160,6 +161,7 @@ class Track:
         for k in range(len(self.filtered_x) - 2, -1, -1):
             F = self.transitions[k + 1]
             P_pred = self.predicted_P[k + 1]
+            assert P_pred is not None # Set by every prediction step after the first
             gain = np.linalg.solve(P_pred, F @ self.filtered_P[k]).T
             self.smoothed_states[k] = self.filtered_x[k] + gain @ (
                 self.smoothed_states[k + 1] - self.predicted_x[k + 1]
@@ -547,7 +549,9 @@ def add_looping_preview(fig, ax, preview_frames, anchor_pose):
 
 def select_initial_humans(global_points, robot_pose, preview_frames=None):
     """Open the first-frame GUI and return selected global coordinates."""
-    fig, (ax, preview_ax) = plt.subplots(1, 2, figsize=(16, 8))
+    fig, axs = plt.subplots(1, 2, figsize=(16, 8))
+    assert isinstance(axs, np.ndarray) # Axes array (for type checking)
+    ax, preview_ax = axs
     ax.scatter(global_points[:, 0], global_points[:, 1], c="black", s=5, alpha=0.55)
     rx, ry, rth = robot_pose
     ax.plot(rx, ry, "bo", markersize=9)
@@ -612,9 +616,11 @@ def select_initial_humans(global_points, robot_pose, preview_frames=None):
 
 def select_checkpoint_corrections(
     global_points, robot_pose, tracks, frame_number, preview_frames=None
-):
+) -> dict:
     """Collect corrections plus additions/deactivations at a checkpoint."""
-    fig, (ax, preview_ax) = plt.subplots(1, 2, figsize=(16, 8))
+    fig, axs = plt.subplots(1, 2, figsize=(16, 8))
+    assert isinstance(axs, np.ndarray) # Axes array (for type checking)
+    ax, preview_ax = axs
     ax.scatter(global_points[:, 0], global_points[:, 1], c="black", s=5, alpha=0.55)
     rx, ry, rth = robot_pose
     ax.plot(rx, ry, "bo", markersize=9, label="Robot")
@@ -890,7 +896,7 @@ def process_recording(
             transitions.append(F)
             predictions.append((x_pred, P_pred))
 
-        checkpoint_actions = {
+        checkpoint_actions: dict[str, Any] = {
             "corrections": {}, "additions": [], "deactivations": set(),
             "reactivations": {},
         }

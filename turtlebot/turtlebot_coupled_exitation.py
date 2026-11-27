@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import numpy as np
 import sys
 import argparse
 import rclpy
@@ -109,7 +110,9 @@ class CoupledExcitationTracker(Node):
         cmd_t = [t - t0 for t in cmd_t]
         odom_t = [t - t0 for t in odom_t]
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        fig, axs = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        assert isinstance(axs, np.ndarray) # Axes array (for type checking)
+        ax1, ax2 = axs
         
         # Linear Subplot
         ax1.step(cmd_t, [d['v'] for d in self.recorded_data['cmd']], label='Cmd V', where='post', color='black', linestyle='--')

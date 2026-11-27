@@ -50,8 +50,8 @@ def fit_coupled_slew_rate_with_delay(pkl_filename):
 
     def optimize_amax_for_given_delay(delay):
         shifted_cmd_t = cmd_t + delay
-        interp_v = interp1d(shifted_cmd_t, cmd_v, kind='previous', bounds_error=False, fill_value=(0.0, cmd_v[-1]))
-        interp_w = interp1d(shifted_cmd_t, cmd_w, kind='previous', bounds_error=False, fill_value=(0.0, cmd_w[-1]))
+        interp_v = interp1d(shifted_cmd_t, cmd_v, kind='previous', bounds_error=False, fill_value=(0.0, cmd_v[-1])) # pyright: ignore[reportArgumentType] (fill_value=(below, above) is accepted)
+        interp_w = interp1d(shifted_cmd_t, cmd_w, kind='previous', bounds_error=False, fill_value=(0.0, cmd_w[-1])) # pyright: ignore[reportArgumentType] (fill_value=(below, above) is accepted)
         u_v_delayed = interp_v(odom_t)
         u_w_delayed = interp_w(odom_t)
         def loss_function(params):
@@ -88,11 +88,13 @@ def fit_coupled_slew_rate_with_delay(pkl_filename):
 
     v_sim_opt, w_sim_opt = simulate_coupled_slew_rate(best_amax_wheel, odom_t, best_u_v_sync, best_u_w_sync, odom_v[0], odom_w[0])
     
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    fig, axs = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+    assert isinstance(axs, np.ndarray) # Axes array (for type checking)
+    ax1, ax2 = axs
     plt.subplots_adjust(left=0.1, right=0.9, bottom=0.1, top=0.9, hspace=0.15)
     
-    interp_v_orig = interp1d(cmd_t, cmd_v, kind='previous', bounds_error=False, fill_value=(cmd_v[0], cmd_v[-1]))
-    interp_w_orig = interp1d(cmd_t, cmd_w, kind='previous', bounds_error=False, fill_value=(cmd_w[0], cmd_w[-1]))
+    interp_v_orig = interp1d(cmd_t, cmd_v, kind='previous', bounds_error=False, fill_value=(cmd_v[0], cmd_v[-1])) # pyright: ignore[reportArgumentType] (fill_value=(below, above) is accepted)
+    interp_w_orig = interp1d(cmd_t, cmd_w, kind='previous', bounds_error=False, fill_value=(cmd_w[0], cmd_w[-1])) # pyright: ignore[reportArgumentType] (fill_value=(below, above) is accepted)
     
     ax1.step(odom_t, interp_v_orig(odom_t), label='Ref', where='post', color='green', alpha=0.7, linestyle='--')
     ax1.step(odom_t, best_u_v_sync, label='Delayed Ref', where='post', color='gray', alpha=0.5, linestyle=':')

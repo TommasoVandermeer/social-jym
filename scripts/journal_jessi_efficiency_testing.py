@@ -35,7 +35,7 @@ metrics = {
     "collisions_with_human": {"label": "Coll. w/ Hum. Rate", "episodic": False},
     "collisions_with_obstacle": {"label": "Coll. w/ Obs. Rate", "episodic": False},
     "timeouts": {"label": "Timeout Rate", "episodic": False}, 
-    "returns": {"label": "Return ($\gamma = 0.9$)", "episodic": True},
+    "returns": {"label": "Return ($\\gamma = 0.9$)", "episodic": True},
     "times_to_goal": {"label": "Time to goal ($s$)", "episodic": True},
     "average_speed": {"label": "Lin. speed ($m/s$)", "episodic": True},
     "average_acceleration": {"label": "Lin. accel. ($m/s^2$)", "episodic": True},
@@ -367,7 +367,7 @@ metrics_to_plot = [
     "perception_loss","pos_reg_loss","vel_reg_loss","cls_loss","returns", # First row: train scenarios
     "perception_loss","pos_reg_loss","vel_reg_loss","cls_loss","returns" # Second row: test scenarios
 ]
-figure, ax = plt.subplots(2, 5, figsize=(20, 8))
+figure, ax = plt.subplots(2, 5, figsize=(20, 8), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 5

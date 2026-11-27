@@ -1,12 +1,15 @@
 from jax import random, jit, vmap, lax, debug
+import numpy as np
 import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 from jax_tqdm import loop_tqdm
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib.patches import Circle
 import os
 import pickle
-from socialjym.utils.aux_functions import tree_to_numpy
+from socialjym.utils.aux_functions import tree_to_numpy, pause_on_click
 import optax
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
@@ -22,6 +25,9 @@ from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward a
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rewards.lasernav_rewards.reward4 import Reward4
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
+
+def count_params(params):
+    return sum(jnp.prod(jnp.array(p.shape)) for p in jax.tree_util.tree_leaves(params))
 
 ### Sim-to-real parameters
 lidar_dt = 0.13
@@ -310,6 +316,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
         # Plot robot-centric simulation
         fig, ax = plt.subplots(figsize=(8,8))
         def animate(frame):
+            assert isinstance(ax, Axes) # Single axes (ax is also used for axes arrays in this script)
             ax.clear()
             ax.set_title('Robot-Centric Frame Inspection')
             ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
@@ -323,15 +330,15 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
                 color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
                 alpha = 1 if robot_centric_data["humans_visibility"][frame][h] else 0.3
                 if humans_policy == 'hsfm':
-                    head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                    head = Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
                     ax.add_patch(head)
-                circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+                circle = Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
                 ax.add_patch(circle)
             # Plot robot
             if kinematics == 'unicycle':
-                head = plt.Circle((robot_radius, 0.), 0.1, color='black', zorder=1)
+                head = Circle((robot_radius, 0.), 0.1, color='black', zorder=1)
                 ax.add_patch(head)
-            circle = plt.Circle((0.,0.), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+            circle = Circle((0.,0.), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
             ax.add_patch(circle)
             # Plot static obstacles
             for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
@@ -350,17 +357,12 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
                     alpha=0.3,
                     zorder=0,
                 )
-        anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps)
+        anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=n_steps) # pyright: ignore[reportArgumentType] (the return value of the frame function is used only with blit=True)
         if save_videos:
             save_path = os.path.join(os.path.dirname(__file__), f'robot_centric_simulation.mp4')
             writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
             anim.save(save_path, writer=writer_video, dpi=300)
-        anim.paused = False
-        def toggle_pause(self, *args, **kwargs):
-            if anim.paused: anim.resume()
-            else: anim.pause()
-            anim.paused = not anim.paused
-        fig.canvas.mpl_connect('button_press_event', toggle_pause)
+        pause_on_click(fig, anim)
         plt.show()
         # Save robot-centered robot_centric_data
         with open(os.path.join(os.path.dirname(__file__), f'realistic_robot_centric_dir_safe_experiences_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
@@ -384,6 +386,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
     # Plot robot-centric simulation
     fig, ax = plt.subplots(figsize=(8,8))
     def animate(frame):
+        assert isinstance(ax, Axes) # Single axes (ax is also used for axes arrays in this script)
         ax.clear()
         ax.set_title('Network Inputs Inspection')
         ax.set(xlim=[ax_lims[0,0], ax_lims[0,1]], ylim=[ax_lims[1,0], ax_lims[1,1]])
@@ -395,9 +398,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
             color = "green" if robot_centric_data["humans_visibility"][frame][h] else "grey"
             alpha = 1 if robot_centric_data["humans_visibility"][frame][h] else 0.3
             if humans_policy == 'hsfm':
-                head = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
+                head = Circle((robot_centric_data["rc_humans_positions"][frame][h,0] + jnp.cos(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h], robot_centric_data["rc_humans_positions"][frame][h,1] + jnp.sin(robot_centric_data["rc_humans_orientations"][frame][h]) * robot_centric_data['humans_radii'][frame][h]), 0.1, color='black', alpha=alpha, zorder=1)
                 ax.add_patch(head)
-            circle = plt.Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            circle = Circle((robot_centric_data["rc_humans_positions"][frame][h,0], robot_centric_data["rc_humans_positions"][frame][h,1]), robot_centric_data['humans_radii'][frame][h], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
             ax.add_patch(circle)
         # Plot static obstacles
         for i, o in enumerate(robot_centric_data["rc_obstacles"][frame]):
@@ -421,17 +424,12 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'realistic_percep
                 alpha=0.3 + 0.7 * t,
                 zorder=20 + n_stack - i,
             )
-    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=debugging_steps)
+    anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=debugging_steps) # pyright: ignore[reportArgumentType] (the return value of the frame function is used only with blit=True)
     if save_videos:
         save_path = os.path.join(os.path.dirname(__file__), f'network_inputs.mp4')
         writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
         anim.save(save_path, writer=writer_video, dpi=300)
-    anim.paused = False
-    def toggle_pause(self, *args, **kwargs):
-        if anim.paused: anim.resume()
-        else: anim.pause()
-        anim.paused = not anim.paused
-    fig.canvas.mpl_connect('button_press_event', toggle_pause)
+    pause_on_click(fig, anim)
     plt.show()
     # Save dataset
     with open(os.path.join(os.path.dirname(__file__), f'realistic_perception_dataset_{lidar_num_rays}.pkl'), 'wb') as f:
@@ -449,8 +447,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name
     # Initialize network
     params, _, _ = jessi.init_nns(random.PRNGKey(random_seed))
     # Count network parameters
-    def count_params(params):
-        return sum(jnp.prod(jnp.array(p.shape)) for p in jax.tree_util.tree_leaves(params))
     n_params = count_params(params)
     print(f"# Perception network parameters: {n_params}")
     # Split dataset into TRAIN, VAL, TEST
@@ -537,7 +533,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name
     @jit
     def batch_augment_data(
         batch:dict,
-        keys:random.PRNGKey,
+        keys:jax.Array,
         base_lidar_noise_std:float = 0.01, # 1cm base noise
         proportional_lidar_noise_std:float = 0.01, # 1% proportional noise
         beam_dropout_prob:float = 0.03, # 3% beams dropout
@@ -546,7 +542,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), perception_nn_name
     @jit 
     def augment_data(
         data:dict,
-        key:random.PRNGKey,
+        key:jax.Array,
         base_lidar_noise_std:float,
         proportional_lidar_noise_std:float,
         beam_dropout_prob:float,
@@ -783,8 +779,6 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
     # Initialize actor network
     _, actor_critic_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
     # Count network parameters
-    def count_params(actor_critic_params):
-        return sum(jnp.prod(jnp.array(p.shape)) for p in jax.tree_util.tree_leaves(actor_critic_params))
     n_params = count_params(actor_critic_params)
     print(f"# Controller network parameters: {n_params}")
     # TRAINING LOOP
@@ -797,7 +791,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
     @jit
     def batch_augment_data(
         batch:dict,
-        keys:random.PRNGKey,
+        keys:jax.Array,
         base_lidar_noise_std:float = 0.01, # 1cm base noise
         proportional_lidar_noise_std:float = 0.01, # 1% proportional noise
         beam_dropout_prob:float = 0.03, # 3% beams dropout
@@ -806,7 +800,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
     @jit 
     def augment_data(
         data:dict,
-        key:random.PRNGKey,
+        key:jax.Array,
         base_lidar_noise_std:float,
         proportional_lidar_noise_std:float,
         beam_dropout_prob:float,
@@ -931,6 +925,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), policy_nn_name)):
     avg_actor_losses = jnp.mean(actor_losses, axis=1)
     avg_critic_losses = jnp.mean(critic_losses, axis=1)
     fig, ax = plt.subplots(1, 3, figsize=(18, 6))
+    assert isinstance(ax, np.ndarray) # Axes array (for type checking)
     ax[0].plot(jnp.arange(policy_n_epochs), avg_losses, c='red')
     ax[1].plot(jnp.arange(policy_n_epochs), avg_actor_losses, c='green')
     ax[2].plot(jnp.arange(policy_n_epochs), avg_critic_losses, c='blue')
@@ -1105,7 +1100,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     font = {'weight' : 'regular',
             'size'   : 18}
     rc('font', **font)
-    figure, ax = plt.subplots(4,3,figsize=(15,15))
+    figure, ax = plt.subplots(4,3,figsize=(15,15), squeeze=False)
     figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95, right=0.95, left=0.1, wspace=0.35)
     # Plot returns during RL
     ax[0,0].grid()
@@ -1207,7 +1202,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     ax[2,1].grid()
     ax[2,1].set(
         xlabel='Training Update',
-        ylabel='$\sigma(v)$',
+        ylabel='$\\sigma(v)$',
         title='Std velocity',
         ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
     )
@@ -1219,7 +1214,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), multitask_network_
     ax[2,2].grid()
     ax[2,2].set(
         xlabel='Training Update',
-        ylabel='$\sigma(\omega)$',
+        ylabel='$\\sigma(\\omega)$',
         title='Std ang. vel.',
         ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
     )

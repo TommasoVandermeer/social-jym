@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import os
 import pickle
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 font = {
@@ -17,6 +18,7 @@ from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.dummy_reward import DummyReward as DReward
 from socialjym.utils.rewards.lasernav_rewards.reward3 import Reward3 as Reward
 from socialjym.policies.vanilla_e2e import VanillaE2E
+from socialjym.utils.aux_functions import pause_on_click
 
 # Hyperparameters
 save_video = False
@@ -210,7 +212,7 @@ for i in range(n_episodes):
     max_abs_adv = max(abs(p_min), abs(p_max))
     max_abs_adv = max(max_abs_adv, 0.05) 
     sym_amin, sym_amax = -max_abs_adv, max_abs_adv
-    fig, axs = plt.subplots(2, 2, figsize=(13,12), constrained_layout=False) # Altezza aumentata per far spazio a due righe
+    fig, axs = plt.subplots(2, 2, figsize=(13,12), constrained_layout=False, squeeze=False) # Altezza aumentata per far spazio a due righe
     fig.subplots_adjust(left=0.05, right=0.88, top=0.98, bottom=0.05, hspace=0., wspace=0.)
     im_val = axs[0, 0].pcolormesh(X, Y, all_value_maps_single_gamma[0], vmin=vmin, vmax=vmax, cmap='viridis', shading='nearest')
     im_adv = axs[1, 0].pcolormesh(X, Y, all_advantage_maps_single_gamma[0], vmin=sym_amin, vmax=sym_amax, cmap='RdBu', shading='nearest')
@@ -258,24 +260,19 @@ for i in range(n_episodes):
                 ax.set_ylabel('Y', labelpad=-20)
                 ax.spines['right'].set_visible(False)
             for h in range(len(humans_poses)):
-                head = plt.Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * humans_radii[h], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * humans_radii[h]), 0.1, color='black', alpha=0.6, zorder=1)
+                head = Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * humans_radii[h], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * humans_radii[h]), 0.1, color='black', alpha=0.6, zorder=1)
                 ax.add_patch(head)
-                circle = plt.Circle((humans_poses[h,0], humans_poses[h,1]), humans_radii[h], edgecolor='black', facecolor='black', alpha=0.6, fill=True, zorder=1)
+                circle = Circle((float(humans_poses[h,0]), float(humans_poses[h,1])), humans_radii[h], edgecolor='black', facecolor='black', alpha=0.6, fill=True, zorder=1)
                 ax.add_patch(circle)
             if info['static_obstacles'][-1].shape[1] > 1: # Polygon obstacles
                 for o in info['static_obstacles'][-1]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
             else: # One segment obstacles
                 for o in info['static_obstacles'][-1]: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
             ax.scatter(robot_goal[0], robot_goal[1], color='magenta', label='Goal', marker='*', s=150, zorder=4)
-    anim = FuncAnimation(fig, animate, interval=policy_single_gamma.dt*1000, frames=n_steps_per_episode)
+    anim = FuncAnimation(fig, animate, interval=policy_single_gamma.dt*1000, frames=n_steps_per_episode) # pyright: ignore[reportArgumentType] (the return value of the frame function is used only with blit=True)
     if save_video:
         save_path = os.path.join(os.path.dirname(__file__), f'value_adv_landscape.mp4')
         writer_video = FFMpegWriter(fps=int(1/policy_single_gamma.dt), bitrate=1800)
         anim.save(save_path, writer=writer_video, dpi=300)
-    anim.paused = False
-    def toggle_pause(self, *args, **kwargs):
-        if anim.paused: anim.resume()
-        else: anim.pause()
-        anim.paused = not anim.paused
-    fig.canvas.mpl_connect('button_press_event', toggle_pause)
+    pause_on_click(fig, anim)
     plt.show()

@@ -1,8 +1,10 @@
 from functools import partial
 from jax import lax,jit
+import numpy as np
 import jax.numpy as jnp
 from matplotlib import rc, rcParams
 import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon
 rc('font', weight='regular', size=20)
 rcParams['pdf.fonttype'] = 42
 rcParams['ps.fonttype'] = 42
@@ -263,11 +265,12 @@ def new_action_space_vertices(action_space_params):
 
 # AX :,2: Feasible and bounded action space + action space distribution and action taken
 fig, axs = plt.subplots(1,2)
+assert isinstance(axs, np.ndarray) # Axes array (for type checking)
 axs[0].set_title("Old Action space")
 axs[1].set_title("New Action space")
 for ax in axs:
     ax.set_xlabel("$v$ (m/s)")
-    ax.set_ylabel("$\omega$ (rad/s)", labelpad=-15)
+    ax.set_ylabel("$\\omega$ (rad/s)", labelpad=-15)
     ax.set_xlim(-0.1, v_max + 0.1)
     ax.set_ylim(-2*v_max/wheels_distance - 0.3, 2*v_max/wheels_distance + 0.3)
     ax.set_xticks(jnp.arange(0, v_max+0.2, 0.2))
@@ -276,7 +279,7 @@ for ax in axs:
     ax.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
     ax.grid()
     ax.add_patch(
-        plt.Polygon(
+        Polygon(
             [   
                 [0,w_max],
                 [0,w_min],
@@ -293,7 +296,7 @@ for ax in axs:
 # OLD ACTION SPACE
 old_action_space = old_action_space_vertices(old_action_space_params)
 axs[0].add_patch(
-    plt.Polygon(
+    Polygon(
         old_action_space,
         closed=True,
         fill=True,
@@ -307,7 +310,7 @@ axs[0].add_patch(
 new_action_space = new_action_space_vertices(new_action_space_params)
 print("\nNew action space vertices:\n", new_action_space)
 axs[1].add_patch(
-    plt.Polygon(
+    Polygon(
         new_action_space[jnp.where(~jnp.isnan(new_action_space[:,0]))],  # Filter out NaN vertices
         closed=True,
         fill=True,

@@ -5,6 +5,7 @@ import pickle
 import sys
 import argparse
 import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
@@ -73,16 +74,16 @@ def main(args=None):
 
     figure, ax = plt.subplots(1,1)
     ax.set_xlabel("$v$ (m/s)")
-    ax.set_ylabel("$\omega$ (rad/s)", labelpad=-15)
+    ax.set_ylabel("$\\omega$ (rad/s)", labelpad=-15)
     ax.set_xlim(-0.1, jessi.v_max + 0.1)
     ax.set_ylim(-2*jessi.v_max/jessi.wheels_distance - 0.3, 2*jessi.v_max/jessi.wheels_distance + 0.3)
     ax.set_xticks(jnp.arange(0, jessi.v_max+0.2, 0.2))
-    ax.set_xticklabels([round(i,1) for i in jnp.arange(0, jessi.v_max, 0.2)] + [r"$\overline{v}$"])
+    ax.set_xticklabels([str(round(i,1)) for i in jnp.arange(0, jessi.v_max, 0.2)] + [r"$\overline{v}$"])
     ax.set_yticks(jnp.arange(-2,3,1).tolist() + [2*jessi.v_max/jessi.wheels_distance,-2*jessi.v_max/jessi.wheels_distance])
     ax.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
     ax.grid()
     ax.add_patch(
-        plt.Polygon(
+        Polygon(
             [   
                 [0,2*jessi.v_max/jessi.wheels_distance],
                 [0,-2*jessi.v_max/jessi.wheels_distance],

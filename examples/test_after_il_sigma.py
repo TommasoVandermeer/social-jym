@@ -1,5 +1,6 @@
 from jax import random, nn
 from jax.tree_util import tree_leaves
+import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import os
@@ -68,7 +69,7 @@ figure.suptitle(f'{n_samples} actor outputs at the initial state - Sigma {jnp.ex
 ax.plot(actions[:,0], actions[:,1], 'o')
 if kinematics == 'unicycle':
     ax.set_xlabel('v ($m/s$)')
-    ax.set_ylabel('$\omega$ $(rad/s)$')
+    ax.set_ylabel('$\\omega$ $(rad/s)$')
     ax.set_xlim(0, policy.v_max)
     ax.set_ylim(-policy.v_max * 2/ policy.wheels_distance, policy.v_max * 2 / policy.wheels_distance)
 else:
@@ -78,6 +79,7 @@ ax.plot(mean_action[0], mean_action[1], 'ro')
 plt.show()
 # Distribution of each action component
 figure, ax = plt.subplots(1,2, figsize=(10,10))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.suptitle(f'{n_samples} actor outputs at the initial state - Sigma {jnp.exp(distrs["logsigma"])}')
 ax[0].hist(actions[:,0], bins=100, density=True)
 ax[1].hist(actions[:,1], bins=100, density=True)
@@ -85,7 +87,7 @@ ax[0].axvline(mean_action[0], color='red', linestyle='dashed', linewidth=2)
 ax[1].axvline(mean_action[1], color='red', linestyle='dashed', linewidth=2)
 if kinematics == 'unicycle':
     ax[0].set_title('v ($m/s$)')
-    ax[1].set_title('$\omega$ $(rad/s)$')
+    ax[1].set_title('$\\omega$ $(rad/s)$')
 else:
     ax[0].set_title('vx ($m/s$)')
     ax[1].set_title('vy $(m/s)$')
@@ -93,6 +95,7 @@ plt.show()
 # Distribution of v_left and v_right in case of unicycle kinematics
 if kinematics == 'unicycle':
     figure, ax = plt.subplots(1,2, figsize=(10,10))
+    assert isinstance(ax, np.ndarray) # Axes array (for type checking)
     figure.suptitle(f'{n_samples} actor outputs at the initial state - Sigma {jnp.exp(distrs["logsigma"])}')
     v_right = (2 * actions[:,0] + actions[:,1] * policy.wheels_distance) / 2
     v_left = (2 * actions[:,0] - actions[:,1] * policy.wheels_distance) / 2

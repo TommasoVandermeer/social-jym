@@ -1,3 +1,4 @@
+import numpy as np
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 import os
@@ -90,7 +91,9 @@ def main(args=None):
         cmd_times_norm  = [t - t_start for t in cmd_times]
         odom_times_norm = jnp.array(odom_times_norm, dtype=jnp.float32)
         cmd_times_norm  = jnp.array(cmd_times_norm, dtype=jnp.float32)
-        _, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        _, axs = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        assert isinstance(axs, np.ndarray) # Axes array (for type checking)
+        ax1, ax2 = axs
         ax1.step(cmd_times_norm, cmd_v, label='Cmd Lineare (v)', color='red', linewidth=2, where='post')
         ax1.plot(odom_times_norm[50:], odom_v[50:], label='Odom Lineare (v)', color='blue', alpha=0.7, linewidth=2)
         ax1.set_ylabel('Velocità [m/s]', fontsize=12)

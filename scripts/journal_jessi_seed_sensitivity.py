@@ -1,4 +1,5 @@
 from jax import random, jit, vmap, lax
+import numpy as np
 import jax
 import jax.numpy as jnp
 from jax.tree_util import tree_map
@@ -25,6 +26,9 @@ from socialjym.policies.jessi import JESSI
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1
 from socialjym.utils.rollouts.jessi_rollouts import jessi_multitask_rl_rollout
+
+def count_params(params):
+    return sum(jnp.prod(jnp.array(p.shape)) for p in jax.tree_util.tree_leaves(params))
 
 out_folder = 'jessi_seed_sensitivity_results'
 perception_nn_name = 'pre_perception_network.pkl'
@@ -126,8 +130,6 @@ for seed in range(n_seeds):
         # INITIALIZE ACTOR NETWORK
         _, actor_critic_params, _ = jessi.init_nns(random.PRNGKey(random_seed))
         # Count network parameters
-        def count_params(actor_critic_params):
-            return sum(jnp.prod(jnp.array(p.shape)) for p in jax.tree_util.tree_leaves(actor_critic_params))
         n_params = count_params(actor_critic_params)
         print(f"# Controller network parameters: {n_params}")
         # TRAINING LOOP
@@ -140,7 +142,7 @@ for seed in range(n_seeds):
         @jit
         def batch_augment_data(
             batch:dict,
-            keys:random.PRNGKey,
+            keys:jax.Array,
             base_lidar_noise_std:float = 0.01, # 1cm base noise
             proportional_lidar_noise_std:float = 0.01, # 1% proportional noise
             beam_dropout_prob:float = 0.03, # 3% beams dropout
@@ -149,7 +151,7 @@ for seed in range(n_seeds):
         @jit 
         def augment_data(
             data:dict,
-            key:random.PRNGKey,
+            key:jax.Array,
             base_lidar_noise_std:float,
             proportional_lidar_noise_std:float,
             beam_dropout_prob:float,
@@ -274,6 +276,7 @@ for seed in range(n_seeds):
         avg_actor_losses = jnp.mean(actor_losses, axis=1)
         avg_critic_losses = jnp.mean(critic_losses, axis=1)
         fig, ax = plt.subplots(1, 3, figsize=(18, 6))
+        assert isinstance(ax, np.ndarray) # Axes array (for type checking)
         ax[0].plot(jnp.arange(policy_n_epochs), avg_losses, c='red')
         ax[1].plot(jnp.arange(policy_n_epochs), avg_actor_losses, c='green')
         ax[2].plot(jnp.arange(policy_n_epochs), avg_critic_losses, c='blue')
@@ -425,7 +428,7 @@ for seed in range(n_seeds):
         font = {'weight' : 'regular',
                 'size'   : 18}
         rc('font', **font)
-        figure, ax = plt.subplots(4,3,figsize=(15,15))
+        figure, ax = plt.subplots(4,3,figsize=(15,15), squeeze=False)
         figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95, right=0.95, left=0.1, wspace=0.35)
         # Plot returns during RL
         ax[0,0].grid()
@@ -527,7 +530,7 @@ for seed in range(n_seeds):
         ax[2,1].grid()
         ax[2,1].set(
             xlabel='Training Update',
-            ylabel='$\sigma(v)$',
+            ylabel='$\\sigma(v)$',
             title='Std velocity',
             ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
         )
@@ -539,7 +542,7 @@ for seed in range(n_seeds):
         ax[2,2].grid()
         ax[2,2].set(
             xlabel='Training Update',
-            ylabel='$\sigma(\omega)$',
+            ylabel='$\\sigma(\\omega)$',
             title='Std ang. vel.',
             ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
         )
@@ -729,7 +732,7 @@ for seed in range(n_seeds):
         font = {'weight' : 'regular',
                 'size'   : 18}
         rc('font', **font)
-        figure, ax = plt.subplots(4,3,figsize=(15,15))
+        figure, ax = plt.subplots(4,3,figsize=(15,15), squeeze=False)
         figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95, right=0.95, left=0.1, wspace=0.35)
         # Plot returns during RL
         ax[0,0].grid()
@@ -831,7 +834,7 @@ for seed in range(n_seeds):
         ax[2,1].grid()
         ax[2,1].set(
             xlabel='Training Update',
-            ylabel='$\sigma(v)$',
+            ylabel='$\\sigma(v)$',
             title='Std velocity',
             ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
         )
@@ -843,7 +846,7 @@ for seed in range(n_seeds):
         ax[2,2].grid()
         ax[2,2].set(
             xlabel='Training Update',
-            ylabel='$\sigma(\omega)$',
+            ylabel='$\\sigma(\\omega)$',
             title='Std ang. vel.',
             ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
         )
@@ -1012,7 +1015,7 @@ for seed in range(n_seeds):
         font = {'weight' : 'regular',
                 'size'   : 18}
         rc('font', **font)
-        figure, ax = plt.subplots(4,3,figsize=(15,15))
+        figure, ax = plt.subplots(4,3,figsize=(15,15), squeeze=False)
         figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95, right=0.95, left=0.1, wspace=0.35)
         # Plot returns during RL
         ax[0,0].grid()
@@ -1114,7 +1117,7 @@ for seed in range(n_seeds):
         ax[2,1].grid()
         ax[2,1].set(
             xlabel='Training Update',
-            ylabel='$\sigma(v)$',
+            ylabel='$\\sigma(v)$',
             title='Std velocity',
             ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
         )
@@ -1126,7 +1129,7 @@ for seed in range(n_seeds):
         ax[2,2].grid()
         ax[2,2].set(
             xlabel='Training Update',
-            ylabel='$\sigma(\omega)$',
+            ylabel='$\\sigma(\\omega)$',
             title='Std ang. vel.',
             ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
         )

@@ -1,7 +1,9 @@
+import numpy as np
 import jax.numpy as jnp
 from jax import vmap, random, lax
 from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Polygon, Rectangle
 import os
 from scipy.spatial import ConvexHull
 from matplotlib import rc, rcParams
@@ -75,7 +77,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space.pdf'
     figure, ax = plt.subplots(1,1, figsize=(10, 3))
     figure.subplots_adjust(left=0.05, right=0.98, top=0.95, bottom=0.25)
     ax.add_patch(
-        plt.Polygon(
+        Polygon(
             [   
                 [w_max,0],
                 [-w_max,0],
@@ -96,9 +98,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space.pdf'
     ax.set_ylim(-0.1, v_max + 0.1)
     ax.set_xlim(-w_max - 0.3, w_max + 0.3)
     ax.set_ylabel("$v$ (m/s)", labelpad=-15)
-    ax.set_xlabel("$\omega$ (rad/s)", labelpad=-5)
+    ax.set_xlabel("$\\omega$ (rad/s)", labelpad=-5)
     ax.plot([-10, 10], [0, 0], color='black', linewidth=3, zorder=5)
-    ax.text(0, 0.1, "$v \geq 0$", zorder=5, verticalalignment='bottom', horizontalalignment='center')
+    ax.text(0, 0.1, "$v \\geq 0$", zorder=5, verticalalignment='bottom', horizontalalignment='center')
     ax.plot([-(w_max)*2, w_max], [-v_max, 2], color='black', linewidth=3, zorder=5)
     # ax.text(-2.5 , L, r"$\omega \leq \frac{\overline{\omega}}{\overline{v}}v - \overline{\omega}$", zorder=5, verticalalignment='center', horizontalalignment='left')
     ax.text(-2.5 , L, r"$\omega \geq \frac{2(v-\overline{v})}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
@@ -116,7 +118,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_2.pd
     figure, ax = plt.subplots(1,1, figsize=(10, 3))
     figure.subplots_adjust(left=0.1, right=0.98, top=0.95, bottom=0.18)
     ax.add_patch(
-        plt.Polygon(
+        Polygon(
             [   
                 [0,temp_wmax],
                 [0,-temp_wmax],
@@ -137,7 +139,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_2.pd
     ax.set_xlim(-0.1, temp_vmax + 0.1)
     ax.set_ylim(-temp_wmax - 0.1, temp_wmax + 0.1)
     ax.set_xlabel("$v$ (m/s)", labelpad=-15)
-    ax.set_ylabel("$\omega$ (rad/s)", labelpad=-20)
+    ax.set_ylabel("$\\omega$ (rad/s)", labelpad=-20)
     ax.text(temp_vmax/2, -temp_wmax/2-0.2, r"$\omega \geq \frac{2(v-\bar{\eta} \rho)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
     ax.text(temp_vmax/2, +temp_wmax/2+0.2, r"$\omega \leq \frac{2(\bar{\eta} \rho-v)}{L}$", zorder=5, verticalalignment='center', horizontalalignment='left')
     ax.grid()
@@ -185,21 +187,21 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax.set_aspect('equal')
     ax.fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightcoral', edgecolor='red', zorder=2)
     ax.fill(obstacles[:,:,0],obstacles[:,:,1], facecolor='black', edgecolor='black', zorder=7)
-    ax.add_artist(plt.Circle((0, 0), radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
+    ax.add_artist(Circle((0, 0), radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
     for i in range(lidar_num_rays):
-        ax.plot([0, collision_points[i, 0]], [0, collision_points[i, 1]], color='blue', linewidth=1, zorder=5)
+        ax.plot([0, float(collision_points[i, 0])], [0, float(collision_points[i, 1])], color='blue', linewidth=1, zorder=5)
     ax.scatter(collision_points[:,0], collision_points[:,1], color='blue', s=150, zorder=8, marker='x')
     ax.set_xlim(-radius - 0.05, v_max * dt + radius + 0.05)
     ax.set_ylim(-0.55, 0.55)
-    ax.set_xlabel("$\Delta x$ (m)")
-    ax.set_ylabel("$\Delta y$ (m)", labelpad=-5)
+    ax.set_xlabel("$\\Delta x$ (m)")
+    ax.set_ylabel("$\\Delta y$ (m)", labelpad=-5)
     ax.grid()
     figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_1.pdf'), format='pdf')
     plt.close()
     figure, ax = plt.subplots(1,1,figsize=(4, 8))
     figure.subplots_adjust(left=0.18, right=0.97, top=0.98, bottom=0.10, wspace=0.1)
     ax.add_patch(
-        plt.Polygon(
+        Polygon(
             [   
                 [0,w_max],
                 [0,-w_max],
@@ -217,10 +219,10 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax.set_xlim(-0.1, v_max + 0.1)
     ax.set_ylim(-w_max - 0.1, w_max + 0.1)
     ax.set_xlabel("$v$ (m/s)")
-    ax.set_ylabel("$\omega$ (rad/s)", labelpad=-20)
+    ax.set_ylabel("$\\omega$ (rad/s)", labelpad=-20)
     ax.grid()
     ax.set_xticks(jnp.arange(0, v_max+0.5, 0.5))
-    ax.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"])
+    ax.set_xticklabels([str(round(i,1)) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"])
     ax.set_yticks(jnp.arange(-2,3,1).tolist() + [w_max,-w_max])
     ax.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
     figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_2.pdf'), format='pdf')
@@ -250,21 +252,21 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax.set_aspect('equal')
     ax.fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightgreen', edgecolor='green', zorder=2)
     ax.fill(obstacles[:,:,0],obstacles[:,:,1], facecolor='black', edgecolor='black', zorder=7)
-    ax.add_artist(plt.Circle((0, 0), radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
+    ax.add_artist(Circle((0, 0), radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
     for i in range(lidar_num_rays):
-        ax.plot([0, collision_points[i, 0]], [0, collision_points[i, 1]], color='blue', linewidth=1, zorder=5)
+        ax.plot([0, float(collision_points[i, 0])], [0, float(collision_points[i, 1])], color='blue', linewidth=1, zorder=5)
     ax.scatter(collision_points[:,0], collision_points[:,1], color='blue', s=150, zorder=8, marker='x')
     ax.set_xlim(-radius - 0.05, v_max * dt + radius + 0.05)
     ax.set_ylim(-0.55, 0.55)
-    ax.set_xlabel("$\Delta x$ (m)")
-    ax.set_ylabel("$\Delta y$ (m)", labelpad=-5)
+    ax.set_xlabel("$\\Delta x$ (m)")
+    ax.set_ylabel("$\\Delta y$ (m)", labelpad=-5)
     ax.grid()
     figure.savefig(os.path.join(os.path.dirname(__file__), 'action_space_bounding_3.pdf'), format='pdf')
     plt.close()
     figure, ax = plt.subplots(1,1,figsize=(4, 8))
     figure.subplots_adjust(left=0.18, right=0.97, top=0.98, bottom=0.10, wspace=0.1)
     ax.add_patch(
-        plt.Polygon(
+        Polygon(
             [   
                 [0,w_max],
                 [0,-w_max],
@@ -280,7 +282,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
         ),
     )
     ax.add_patch(
-        plt.Polygon(
+        Polygon(
             [   
                 [0,beta*w_max],
                 [0,-gamma*w_max],
@@ -298,10 +300,10 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax.set_xlim(-0.1, v_max + 0.1)
     ax.set_ylim(-w_max - 0.1, w_max + 0.1)
     ax.set_xlabel("$v$ (m/s)")
-    ax.set_ylabel("$\omega$ (rad/s)", labelpad=-20)
+    ax.set_ylabel("$\\omega$ (rad/s)", labelpad=-20)
     ax.grid()
     ax.set_xticks(jnp.arange(0, v_max+0.5, 0.5))
-    ax.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"])
+    ax.set_xticklabels([str(round(i,1)) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"])
     ax.set_yticks(jnp.arange(-2,3,1).tolist() + [w_max,-w_max])
     ax.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
     ax.legend(fontsize=16.5, loc='upper right')
@@ -318,19 +320,19 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax11 = figure.add_subplot(gs[1, 1])
     ax_right = figure.add_subplot(gs[:, 2])
     pos = ax_right.get_position()
-    ax_right.set_position([pos.x0 + 0.07, pos.y0, pos.width - 0.07, pos.height])
+    ax_right.set_position((pos.x0 + 0.07, pos.y0, pos.width - 0.07, pos.height))
     for ax in (ax00, ax01, ax10, ax11):
         ax.tick_params(axis="both", which="both", labelsize=18)
         ax.set_aspect('equal')
         ax.set_xlim(-radius - 0.05, v_max * dt + radius + 0.05)
         ax.set_ylim(-0.55, 0.65)
         ax.grid()
-        ax.add_artist(plt.Circle((0, 0), radius, color='black', fill=False, zorder=100, linewidth=2, linestyle='--'))
+        ax.add_artist(Circle((0, 0), radius, color='black', fill=False, zorder=100, linewidth=2, linestyle='--'))
         ax.scatter(collision_points[:,0], collision_points[:,1], color='blue', s=150, zorder=101, marker='x')
     for ax in (ax00, ax10):
-        ax.set_ylabel("$\Delta y$ (m)", labelpad=-5, fontsize=18)
+        ax.set_ylabel("$\\Delta y$ (m)", labelpad=-5, fontsize=18)
     for ax in (ax10, ax11):
-        ax.set_xlabel("$\Delta x$ (m)", fontsize=18)
+        ax.set_xlabel("$\\Delta x$ (m)", fontsize=18)
     for ax in (ax00, ax01):
         ax.set_xticklabels([])
     for ax in (ax01, ax11):
@@ -338,10 +340,10 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax_right.set_xlim(-0.1, v_max + 0.1)
     ax_right.set_ylim(-w_max - 0.1, w_max + 0.1)
     ax_right.set_xlabel("$v$ (m/s)", fontsize=18)
-    ax_right.set_ylabel("$\omega$ (rad/s)", labelpad=-5, fontsize=18)
+    ax_right.set_ylabel("$\\omega$ (rad/s)", labelpad=-5, fontsize=18)
     ax_right.grid()
     ax_right.set_xticks(jnp.arange(0, v_max+0.5, 0.5))
-    ax_right.set_xticklabels([round(i,1) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"], fontsize=18)
+    ax_right.set_xticklabels([str(round(i,1)) for i in jnp.arange(0, v_max, 0.5)] + [r"$\overline{v}$"], fontsize=18)
     ax_right.set_yticks(jnp.arange(-2,3,1).tolist() + [w_max,-w_max])
     ax_right.set_yticklabels([round(i) for i in jnp.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"], fontsize=18)
     ## AX (0,0)
@@ -405,7 +407,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax00.fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightcoral', edgecolor='red', zorder=2)
     ax00.fill(obstacles[:,:,0],obstacles[:,:,1], facecolor='black', edgecolor='black', zorder=7)
     for i in range(lidar_num_rays):
-        ax00.plot([0, collision_points[i, 0]], [0, collision_points[i, 1]], color='blue', linewidth=1, zorder=5)
+        ax00.plot([0, float(collision_points[i, 0])], [0, float(collision_points[i, 1])], color='blue', linewidth=1, zorder=5)
     ## AX (0,1)
     ax01.text(-0.3, 0.58, r"{\bfseries\boldmath  Bounded displacements}", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
     alpha, beta, gamma = policy.bound_action_space(collision_points)
@@ -432,10 +434,10 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ax01.fill(envelope_points[hull.vertices, 0], envelope_points[hull.vertices, 1], facecolor='lightgreen', edgecolor='green', zorder=2)
     ax01.fill(obstacles[:,:,0],obstacles[:,:,1], facecolor='black', edgecolor='black', zorder=7)
     for i in range(lidar_num_rays):
-        ax01.plot([0, collision_points[i, 0]], [0, collision_points[i, 1]], color='blue', linewidth=1, zorder=5)
+        ax01.plot([0, float(collision_points[i, 0])], [0, float(collision_points[i, 1])], color='blue', linewidth=1, zorder=5)
     ## AX (:,2)
     ax_right.add_patch(
-        plt.Polygon(
+        Polygon(
             [   
                 [0,w_max],
                 [0,-w_max],
@@ -451,7 +453,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
         ),
     )
     ax_right.add_patch(
-        plt.Polygon(
+        Polygon(
             [   
                 [0,beta*w_max],
                 [0,-gamma*w_max],
@@ -470,7 +472,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ## AX (1,0)
     ax10.text(-0.3, 0.58, r"{\bfseries\boldmath Stage 1: Reduce $\alpha$}", verticalalignment='center', horizontalalignment='left', fontsize=18, fontweight='bold')
     ax10.add_artist(
-        plt.Rectangle(
+        Rectangle(
             (-radius, -dt**2*v_max**2/(4*L) - radius), 
             v_max*dt + 2 * radius, 
             2*radius + (dt**2*v_max**2/(4*L) * 2), 
@@ -481,7 +483,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
         )
     )
     ax10.add_artist(
-        plt.Rectangle(
+        Rectangle(
             (-radius,-radius), 
             v_max*dt + 2 * radius, 
             2*radius, 
@@ -492,7 +494,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
         )
     )
     ax10.add_artist(
-        plt.Rectangle(
+        Rectangle(
             (0,-radius), 
             v_max*dt + radius, 
             2*radius, 
@@ -523,11 +525,11 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
             ax.text(label_pos[0], label_pos[1], label, verticalalignment='bottom', horizontalalignment='center', color=color, zorder=8, fontsize=16)
         else: # Diagonal segment
             marker = 'x'
-            label_pos = label_pos if label_pos is None else ((xy0[0] + xy1[0]) / 2, (xy0[1] + xy1[1]) / 2)
+            label_pos = label_pos if label_pos is not None else ((xy0[0] + xy1[0]) / 2, (xy0[1] + xy1[1]) / 2)
             ax.text(label_pos[0], label_pos[1], label, verticalalignment='center', horizontalalignment='center', color=color, zorder=8, fontsize=16)
         ax.scatter([xy0[0],xy1[0]], [xy0[1],xy1[1]], color=color, s=50, zorder=8, marker=marker)
     segment(ax10, [0.,0.], [0.,-radius], '$r$', color='black')
-    segment(ax10, [radius,0.], [v_max*dt + radius,0.], '$\Delta x_{\max}$', label_pos=(0.85,0.01), color='black')
+    segment(ax10, [radius,0.], [v_max*dt + radius,0.], '$\\Delta x_{\\max}$', label_pos=(0.85,0.01), color='black')
     ax10.text(-radius/2, 0, r'$\mathcal{B}_0$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
     ax10.text(-radius/2, -radius-(dt**2*v_max/(4*L))/2, r'$\mathcal{B}_{\gamma}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
     ax10.text(-radius/2, radius+(dt**2*v_max/(4*L))/2+0.02, r'$\mathcal{B}_{\beta}$', verticalalignment='center', horizontalalignment='center', color='black', zorder=8, fontsize=16)
@@ -535,7 +537,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
     ## AX (1,1)
     ax11.text(-0.3, 0.58,r"{\bfseries\boldmath Stage 2: Reduce $\beta$ and $\gamma$}", verticalalignment="center", horizontalalignment="left", fontsize=18)
     ax11.add_artist(
-        plt.Rectangle(
+        Rectangle(
             (-radius, -alpha*dt**2*v_max**2/(4*L) - radius), 
             alpha*v_max*dt + 2 * radius, 
             2*radius + (alpha*dt**2*v_max**2/(4*L) * 2), 
@@ -546,7 +548,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
         )
     )
     ax11.add_artist(
-        plt.Rectangle(
+        Rectangle(
             (-radius,radius), 
             alpha*v_max*dt + 2 * radius, 
             (alpha*dt**2*v_max/(4*L)), 
@@ -558,7 +560,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
         )
     )
     ax11.add_artist(
-        plt.Rectangle(
+        Rectangle(
             (-radius,-alpha*dt**2*v_max/(4*L) - radius), 
             alpha*v_max*dt + 2 * radius, 
             (alpha*dt**2*v_max/(4*L)), 
@@ -599,6 +601,7 @@ if (not os.path.exists(os.path.join(os.path.dirname(__file__), 'action_space_bou
 
 ### FIG5: action_space_bounding_proof.pdf
     figure, ax = plt.subplots(1,2,figsize=(12, 6))
+    assert isinstance(ax, np.ndarray) # Axes array (for type checking)
     policy = JESSI(
         radius, 
         v_max, 
@@ -764,9 +767,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'scenarios.pdf')):
             else:
                 color = 'blue'
                 alpha = 0.6
-                head = plt.Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * info['humans_parameters'][h,0], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
+                head = Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * info['humans_parameters'][h,0], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
                 ax.add_patch(head)
-            circle = plt.Circle((humans_poses[h,0], humans_poses[h,1]), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            circle = Circle((float(humans_poses[h,0]), float(humans_poses[h,1])), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
             ax.add_patch(circle)
         for h in range(len(humans_poses)):
             if scenario == 'circular_crossing_with_static_obstacles' and h < env.ccso_n_static_humans:
@@ -785,9 +788,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'scenarios.pdf')):
                 alpha=alpha,
                 zorder=30,
             )
-        head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+        head = Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
         ax.add_patch(head)
-        circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+        circle = Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
         ax.add_patch(circle)
         for goal in env.robot_goals_per_scenario[SCENARIOS.index(scenario)]:
             if info["is_x_flipped"]: goal = goal.at[0].set(-goal[0])
@@ -948,12 +951,13 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or 
     action, _, perc_input, _, _, _, human_distr, actor_distr, _, _, _, human_attns  = policy.act(random.PRNGKey(0),obs,info,network_params)
     ### PLOT: teaser.pdf
     fig, ax = plt.subplots(2,1,figsize=(5,6.5))
+    assert isinstance(ax, np.ndarray) # Axes array (for type checking)
     fig.subplots_adjust(left=0.09, right=0.98, top=0.98, bottom=0.07, hspace=0.)
     # Plot humans
     for h in range(len(state[:-1])):
-        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.6, zorder=1)
+        head = Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.6, zorder=1)
         ax[0].add_patch(head)
-        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+        circle = Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
         ax[0].add_patch(circle)
     # Plot human velocities
     humans_velocities = lax.cond(
@@ -1022,9 +1026,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or 
         a.set(xlim=[jnp.min(obstacles[:,:,:,0])-0.1,jnp.max(obstacles[:,:,:,0])+0.1],ylim=[jnp.min(obstacles[:,:,:,1])-0.1+y_min_slack,jnp.max(obstacles[:,:,:,1])+0.1+y_max_slack])
         # Plot robot
         robot_position = state[-1,:2]
-        head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+        head = Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
         a.add_patch(head)
-        circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+        circle = Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
         a.add_patch(circle)
         # Plot robot goal
         a.plot(
@@ -1063,9 +1067,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or 
             width, height = 2 * jnp.sqrt(eigenvalues)
             ellipse = Ellipse(
                 xy=pos,
-                width=width,
-                height=height,
-                angle=jnp.degrees(angle),
+                width=float(width),
+                height=float(height),
+                angle=float(jnp.degrees(angle)),
                 edgecolor='blue',
                 facecolor='lightblue',
                 alpha=0.8,
@@ -1097,9 +1101,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or 
             width, height = 2 * jnp.sqrt(eigenvalues)
             ellipse = Ellipse(
                 xy=vel,
-                width=width,
-                height=height,
-                angle=jnp.degrees(angle),
+                width=float(width),
+                height=float(height),
+                angle=float(jnp.degrees(angle)),
                 edgecolor='blue',
                 facecolor='lightblue',
                 alpha=0.8,
@@ -1133,9 +1137,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or 
             a.set(xlim=[jnp.min(obstacles[:,:,:,0])-0.01,jnp.max(obstacles[:,:,:,0])+0.01],ylim=[jnp.min(obstacles[:,:,:,1])-0.05,jnp.max(obstacles[:,:,:,1])+0.05])
             # Plot robot
             robot_position = state[-1,:2]
-            head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+            head = Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
             a.add_patch(head)
-            circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+            circle = Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
             a.add_patch(circle)
             # Plot robot goal
             a.plot(
@@ -1150,16 +1154,16 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or 
             for o in obstacles: a.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
     # Plot humans
     for h in range(len(state[:-1])):
-        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.6, zorder=1)
-        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+        head = Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.6, zorder=1)
+        circle = Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
         ax1.add_patch(head)
         ax1.add_patch(circle)
-        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.3, zorder=1)
-        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.2, fill=True, zorder=1)
+        head = Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.3, zorder=1)
+        circle = Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.2, fill=True, zorder=1)
         ax2.add_patch(head)
         ax2.add_patch(circle)
-        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.3, zorder=1)
-        circle = plt.Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.2, fill=True, zorder=1)
+        head = Circle((state[h,0] + jnp.cos(state[h,4]) * custom_episode["humans_radius"][h], state[h,1] + jnp.sin(state[h,4]) * custom_episode["humans_radius"][h]), 0.1, color='black', alpha=0.3, zorder=1)
+        circle = Circle((state[h,0], state[h,1]), custom_episode["humans_radius"][h], edgecolor='black', facecolor='blue', alpha=0.2, fill=True, zorder=1)
         ax3.add_patch(head)
         ax3.add_patch(circle)
     # Plot human velocities
@@ -1245,9 +1249,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or 
             width, height = 2 * jnp.sqrt(eigenvalues)
             ellipse = Ellipse(
                 xy=pos,
-                width=width,
-                height=height,
-                angle=jnp.degrees(angle),
+                width=float(width),
+                height=float(height),
+                angle=float(jnp.degrees(angle)),
                 edgecolor='blue',
                 facecolor='lightblue',
                 alpha=0.8,
@@ -1308,9 +1312,9 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or 
             width, height = 2 * jnp.sqrt(eigenvalues)
             ellipse = Ellipse(
                 xy=vel,
-                width=width,
-                height=height,
-                angle=jnp.degrees(angle),
+                width=float(width),
+                height=float(height),
+                angle=float(jnp.degrees(angle)),
                 edgecolor='blue',
                 facecolor='lightblue',
                 alpha=0.8,
@@ -1359,8 +1363,8 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'teaser.pdf')) or 
         r"{\bfseries goal}"
     )
     ax3.text(
-        robot_goal[0],
-        robot_goal[1]+0.7, 
+        float(robot_goal[0]),
+        float(robot_goal[1]+0.7), 
         text, 
         fontsize=18, 
         color="red", 
@@ -1407,7 +1411,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'campaign_metrics.
     )
 
     # Inherit the script's LaTeX/Computer Modern and PDF font settings.
-    figure, axes = plt.subplots(2, 2, figsize=(8, 5.8), layout='constrained')
+    figure, axes = plt.subplots(2, 2, figsize=(8, 5.8), layout='constrained', squeeze=False)
     figure.subplots_adjust(right=0.95)
     campaign_rng = np.random.default_rng(0)  # Reproducible horizontal jitter only.
     for ax, (metric, title, unit) in zip(axes.flat, campaign_metrics):

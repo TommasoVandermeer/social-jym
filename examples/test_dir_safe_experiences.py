@@ -1,10 +1,12 @@
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 import os 
 import pickle
 from matplotlib import rc, rcParams
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.lines import Line2D
+from socialjym.utils.aux_functions import pause_on_click
 
 save_video = True
 
@@ -50,14 +52,14 @@ def animate(frame):
     )
     # Plot humans
     for h in range(len(raw_data["humans_positions"][frame])):
-        head = plt.Circle((raw_data["humans_positions"][frame][h,0] + jnp.cos(raw_data["humans_orientations"][frame][h]) * raw_data['humans_radii'][frame][h], raw_data["humans_positions"][frame][h,1] + jnp.sin(raw_data["humans_orientations"][frame][h]) * raw_data['humans_radii'][frame][h]), 0.1, color='black', zorder=1)
+        head = Circle((raw_data["humans_positions"][frame][h,0] + jnp.cos(raw_data["humans_orientations"][frame][h]) * raw_data['humans_radii'][frame][h], raw_data["humans_positions"][frame][h,1] + jnp.sin(raw_data["humans_orientations"][frame][h]) * raw_data['humans_radii'][frame][h]), 0.1, color='black', zorder=1)
         ax.add_patch(head)
-        circle = plt.Circle((raw_data["humans_positions"][frame][h,0], raw_data["humans_positions"][frame][h,1]), raw_data['humans_radii'][frame][h], edgecolor='black', facecolor='blue', fill=True, zorder=1)
+        circle = Circle((raw_data["humans_positions"][frame][h,0], raw_data["humans_positions"][frame][h,1]), raw_data['humans_radii'][frame][h], edgecolor='black', facecolor='blue', fill=True, zorder=1)
         ax.add_patch(circle)
     # Plot robot
-    head = plt.Circle((raw_data["robot_positions"][frame][0] + jnp.cos(raw_data["robot_orientations"][frame]) * 0.3, raw_data["robot_positions"][frame][1] + jnp.sin(raw_data["robot_orientations"][frame]) * 0.3), 0.1, color='black', zorder=1)
+    head = Circle((raw_data["robot_positions"][frame][0] + jnp.cos(raw_data["robot_orientations"][frame]) * 0.3, raw_data["robot_positions"][frame][1] + jnp.sin(raw_data["robot_orientations"][frame]) * 0.3), 0.1, color='black', zorder=1)
     ax.add_patch(head)
-    circle = plt.Circle((raw_data["robot_positions"][frame][0], raw_data["robot_positions"][frame][1]), 0.3, edgecolor="black", facecolor="red", fill=True, zorder=3)
+    circle = Circle((raw_data["robot_positions"][frame][0], raw_data["robot_positions"][frame][1]), 0.3, edgecolor="black", facecolor="red", fill=True, zorder=3)
     ax.add_patch(circle)
     # Plot robot goal
     ax.scatter(raw_data["robot_goals"][frame,0], raw_data["robot_goals"][frame,1], marker="*", color="red", zorder=2)
@@ -68,15 +70,10 @@ def animate(frame):
             linestyle = 'solid' 
             alpha = 1
             ax.plot(s[:,0],s[:,1], color=color, linewidth=2, zorder=11, alpha=alpha, linestyle=linestyle)
-anim = FuncAnimation(fig, animate, interval=0.25*1000, frames=n_steps)
+anim = FuncAnimation(fig, animate, interval=0.25*1000, frames=n_steps) # pyright: ignore[reportArgumentType] (the return value of the frame function is used only with blit=True)
 if save_video:
     save_path=os.path.join(os.path.dirname(__file__),f'icar25_training_setting.mp4')
     writer_video = FFMpegWriter(fps=int(1/0.25), bitrate=1800)
     anim.save(save_path, writer=writer_video, dpi=300)
-anim.paused = False
-def toggle_pause(self, *args, **kwargs):
-    if anim.paused: anim.resume()
-    else: anim.pause()
-    anim.paused = not anim.paused
-fig.canvas.mpl_connect('button_press_event', toggle_pause)
+pause_on_click(fig, anim)
 plt.show()

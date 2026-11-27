@@ -2,6 +2,9 @@ import jax.numpy as jnp
 from jax import random, jit, vmap
 import os
 import matplotlib.pyplot as plt
+from typing import cast
+from mpl_toolkits.mplot3d.axes3d import Axes3D
+from matplotlib.lines import Line2D
 from matplotlib.patches import Polygon
 from matplotlib import rc, rcParams
 font = {
@@ -111,7 +114,7 @@ pdf_values = gaussian.batch_p(distr, samples)
 fig = plt.figure(figsize=(16, 8))
 fig.subplots_adjust(top=0.95, bottom=0.1, left=0.05, right=0.95, wspace=0.08)
 gs = fig.add_gridspec(1, 2, width_ratios=[2, 1])
-ax = fig.add_subplot(gs[0, 0], projection='3d')
+ax = cast(Axes3D, fig.add_subplot(gs[0, 0], projection='3d'))
 ax.scatter(samples_not_bounded[:,0], samples_not_bounded[:,1], gaussian.batch_p(distr, samples_not_bounded), label='Feasible actions', zorder=5)
 ax.scatter(samples_actually_bounded[:,0], samples_actually_bounded[:,1], gaussian.batch_p(distr, samples_actually_bounded), c='r', alpha=0.15, zorder=2)
 ax.plot([vmax, 0, 0, vmax], [0, -2*vmax/wheels_distance, 2*vmax/wheels_distance,0], [0,0,0,0], c='black', linewidth=2, zorder=3, label="Action space bounds")
@@ -120,7 +123,7 @@ ax.set_xlabel('$v$', labelpad=15)
 ax.set_ylabel('$\\omega$', labelpad=15)
 ax.set_zlabel(r'$f_{V \Omega}(v, \omega)$', labelpad=15)
 handles, labels = ax.get_legend_handles_labels()
-handles.insert(0, plt.Line2D([0], [0], marker='o', color='w', label='Infeasible actions', markerfacecolor='r', alpha=.8, markersize=6))
+handles.insert(0, Line2D([0], [0], marker='o', color='w', label='Infeasible actions', markerfacecolor='r', alpha=.8, markersize=6))
 labels.insert(0, 'Infeasible actions')
 ax.legend(handles, labels)
 ax2 = fig.add_subplot(gs[0, 1])
@@ -151,7 +154,7 @@ plt.show()
 # Compute PDF value of samples and plot (unbounded) distribution
 pdf_values = gaussian.batch_p(distr, samples)
 fig = plt.figure()
-ax = fig.add_subplot(projection='3d')
+ax = cast(Axes3D, fig.add_subplot(projection='3d'))
 ax.scatter(bounded_samples[:,0], bounded_samples[:,1], pdf_values, label='PDF values')
 ax.scatter(0, 0, 0, c='g', label='Origin')
 ax.set(xlim=[-0.1,vmax+0.1], ylim=[-vmax*2/wheels_distance-0.2,+vmax*2/wheels_distance+0.2])
@@ -171,7 +174,7 @@ dy = 1/10 * jnp.ones_like(zpos)
 dz = hist.ravel()
 mask_dz = dz == 0
 fig = plt.figure()
-ax = fig.add_subplot(projection='3d')
+ax = cast(Axes3D, fig.add_subplot(projection='3d'))
 ax.set(xlim=[-0.1,vmax+0.1], ylim=[-vmax*2/wheels_distance-0.2,+vmax*2/wheels_distance+0.2])
 ax.bar3d(xpos[~mask_dz], ypos[~mask_dz], zpos, dx, dy, dz[~mask_dz], zsort='average')
 plt.show()

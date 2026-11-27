@@ -1,6 +1,9 @@
 from jax import random, jit, vmap, lax, debug
+import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Circle, Rectangle
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 import matplotlib.colors as mcolors
 import os
@@ -10,7 +13,7 @@ from jhsfm.hsfm import vectorized_compute_obstacle_closest_point
 from socialjym.utils.distributions.gaussian_mixture_model import GMM
 from socialjym.envs.socialnav import SocialNav
 from socialjym.utils.rewards.socialnav_rewards.dummy_reward import DummyReward
-from socialjym.utils.aux_functions import animate_trajectory
+from socialjym.utils.aux_functions import animate_trajectory, pause_on_click
 from socialjym.policies.dir_safe import DIRSAFE
 
 ### Parameters
@@ -372,6 +375,7 @@ scenarios_titles = [
 ]
 # Fit GMM to dynamic obstacles (humans) positions
 fig, axs = plt.subplots(1, 3, figsize=(19.21,11.22))
+assert isinstance(axs, np.ndarray) # Axes array (for type checking)
 fig.suptitle(f"{scenarios_titles[info['current_scenario']]}\n{n_humans} {humans_policy}-driven humans - {n_obstacles} obstacles", fontsize=35)
 fig.subplots_adjust(right=0.99, left=0.04, top=0.85, bottom=0.15, wspace=0.)
 ax_titles = ["Robot-centric simulation", "Dynamic obstacles GMM", "Static obstacles GMM"]
@@ -383,6 +387,7 @@ for i, ax in enumerate(axs):
     else: ax.set_yticks([], labels=[])
     ax.set_aspect('equal', adjustable='box')
 def animate(frame):
+    assert isinstance(axs, np.ndarray) # Axes array (for type checking)
     # Reset axes
     for i, ax in enumerate(axs):
         ax.clear()
@@ -393,7 +398,7 @@ def animate(frame):
         else: ax.set_yticks([], labels=[])
         ax.set_aspect('equal', adjustable='box')
         for cell_center in grid_cells:
-            rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
+            rect = Rectangle((float(cell_center[0]-cell_size[0]/2), float(cell_center[1]-cell_size[1]/2)), float(cell_size[0]), float(cell_size[1]), facecolor='none', edgecolor='grey', linewidth=1, alpha=0.5, zorder=1)
             ax.add_patch(rect)
     ## AXS[0] - Plot robot-centric simulation
     # Plot robot goal
@@ -401,15 +406,15 @@ def animate(frame):
     # Plot humans
     for h in range(len(robot_centric_humans_positions[frame])):
         if humans_policy == 'hsfm':
-            head = plt.Circle((robot_centric_humans_positions[frame][h,0] + jnp.cos(robot_centric_humans_orientations[frame][h]) * data['humans_radii'][h], robot_centric_humans_positions[frame][h,1] + jnp.sin(robot_centric_humans_orientations[frame][h]) * data['humans_radii'][h]), 0.1, color=colors[h%len(colors)], zorder=1)
+            head = Circle((robot_centric_humans_positions[frame][h,0] + jnp.cos(robot_centric_humans_orientations[frame][h]) * data['humans_radii'][h], robot_centric_humans_positions[frame][h,1] + jnp.sin(robot_centric_humans_orientations[frame][h]) * data['humans_radii'][h]), 0.1, color=colors[h%len(colors)], zorder=1)
             axs[0].add_patch(head)
-        circle = plt.Circle((robot_centric_humans_positions[frame][h,0], robot_centric_humans_positions[frame][h,1]), data['humans_radii'][h], edgecolor=colors[h%len(colors)], facecolor="white", fill=True, zorder=1)
+        circle = Circle((robot_centric_humans_positions[frame][h,0], robot_centric_humans_positions[frame][h,1]), data['humans_radii'][h], edgecolor=colors[h%len(colors)], facecolor="white", fill=True, zorder=1)
         axs[0].add_patch(circle)
     # Plot robot
     if kinematics == 'unicycle':
-        head = plt.Circle((robot_radius, 0.), 0.1, color='black', zorder=1)
+        head = Circle((robot_radius, 0.), 0.1, color='black', zorder=1)
         axs[0].add_patch(head)
-    circle = plt.Circle((0.,0.), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+    circle = Circle((0.,0.), robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
     axs[0].add_patch(circle)
     # Plot static obstacles
     if robot_centric_static_obstacles[frame].shape[1] > 1: # Polygon obstacles
@@ -427,18 +432,18 @@ def animate(frame):
             zorder=0,
         )
     # Legend
-    robot_legend = plt.Line2D([0], [0], marker='o', color='w', label='Robot', markerfacecolor='red', markeredgecolor='black', markersize=15)
-    human_legend = plt.Line2D([0], [0], marker='o', color='w', label='Humans', markerfacecolor='white', markeredgecolor='black', markersize=15)
-    goal_legend = plt.Line2D([0], [0], marker='*', color='w', label='Goal', markerfacecolor='red', markeredgecolor='red', markersize=10)
-    obstacle_legend = plt.Line2D([0], [0], color='black', lw=2, label='Obstacles')
-    visibility_lines_legend = plt.Line2D([0], [0], color='blue', lw=1, label='Visibility rays')
+    robot_legend = Line2D([0], [0], marker='o', color='w', label='Robot', markerfacecolor='red', markeredgecolor='black', markersize=15)
+    human_legend = Line2D([0], [0], marker='o', color='w', label='Humans', markerfacecolor='white', markeredgecolor='black', markersize=15)
+    goal_legend = Line2D([0], [0], marker='*', color='w', label='Goal', markerfacecolor='red', markeredgecolor='red', markersize=10)
+    obstacle_legend = Line2D([0], [0], color='black', lw=2, label='Obstacles')
+    visibility_lines_legend = Line2D([0], [0], color='blue', lw=1, label='Visibility rays')
     axs[0].legend(handles=[robot_legend, human_legend, goal_legend, obstacle_legend, visibility_lines_legend], loc='upper center', bbox_to_anchor=(0.5, -0.125), fontsize=15)
     ## AXS[1] - Plot dynamic obstacles GMM
     # Plot humans positions
     for h in range(len(robot_centric_humans_positions[frame])):
         color = "red" if visible_humans_mask[frame][h] else "grey"
         alpha = 0.5 if visible_humans_mask[frame][h] else 0.3
-        circle = plt.Circle((robot_centric_humans_positions[frame][h,0], robot_centric_humans_positions[frame][h,1]), data['humans_radii'][h], color=color, fill=True, zorder=11, alpha=alpha)
+        circle = Circle((robot_centric_humans_positions[frame][h,0], robot_centric_humans_positions[frame][h,1]), data['humans_radii'][h], color=color, fill=True, zorder=11, alpha=alpha)
         axs[1].add_patch(circle)
     # Plot color-coded GMM samples
     points_high_p = gmm_sample_points[dynamic_ps[frame] > p_visualization_threshold]
@@ -452,8 +457,8 @@ def animate(frame):
         zorder=10,
     )
     # Legend
-    visible_human_legend = plt.Line2D([0], [0], marker='o', color='w', label='Visible humans', markerfacecolor='red', markeredgecolor='red', markersize=15, alpha=0.5)
-    invisible_human_legend = plt.Line2D([0], [0], marker='o', color='w', label='Invisible humans', markerfacecolor='grey', markeredgecolor='grey', markersize=15, alpha=0.3)
+    visible_human_legend = Line2D([0], [0], marker='o', color='w', label='Visible humans', markerfacecolor='red', markeredgecolor='red', markersize=15, alpha=0.5)
+    invisible_human_legend = Line2D([0], [0], marker='o', color='w', label='Invisible humans', markerfacecolor='grey', markeredgecolor='grey', markersize=15, alpha=0.3)
     axs[1].legend(handles=[visible_human_legend, invisible_human_legend], loc='upper center', bbox_to_anchor=(0.5, -0.125), fontsize=15)
     ## AXS[2] - Plot static obstacles GMM
     for i, o in enumerate(robot_centric_static_obstacles[frame]): 
@@ -474,18 +479,13 @@ def animate(frame):
         zorder=10,
     )
     # Legend
-    visible_obstacle_legend = plt.Line2D([0], [0], color='black', lw=2, label='Visible obstacles', alpha=0.5)
-    invisible_obstacle_legend = plt.Line2D([0], [0], color='grey', lw=2, label='Invisible obstacles', alpha=0.3, linestyle='dashed')
+    visible_obstacle_legend = Line2D([0], [0], color='black', lw=2, label='Visible obstacles', alpha=0.5)
+    invisible_obstacle_legend = Line2D([0], [0], color='grey', lw=2, label='Invisible obstacles', alpha=0.3, linestyle='dashed')
     axs[2].legend(handles=[visible_obstacle_legend, invisible_obstacle_legend], loc='upper center', bbox_to_anchor=(0.5, -0.125), fontsize=15)
-anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(all_states))
+anim = FuncAnimation(fig, animate, interval=robot_dt*1000, frames=len(all_states)) # pyright: ignore[reportArgumentType] (the return value of the frame function is used only with blit=True)
 if save:
     save_path = os.path.join(os.path.dirname(__file__), f'target_gmms_{scenario}_{n_humans}humans_{n_obstacles}obstacles.mp4')
     writer_video = FFMpegWriter(fps=int(1/robot_dt), bitrate=1800)
     anim.save(save_path, writer=writer_video, dpi=300)
-anim.paused = False
-def toggle_pause(self, *args, **kwargs):
-    if anim.paused: anim.resume()
-    else: anim.pause()
-    anim.paused = not anim.paused
-fig.canvas.mpl_connect('button_press_event', toggle_pause)
+pause_on_click(fig, anim)
 plt.show()

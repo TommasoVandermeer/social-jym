@@ -112,7 +112,7 @@ ax.add_patch(actions_space_bound)
 # ax.gca().set_aspect('equal', adjustable='box')
 # ax.set_title(f"Action space (V,w) - Wheelbase: {policy.wheels_distance/2}m - Vmax: {policy.v_max}m/s")
 ax.set_xlabel("$v$ $(m/s)$")
-ax.set_ylabel("$\omega$ $(rad/s)$", labelpad=-16)
+ax.set_ylabel("$\\omega$ $(rad/s)$", labelpad=-16)
 ax.legend(fontsize=27)
 ax.grid()
 plt.show()
@@ -140,7 +140,7 @@ pxy_theta = vmap(exact_integration_of_action_space, in_axes=(0, 0))(jnp.zeros((l
 orientations = jnp.ones((len(policy.action_space), 2)) * 0.05 * jnp.array([jnp.cos(pxy_theta[:,2]), jnp.sin(pxy_theta[:,2])]).T
 plt.scatter(pxy_theta[:,0], pxy_theta[:,1])
 for i, orientation in enumerate(orientations):
-    plt.arrow(pxy_theta[i,0], pxy_theta[i,1], orientation[0], orientation[1], color='black', head_width=0.005, alpha=0.5)
+    plt.arrow(float(pxy_theta[i,0]), float(pxy_theta[i,1]), float(orientation[0]), float(orientation[1]), color='black', head_width=0.005, alpha=0.5)
 plt.gca().set_aspect('equal', adjustable='box')
 plt.title("All robot positions and orientations applying action space (V,w) starting from Px=Py=0m, theta=0r and using exact (analytical) integration")
 plt.xlabel("x (x)")

@@ -1,4 +1,5 @@
 from jax.tree_util import tree_map
+import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -133,22 +134,23 @@ metrics_data = {
 
 # Plot metrics curves for each training scenario, averaged over everything else
 figure, ax = plt.subplots(math.ceil((len(all_metrics)-len(exclude_metrics))/2), 2, figsize=(18,18))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.07, hspace=0.3, wspace=0.3)
 for key, values in all_metrics.items():
     if key in exclude_metrics:
         continue
     else:
-        ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set(
+        ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set(
             xlabel='Number of humans',
             ylabel=metrics_data[key]["label"])
         if "ylim" in metrics_data[key]:
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_ylim(metrics_data[key]["ylim"])
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_ylim(metrics_data[key]["ylim"])
         if "yticks" in metrics_data[key]:
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_yticks(metrics_data[key]["yticks"])
-        ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_xticks(jnp.arange(len(test_n_humans)), labels=test_n_humans)
-        ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].grid()
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_yticks(metrics_data[key]["yticks"])
+        ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_xticks(jnp.arange(len(test_n_humans)), labels=test_n_humans)
+        ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].grid()
         for ts_idx, train_scenario in enumerate(train_scenarios):
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].plot(
                 jnp.arange(len(test_n_humans)), 
                 jnp.nanmean(values[:,ts_idx,:,:], axis=(0,1,2,4)) if key != "successes" else jnp.nanmean(values[:,ts_idx,:,:], axis=(0,1,2)) / n_test_trials,
                 color=list(mcolors.TABLEAU_COLORS.values())[ts_idx+6],
@@ -160,6 +162,7 @@ figure.savefig(os.path.join(os.path.dirname(__file__),f"metrics_tests_in_new_sce
 
 # Plot success rate and time to goal for each training scenario, averaged over everything else
 figure, ax = plt.subplots(1, 2, figsize=(18,6))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(right=0.78, top=0.985, bottom=0.13, left=0.07, hspace=0.3, wspace=0.3)
 col = 0
 for key, values in all_metrics.items():

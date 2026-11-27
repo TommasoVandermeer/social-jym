@@ -1,3 +1,4 @@
+from typing import Any, cast
 import flax.linen as fnn
 from jax import random, vmap, jit
 import jax.numpy as jnp
@@ -19,7 +20,7 @@ model = InputNormalizer()
 
 @jit
 def _normalize_and_clip_observation_and_update_state(
-    state:dict, 
+    state:Any, 
     x:jnp.ndarray, 
     bound:float,
     ):
@@ -36,16 +37,16 @@ def _normalize_and_clip_observation_and_update_state(
 
 @jit
 def _normalize_and_clip_observation(
-    state:dict, 
+    state:Any, 
     x:jnp.ndarray, 
     bound:float,
     ):
     # Apply the model (normalize the input)
-    norm_x = model.apply(
+    norm_x = cast(jnp.ndarray, model.apply(
         {"batch_stats": state},
         x,
         False,
-    )
+    ))
     clipped_norm_x = jnp.clip(norm_x, -bound, bound)
     return clipped_norm_x
 

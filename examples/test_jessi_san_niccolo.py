@@ -1,6 +1,7 @@
 from jax import random, vmap
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 import pickle
 import os
 
@@ -158,14 +159,14 @@ for i in range(n_episodes):
     for h in range(len(state[:-1])):
         color = 'blue'
         alpha = 0.6
-        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * info['humans_parameters'][h,0], state[h,1] + jnp.sin(state[h,4]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
+        head = Circle((state[h,0] + jnp.cos(state[h,4]) * info['humans_parameters'][h,0], state[h,1] + jnp.sin(state[h,4]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
         ax.add_patch(head)
-        circle = plt.Circle((state[h,0], state[h,1]), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+        circle = Circle((state[h,0], state[h,1]), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
         ax.add_patch(circle)
     robot_position = state[-1,:2]
-    head = plt.Circle((robot_position[0] + env.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + env.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+    head = Circle((robot_position[0] + env.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + env.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
     ax.add_patch(head)
-    circle = plt.Circle((robot_position[0], robot_position[1]), env.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+    circle = Circle((robot_position[0], robot_position[1]), env.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
     ax.add_patch(circle)
     ax.set_aspect('equal', adjustable='datalim')
     plt.show()

@@ -2,10 +2,12 @@ from jax import numpy as jnp
 import jax
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 import time
 
 from jhsfm.hsfm import step
 from jhsfm.utils import *
+from socialjym.utils.aux_functions import pause_on_click
 
 # Hyperparameters
 seed = 0
@@ -138,17 +140,17 @@ def animate(frame):
     for h in range(len(all_states[int(frame*animation_ratio)])):
         color = "green"
         alpha = 0.1
-        head = plt.Circle((all_states[int(frame*animation_ratio)][h,0] + jnp.cos(all_states[int(frame*animation_ratio)][h,4]) * humans_parameters[h,0], all_states[int(frame*animation_ratio)][h,1] + jnp.sin(all_states[int(frame*animation_ratio)][h,4]) * humans_parameters[h,0]), 0.1, color='black', alpha=alpha, zorder=1)
+        head = Circle((all_states[int(frame*animation_ratio)][h,0] + jnp.cos(all_states[int(frame*animation_ratio)][h,4]) * humans_parameters[h,0], all_states[int(frame*animation_ratio)][h,1] + jnp.sin(all_states[int(frame*animation_ratio)][h,4]) * humans_parameters[h,0]), 0.1, color='black', alpha=alpha, zorder=1)
         ax.add_patch(head)
-        circle = plt.Circle((all_states[int(frame*animation_ratio)][h,0], all_states[int(frame*animation_ratio)][h,1]), humans_parameters[h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+        circle = Circle((all_states[int(frame*animation_ratio)][h,0], all_states[int(frame*animation_ratio)][h,1]), float(humans_parameters[h,0]), edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
         ax.add_patch(circle)
         leftx = all_leg_states[int(frame*animation_ratio)][h,0]
         lefty = all_leg_states[int(frame*animation_ratio)][h,1]
         rightx = all_leg_states[int(frame*animation_ratio)][h,3]
         righty = all_leg_states[int(frame*animation_ratio)][h,4]
-        leg_circle = plt.Circle((leftx, lefty), leg_radius, edgecolor='black', facecolor='black', zorder=2)
+        leg_circle = Circle((leftx, lefty), leg_radius, edgecolor='black', facecolor='black', zorder=2)
         ax.add_patch(leg_circle)
-        leg_circle = plt.Circle((rightx, righty), leg_radius, edgecolor='black', facecolor='black', zorder=2)
+        leg_circle = Circle((rightx, righty), leg_radius, edgecolor='black', facecolor='black', zorder=2)
         ax.add_patch(leg_circle)
     # Plot static obstacles
     if static_obstacles is not None:
@@ -156,11 +158,6 @@ def animate(frame):
             for o in static_obstacles: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
         else: # One segment obstacles
             for o in static_obstacles: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
-anim = FuncAnimation(fig, animate, interval=animation_dt*1000, frames=steps//animation_ratio)
-anim.paused = False
-def toggle_pause(self, *args, **kwargs):
-    if anim.paused: anim.resume()
-    else: anim.pause()
-    anim.paused = not anim.paused
-fig.canvas.mpl_connect('button_press_event', toggle_pause)
+anim = FuncAnimation(fig, animate, interval=animation_dt*1000, frames=steps//animation_ratio) # pyright: ignore[reportArgumentType] (the return value of the frame function is used only with blit=True)
+pause_on_click(fig, anim)
 plt.show()

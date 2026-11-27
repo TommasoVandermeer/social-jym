@@ -241,6 +241,7 @@ for seed in range(n_seeds):
                 'size'   : 18}
         rc('font', **font)
         figure, ax = plt.subplots(1,2,figsize=(15,15))
+        assert isinstance(ax, np.ndarray) # Axes array (for type checking)
         figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95, right=0.95, left=0.1, wspace=0.35)
         # Plot returns during RL
         ax[0].grid()

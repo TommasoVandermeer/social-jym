@@ -1,4 +1,5 @@
 from jax import random, vmap, jit, lax
+import numpy as np
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 import os
@@ -209,6 +210,7 @@ for i in range(n_episodes):
     reference_velocities = all_actions
     reference_velocities_times = jnp.arange(0, reference_velocities.shape[0]*env.robot_dt, env.robot_dt)
     figure, ax = plt.subplots(2, 1, figsize=(15, 10))
+    assert isinstance(ax, np.ndarray) # Axes array (for type checking)
     figure.subplots_adjust(left=0.1, right=0.9, bottom=0.15)
     ax[0].step(reference_velocities_times, reference_velocities[:,0], label='Action', where='post', color='green', alpha=0.7)
     ax[0].plot(robot_velocities_times, robot_velocities[:,0], label='Velocity', color='red', linewidth=2)

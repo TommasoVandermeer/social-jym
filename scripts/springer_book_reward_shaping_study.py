@@ -1,4 +1,5 @@
 from jax.tree_util import tree_map
+import numpy as np
 import jax.numpy as jnp
 import optax
 import os
@@ -94,9 +95,9 @@ for ts_idx, train_scenario in enumerate(train_scenarios):
                 target_reached_reward = True,
                 collision_penalty_reward = True,
                 discomfort_penalty_reward = True,
-                progress_to_goal_reward = binary_reward[0],
-                time_penalty_reward = binary_reward[1],
-                high_rotation_penalty_reward = binary_reward[2],
+                progress_to_goal_reward = bool(binary_reward[0]),
+                time_penalty_reward = bool(binary_reward[1]),
+                high_rotation_penalty_reward = bool(binary_reward[2]),
                 discomfort_distance=ds,
                 progress_to_goal_weight=wp,
                 time_penalty=wt,
@@ -325,7 +326,7 @@ metrics = {
     "successes": {"label": "Success Rate", "episodic": False}, 
     "collisions": {"label": "Collision Rate", "episodic": False}, 
     "timeouts": {"label": "Timeout Rate", "episodic": False}, 
-    "returns": {"label": "Discounted return ($\gamma = 0.9$)", "episodic": True},
+    "returns": {"label": "Discounted return ($\\gamma = 0.9$)", "episodic": True},
     "times_to_goal": {"label": "Time to goal ($s$)", "episodic": True},
     "average_speed": {"label": "Lin. speed ($m/s$)", "episodic": True},
     "average_acceleration": {"label": "Lin. accel. ($m/s^2$)", "episodic": True},
@@ -394,7 +395,7 @@ xoffset=0.1
 yoffset = 0.3
 ax.set(xlim=[0-xoffset,policy.v_max+xoffset], ylim=[-policy.v_max*2/policy.wheels_distance-yoffset,policy.v_max*2/policy.wheels_distance+yoffset])
 ax.set_xlabel("$v_r$ $(m/s)$")
-ax.set_ylabel("$\omega_r$ $(rad/s)$")
+ax.set_ylabel("$\\omega_r$ $(rad/s)$")
 ax.legend()
 figure.savefig(os.path.join(figure_folder,f"0.pdf"), format='pdf')
 
@@ -402,6 +403,7 @@ figure.savefig(os.path.join(figure_folder,f"0.pdf"), format='pdf')
 metrics_to_plot = ["times_to_goal", "average_angular_acceleration"]
 colors = ["lightskyblue", "blue", "lightcoral", "red"]
 figure, ax = plt.subplots(1, 2, figsize=(10,5))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(hspace=0.7, wspace=0.2, bottom=0.13, top=0.91, left=0.05, right=0.77)
 for m_idx, metric in enumerate(metrics_to_plot):        
     bar_width = 0.2
@@ -434,7 +436,7 @@ figure.savefig(os.path.join(figure_folder,f"1.pdf"), format='pdf')
 
 # Plot boxplot of each metric for base reward  in all train envs
 metrics_to_plot = ["times_to_goal", "path_length", "space_compliance", "average_speed", "average_acceleration", "average_jerk", "average_angular_speed", "average_angular_acceleration", "average_angular_jerk"]
-figure, ax = plt.subplots(3, 3, figsize=(10,10))
+figure, ax = plt.subplots(3, 3, figsize=(10,10), squeeze=False)
 figure.subplots_adjust(hspace=0.7, wspace=0.3, bottom=0.08, top=0.93, left=0.07, right=0.83)
 colors = {
     "sfm": "blue",
@@ -460,7 +462,7 @@ for m_idx, metric in enumerate(metrics_to_plot):
             unclean_data = jnp.zeros((len(test_n_humans),n_test_trials*len(test_scenarios)*len(test_envs)))
             for h_idx in range(len(test_n_humans)):
                 unclean_data = unclean_data.at[h_idx].set(values[0,te_idx,0,0,:,h_idx,:].flatten())
-            data = pd.DataFrame(jnp.transpose(unclean_data), columns=test_n_humans)
+            data = pd.DataFrame(jnp.transpose(unclean_data), columns=pd.Index(test_n_humans))
             data = data.dropna()
             ax[i,j].boxplot(
                 data, 
@@ -481,6 +483,7 @@ figure.savefig(os.path.join(figure_folder,f"2.pdf"), format='pdf')
 metrics_to_plot = ["times_to_goal", "average_angular_acceleration"]
 colors = ["blue", "green", "red", "grey"]
 figure, ax = plt.subplots(1, 2, figsize=(10,5))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(hspace=0.7, wspace=0.2, bottom=0.13, top=0.91, left=0.05, right=0.77)
 for m_idx, metric in enumerate(metrics_to_plot):        
     bar_width = 0.2
@@ -524,7 +527,7 @@ colors = {
         },
     }
 for te_idx, train_env in enumerate(train_envs):
-    figure, ax = plt.subplots(3, 3, figsize=(10,10))
+    figure, ax = plt.subplots(3, 3, figsize=(10,10), squeeze=False)
     figure.subplots_adjust(hspace=0.7, wspace=0.3, bottom=0.08, top=0.93, left=0.07, right=0.83)
     legend_elements = [
         Line2D([0], [0], color=colors[train_env]["R0"], lw=4, label="R0"),
@@ -546,7 +549,7 @@ for te_idx, train_env in enumerate(train_envs):
                 unclean_data = jnp.zeros((len(test_n_humans),n_test_trials*len(test_scenarios)*len(test_envs)))
                 for h_idx in range(len(test_n_humans)):
                     unclean_data = unclean_data.at[h_idx].set(values[0,te_idx,reward,0,:,h_idx,:].flatten())
-                data = pd.DataFrame(jnp.transpose(unclean_data), columns=test_n_humans)
+                data = pd.DataFrame(jnp.transpose(unclean_data), columns=pd.Index(test_n_humans))
                 data = data.dropna()
                 ax[i,j].boxplot(
                     data, 
@@ -573,7 +576,7 @@ colors[1][7] = "grey"
 metrics_to_plot = ["times_to_goal", "path_length", "average_angular_acceleration", "space_compliance"]
 for te_idx, train_env in enumerate(train_envs):
     legend_elements = [Line2D([0], [0], color=colors[te_idx][r], lw=4, label=rewards[r]["label"]) for r in range(len(rewards))]
-    figure, ax = plt.subplots(2, 2, figsize=(10,10))
+    figure, ax = plt.subplots(2, 2, figsize=(10,10), squeeze=False)
     figure.subplots_adjust(hspace=0.3, wspace=0.2, bottom=0.08, top=0.93, left=0.07, right=0.95)
     # figure.subplots_adjust(hspace=0.3, wspace=0.2, bottom=0.08, top=0.93, left=0.07, right=0.87)
     # figure.legend(handles=legend_elements, loc="center right", title=f"Train\nenv.\n{train_env.upper()}\n\nN° Hum.\n{test_n_humans[1]}\n\nReward", fontsize=15)
@@ -588,7 +591,7 @@ for te_idx, train_env in enumerate(train_envs):
         ax[i,j].grid(zorder=0)
         for r_idx in range(len(rewards)):
             unclean_data = values[0,te_idx,r_idx,0,:,1,:].flatten()
-            data = pd.DataFrame(jnp.transpose(unclean_data), columns=[r_idx])
+            data = pd.DataFrame(jnp.transpose(unclean_data), columns=pd.Index([r_idx]))
             data = data.dropna()
             ax[i,j].boxplot(
                 data, 
@@ -627,7 +630,7 @@ for te_idx, train_env in enumerate(train_envs):
 #         for h_idx in range(len(test_n_humans)):
 #             for r_idx in range(len(rewards)):
 #                 unclean_data = values[0,te_idx,r_idx,0,:,h_idx,:].flatten()
-#                 data = pd.DataFrame(jnp.transpose(unclean_data), columns=[r_idx])
+#                 data = pd.DataFrame(jnp.transpose(unclean_data), columns=pd.Index([r_idx]))
 #                 data = data.dropna()
 #                 ax[i,j].boxplot(
 #                     data, 
@@ -706,7 +709,7 @@ for te_idx, train_env in enumerate(train_envs):
 #                 unclean_data = jnp.zeros((len(test_n_humans),n_test_trials*len(test_scenarios)))
 #                 for h_idx in range(len(test_n_humans)):
 #                     unclean_data = unclean_data.at[h_idx].set(values[0,0,r_idx,0,e_idx,h_idx,:].flatten())
-#                 data = pd.DataFrame(jnp.transpose(unclean_data), columns=test_n_humans)
+#                 data = pd.DataFrame(jnp.transpose(unclean_data), columns=pd.Index(test_n_humans))
 #                 data = data.dropna()
 #                 ax[i,j].boxplot(data, widths=0.4, patch_artist=True, 
 #                     boxprops=dict(facecolor='lightblue', edgecolor='lightblue', alpha=0.7),
@@ -722,7 +725,7 @@ for te_idx, train_env in enumerate(train_envs):
 #                 unclean_data = jnp.zeros((len(test_n_humans),n_test_trials*len(test_scenarios)))
 #                 for h_idx in range(len(test_n_humans)):
 #                     unclean_data = unclean_data.at[h_idx].set(values[0,1,r_idx,0,e_idx,h_idx,:].flatten())
-#                 data = pd.DataFrame(jnp.transpose(unclean_data), columns=test_n_humans)
+#                 data = pd.DataFrame(jnp.transpose(unclean_data), columns=pd.Index(test_n_humans))
 #                 data = data.dropna()
 #                 ax[i,j].boxplot(data, widths=0.3, patch_artist=True, 
 #                         boxprops=dict(facecolor="lightcoral", edgecolor="lightcoral", alpha=0.4),

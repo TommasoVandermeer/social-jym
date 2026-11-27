@@ -1,3 +1,4 @@
+import numpy as np
 import jax.numpy as jnp
 from jax import random, jit, vmap, nn
 import matplotlib.pyplot as plt
@@ -67,20 +68,22 @@ def f2_hard(key, mean, sigma, max_speed):
 soft_actions = vmap(f_soft, in_axes=(0, None, None, None, None))(random.split(key, n_samples), mean, sigma, max_speed, wheel_distance)
 hard_actions = vmap(f_hard, in_axes=(0, None, None, None, None))(random.split(key, n_samples), mean, sigma, max_speed, wheel_distance)
 figure, ax = plt.subplots(1,2, figsize=(10,10))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.suptitle(f"Smooth vs Hard actions clipping - Samples {n_samples} - Mean: {mean} - Sigma: {sigma} - Max speed: {max_speed} - Wheel distance: {wheel_distance}\nUNICYCLE KINEMATICS")
 ax[0].plot(soft_actions[:,0], soft_actions[:,1], 'o', markersize=1)
 ax[0].set_title('Smooth clipping')
 ax[0].set_xlabel('v ($m/s$)')
-ax[0].set_ylabel('$\omega$ $(rad/s)$')
+ax[0].set_ylabel('$\\omega$ $(rad/s)$')
 ax[1].plot(hard_actions[:,0], hard_actions[:,1], 'o', markersize=1)
 ax[1].set_title('Hard clipping')
 ax[1].set_xlabel('v ($m/s$)')
-ax[1].set_ylabel('$\omega$ $(rad/s)$')
+ax[1].set_ylabel('$\\omega$ $(rad/s)$')
 plt.show()
 
 soft_actions = vmap(f2_soft, in_axes=(0, None, None, None))(random.split(key, n_samples), mean, sigma, max_speed)
 hard_actions = vmap(f2_hard, in_axes=(0, None, None, None))(random.split(key, n_samples), mean, sigma, max_speed)
 figure, ax = plt.subplots(1,2, figsize=(10,10))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.suptitle(f"Smooth vs Hard actions clipping - Samples {n_samples} - Mean: {mean} - Sigma: {sigma} - Max speed: {max_speed}\nHOLONOMIC KINEMATICS")
 ax[0].plot(soft_actions[:,0], soft_actions[:,1], 'o', markersize=1)
 ax[0].set_title('Smooth clipping')

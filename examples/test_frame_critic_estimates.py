@@ -1,8 +1,10 @@
 from jax import random, vmap, jit
+import numpy as np
 import jax.numpy as jnp
 import os
 import pickle
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 from matplotlib import rc, rcParams
 font = {
     'weight' : 'regular',
@@ -108,6 +110,7 @@ for i in range(n_episodes):
         vmin = min(jnp.min(value_map_single_gamma), jnp.min(value_map_multi_gamma))
         vmax = max(jnp.max(value_map_single_gamma), jnp.max(value_map_multi_gamma))
         fig, axs = plt.subplots(1, 2, figsize=(14, 6))
+        assert isinstance(axs, np.ndarray) # Axes array (for type checking)
         fig.subplots_adjust(left=0.08, right=0.95, top=0.95, bottom=0.05, hspace=0., wspace=0.2)
         humans_positions = state[:-1,:2]
         humans_orientations = state[:-1,4]
@@ -125,9 +128,9 @@ for i in range(n_episodes):
             ax.set_xlabel('X', labelpad=-7)
             ax.set_ylabel('Y', labelpad=-20)
             for h in range(len(humans_poses)):
-                head = plt.Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * humans_radii[h], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * humans_radii[h]), 0.1, color='black', alpha=0.6, zorder=1)
+                head = Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * humans_radii[h], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * humans_radii[h]), 0.1, color='black', alpha=0.6, zorder=1)
                 ax.add_patch(head)
-                circle = plt.Circle((humans_poses[h,0], humans_poses[h,1]), humans_radii[h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
+                circle = Circle((float(humans_poses[h,0]), float(humans_poses[h,1])), humans_radii[h], edgecolor='black', facecolor='blue', alpha=0.6, fill=True, zorder=1)
                 ax.add_patch(circle)
             if info['static_obstacles'][-1].shape[1] > 1: # Polygon obstacles
                 for o in info['static_obstacles'][-1]: ax.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)

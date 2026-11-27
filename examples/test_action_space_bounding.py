@@ -1,4 +1,6 @@
+import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Polygon, Rectangle
 import jax.numpy as jnp
 from jax import lax, jit, vmap, debug
 from scipy.spatial import ConvexHull
@@ -141,6 +143,7 @@ rc('font', **font)
 rcParams['pdf.fonttype'] = 42
 rcParams['ps.fonttype'] = 42
 figure, ax = plt.subplots(1, 2, figsize=(25.61, 13.61), gridspec_kw={'width_ratios': [2, 1]})
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(left=0.06, right=0.97, top=0.98, bottom=0.07, wspace=0.1)
 figure2, ax2 = plt.subplots(1,1,figsize=(11, 8))
 figure2.subplots_adjust(left=0.14, right=0.99, top=0.99, bottom=0.15, wspace=0.1)
@@ -157,9 +160,9 @@ second_order_taylor_approximation_negative_dx = second_order_taylor_approximatio
 second_order_taylor_approximation_positive_dy = second_order_taylor_approximation_positive_vy * dt
 second_order_taylor_approximation_negative_dy = second_order_taylor_approximation_negative_vy * dt
 # Plot initial configuration
-ax[0].add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
-ax2.add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
-ax4.add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
+ax[0].add_artist(Circle((0, 0), robot_radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
+ax2.add_artist(Circle((0, 0), robot_radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
+ax4.add_artist(Circle((0, 0), robot_radius, color='black', fill=False, zorder=3, linewidth=2, linestyle='--'))
 # Plot convex hull of all possible new configurations
 circles = [(x, y, robot_radius)for x, y in zip(second_order_taylor_approximation_positive_dx[::20], second_order_taylor_approximation_positive_dy[::20])] + [(x, y, robot_radius) for x, y in zip(second_order_taylor_approximation_negative_dx[::20], second_order_taylor_approximation_negative_dy[::20])]
 points = []
@@ -184,7 +187,7 @@ for i, o in enumerate(obstacles):
         ax4.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=7)
 ## Plot displacement boundary rectangle 
 ax[0].add_artist(
-    plt.Rectangle(
+    Rectangle(
         (-robot_radius, -alpha*dt**2*gamma*vmax**2/(4*wheels_distance) - robot_radius), 
         alpha*vmax*dt + 2 * robot_radius, 
         2*robot_radius + (alpha*dt**2*vmax**2/(4*wheels_distance) * (beta + gamma)), 
@@ -196,7 +199,7 @@ ax[0].add_artist(
     )
 )
 ax2.add_artist(
-    plt.Rectangle(
+    Rectangle(
         (-robot_radius, -alpha*dt**2*gamma*vmax**2/(4*wheels_distance) - robot_radius), 
         alpha*vmax*dt + 2 * robot_radius, 
         2*robot_radius + (alpha*dt**2*vmax**2/(4*wheels_distance) * (beta + gamma)), 
@@ -210,12 +213,12 @@ ax2.add_artist(
 # Lower ALPHA
 intersection_points = []
 for o, obs in enumerate(obstacles):
-    for s, segment in enumerate(obs):
+    for s, obstacle_segment in enumerate(obs):
         intersection, intersection_point_0, intersection_point_1 = segment_rectangle_intersection(
-            segment[0][0], 
-            segment[0][1], 
-            segment[1][0], 
-            segment[1][1],
+            obstacle_segment[0][0], 
+            obstacle_segment[0][1], 
+            obstacle_segment[1][0], 
+            obstacle_segment[1][1],
             0. + 1e-6, # xmin
             alpha * vmax * dt + robot_radius - 1e-6, # xmax
             -robot_radius + 1e-6, # ymin
@@ -237,12 +240,12 @@ new_alpha = lax.cond(
 # Lower BETA
 intersection_points = []
 for o, obs in enumerate(obstacles):
-    for s, segment in enumerate(obs):
+    for s, obstacle_segment in enumerate(obs):
         intersection, intersection_point_0, intersection_point_1 = segment_rectangle_intersection(
-            segment[0][0], 
-            segment[0][1], 
-            segment[1][0], 
-            segment[1][1],
+            obstacle_segment[0][0], 
+            obstacle_segment[0][1], 
+            obstacle_segment[1][0], 
+            obstacle_segment[1][1],
             -robot_radius + 1e-6, # xmin
             new_alpha * vmax * dt + robot_radius - 1e-6, # xmax
             robot_radius + 1e-6, # ymin
@@ -264,12 +267,12 @@ new_beta = lax.cond(
 # Lower GAMMA
 intersection_points = []
 for o, obs in enumerate(obstacles):
-    for s, segment in enumerate(obs):
+    for s, obstacle_segment in enumerate(obs):
         intersection, intersection_point_0, intersection_point_1 = segment_rectangle_intersection(
-            segment[0][0], 
-            segment[0][1], 
-            segment[1][0], 
-            segment[1][1],
+            obstacle_segment[0][0], 
+            obstacle_segment[0][1], 
+            obstacle_segment[1][0], 
+            obstacle_segment[1][1],
             -robot_radius + 1e-6, # xmin
             new_alpha * vmax * dt + robot_radius - 1e-6, # xmax
             -robot_radius - (new_alpha*dt**2*gamma*vmax**2/(4*wheels_distance)) + 1e-6, # ymin
@@ -292,7 +295,7 @@ print(f"New alpha (for collision avoidance): {new_alpha}")
 print(f"New beta (for collision avoidance): {new_beta}")
 print(f"New gamma (for collision avoidance): {new_gamma}")
 ax[0].add_artist(
-    plt.Rectangle(
+    Rectangle(
         (-robot_radius, -new_alpha*dt**2*new_gamma*vmax**2/(4*wheels_distance) - robot_radius), 
         new_alpha*vmax*dt + 2 * robot_radius, 
         2*robot_radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance) * (new_beta + new_gamma)), 
@@ -304,7 +307,7 @@ ax[0].add_artist(
     ),
 )
 ax4.add_artist(
-    plt.Rectangle(
+    Rectangle(
         (-robot_radius, -new_alpha*dt**2*new_gamma*vmax**2/(4*wheels_distance) - robot_radius), # + 0.008,
         new_alpha*vmax*dt + 2 * robot_radius, 
         2*robot_radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance) * (new_beta + new_gamma)), # - 0.008, 
@@ -354,20 +357,20 @@ ax4.fill(points[hull.vertices, 0], points[hull.vertices, 1], facecolor='lightgre
 ax[0].set_xlim(-robot_radius - 0.05, vmax * dt + robot_radius + 0.05)
 ax[0].set_ylim(-0.5, 0.5)
 ax[0].axis("equal")
-ax[0].set_xlabel("$\Delta x$ (m)")
-ax[0].set_ylabel("$\Delta y$ (m)")
+ax[0].set_xlabel("$\\Delta x$ (m)")
+ax[0].set_ylabel("$\\Delta y$ (m)")
 ax2.set_aspect('equal',adjustable='box')
 ax2.set_xlim(-robot_radius - 0.05, vmax * dt + robot_radius + 0.05)
 ax2.set_ylim(-0.52, 0.52)
-ax2.set_xlabel("$\Delta x$ (m)")
-ax2.set_ylabel("$\Delta y$ (m)", labelpad=-35)
+ax2.set_xlabel("$\\Delta x$ (m)")
+ax2.set_ylabel("$\\Delta y$ (m)", labelpad=-35)
 ax2.set_xticks(jnp.arange(-0.2, vmax * dt + robot_radius, 0.2), labels=[round(i,1) for i in jnp.arange(-0.2, vmax * dt + robot_radius, 0.2).tolist()] )
 ax2.grid(zorder=1)
 ax4.set_aspect('equal',adjustable='box')
 ax4.set_xlim(-robot_radius - 0.05, vmax * dt + robot_radius + 0.05)
 ax4.set_ylim(-0.52, 0.52)
-ax4.set_xlabel("$\Delta x$ (m)")
-ax4.set_ylabel("$\Delta y$ (m)", labelpad=-35)
+ax4.set_xlabel("$\\Delta x$ (m)")
+ax4.set_ylabel("$\\Delta y$ (m)", labelpad=-35)
 ax4.set_xticks(jnp.arange(-0.2, vmax * dt + robot_radius, 0.2), labels=[round(i,1) for i in jnp.arange(-0.2, vmax * dt + robot_radius, 0.2).tolist()] )
 ax4.grid(zorder=1)
 h, l = ax[0].get_legend_handles_labels()
@@ -380,7 +383,7 @@ ax[0].legend(h, l)
 ax[0].grid(zorder=1)
 ### Plot original action space (v, w) and the new bounded action space
 ax[1].add_patch(
-    plt.Polygon(
+    Polygon(
         [   
             [0,2*vmax/wheels_distance],
             [0,-2*vmax/wheels_distance],
@@ -396,7 +399,7 @@ ax[1].add_patch(
     ),
 )
 ax[1].add_patch(
-    plt.Polygon(
+    Polygon(
         [   
             [0,(2*vmax/wheels_distance)*new_beta],
             [0,(-2*vmax/wheels_distance)*new_gamma],
@@ -414,15 +417,15 @@ ax[1].add_patch(
 ax[1].set_xlim(-0.1, vmax + 0.1)
 ax[1].set_ylim(-2*vmax/wheels_distance - 0.3, 2*vmax/wheels_distance + 0.3)
 ax[1].set_xlabel("$v$ (m/s)")
-ax[1].set_ylabel("$\omega$ (rad/s)")
+ax[1].set_ylabel("$\\omega$ (rad/s)")
 ax[1].grid()
 ax[1].legend()
 ax[1].set_xticks(jnp.arange(0, vmax+0.2, 0.2))
 ax[1].set_xticklabels([round(i,1) for i in np.arange(0, vmax, 0.2)] + [r"$\overline{v}$"])
 ax[1].set_yticks(np.arange(-2,3,1).tolist() + [2*vmax/wheels_distance,-2*vmax/wheels_distance])
-ax[1].set_yticklabels([round(i) for i in np.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+ax[1].set_yticklabels([str(round(i)) for i in np.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
 ax3.add_patch(
-    plt.Polygon(
+    Polygon(
         [   
             [0,2*vmax/wheels_distance],
             [0,-2*vmax/wheels_distance],
@@ -438,7 +441,7 @@ ax3.add_patch(
     ),
 )
 ax5.add_patch(
-    plt.Polygon(
+    Polygon(
         [   
             [0,2*vmax/wheels_distance],
             [0,-2*vmax/wheels_distance],
@@ -454,7 +457,7 @@ ax5.add_patch(
     ),
 )
 ax5.add_patch(
-    plt.Polygon(
+    Polygon(
         [   
             [0,(2*vmax/wheels_distance)*new_beta],
             [0,(-2*vmax/wheels_distance)*new_gamma],
@@ -472,21 +475,21 @@ ax5.add_patch(
 ax3.set_xlim(-0.1, vmax + 0.1)
 ax3.set_ylim(-2*vmax/wheels_distance - 0.1, 2*vmax/wheels_distance + 0.1)
 ax3.set_xlabel("$v$ (m/s)")
-ax3.set_ylabel("$\omega$ (rad/s)", labelpad=-35)
+ax3.set_ylabel("$\\omega$ (rad/s)", labelpad=-35)
 ax3.grid()
 ax3.set_xticks(jnp.arange(0, vmax+0.5, 0.5))
-ax3.set_xticklabels([round(i,1) for i in np.arange(0, vmax, 0.5)] + [r"$\overline{v}$"])
+ax3.set_xticklabels([str(round(i,1)) for i in np.arange(0, vmax, 0.5)] + [r"$\overline{v}$"])
 ax3.set_yticks(np.arange(-2,3,1).tolist() + [2*vmax/wheels_distance,-2*vmax/wheels_distance])
-ax3.set_yticklabels([round(i) for i in np.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+ax3.set_yticklabels([str(round(i)) for i in np.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
 ax5.set_xlim(-0.1, vmax + 0.1)
 ax5.set_ylim(-2*vmax/wheels_distance - 0.1, 2*vmax/wheels_distance + 0.1)
 ax5.set_xlabel("$v$ (m/s)")
-ax5.set_ylabel("$\omega$ (rad/s)", labelpad=-35)
+ax5.set_ylabel("$\\omega$ (rad/s)", labelpad=-35)
 ax5.grid()
 ax5.set_xticks(jnp.arange(0, vmax+0.5, 0.5))
-ax5.set_xticklabels([round(i,1) for i in np.arange(0, vmax, 0.5)] + [r"$\overline{v}$"])
+ax5.set_xticklabels([str(round(i,1)) for i in np.arange(0, vmax, 0.5)] + [r"$\overline{v}$"])
 ax5.set_yticks(np.arange(-2,3,1).tolist() + [2*vmax/wheels_distance,-2*vmax/wheels_distance])
-ax5.set_yticklabels([round(i) for i in np.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
+ax5.set_yticklabels([str(round(i)) for i in np.arange(-2,3,1).tolist()] + [r"$\overline{\omega}$", r"$-\overline{\omega}$"])
 import os
 figure.savefig(os.path.join(os.path.dirname(__file__),"action_space_bounding.eps"), format='eps')
 figure2.savefig(os.path.join(os.path.dirname(__file__),"action_space_bounding_1.eps"), format='eps')
@@ -503,10 +506,11 @@ font = {'weight' : 'regular',
         'size'   : 27}
 rc('font', **font)
 figure, ax = plt.subplots(1, 2, figsize=(25.61, 8.7))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(left=0.06, right=0.95, top=0.96, bottom=0.08, wspace=0.)
 # Plot initial configuration
-ax[0].add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=4, linewidth=2, linestyle='--'))
-ax[1].add_artist(plt.Circle((0, 0), robot_radius, color='black', fill=False, zorder=4, linewidth=2, linestyle='--'))
+ax[0].add_artist(Circle((0, 0), robot_radius, color='black', fill=False, zorder=4, linewidth=2, linestyle='--'))
+ax[1].add_artist(Circle((0, 0), robot_radius, color='black', fill=False, zorder=4, linewidth=2, linestyle='--'))
 # Plot obstacles
 for i, o in enumerate(obstacles): 
     if o.shape[0] == 1:  # Single segment obstacle
@@ -521,7 +525,7 @@ for i, o in enumerate(obstacles):
         ax[1].fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=7)
 # Plot bounding rectangles
 ax[0].add_artist(
-    plt.Rectangle(
+    Rectangle(
         (-robot_radius, -alpha*dt**2*gamma*vmax**2/(4*wheels_distance) - robot_radius), 
         alpha*vmax*dt + 2 * robot_radius, 
         2*robot_radius + (alpha*dt**2*vmax**2/(4*wheels_distance) * (beta + gamma)), 
@@ -532,7 +536,7 @@ ax[0].add_artist(
     )
 )
 ax[0].add_artist(
-    plt.Rectangle(
+    Rectangle(
         (-robot_radius,-robot_radius), 
         alpha*vmax*dt + 2 * robot_radius, 
         2*robot_radius, 
@@ -543,7 +547,7 @@ ax[0].add_artist(
     )
 )
 ax[0].add_artist(
-    plt.Rectangle(
+    Rectangle(
         (0,-robot_radius), 
         alpha*vmax*dt + robot_radius, 
         2*robot_radius, 
@@ -555,7 +559,7 @@ ax[0].add_artist(
     )
 )
 ax[1].add_artist(
-    plt.Rectangle(
+    Rectangle(
         (-robot_radius, -new_alpha*dt**2*gamma*vmax**2/(4*wheels_distance) - robot_radius), 
         new_alpha*vmax*dt + 2 * robot_radius, 
         2*robot_radius + (new_alpha*dt**2*vmax**2/(4*wheels_distance) * (beta + gamma)), 
@@ -566,7 +570,7 @@ ax[1].add_artist(
     )
 )
 ax[1].add_artist(
-    plt.Rectangle(
+    Rectangle(
         (-robot_radius,robot_radius), 
         new_alpha*vmax*dt + 2 * robot_radius, 
         (new_alpha*dt**2*vmax/(4*wheels_distance) * (beta)), 
@@ -578,7 +582,7 @@ ax[1].add_artist(
     )
 )
 ax[1].add_artist(
-    plt.Rectangle(
+    Rectangle(
         (-robot_radius,-new_alpha*dt**2*gamma*vmax/(4*wheels_distance) - robot_radius), 
         new_alpha*vmax*dt + 2 * robot_radius, 
         (new_alpha*dt**2*vmax/(4*wheels_distance) * (gamma)), 
@@ -610,12 +614,12 @@ def segment(ax, xy0, xy1, label, label_pos=None, color='black'):
         ax.text(label_pos[0], label_pos[1], label, verticalalignment='bottom', horizontalalignment='center', color=color, zorder=8)
     else: # Diagonal segment
         marker = 'x'
-        label_pos = label_pos if label_pos is None else ((xy0[0] + xy1[0]) / 2, (xy0[1] + xy1[1]) / 2)
+        label_pos = label_pos if label_pos is not None else ((xy0[0] + xy1[0]) / 2, (xy0[1] + xy1[1]) / 2)
         ax.text(label_pos[0], label_pos[1], label, verticalalignment='center', horizontalalignment='center', color=color, zorder=8)
     ax.scatter([xy0[0],xy1[0]], [xy0[1],xy1[1]], color=color, s=50, zorder=8, marker=marker)
 segment(ax[0], [0.,0.], [0.,-robot_radius], '$r$', color='black')
 segment(ax[1], [0.,0.], [0.,-robot_radius], '$r$', color='black')
-segment(ax[0], [robot_radius,0.], [alpha*vmax*dt + robot_radius,0.], '$\Delta x_{\max}$', label_pos=(0.85,0.01), color='black')
+segment(ax[0], [robot_radius,0.], [alpha*vmax*dt + robot_radius,0.], '$\\Delta x_{\\max}$', label_pos=(0.85,0.01), color='black')
 segment(ax[1], [robot_radius,0.], [new_alpha*vmax*dt + robot_radius,0.], r'$\tilde{\Delta} x_{\max}$', color='black')
 segment(
     ax[1], 
@@ -646,14 +650,14 @@ ax[0].set_title(r"Stage 1: Reduce $\alpha$", weight="bold")
 ax[0].set_aspect('equal',adjustable='box')
 ax[0].set_xlim(-robot_radius - 0.05, vmax * dt + robot_radius + 0.3)
 ax[0].set_ylim(-0.55, 0.55)
-ax[0].set_xlabel("$\Delta x$ (m)")
-ax[0].set_ylabel("$\Delta y$ (m)")
+ax[0].set_xlabel("$\\Delta x$ (m)")
+ax[0].set_ylabel("$\\Delta y$ (m)")
 ax[1].grid(zorder=1)
 ax[1].set_title(r"Stage 2: Reduce $\beta$ and $\gamma$", weight="bold")
 ax[1].set_aspect('equal',adjustable='box')
 ax[1].set_xlim(-robot_radius - 0.15 - 0.2, vmax * dt + robot_radius)
 ax[1].set_ylim(-0.55, 0.55)
-ax[1].set_xlabel("$\Delta x$ (m)")
+ax[1].set_xlabel("$\\Delta x$ (m)")
 ax[1].yaxis.tick_right()
 h, l = ax[0].get_legend_handles_labels()
 h1, l1 = ax[1].get_legend_handles_labels()
@@ -670,9 +674,9 @@ figure.legend(
 )
 figure.savefig(os.path.join(os.path.dirname(__file__),"action_space_bounding_algorithm.eps"), format='eps')
 bbox = figure.get_window_extent().transformed(figure.dpi_scale_trans.inverted())
-bbox.x1 = (bbox.x0 + bbox.x1) / 2
+bbox.x1 = (bbox.x0 + bbox.x1) / 2 # pyright: ignore[reportAttributeAccessIssue] (Bbox.x1 has a setter)
 plt.savefig(os.path.join(os.path.dirname(__file__),"action_space_bounding_algorithm_1.eps"), format='eps', bbox_inches=bbox)
 bbox = figure.get_window_extent().transformed(figure.dpi_scale_trans.inverted())
 mid_x = (bbox.x0 + bbox.x1) / 2
-bbox.x0 = mid_x  # move left edge to the middle
+bbox.x0 = mid_x  # pyright: ignore[reportAttributeAccessIssue] (Bbox.x0 has a setter) move left edge to the middle
 plt.savefig(os.path.join(os.path.dirname(__file__),"action_space_bounding_algorithm_2.eps"), format='eps', bbox_inches=bbox)

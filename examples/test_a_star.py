@@ -2,6 +2,8 @@ import jax.numpy as jnp
 from jax import jit, lax, random, vmap
 from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Circle, Rectangle
 import heapq
 import os 
 import pickle
@@ -317,7 +319,7 @@ def find_a_star_path(occupancy_grid, start_pos, goal_pos, grid_coordinates, grid
     while open_set:
         # Get the node with the lowest f value
         _, current_node = heapq.heappop(open_set)
-        if jnp.array_equal(current_node, goal_node):
+        if jnp.array_equal(jnp.array(current_node), jnp.array(goal_node)):
             return reconstruct_path(nodes_data, goal_node)
         closed_set.add((current_node[0], current_node[1]))
         # Get neighbors
@@ -360,9 +362,9 @@ try:
         custom_episodes = pickle.load(f)
         full_state = custom_episodes['full_state'][1, :-1]
         for h in range(full_state.shape[0]):
-            head = plt.Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * 0.3, full_state[h,1] + jnp.sin(full_state[h,4]) * 0.3), 0.1, color='purple', zorder=10)
+            head = Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * 0.3, full_state[h,1] + jnp.sin(full_state[h,4]) * 0.3), 0.1, color='purple', zorder=10)
             ax2.add_patch(head)
-            circle = plt.Circle((full_state[h,0],full_state[h,1]),0.3, edgecolor='purple', facecolor="white", fill=True, zorder=10)
+            circle = Circle((full_state[h,0],full_state[h,1]),0.3, edgecolor='purple', facecolor="white", fill=True, zorder=10)
             ax2.add_patch(circle)
 except:
     pass
@@ -378,7 +380,7 @@ for idx, coord in enumerate(grid_coordinates.reshape(-1,2)):
     i = idx // static_obstacles_for_each_cell.shape[1]
     j = idx % static_obstacles_for_each_cell.shape[1]
     facecolor = 'red' if occupancy_grid[i,j] else 'none'
-    rect = plt.Rectangle((coord[0], coord[1]), grid_cell_size, grid_cell_size, facecolor=facecolor, edgecolor='gray', linewidth=0.5, alpha=0.5, zorder=0)
+    rect = Rectangle((float(coord[0]), float(coord[1])), grid_cell_size, grid_cell_size, facecolor=facecolor, edgecolor='gray', linewidth=0.5, alpha=0.5, zorder=0)
     ax.add_patch(rect)
 ax.scatter(start_pos[0], start_pos[1], color='green', label='Start Position', zorder=4, marker='o', s=100)
 ax.scatter(goal_pos[0], goal_pos[1], color='red', label='Goal Position', zorder=4, marker='*', s=100)
@@ -396,7 +398,7 @@ ax2.set_xlabel('x (m)')
 ax2.set_ylabel('y (m)', labelpad=-10)
 ax2.set_xticks(jnp.arange(-15, 16, 5))
 # h, l = ax2.get_legend_handles_labels()
-# h.append(plt.Line2D([0], [0], color='black', lw=2, label='Obstacles'))
+# h.append(Line2D([0], [0], color='black', lw=2, label='Obstacles'))
 # l.append('Obstacles')
 # ax2.legend(h, l, loc='center left', bbox_to_anchor=(1, 0.5))
 ax2.set_aspect('equal', adjustable='box')
@@ -478,9 +480,9 @@ with open(os.path.join(os.path.dirname(__file__), 'custom_episodes_30_humans.pkl
     custom_episodes = pickle.load(f)
     full_state = custom_episodes['full_state'][1, :-1]
     for h in range(full_state.shape[0]):
-        head = plt.Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * 0.3, full_state[h,1] + jnp.sin(full_state[h,4]) * 0.3), 0.1, color='purple', zorder=10)
+        head = Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * 0.3, full_state[h,1] + jnp.sin(full_state[h,4]) * 0.3), 0.1, color='purple', zorder=10)
         ax2.add_patch(head)
-        circle = plt.Circle((full_state[h,0],full_state[h,1]),0.3, edgecolor='purple', facecolor="white", fill=True, zorder=10)
+        circle = Circle((full_state[h,0],full_state[h,1]),0.3, edgecolor='purple', facecolor="white", fill=True, zorder=10)
         ax2.add_patch(circle)
 if obstacles.shape[1] > 1: # Polygon obstacles
     for o in obstacles: 
@@ -488,9 +490,9 @@ if obstacles.shape[1] > 1: # Polygon obstacles
 else: # One segment obstacles
     for o in obstacles: 
         ax2.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
-head = plt.Circle((all_states[0,-1,0] + jnp.cos(all_states[0,-1,4]) * 0.3, all_states[0,-1,1] + jnp.sin(all_states[0,-1,4]) * 0.3), 0.1, color='black', zorder=10)
+head = Circle((float(all_states[0,-1,0] + jnp.cos(all_states[0,-1,4]) * 0.3), float(all_states[0,-1,1] + jnp.sin(all_states[0,-1,4]) * 0.3)), 0.1, color='black', zorder=10)
 ax2.add_patch(head)
-circle = plt.Circle((all_states[0,-1,0],all_states[0,-1,1]),0.3, edgecolor='black', facecolor="red", fill=True, zorder=10)
+circle = Circle((float(all_states[0,-1,0]), float(all_states[0,-1,1])),0.3, edgecolor='black', facecolor="red", fill=True, zorder=10)
 ax2.add_patch(circle)
 ax2.scatter(goal_pos[0], goal_pos[1], color='red', label='Goal Position', zorder=4, marker='*', s=100)
 ax2.plot(all_states[:, -1, 0], all_states[:, -1, 1], color='blue', linewidth=2, label='DIR-SAFE Trajectory', zorder=3, linestyle='--')

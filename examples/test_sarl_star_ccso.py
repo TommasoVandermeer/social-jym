@@ -1,6 +1,7 @@
 from jax import random, vmap
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import time
 import os
 import warnings
@@ -86,7 +87,7 @@ for i in range(n_episodes):
                 cell_size = 0.9
                 facecolor = 'red' if info['occupancy_grid'][i,j] else 'none'
                 facecolor = 'grey' if jnp.array_equal(jnp.array([i,j]), robot_cell_idx) or jnp.array_equal(jnp.array([i,j]), goal_cell_idx) else facecolor
-                rect = plt.Rectangle((coord[0]-cell_size/2, coord[1]-cell_size/2), cell_size, cell_size, facecolor=facecolor, edgecolor='gray', linewidth=0.5, alpha=0.5, zorder=0)
+                rect = Rectangle((coord[0]-cell_size/2, coord[1]-cell_size/2), cell_size, cell_size, facecolor=facecolor, edgecolor='gray', linewidth=0.5, alpha=0.5, zorder=0)
                 plt.gca().add_patch(rect)
         for o in aux_info['static_obstacles'][-1]: plt.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)
         plt.plot(state[-1,0], state[-1,1], marker='o', color='b', markersize=10, label='Robot start')

@@ -1,6 +1,7 @@
 from jax import random, vmap
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.utils.rewards.lasernav_rewards.reward1 import Reward1 as Reward
@@ -127,16 +128,16 @@ for i in range(n_episodes):
     ax.set_ylabel('Y', labelpad=-16)
     ax.set_aspect('equal', adjustable='datalim')
     for h in range(env.n_humans):
-        head = plt.Circle((state[h,0] + jnp.cos(state[h,4]) * info["humans_parameters"][h,0], state[h,1] + jnp.sin(state[h,4]) * info["humans_parameters"][h,0]), 0.1, color='black', alpha=0.7, zorder=1)
+        head = Circle((state[h,0] + jnp.cos(state[h,4]) * info["humans_parameters"][h,0], state[h,1] + jnp.sin(state[h,4]) * info["humans_parameters"][h,0]), 0.1, color='black', alpha=0.7, zorder=1)
         ax.add_patch(head)
-        body = plt.Circle((state[h,0], state[h,1]), info["humans_parameters"][h,0], edgecolor='black', facecolor='white', alpha=0.7, fill=True, zorder=1)
+        body = Circle((state[h,0], state[h,1]), info["humans_parameters"][h,0], edgecolor='black', facecolor='white', alpha=0.7, fill=True, zorder=1)
         ax.add_patch(body)
         ax.plot(trajectory[:,h,0], trajectory[:,h,1], color='red', zorder=100)
         for n in range(n_noised_trajectories):
             ax.plot(noised_trajectories[n,:,h,0], noised_trajectories[n,:,h,1], color='blue', zorder=99)
-    head = plt.Circle((state[-1,0] + policy.robot_radius * jnp.cos(state[-1,4]), state[-1,1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+    head = Circle((state[-1,0] + policy.robot_radius * jnp.cos(state[-1,4]), state[-1,1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
     ax.add_patch(head)
-    body = plt.Circle((state[-1,0], state[-1,1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+    body = Circle((state[-1,0], state[-1,1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
     ax.add_patch(body)
     ax.plot(
         info["robot_goal"][0],

@@ -211,7 +211,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
     font = {'weight' : 'regular',
             'size'   : 18}
     rc('font', **font)
-    figure, ax = plt.subplots(4,3,figsize=(15,15))
+    figure, ax = plt.subplots(4,3,figsize=(15,15), squeeze=False)
     figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95, right=0.95, left=0.1, wspace=0.35)
     # Plot returns during RL
     ax[0,0].grid()
@@ -313,7 +313,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
     ax[2,1].grid()
     ax[2,1].set(
         xlabel='Training Update',
-        ylabel='$\sigma(v)$',
+        ylabel='$\\sigma(v)$',
         title='Std velocity',
         ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
     )
@@ -325,7 +325,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), finetune_network_n
     ax[2,2].grid()
     ax[2,2].set(
         xlabel='Training Update',
-        ylabel='$\sigma(\omega)$',
+        ylabel='$\\sigma(\\omega)$',
         title='Std ang. vel.',
         ylim=(jnp.min(stds_during_rl)-0.01, jnp.max(stds_during_rl)+0.01),
     )

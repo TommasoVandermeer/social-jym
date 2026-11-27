@@ -2,6 +2,7 @@ from jax import random, debug, vmap, lax, jit
 import jax.numpy as jnp
 import time
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in cast")
 
@@ -71,7 +72,7 @@ for i in range(n_episodes):
     #     cell_center = cell
     #     x, y = i // grid_cells.shape[0], i % grid_cells.shape[1]
     #     facecolor = 'red' if grid_info['grid_occupancy'][x,y] else 'none'
-    #     rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor=facecolor, edgecolor='black', linewidth=0.5, alpha=0.5, zorder=1)
+    #     rect = Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor=facecolor, edgecolor='black', linewidth=0.5, alpha=0.5, zorder=1)
     #     ax.add_patch(rect)
     # # Plot adjacency edges
     # for edge in jnp.argwhere(edges < jnp.inf):
@@ -110,7 +111,7 @@ for i in range(n_episodes):
             cell_size = 0.9
             facecolor = 'red' if occupancy_grid[i,j] else 'none'
             facecolor = 'grey' if jnp.array_equal(jnp.array([i,j]), robot_cell_idx) or jnp.array_equal(jnp.array([i,j]), goal_cell_idx) else facecolor
-            rect = plt.Rectangle((coord[0]-cell_size/2, coord[1]-cell_size/2), cell_size, cell_size, facecolor=facecolor, edgecolor='gray', linewidth=0.5, alpha=0.5, zorder=0)
+            rect = Rectangle((coord[0]-cell_size/2, coord[1]-cell_size/2), cell_size, cell_size, facecolor=facecolor, edgecolor='gray', linewidth=0.5, alpha=0.5, zorder=0)
             plt.gca().add_patch(rect)
     if info['static_obstacles'][-1].shape[1] > 1: # Polygon obstacles
         for o in info['static_obstacles'][-1]: plt.fill(o[:,:,0],o[:,:,1], facecolor='black', edgecolor='black', zorder=3)

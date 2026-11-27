@@ -42,7 +42,7 @@ metrics = {
     "collisions_with_human": {"label": "Coll. w/ Hum. Rate", "episodic": False},
     "collisions_with_obstacle": {"label": "Coll. w/ Obs. Rate", "episodic": False},
     "timeouts": {"label": "Timeout Rate", "episodic": False}, 
-    "returns": {"label": "Return ($\gamma = 0.9$)", "episodic": True},
+    "returns": {"label": "Return ($\\gamma = 0.9$)", "episodic": True},
     "times_to_goal": {"label": "Time to goal ($s$)", "episodic": True},
     "average_speed": {"label": "Lin. speed ($m/s$)", "episodic": True},
     "average_acceleration": {"label": "Lin. accel. ($m/s^2$)", "episodic": True},
@@ -1026,7 +1026,7 @@ print_pretty_table(ccso_scenarios_summary, "Second experimental setup results", 
 ### PLOT RESULTS ###
 # Plot metrics against number of humans on TRAIN scenarios
 metrics_to_plot = ["successes", "collisions_with_human", "collisions_with_obstacle", "timeouts", "times_to_goal", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -1051,7 +1051,7 @@ figure.legend(h, l, loc='center right', title='Policy\n(TRAIN scenarios)')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_benchmark_tests_1.eps"), format='eps')
 # Plot metrics against number of obstacles on TRAIN scenarios
 metrics_to_plot = ["successes", "collisions_with_human", "collisions_with_obstacle", "timeouts", "times_to_goal", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -1075,7 +1075,7 @@ figure.legend(h, l, loc='center right', title='Policy\n(TRAIN scenarios)')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_benchmark_tests_2.eps"), format='eps')
 # Plot metrics against number of humans on TEST scenario
 metrics_to_plot = ["successes", "collisions_with_human", "collisions_with_obstacle", "timeouts", "times_to_goal", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -1100,7 +1100,7 @@ figure.legend(h, l, loc='center right', title='Policy\n(TEST scenario)')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_benchmark_tests_3.eps"), format='eps')
 # Plot metrics against number of obstacles on TEST scenario
 metrics_to_plot = ["successes", "collisions_with_human", "collisions_with_obstacle", "timeouts", "times_to_goal", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -1124,7 +1124,7 @@ figure.legend(h, l, loc='center right', title='Policy\n(TEST scenario)')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_benchmark_tests_4.eps"), format='eps')
 # Plot metrics against number of humans on CCSO scenario
 metrics_to_plot = ["successes", "collisions_with_human", "collisions_with_obstacle", "timeouts", "times_to_goal", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -1149,7 +1149,7 @@ figure.legend(h, l, loc='center right', title='Policy\n(CCSO scenario)')
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_benchmark_tests_5.eps"), format='eps')
 # Plot metrics against number of obstacles on CCSO scenario
 metrics_to_plot = ["successes", "collisions_with_human", "collisions_with_obstacle", "timeouts", "times_to_goal", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3

@@ -1,3 +1,4 @@
+import numpy as np
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 import os
@@ -101,19 +102,20 @@ metrics_data = {
     "returns": {"row_position": 3, "col_position": 2, "label": "Return"},
 }
 figure, ax = plt.subplots(math.ceil(len(metrics_data)/3), 3, figsize=(18,18))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(right=0.82, top=0.985, bottom=0.05, left=0.09, hspace=0.3, wspace=0.3)
 for key in metrics_data:
-    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set(
+    ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set(
         xlabel='Number of humans',
         ylabel=metrics_data[key]["label"])
     if "ylim" in metrics_data[key]:
-        ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_ylim(metrics_data[key]["ylim"])
+        ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_ylim(metrics_data[key]["ylim"])
     if "yticks" in metrics_data[key]:
-        ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_yticks(metrics_data[key]["yticks"])
-    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_xticks(jnp.arange(len(n_humans_for_tests)), labels=[i for i in n_humans_for_tests])
-    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].grid()
+        ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_yticks(metrics_data[key]["yticks"])
+    ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_xticks(jnp.arange(len(n_humans_for_tests)), labels=[i for i in n_humans_for_tests])
+    ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].grid()
     for p, policy in enumerate(policies):
-        ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
+        ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].plot(
             jnp.arange(len(n_humans_for_tests)), 
             jnp.nanmean(metrics_sarl_vs_sarl_ppo[key][p], axis=1) if key != "successes" else metrics_sarl_vs_sarl_ppo[key][p] / n_trials,
             color=list(mcolors.TABLEAU_COLORS.values())[p],

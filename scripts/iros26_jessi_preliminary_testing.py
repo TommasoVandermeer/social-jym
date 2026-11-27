@@ -1,3 +1,4 @@
+import numpy as np
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 from jax import random
@@ -53,7 +54,7 @@ metrics = {
     "collisions_with_human": {"label": "Coll. w/ Hum. Rate", "episodic": False},
     "collisions_with_obstacle": {"label": "Coll. w/ Obs. Rate", "episodic": False},
     "timeouts": {"label": "Timeout Rate", "episodic": False}, 
-    "returns": {"label": "Return ($\gamma = 0.9$)", "episodic": True},
+    "returns": {"label": "Return ($\\gamma = 0.9$)", "episodic": True},
     "times_to_goal": {"label": "Time to goal ($s$)", "episodic": True},
     "average_speed": {"label": "Lin. speed ($m/s$)", "episodic": True},
     "average_acceleration": {"label": "Lin. accel. ($m/s^2$)", "episodic": True},
@@ -211,7 +212,7 @@ else:
 # Plot metrics of JESSI-MULTITASK vs JESSI-MODULAR vs JESSI-POLICY against number of humans on SEEN scenarios
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 colors = ["green", "red", "blue"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -239,7 +240,7 @@ figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_different_training
 # Plot metrics of JESSI-E2E vs JESSI-MODULAR against number of obstacles on SEEN scenarios
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 colors = ["green", "red", "blue"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -266,7 +267,7 @@ figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_different_training
 # Plot metrics of JESSI-E2E vs JESSI-MODULAR against number of humans on UNSEEN scenarios
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 colors = ["green", "red","blue"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -294,7 +295,7 @@ figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_different_training
 # Plot metrics of JESSI-E2E vs JESSI-MODULAR against number of obstacles on UNSEEN scenarios
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 colors = ["green", "red", "blue"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -337,6 +338,7 @@ for p in range(len(all_metrics[metric])):
         label = 'policy'
         short = 'P'
     figure, ax = plt.subplots(1, 4, figsize=(16, 5))
+    assert isinstance(ax, np.ndarray) # Axes array (for type checking)
     figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.15, top=0.92, left=0.08, right=0.82)
     for m, metric in enumerate(metrics_to_plot):
         ax[m].set(
@@ -358,6 +360,7 @@ for p in range(len(all_metrics[metric])):
     figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_" + label + "_preliminary_tests_1.eps"), format='eps')
     # Plot metrics for each test scenario against number of obstacles
     figure, ax = plt.subplots(1, 4, figsize=(16, 5))
+    assert isinstance(ax, np.ndarray) # Axes array (for type checking)
     figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.15, top=0.92, left=0.08, right=0.82)
     for m, metric in enumerate(metrics_to_plot):
         ax[m].set(
@@ -438,7 +441,7 @@ else:
 # Plot metrics for each test scenario against number of humans
 metrics_to_plot = ["successes","collisions","timeouts","collisions_with_obstacle","collisions_with_human","times_to_goal", "path_length", "average_speed", "average_angular_speed","episodic_spl", "space_compliance","returns"]
 colors = ["green", "red", "blue", "orange", "purple", "brown", "pink"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.7)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -528,7 +531,7 @@ else:
 # Plot metrics for each test scenario against number of humans
 metrics_to_plot = ["successes","collisions","timeouts","collisions_with_obstacle","collisions_with_human","times_to_goal", "path_length", "average_speed", "average_angular_speed","episodic_spl", "space_compliance","returns"]
 colors = ["green", "red", "blue", "orange", "purple", "brown", "pink"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.75)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3
@@ -631,7 +634,7 @@ else:
 ## PLOTS
 # Plot metrics on SEEN scenarios PRE RL
 metrics_to_plot = ["precision","recall","ADE","AVE","mahalanobis_pos","mahalanobis_vel"]
-figure, ax = plt.subplots(3, 2, figsize=(15, 20))
+figure, ax = plt.subplots(3, 2, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.95)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 2
@@ -667,7 +670,7 @@ for m, metric in enumerate(metrics_to_plot):
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_perception_pre_rl_seen_scenarios.eps"), format='eps')
 # Plot metrics on UNSEEN scenarios PRE RL
 metrics_to_plot = ["precision","recall","ADE","AVE","mahalanobis_pos","mahalanobis_vel"]
-figure, ax = plt.subplots(3, 2, figsize=(15, 20))
+figure, ax = plt.subplots(3, 2, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.95)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 2
@@ -703,7 +706,7 @@ for m, metric in enumerate(metrics_to_plot):
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_perception_pre_rl_unseen_scenarios.eps"), format='eps')
 # Plot metrics on SEEN scenarios POST RL
 metrics_to_plot = ["precision","recall","ADE","AVE","mahalanobis_pos","mahalanobis_vel"]
-figure, ax = plt.subplots(3, 2, figsize=(15, 20))
+figure, ax = plt.subplots(3, 2, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.95)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 2
@@ -739,7 +742,7 @@ for m, metric in enumerate(metrics_to_plot):
 figure.savefig(os.path.join(os.path.dirname(__file__), "jessi_perception_post_rl_seen_scenarios.eps"), format='eps')
 # Plot metrics on UNSEEN scenarios POST RL
 metrics_to_plot = ["precision","recall","ADE","AVE","mahalanobis_pos","mahalanobis_vel"]
-figure, ax = plt.subplots(3, 2, figsize=(15, 20))
+figure, ax = plt.subplots(3, 2, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.95)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 2

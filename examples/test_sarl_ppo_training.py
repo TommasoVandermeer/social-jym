@@ -1,3 +1,4 @@
+import numpy as np
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 from jax import random
@@ -179,6 +180,7 @@ with open(os.path.join(os.path.dirname(__file__),"metrics_after_il.pkl"), 'wb') 
     pickle.dump(metrics_after_il, f)
 ### Plot losses during IL
 figure, ax = plt.subplots(2,1,figsize=(10,10))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 ax[0].set(
     xlabel='Epoch', 
     ylabel='Loss', 
@@ -301,7 +303,7 @@ from matplotlib import rc
 font = {'weight' : 'regular',
         'size'   : 18}
 rc('font', **font)
-figure, ax = plt.subplots(4,2,figsize=(15,15))
+figure, ax = plt.subplots(4,2,figsize=(15,15), squeeze=False)
 figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95, right=0.95, left=0.1, wspace=0.35)
 # Plot returns during RL
 ax[0,0].grid()
@@ -477,20 +479,21 @@ metrics_data = {
     "returns": {"row_position": 3, "col_position": 2, "label": "Return"},
 }
 figure, ax = plt.subplots(math.ceil(len(metrics_data)/3), 3, figsize=(18,18))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(right=0.82, top=0.985, bottom=0.05, left=0.09, hspace=0.3, wspace=0.3)
 for key in metrics_data:
-    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set(
+    ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set(
         xlabel='Number of humans',
         ylabel=metrics_data[key]["label"])
     if "ylim" in metrics_data[key]:
-        ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_ylim(metrics_data[key]["ylim"])
+        ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_ylim(metrics_data[key]["ylim"])
     if "yticks" in metrics_data[key]:
-        ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_yticks(metrics_data[key]["yticks"])
-    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_xticks(jnp.arange(len(n_humans_for_tests)), labels=[i for i in n_humans_for_tests])
-    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].grid()
+        ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_yticks(metrics_data[key]["yticks"])
+    ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_xticks(jnp.arange(len(n_humans_for_tests)), labels=[i for i in n_humans_for_tests])
+    ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].grid()
     for v, visibility in enumerate(test_robot_visibility):
         for p, metrics in enumerate(all_metrics):
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].plot(
                 jnp.arange(len(n_humans_for_tests)), 
                 jnp.nanmean(metrics[key][v], axis=1) if key != "successes" else metrics[key][v] / n_trials,
                 color=list(mcolors.TABLEAU_COLORS.values())[p],
@@ -512,7 +515,7 @@ scenarios_data = {
     "circular_crossing_with_static_obstacles": {"label": "CCSO"},
     "crowd_navigation": {"label": "CN"},
 }
-figure, ax = plt.subplots(2,2, figsize=(12,6))
+figure, ax = plt.subplots(2,2, figsize=(12,6), squeeze=False)
 figure.subplots_adjust(right=0.83, top=0.93, bottom=0.125, left=0.1, hspace=0.5, wspace=0.3)
 for v, visibility in enumerate(test_robot_visibility):
     for p, metrics in enumerate(all_metrics):

@@ -4,6 +4,7 @@ from jax import jit, lax
 import heapq
 from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import matplotlib.colors as mcolors
 import os
 import pickle
@@ -286,7 +287,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'path_to_goal.pkl'
         while open_set:
             # Get the node with the lowest f value
             _, current_node = heapq.heappop(open_set)
-            if jnp.array_equal(current_node, goal_node):
+            if jnp.array_equal(jnp.array(current_node), jnp.array(goal_node)):
                 return reconstruct_path(nodes_data, goal_node)
             closed_set.add((current_node[0], current_node[1]))
             # Get neighbors
@@ -320,7 +321,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), 'path_to_goal.pkl'
         i = idx // static_obstacles_for_each_cell.shape[1]
         j = idx % static_obstacles_for_each_cell.shape[1]
         facecolor = 'red' if occupancy_grid[i,j] else 'none'
-        rect = plt.Rectangle((coord[0], coord[1]), grid_cell_size, grid_cell_size, facecolor=facecolor, edgecolor='gray', linewidth=0.5, alpha=0.5, zorder=0)
+        rect = Rectangle((float(coord[0]), float(coord[1])), grid_cell_size, grid_cell_size, facecolor=facecolor, edgecolor='gray', linewidth=0.5, alpha=0.5, zorder=0)
         ax.add_patch(rect)
     ax.scatter(start_pos[0], start_pos[1], color='green', label='Start Position', zorder=4, marker='o', s=100)
     ax.scatter(goal_pos[0], goal_pos[1], color='red', label='Goal Position', zorder=4, marker='*', s=100)
@@ -357,7 +358,7 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f'custom_episodes_
     humans_goals = jnp.zeros((n_trials, n_humans, 2))  # (goal_x, goal_y)
     for trial in range(n_trials):
         print(f"Trial {trial + 1}/{n_trials}: generating humans initial states and goals...")
-        covered_positions = [start_pos.tolist(), goal_pos.tolist()]  # Start and goal positions are covered
+        covered_positions: list = [start_pos.tolist(), goal_pos.tolist()]  # Start and goal positions are covered
         for human in range(n_humans):
             repeat = True
             while repeat:
@@ -533,7 +534,7 @@ metrics = {
     "successes": {"label": "Success Rate", "episodic": False}, 
     "collisions": {"label": "Collision Rate", "episodic": False}, 
     "timeouts": {"label": "Timeout Rate", "episodic": False}, 
-    "returns": {"label": "Return ($\gamma = 0.9$)", "episodic": True},
+    "returns": {"label": "Return ($\\gamma = 0.9$)", "episodic": True},
     "times_to_goal": {"label": "Time to goal ($s$)", "episodic": True},
     "average_speed": {"label": "Lin. speed ($m/s$)", "episodic": True},
     "average_acceleration": {"label": "Lin. accel. ($m/s^2$)", "episodic": True},
@@ -550,7 +551,7 @@ metrics = {
 # Plot boxplots of metrics DIR-SAFE vs DWA
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_jerk", "average_angular_speed", "average_angular_jerk", "space_compliance"]
 colors = ["red", "blue"]
-figure, ax = plt.subplots(3, 3, figsize=(15, 20))
+figure, ax = plt.subplots(3, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.3, wspace=0.35, bottom=0.1, top=0.95, left=0.08, right=0.95)
 for m, metric in enumerate(metrics_to_plot):
     i = m // 3

@@ -4,6 +4,7 @@ from jax.tree_util import tree_map
 import os
 import pickle
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 
 from socialjym.envs.lasernav import LaserNav
 from socialjym.envs.base_env import wrap_angle
@@ -80,15 +81,15 @@ def plot_base(old_state, info):
     color = 'blue'
     alpha = 0.6 
     for h in range(len(humans_poses)):
-        head = plt.Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * info["humans_parameters"][h,0], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * info["humans_parameters"][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
+        head = Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * info["humans_parameters"][h,0], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * info["humans_parameters"][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
         ax.add_patch(head)
-        circle = plt.Circle((humans_poses[h,0], humans_poses[h,1]), info["humans_parameters"][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+        circle = Circle((humans_poses[h,0], humans_poses[h,1]), info["humans_parameters"][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
         ax.add_patch(circle)
     # Plot robot
     robot_position = old_state[-1,:2]
-    head = plt.Circle((robot_position[0] + env.robot_radius * jnp.cos(old_state[-1,4]), robot_position[1] + env.robot_radius * jnp.sin(old_state[-1,4])), 0.1, color='black', zorder=3)
+    head = Circle((robot_position[0] + env.robot_radius * jnp.cos(old_state[-1,4]), robot_position[1] + env.robot_radius * jnp.sin(old_state[-1,4])), 0.1, color='black', zorder=3)
     ax.add_patch(head)
-    circle = plt.Circle((robot_position[0], robot_position[1]), env.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=4)
+    circle = Circle((robot_position[0], robot_position[1]), env.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=4)
     ax.add_patch(circle)
     # Plot robot goal
     ax.plot(
@@ -179,22 +180,22 @@ for i in range(n_episodes):
             # Plot risk horizon evaluation states
             if reward_info["evaluation_states"] is not None:
                 for i, s in enumerate(reward_info["evaluation_states"]):
-                    circle = plt.Circle((s[-1,0], s[-1,1]), env.robot_radius, edgecolor="green", fill=False, zorder=2, alpha=0.3)
+                    circle = Circle((s[-1,0], s[-1,1]), env.robot_radius, edgecolor="green", fill=False, zorder=2, alpha=0.3)
                     ax.add_patch(circle)
-                    head = plt.Circle((s[-1,0] + env.robot_radius * jnp.cos(s[-1,4]), s[-1,1] + env.robot_radius * jnp.sin(s[-1,4])), 0.1, color='darkgreen', zorder=2, alpha=0.3)
+                    head = Circle((s[-1,0] + env.robot_radius * jnp.cos(s[-1,4]), s[-1,1] + env.robot_radius * jnp.sin(s[-1,4])), 0.1, color='darkgreen', zorder=2, alpha=0.3)
                     ax.add_patch(head)
                     for h in range(s.shape[0]-1):
                         if i == reward_info["closest_distance_time_index"][h]:
-                            circle = plt.Circle((s[h,0], s[h,1]), info["humans_parameters"][h,0], edgecolor="green", fill=False, zorder=2, alpha=0.3)
+                            circle = Circle((s[h,0], s[h,1]), info["humans_parameters"][h,0], edgecolor="green", fill=False, zorder=2, alpha=0.3)
                             ax.add_patch(circle)
                 for i, s in enumerate(reward_info["next_evaluation_states"]):
-                    circle = plt.Circle((s[-1,0], s[-1,1]), env.robot_radius, edgecolor="red", fill=False, zorder=2, alpha=0.3)
+                    circle = Circle((s[-1,0], s[-1,1]), env.robot_radius, edgecolor="red", fill=False, zorder=2, alpha=0.3)
                     ax.add_patch(circle)
-                    head = plt.Circle((s[-1,0] + env.robot_radius * jnp.cos(s[-1,4]), s[-1,1] + env.robot_radius * jnp.sin(s[-1,4])), 0.1, color='darkred', zorder=2, alpha=0.3)
+                    head = Circle((s[-1,0] + env.robot_radius * jnp.cos(s[-1,4]), s[-1,1] + env.robot_radius * jnp.sin(s[-1,4])), 0.1, color='darkred', zorder=2, alpha=0.3)
                     ax.add_patch(head)
                     for h in range(s.shape[0]-1):
                         if i == reward_info["next_closest_distance_time_index"][h]:
-                            circle = plt.Circle((s[h,0], s[h,1]), info["humans_parameters"][h,0], edgecolor="red", fill=False, zorder=2, alpha=0.3)
+                            circle = Circle((s[h,0], s[h,1]), info["humans_parameters"][h,0], edgecolor="red", fill=False, zorder=2, alpha=0.3)
                             ax.add_patch(circle)
             plt.show()
         # Plot ESCAPE state
@@ -218,9 +219,9 @@ for i in range(n_episodes):
                 ])),
                 robot_pos)
             next_robot_yaw = wrap_angle(robot_yaw + robot_velocity_unicycle[1])
-            circle = plt.Circle((next_robot_pos[0], next_robot_pos[1]), env.robot_radius, edgecolor="green", fill=False, zorder=2, alpha=0.3)
+            circle = Circle((next_robot_pos[0], next_robot_pos[1]), env.robot_radius, edgecolor="green", fill=False, zorder=2, alpha=0.3)
             ax.add_patch(circle)
-            head = plt.Circle((next_robot_pos[0] + env.robot_radius * jnp.cos(next_robot_yaw), next_robot_pos[1] + env.robot_radius * jnp.sin(next_robot_yaw)), 0.1, color='darkgreen', zorder=2, alpha=0.3)
+            head = Circle((next_robot_pos[0] + env.robot_radius * jnp.cos(next_robot_yaw), next_robot_pos[1] + env.robot_radius * jnp.sin(next_robot_yaw)), 0.1, color='darkgreen', zorder=2, alpha=0.3)
             ax.add_patch(head)
             # Plot robot after action application
             robot_pos = old_state[-1,:2]
@@ -238,9 +239,9 @@ for i in range(n_episodes):
                 ])),
                 robot_pos)
             next_robot_yaw = wrap_angle(robot_yaw + robot_velocity_unicycle[1])
-            circle = plt.Circle((next_robot_pos[0], next_robot_pos[1]), env.robot_radius, edgecolor="red", fill=False, zorder=2, alpha=0.3)
+            circle = Circle((next_robot_pos[0], next_robot_pos[1]), env.robot_radius, edgecolor="red", fill=False, zorder=2, alpha=0.3)
             ax.add_patch(circle)
-            head = plt.Circle((next_robot_pos[0] + env.robot_radius * jnp.cos(next_robot_yaw), next_robot_pos[1] + env.robot_radius * jnp.sin(next_robot_yaw)), 0.1, color='darkred', zorder=2, alpha=0.3)
+            head = Circle((next_robot_pos[0] + env.robot_radius * jnp.cos(next_robot_yaw), next_robot_pos[1] + env.robot_radius * jnp.sin(next_robot_yaw)), 0.1, color='darkred', zorder=2, alpha=0.3)
             ax.add_patch(head)
             plt.show()
         # Save data for animation

@@ -1,6 +1,7 @@
 from jax import jit, vmap, lax, random, debug
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from functools import partial
 
 from socialjym.envs.socialnav import SocialNav
@@ -55,13 +56,13 @@ plt.scatter(free_cells[:,0], free_cells[:,1], color='green', s=10, label='Free c
 for cell in free_cells:
     cell_size = cell[2:]
     cell_center = cell[:2]
-    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='green', linewidth=0.5, alpha=0.5, zorder=1)
+    rect = Rectangle((float(cell_center[0]-cell_size[0]/2), float(cell_center[1]-cell_size[1]/2)), float(cell_size[0]), float(cell_size[1]), facecolor='none', edgecolor='green', linewidth=0.5, alpha=0.5, zorder=1)
     ax.add_patch(rect)
 # Plot occupied cells
 for cell in occupied_cells:
     cell_size = cell[2:]
     cell_center = cell[:2]
-    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='red', edgecolor='red', linewidth=0.5, alpha=0.5, zorder=2)
+    rect = Rectangle((float(cell_center[0]-cell_size[0]/2), float(cell_center[1]-cell_size[1]/2)), float(cell_size[0]), float(cell_size[1]), facecolor='red', edgecolor='red', linewidth=0.5, alpha=0.5, zorder=2)
     ax.add_patch(rect)
 # Plot adjacency edges
 for x, from_cell in enumerate(free_cells):

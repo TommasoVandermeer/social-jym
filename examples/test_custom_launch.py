@@ -1,3 +1,4 @@
+from typing import Any
 from jax import random, debug, vmap, device_get
 import jax.numpy as jnp
 import numpy as np
@@ -12,7 +13,7 @@ from socialjym.policies.sarl import SARL
 from socialjym.utils.aux_functions import plot_state, plot_trajectory, animate_trajectory, load_crowdnav_policy, load_socialjym_policy, test_k_trials
 
 # Hyperparameters
-reward_params = {
+reward_params: dict[str, Any] = {
     'goal_reward': 1.,
     'collision_penalty': -0.25,
     'discomfort_distance': 0.2,

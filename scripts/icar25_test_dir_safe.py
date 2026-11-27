@@ -1,3 +1,4 @@
+import numpy as np
 import jax.numpy as jnp
 from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
@@ -137,7 +138,7 @@ metrics = {
     "successes": {"label": "Success Rate", "episodic": False}, 
     "collisions": {"label": "Collision Rate", "episodic": False}, 
     "timeouts": {"label": "Timeout Rate", "episodic": False}, 
-    "returns": {"label": "Return ($\gamma = 0.9$)", "episodic": True},
+    "returns": {"label": "Return ($\\gamma = 0.9$)", "episodic": True},
     "times_to_goal": {"label": "Time to goal ($s$)", "episodic": True},
     "average_speed": {"label": "Lin. speed ($m/s$)", "episodic": True},
     "average_acceleration": {"label": "Lin. accel. ($m/s^2$)", "episodic": True},
@@ -159,8 +160,8 @@ scenarios = {
 # Plot metrics for each test scenario against number of humans
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 colors = ["red", "green", "blue"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
-figure2, ax2 = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
+figure2, ax2 = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 figure2.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
@@ -200,8 +201,8 @@ figure2.savefig(os.path.join(os.path.dirname(__file__), "icar25_dwa_test_results
 # Plot metrics for each test scenario against number of obstacles
 metrics_to_plot = ["successes","collisions","timeouts","times_to_goal", "path_length", "average_speed", "average_jerk", "average_angular_speed", "average_angular_jerk","episodic_spl", "space_compliance","returns"]
 colors = ["red", "green", "blue"]
-figure, ax = plt.subplots(4, 3, figsize=(15, 20))
-figure2, ax2 = plt.subplots(4, 3, figsize=(15, 20))
+figure, ax = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
+figure2, ax2 = plt.subplots(4, 3, figsize=(15, 20), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 figure2.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
@@ -238,7 +239,7 @@ figure2.savefig(os.path.join(os.path.dirname(__file__), "icar25_dwa_test_results
 
 # Plot metrics against number of humans and obstacles
 metrics_to_plot = ["successes","times_to_goal", "space_compliance"]
-figure, ax = plt.subplots(2, 3, figsize=(15, 10))
+figure, ax = plt.subplots(2, 3, figsize=(15, 10), squeeze=False)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.1, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     ax[0,m].set(
@@ -283,6 +284,7 @@ figure.savefig(os.path.join(os.path.dirname(__file__), "icar25_soarld_test_resul
 # Plot metrics against number of humans
 metrics_to_plot = ["successes","times_to_goal", "space_compliance"]
 figure, ax = plt.subplots(1, 3, figsize=(13, 3.8))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(hspace=0.4, wspace=0.2, bottom=0.19, top=0.89, left=0.05, right=0.99)
 for m, metric in enumerate(metrics_to_plot):
     ax[m].set(

@@ -1,4 +1,5 @@
 from jax.tree_util import tree_map
+import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -105,23 +106,24 @@ metrics_data = {
 # Plot usual metrics for each (policy-test scenario) couple against the number of humans
 for e_idx, test_env in enumerate(test_environments):
     figure, ax = plt.subplots(math.ceil((len(all_metrics)-len(exclude_metrics))/2), 2, figsize=(18,18))
+    assert isinstance(ax, np.ndarray) # Axes array (for type checking)
     figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.09, hspace=0.3, wspace=0.3)
     for key, values in all_metrics.items():
         if key in exclude_metrics:
             continue
         else:
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set(
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set(
                 xlabel='Number of humans',
                 ylabel=metrics_data[key]["label"])
             if "ylim" in metrics_data[key]:
-                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_ylim(metrics_data[key]["ylim"])
+                ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_ylim(metrics_data[key]["ylim"])
             if "yticks" in metrics_data[key]:
-                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_yticks(metrics_data[key]["yticks"])
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_xticks(jnp.arange(len(test_n_humans)), labels=[i for i in test_n_humans])
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].grid()
+                ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_yticks(metrics_data[key]["yticks"])
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_xticks(jnp.arange(len(test_n_humans)), labels=[i for i in test_n_humans])
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].grid()
             for policy in range(len(values)):
                 for s_idx, test_scenario in enumerate(test_scenarios):
-                    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
+                    ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].plot(
                         jnp.arange(len(test_n_humans)), 
                         jnp.nanmean(values[policy,e_idx,s_idx], axis=1) if key != "successes" else values[policy,e_idx,s_idx] / n_test_trials,
                         color=list(mcolors.TABLEAU_COLORS.values())[policy+s_idx*len(values)],
@@ -135,25 +137,26 @@ for e_idx, test_env in enumerate(test_environments):
 # Plot usual metrics for each test scenario against the number of humans
 for e_idx, test_env in enumerate(test_environments):
     figure, ax = plt.subplots(math.ceil((len(all_metrics)-len(exclude_metrics))/2), 2, figsize=(18,18))
+    assert isinstance(ax, np.ndarray) # Axes array (for type checking)
     figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.09, hspace=0.3, wspace=0.3)
     for key, values in all_metrics.items():
         if key in exclude_metrics:
             continue
         else:
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set(
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set(
                 xlabel='Number of humans',
                 ylabel=metrics_data[key]["label"])
             if "ylim" in metrics_data[key]:
-                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_ylim(metrics_data[key]["ylim"])
+                ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_ylim(metrics_data[key]["ylim"])
             if "yticks" in metrics_data[key]:
-                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_yticks(metrics_data[key]["yticks"])
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_xticks(jnp.arange(len(test_n_humans)), labels=[i for i in test_n_humans])
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].grid()
+                ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_yticks(metrics_data[key]["yticks"])
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_xticks(jnp.arange(len(test_n_humans)), labels=[i for i in test_n_humans])
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].grid()
             for policy in range(len(values)):
                 if policy_labels[policy] == "SARL-CCSO-HSFM":
                     continue
                 for s_idx, test_scenario in enumerate(test_scenarios):
-                    ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
+                    ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].plot(
                         jnp.arange(len(test_n_humans)), 
                         jnp.nanmean(values[policy,e_idx,s_idx], axis=1) if key != "successes" else values[policy,e_idx,s_idx] / n_test_trials,
                         color=list(mcolors.TABLEAU_COLORS.values())[policy+s_idx*len(values)],

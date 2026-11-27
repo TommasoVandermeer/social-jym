@@ -32,7 +32,7 @@ metrics = {
     "collisions_with_human": {"label": "Coll. w/ Hum. Rate", "episodic": False},
     "collisions_with_obstacle": {"label": "Coll. w/ Obs. Rate", "episodic": False},
     "timeouts": {"label": "Timeout Rate", "episodic": False}, 
-    "returns": {"label": "Return ($\gamma = 0.9$)", "episodic": True},
+    "returns": {"label": "Return ($\\gamma = 0.9$)", "episodic": True},
     "times_to_goal": {"label": "Time to goal ($s$)", "episodic": True},
     "average_speed": {"label": "Lin. speed ($m/s$)", "episodic": True},
     "average_acceleration": {"label": "Lin. accel. ($m/s^2$)", "episodic": True},

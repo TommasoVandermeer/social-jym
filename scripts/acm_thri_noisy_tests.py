@@ -1,4 +1,5 @@
 from jax.tree_util import tree_map
+import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -104,22 +105,23 @@ metrics_data = {
 }
 for e_idx, test_env in enumerate(test_environments):
     figure, ax = plt.subplots(math.ceil((len(all_metrics)-len(exclude_metrics))/2), 2, figsize=(18,18))
+    assert isinstance(ax, np.ndarray) # Axes array (for type checking)
     figure.subplots_adjust(right=0.78, top=0.985, bottom=0.05, left=0.07, hspace=0.3, wspace=0.3)
     for key, values in all_metrics.items():
         if key in exclude_metrics:
             continue
         else:
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set(
-                xlabel='Noise $\sigma$ (%)',
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set(
+                xlabel='Noise $\\sigma$ (%)',
                 ylabel=metrics_data[key]["label"])
             if "ylim" in metrics_data[key]:
-                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_ylim(metrics_data[key]["ylim"])
+                ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_ylim(metrics_data[key]["ylim"])
             if "yticks" in metrics_data[key]:
-                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_yticks(metrics_data[key]["yticks"])
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].set_xticks(noise_sigma_percentage_levels, labels=[n*100 for n in noise_sigma_percentage_levels])
-            ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].grid()
+                ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_yticks(metrics_data[key]["yticks"])
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].set_xticks(noise_sigma_percentage_levels, labels=[n*100 for n in noise_sigma_percentage_levels])
+            ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].grid()
             for policy in range(len(values)):
-                ax[metrics_data[key]["row_position"], metrics_data[key]["col_position"]].plot(
+                ax[int(metrics_data[key]["row_position"]), int(metrics_data[key]["col_position"])].plot(
                     noise_sigma_percentage_levels, 
                     jnp.nanmean(values[policy,e_idx], axis=(0,2)) if key != "successes" else jnp.nanmean(values[policy,e_idx], axis=(0)) / n_test_trials,
                     color=list(mcolors.TABLEAU_COLORS.values())[policy+3],

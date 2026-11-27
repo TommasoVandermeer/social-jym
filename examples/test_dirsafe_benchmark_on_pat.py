@@ -1,3 +1,4 @@
+import numpy as np
 import jax.numpy as jnp
 from matplotlib import pyplot as plt
 import matplotlib.colors as mcolors
@@ -136,7 +137,7 @@ metrics = {
     "successes": {"label": "Success Rate", "episodic": False}, 
     "collisions": {"label": "Collision Rate", "episodic": False}, 
     "timeouts": {"label": "Timeout Rate", "episodic": False}, 
-    "returns": {"label": "Return ($\gamma = 0.9$)", "episodic": True},
+    "returns": {"label": "Return ($\\gamma = 0.9$)", "episodic": True},
     "times_to_goal": {"label": "Time to goal ($s$)", "episodic": True},
     "average_speed": {"label": "Lin. speed ($m/s$)", "episodic": True},
     "average_acceleration": {"label": "Lin. accel. ($m/s^2$)", "episodic": True},
@@ -173,6 +174,7 @@ colors = list(mcolors.TABLEAU_COLORS.values())
 ## Plot results against number of humans (averaged over number of obstacles)
 nrows, ncols = 4, 4
 figure, ax = plt.subplots(nrows, ncols, figsize=(15, 20))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // ncols
@@ -199,6 +201,7 @@ figure.savefig(os.path.join(os.path.dirname(__file__), "dir_safe_benchmark_on_pa
 ## Plot results against number of obstacles (averaged over number of humans)
 nrows, ncols = 4, 4
 figure, ax = plt.subplots(nrows, ncols, figsize=(15, 20))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 figure.subplots_adjust(hspace=0.4, wspace=0.3, bottom=0.05, top=0.95, left=0.08, right=0.82)
 for m, metric in enumerate(metrics_to_plot):
     i = m // ncols

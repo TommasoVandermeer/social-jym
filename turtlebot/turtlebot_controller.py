@@ -464,6 +464,7 @@ class TB4Controller(Node):
         cleaned = np.nan_to_num(ranges, nan=30., posinf=30., neginf=30.)
         cleaned[cleaned < 0.15] = self.lidar_max_dist
         cleaned = np.clip(cleaned, 0.0, self.lidar_max_dist)
+        assert self.latest_scan is not None # Called only after a scan is received
         tb4_angle_min = self.latest_scan.angle_min
         tb4_angle_max = self.latest_scan.angle_max
         tb4_num_rays = len(cleaned)
@@ -974,7 +975,7 @@ class TB4Controller(Node):
                 'timestamp_convention': 'shared_clock_acquisition_time',
             }
             if self.planner == 'JESSI' or self.planner == 'BOUNDED-VANILLA-E2E':
-                out['params']['n_stack_for_action_space_bounding'] = self.policy.n_stack_for_action_space_bounding
+                out['params']['n_stack_for_action_space_bounding'] = getattr(self.policy, 'n_stack_for_action_space_bounding')
             temporary = save_path.with_suffix(save_path.suffix + '.tmp')
             with open(temporary, 'wb') as f:
                 pickle.dump(out, f)

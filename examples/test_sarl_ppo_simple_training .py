@@ -149,6 +149,7 @@ for test, n_humans in enumerate(n_humans_for_tests):
 
 # Plot losses during IL
 figure, ax = plt.subplots(2,1,figsize=(10,10))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 ax[0].set(
     xlabel='Epoch', 
     ylabel='Loss', 

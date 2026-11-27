@@ -167,7 +167,7 @@ def plot_results(rows, output_path):
         ("average_angular_jerk_rad_s3", "Angular jerk [rad/s³]", "all"),
         ("space_compliance", "Space compliance", "all"),
     )
-    figure, axes = plt.subplots(2, 3, figsize=(15, 8))
+    figure, axes = plt.subplots(2, 3, figsize=(15, 8), squeeze=False)
     for axis, (metric, label, cohort) in zip(axes.flat, plots):
         data = [finite_values(rows, policy, metric, cohort) for policy in ("JESSI", "DWA")]
         if all(len(values) for values in data):

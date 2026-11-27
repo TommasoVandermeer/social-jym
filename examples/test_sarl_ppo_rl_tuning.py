@@ -213,7 +213,7 @@ from matplotlib import rc
 font = {'weight' : 'regular',
         'size'   : 18}
 rc('font', **font)
-figure, ax = plt.subplots(5,2,figsize=(15,15))
+figure, ax = plt.subplots(5,2,figsize=(15,15), squeeze=False)
 figure.subplots_adjust(hspace=0.5, bottom=0.05, top=0.90, right=0.9, left=0.1, wspace=0.35)
 figure.suptitle(f"Hyperparameters tuning - {n_trials} Trials - Moving average of results ({window} updates window)")
 # Plot returns during RL

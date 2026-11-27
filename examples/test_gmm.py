@@ -1,7 +1,11 @@
 from jax import random, jit, vmap, lax, debug
+import numpy as np
 import jax.numpy as jnp
 from jax.nn import softmax
 import matplotlib.pyplot as plt
+from typing import cast
+from mpl_toolkits.mplot3d.axes3d import Axes3D
+from matplotlib.patches import Circle, Rectangle
 
 from socialjym.utils.distributions.gaussian_mixture_model import GMM
 
@@ -98,7 +102,7 @@ samples = gmm.batch_sample(fitted_distribution, random.split(random.PRNGKey(rand
 p = gmm.batch_p(fitted_distribution, samples)
 # Plot fitted distribution
 fig = plt.figure(figsize=(8, 6))
-ax = fig.add_subplot(111, projection='3d')
+ax = cast(Axes3D, fig.add_subplot(111, projection='3d'))
 ax.scatter(samples[:, 0], samples[:, 1], p, c=p, cmap='viridis', s=5, alpha=0.7)
 for pos in humans_position:
     ax.plot([pos[0], pos[0]], [pos[1], pos[1]], [0, ax.get_zlim()[1]], color='red', linewidth=2)
@@ -125,7 +129,7 @@ future_samples = gmm.batch_sample(future_fitted_distribution, random.split(rando
 future_p = gmm.batch_p(future_fitted_distribution, future_samples)
 # Plot fitted distribution
 fig = plt.figure(figsize=(8, 6))
-ax = fig.add_subplot(111, projection='3d')
+ax = cast(Axes3D, fig.add_subplot(111, projection='3d'))
 ax.scatter(future_samples[:, 0], future_samples[:, 1], future_p, c=future_p, cmap='viridis', s=5, alpha=0.7)
 for pos in future_humans_position:
     ax.plot([pos[0], pos[0]], [pos[1], pos[1]], [0, ax.get_zlim()[1]], color='red', linewidth=2)
@@ -141,10 +145,11 @@ fig.colorbar(ax.collections[0], ax=ax, label='Probability Density')
 
 ### Plot top views of the fitted distributions
 fig, ax = plt.subplots(1, 2, figsize=(16, 8))
+assert isinstance(ax, np.ndarray) # Axes array (for type checking)
 ax[0].set_xlim(-7, 7)
 ax[0].set_ylim(-7, 7)
 for pos, rad, vel in zip(humans_position, humans_radii, humans_velocity):
-    circle = plt.Circle(pos, rad, color='red', alpha=1, zorder=10)
+    circle = Circle((float(pos[0]), float(pos[1])), float(rad), color='red', alpha=1, zorder=10)
     ax[0].add_artist(circle)
     ax[0].arrow(pos[0], pos[1], vel[0], vel[1], head_width=0.2, head_length=0.2, fc='red', ec='red', zorder=11)
 ax[0].scatter(samples[:, 0], samples[:, 1], c=p, cmap='viridis', s=5, alpha=0.5)
@@ -152,21 +157,21 @@ ax[0].set_title("Humans and Fitted GMM Top View")
 ax[0].set_xlabel("X")
 ax[0].set_ylabel("Y")
 for cell_center in grid_cells:
-    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
+    rect = Rectangle((float(cell_center[0]-cell_size[0]/2), float(cell_center[1]-cell_size[1]/2)), float(cell_size[0]), float(cell_size[1]), facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
     ax[0].add_patch(rect)
 ax[0].set_aspect('equal', adjustable='box')
 # Plot top view of the fitted distribution
 ax[1].set_xlim(-7, 7)
 ax[1].set_ylim(-7, 7)
 for pos, rad in zip(future_humans_position, humans_radii):
-    circle = plt.Circle(pos, rad, color='red', alpha=1, zorder=10)
+    circle = Circle((float(pos[0]), float(pos[1])), float(rad), color='red', alpha=1, zorder=10)
     ax[1].add_artist(circle)
 ax[1].scatter(future_samples[:, 0], future_samples[:, 1], c=future_p, cmap='viridis', s=5, alpha=0.5)
-ax[1].set_title(f"Next Humans and Fitted GMM Top View - $\Delta t$={sampling_time}s")
+ax[1].set_title(f"Next Humans and Fitted GMM Top View - $\\Delta t$={sampling_time}s")
 ax[1].set_xlabel("X")
 ax[1].set_ylabel("Y")
 for cell_center in grid_cells:
-    rect = plt.Rectangle((cell_center[0]-cell_size[0]/2, cell_center[1]-cell_size[1]/2), cell_size[0], cell_size[1], facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
+    rect = Rectangle((float(cell_center[0]-cell_size[0]/2), float(cell_center[1]-cell_size[1]/2)), float(cell_size[0]), float(cell_size[1]), facecolor='none', edgecolor='black', linewidth=1.5, alpha=0.5, zorder=1)
     ax[1].add_patch(rect)
 ax[1].set_aspect('equal', adjustable='box')
 

@@ -1,3 +1,4 @@
+from typing import cast
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, CheckButtons
@@ -59,7 +60,7 @@ def update_plot(v, w, a_max, dt, alpha, beta, gamma, apply_limit):
         limit_poly = Polygon([(-1.0, w_limit_val), (2.0, w_limit_val), (2.0, -w_limit_val), (-1.0, -w_limit_val)])
         scaled_poly = scaled_poly.intersection(limit_poly)
     if not scaled_poly.is_empty and scaled_poly.geom_type == 'Polygon':
-        x_scaled, y_scaled = scaled_poly.exterior.xy
+        x_scaled, y_scaled = cast(Polygon, scaled_poly).exterior.xy
         scaled_poly_patch.set_xy(np.column_stack((x_scaled, y_scaled)))
     else:
         scaled_poly_patch.set_xy(np.empty((0, 2)))
@@ -71,20 +72,20 @@ def update_plot(v, w, a_max, dt, alpha, beta, gamma, apply_limit):
     ])
     feasible_poly = scaled_poly.intersection(dynamic_poly)
     if not feasible_poly.is_empty and feasible_poly.geom_type == 'Polygon':
-        x, y = feasible_poly.exterior.xy
+        x, y = cast(Polygon, feasible_poly).exterior.xy
         fill_patch.set_xy(np.column_stack((x, y)))
     else:
         fill_patch.set_xy(np.empty((0, 2)))
     fig.canvas.draw_idle()
 
-ax_v = plt.axes([0.15, 0.35, 0.60, 0.02])
-ax_w = plt.axes([0.15, 0.30, 0.60, 0.02])
-ax_a = plt.axes([0.15, 0.25, 0.60, 0.02])
-ax_dt = plt.axes([0.15, 0.20, 0.60, 0.02])
-ax_alpha = plt.axes([0.15, 0.15, 0.60, 0.02])
-ax_beta = plt.axes([0.15, 0.10, 0.60, 0.02])
-ax_gamma = plt.axes([0.15, 0.05, 0.60, 0.02])
-ax_check = plt.axes([0.80, 0.15, 0.15, 0.1])
+ax_v = plt.axes((0.15, 0.35, 0.60, 0.02))
+ax_w = plt.axes((0.15, 0.30, 0.60, 0.02))
+ax_a = plt.axes((0.15, 0.25, 0.60, 0.02))
+ax_dt = plt.axes((0.15, 0.20, 0.60, 0.02))
+ax_alpha = plt.axes((0.15, 0.15, 0.60, 0.02))
+ax_beta = plt.axes((0.15, 0.10, 0.60, 0.02))
+ax_gamma = plt.axes((0.15, 0.05, 0.60, 0.02))
+ax_check = plt.axes((0.80, 0.15, 0.15, 0.1))
 
 slider_v = Slider(ax_v, 'current_v', -0.2, v_max + 0.2, valinit=init_v)
 slider_w = Slider(ax_w, 'current_w', -w_max, w_max, valinit=init_w)
@@ -116,7 +117,9 @@ plt.show()
 init_A_max = 0.9
 init_r_robot = 0.2
 
-fig, (ax_lin, ax_ang) = plt.subplots(1, 2, figsize=(12, 6))
+fig, axs_lin_ang = plt.subplots(1, 2, figsize=(12, 6))
+assert isinstance(axs_lin_ang, np.ndarray) # Axes array (for type checking)
+ax_lin, ax_ang = axs_lin_ang
 plt.subplots_adjust(bottom=0.3)
 
 d_front = np.linspace(0, 2.0, 500)
@@ -153,17 +156,17 @@ def update(A_max, r_robot):
 
 update(init_A_max, init_r_robot)
 
-ax_slider_A = plt.axes([0.15, 0.15, 0.7, 0.03])
-ax_slider_r = plt.axes([0.15, 0.08, 0.7, 0.03])
+ax_slider_A = plt.axes((0.15, 0.15, 0.7, 0.03))
+ax_slider_r = plt.axes((0.15, 0.08, 0.7, 0.03))
 
 slider_A = Slider(ax_slider_A, 'A_max (wheels)', 0.1, 2.0, valinit=init_A_max)
 slider_r = Slider(ax_slider_r, 'r_robot', 0.1, 0.5, valinit=init_r_robot)
 
-def on_change(val):
+def on_change_2(val):
     update(slider_A.val, slider_r.val)
 
-slider_A.on_changed(on_change)
-slider_r.on_changed(on_change)
+slider_A.on_changed(on_change_2)
+slider_r.on_changed(on_change_2)
 
 plt.show()
 
@@ -219,7 +222,7 @@ line_blue2, = ax.plot([], [], color='blue', linewidth=1.5, zorder=5)
 line_blue3, = ax.plot([], [], color='blue', linewidth=1.5, zorder=5)
 line_blue4, = ax.plot([], [], color='blue', linewidth=1.5, zorder=5)
 
-def update_plot(v, w, a_max, dt, d_front, d_left, d_right, apply_limit):
+def update_plot_3(v, w, a_max, dt, d_front, d_left, d_right, apply_limit):
     dv = a_max * dt
     dw = (2 * dt * a_max) / wheels_distance
     
@@ -265,7 +268,7 @@ def update_plot(v, w, a_max, dt, d_front, d_left, d_right, apply_limit):
         poly_static_valid = poly_static_valid.intersection(limit_poly)
         
     if not poly_static_valid.is_empty and poly_static_valid.geom_type == 'Polygon':
-        x_s, y_s = poly_static_valid.exterior.xy
+        x_s, y_s = cast(Polygon, poly_static_valid).exterior.xy
         scaled_poly_patch.set_xy(np.column_stack((x_s, y_s)))
     else:
         scaled_poly_patch.set_xy(np.empty((0, 2)))
@@ -280,21 +283,21 @@ def update_plot(v, w, a_max, dt, d_front, d_left, d_right, apply_limit):
     feasible_poly = poly_static_valid.intersection(poly_dynamic)
     
     if not feasible_poly.is_empty and feasible_poly.geom_type == 'Polygon':
-        x, y = feasible_poly.exterior.xy
+        x, y = cast(Polygon, feasible_poly).exterior.xy
         fill_patch.set_xy(np.column_stack((x, y)))
     else:
         fill_patch.set_xy(np.empty((0, 2)))
         
     fig.canvas.draw_idle()
 
-ax_v = plt.axes([0.10, 0.35, 0.60, 0.02])
-ax_w = plt.axes([0.10, 0.31, 0.60, 0.02])
-ax_a = plt.axes([0.10, 0.27, 0.60, 0.02])
-ax_dt = plt.axes([0.10, 0.23, 0.60, 0.02])
-ax_d_front = plt.axes([0.10, 0.19, 0.60, 0.02])
-ax_d_left = plt.axes([0.10, 0.15, 0.60, 0.02])
-ax_d_right = plt.axes([0.10, 0.11, 0.60, 0.02])
-ax_check = plt.axes([0.75, 0.20, 0.20, 0.1])
+ax_v = plt.axes((0.10, 0.35, 0.60, 0.02))
+ax_w = plt.axes((0.10, 0.31, 0.60, 0.02))
+ax_a = plt.axes((0.10, 0.27, 0.60, 0.02))
+ax_dt = plt.axes((0.10, 0.23, 0.60, 0.02))
+ax_d_front = plt.axes((0.10, 0.19, 0.60, 0.02))
+ax_d_left = plt.axes((0.10, 0.15, 0.60, 0.02))
+ax_d_right = plt.axes((0.10, 0.11, 0.60, 0.02))
+ax_check = plt.axes((0.75, 0.20, 0.20, 0.1))
 
 slider_v = Slider(ax_v, 'v', -0.2, v_max + 0.2, valinit=init_v)
 slider_w = Slider(ax_w, 'w', -w_max, w_max, valinit=init_w)
@@ -305,20 +308,20 @@ slider_d_left = Slider(ax_d_left, 'd_left', 0.0, 2.0, valinit=init_d_left)
 slider_d_right = Slider(ax_d_right, 'd_right', 0.0, 2.0, valinit=init_d_right)
 check = CheckButtons(ax_check, ['w limit (1.9)'], [init_limit])
 
-def on_change(val):
-    update_plot(slider_v.val, slider_w.val, slider_a.val, slider_dt.val, 
+def on_change_3(val):
+    update_plot_3(slider_v.val, slider_w.val, slider_a.val, slider_dt.val, 
                 slider_d_front.val, slider_d_left.val, slider_d_right.val, 
                 check.get_status()[0])
 
-slider_v.on_changed(on_change)
-slider_w.on_changed(on_change)
-slider_a.on_changed(on_change)
-slider_dt.on_changed(on_change)
-slider_d_front.on_changed(on_change)
-slider_d_left.on_changed(on_change)
-slider_d_right.on_changed(on_change)
-check.on_clicked(on_change)
+slider_v.on_changed(on_change_3)
+slider_w.on_changed(on_change_3)
+slider_a.on_changed(on_change_3)
+slider_dt.on_changed(on_change_3)
+slider_d_front.on_changed(on_change_3)
+slider_d_left.on_changed(on_change_3)
+slider_d_right.on_changed(on_change_3)
+check.on_clicked(on_change_3)
 
-update_plot(init_v, init_w, init_amax, init_dt, init_d_front, init_d_left, init_d_right, init_limit)
+update_plot_3(init_v, init_w, init_amax, init_dt, init_d_front, init_d_left, init_d_right, init_limit)
 
 plt.show()

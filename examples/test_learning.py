@@ -290,6 +290,7 @@ for test, n_humans in enumerate(n_humans_for_tests):
 
 # Plot success rate after IL and RL for each seed
 figure3, ax3 = plt.subplots(2,1,figsize=(10,10))
+assert isinstance(ax3, np.ndarray) # Axes array (for type checking)
 ax3[0].set(
     xlabel='Number of humans', 
     ylabel='Success rate', 

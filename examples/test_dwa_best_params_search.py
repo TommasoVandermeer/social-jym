@@ -58,10 +58,10 @@ for trial in range(n_trials):
         lidar_max_dist=env.lidar_max_dist,
         n_stack=env.n_stack,
         lidar_n_stack_to_use=lidar_n_stack_to_use,
-        predict_time_horizon=time_horizon,
-        heading_cost_coeff=heading_coeff,
-        velocity_cost_coeff=velocity_coeff,
-        clearance_cost_coeff=clearence_coeff,
+        predict_time_horizon=float(time_horizon),
+        heading_cost_coeff=float(heading_coeff),
+        velocity_cost_coeff=float(velocity_coeff),
+        clearance_cost_coeff=float(clearence_coeff),
     )
     # Execute tests
     metrics = policy.evaluate(

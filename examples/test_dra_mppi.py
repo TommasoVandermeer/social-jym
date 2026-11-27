@@ -4,6 +4,7 @@ from jax.tree_util import tree_map
 import os
 import pickle
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 from matplotlib import rc, rcParams
 rc('font', weight='regular', size=20)
 rcParams['pdf.fonttype'] = 42
@@ -78,17 +79,17 @@ if use_ground_truth_data:
         for h in range(len(humans_poses)):
             color = 'blue'
             alpha = 0.6
-            head = plt.Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * info['humans_parameters'][h,0], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
+            head = Circle((humans_poses[h,0] + jnp.cos(humans_poses[h,2]) * info['humans_parameters'][h,0], humans_poses[h,1] + jnp.sin(humans_poses[h,2]) * info['humans_parameters'][h,0]), 0.1, color='black', alpha=alpha, zorder=1)
             ax.add_patch(head)
-            circle = plt.Circle((humans_poses[h,0], humans_poses[h,1]), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
+            circle = Circle((float(humans_poses[h,0]), float(humans_poses[h,1])), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, alpha=alpha, fill=True, zorder=1)
             ax.add_patch(circle)
         # Plot human velocities
         for h in range(len(humans_poses)):
             color = 'blue'
             alpha = 0.6
             ax.arrow(
-                humans_poses[h,0],
-                humans_poses[h,1],
+                float(humans_poses[h,0]),
+                float(humans_poses[h,1]),
                 humans_velocities[h,0],
                 humans_velocities[h,1],
                 head_width=0.15,
@@ -100,9 +101,9 @@ if use_ground_truth_data:
             )
         # Plot robot
         robot_position = state[-1,:2]
-        head = plt.Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
+        head = Circle((robot_position[0] + policy.robot_radius * jnp.cos(state[-1,4]), robot_position[1] + policy.robot_radius * jnp.sin(state[-1,4])), 0.1, color='black', zorder=1)
         ax.add_patch(head)
-        circle = plt.Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
+        circle = Circle((robot_position[0], robot_position[1]), policy.robot_radius, edgecolor="black", facecolor="red", fill=True, zorder=3)
         ax.add_patch(circle)
         # Plot robot goal
         ax.plot(

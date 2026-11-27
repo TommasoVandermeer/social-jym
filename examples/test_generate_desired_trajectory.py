@@ -198,8 +198,8 @@ def redraw():
     )
     ax.set_title(hud, fontsize=10, family='monospace')
     ax.set_xlabel('X'); ax.set_ylabel('Y')
-    ax.set_xlim([-TRAFFIC_LENGTH / 2 - 3, TRAFFIC_LENGTH / 2 + 1])
-    ax.set_ylim([-TRAFFIC_HEIGHT, TRAFFIC_HEIGHT])
+    ax.set_xlim(-TRAFFIC_LENGTH / 2 - 3, TRAFFIC_LENGTH / 2 + 1)
+    ax.set_ylim(-TRAFFIC_HEIGHT, TRAFFIC_HEIGHT)
     ax.set_aspect('equal', adjustable='box')
     fig.canvas.draw_idle()
 

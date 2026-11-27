@@ -2,6 +2,8 @@ import jax.numpy as jnp
 from jax import random, jit
 import os
 import matplotlib.pyplot as plt
+from typing import cast
+from mpl_toolkits.mplot3d.axes3d import Axes3D
 from matplotlib.patches import Polygon
 from matplotlib import rc, rcParams
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -116,7 +118,7 @@ pdf_values = distribution.batch_p(distr, samples)
 fig = plt.figure(figsize=(16, 8))
 fig.subplots_adjust(top=0.95, bottom=0.1, left=0.05, right=0.95, wspace=0.08)
 gs = fig.add_gridspec(1, 2, width_ratios=[2, 1])
-ax = fig.add_subplot(gs[0, 0], projection='3d')
+ax = cast(Axes3D, fig.add_subplot(gs[0, 0], projection='3d'))
 ax.scatter(samples[:,0], samples[:,1], pdf_values, label='Feasible actions', zorder=5)
 ax.plot([vmax, 0, 0, vmax], [0, -2*vmax/wheels_distance, 2*vmax/wheels_distance,0], [0,0,0,0], c='black', linewidth=2, zorder=3, label="Action space bounds")
 ax.set(xlim=[-vmax-0.3,vmax+0.3], ylim=[-vmax*2/wheels_distance-0.5,+vmax*2/wheels_distance+0.5])

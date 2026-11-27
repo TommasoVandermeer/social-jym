@@ -77,6 +77,7 @@ class ScheduleTests(unittest.TestCase):
                 pickle.dump({"final_event": {"reason": "goal_reached", "timestamp": 4.0}}, stream)
             reason, event = controller_outcome(Path(directory))
             self.assertEqual(reason, "goal_reached")
+            assert event is not None
             self.assertEqual(event["timestamp"], 4.0)
 
     def test_retry_archives_aborted_attempt_and_resets_schedule(self):

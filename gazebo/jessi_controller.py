@@ -127,6 +127,7 @@ class JessiController(Node):
         curr_x = self.latest_odom.pose.pose.position.x
         curr_y = self.latest_odom.pose.pose.position.y
         curr_theta = self.get_yaw_from_quaternion(self.latest_odom.pose.pose.orientation)
+        assert self.initial_odom is not None # Set by the first odometry message
         init_x = self.initial_odom.pose.pose.position.x
         init_y = self.initial_odom.pose.pose.position.y
         init_theta = self.get_yaw_from_quaternion(self.initial_odom.pose.pose.orientation)

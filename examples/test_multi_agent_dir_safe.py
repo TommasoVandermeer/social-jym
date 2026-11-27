@@ -1,3 +1,4 @@
+from matplotlib.patches import Circle, Rectangle
 import jax.numpy as jnp
 from matplotlib import pyplot as plt
 import matplotlib.colors as mcolors
@@ -15,7 +16,7 @@ from socialjym.envs.socialnav import SocialNav
 from socialjym.envs.base_env import wrap_angle
 from socialjym.utils.rewards.socialnav_rewards.reward2 import Reward2
 from socialjym.policies.dir_safe import DIRSAFE
-from socialjym.utils.aux_functions import animate_trajectory, interpolate_humans_boundaries, interpolate_obstacle_segments, plot_state
+from socialjym.utils.aux_functions import animate_trajectory, interpolate_humans_boundaries, interpolate_obstacle_segments, plot_state, pause_on_click
 
 ### Hyperparameters
 save_videos = False
@@ -71,7 +72,7 @@ cells, edges, grid_info = decompose(
 #     for j, coord in enumerate(row):
 #         cell_size = cell_size
 #         facecolor = 'red' if grid_info['grid_occupancy'][i,j] else 'none'
-#         rect = plt.Rectangle((coord[0]-cell_size/2, coord[1]-cell_size/2), cell_size, cell_size, facecolor=facecolor, edgecolor='gray', linewidth=0.5, alpha=0.5, zorder=0)
+#         rect = Rectangle((coord[0]-cell_size/2, coord[1]-cell_size/2), cell_size, cell_size, facecolor=facecolor, edgecolor='gray', linewidth=0.5, alpha=0.5, zorder=0)
 #         plt.gca().add_patch(rect)
 # for o in custom_episodes["static_obstacles"][trial,-1]: plt.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
 # plt.gca().set_aspect('equal', adjustable='box')
@@ -146,23 +147,23 @@ xlims = [jnp.nanmin(stacked_obstacles[-1][:,:,:,0]), jnp.nanmax(stacked_obstacle
 ylims = [jnp.nanmin(stacked_obstacles[-1][:,:,:,1]), jnp.nanmax(stacked_obstacles[-1][:,:,:,1])]
 figure, ax = plt.subplots(1,1, figsize=(8,8))
 figure.subplots_adjust(left=0.09, right=0.85, top=0.99, bottom=0.05)
-ax.set_xlim(xlims[0], xlims[1])
-ax.set_ylim(ylims[0], ylims[1])
+ax.set_xlim(float(xlims[0]), float(xlims[1]))
+ax.set_ylim(float(ylims[0]), float(ylims[1]))
 ax.set_xlabel('X')
 ax.set_ylabel('Y', labelpad=-13)
 for h in range(len(full_state)-1): 
-        head = plt.Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * humans_radiuses[h], full_state[h,1] + jnp.sin(full_state[h,4]) * humans_radiuses[h]), 0.1, color="blue", zorder=1)
+        head = Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * humans_radiuses[h], full_state[h,1] + jnp.sin(full_state[h,4]) * humans_radiuses[h]), 0.1, color="blue", zorder=1)
         ax.add_patch(head)
-        circle = plt.Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor="blue", facecolor="white", fill=True, zorder=1)
+        circle = Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor="blue", facecolor="white", fill=True, zorder=1)
         ax.add_patch(circle)
 for o in obstacles: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
 for i, path in enumerate(paths):
     ax.plot(path[:,0], path[:,1], linestyle='--', color=colors[i % len(colors)], linewidth=2, zorder=2)
     for j in range(len(path)-1):
         ax.scatter(path[j,0], path[j,1], marker='.', color=colors[i % len(colors)], s=50, zorder=4)
-    head = plt.Circle((paths[i][0][0] + jnp.cos(starting_orientations[i]) * humans_radiuses[i], paths[i][0][1] + jnp.sin(starting_orientations[i]) * humans_radiuses[i]), 0.1, color='black', zorder=1)
+    head = Circle((paths[i][0][0] + jnp.cos(starting_orientations[i]) * humans_radiuses[i], paths[i][0][1] + jnp.sin(starting_orientations[i]) * humans_radiuses[i]), 0.1, color='black', zorder=1)
     ax.add_patch(head)
-    circle = plt.Circle((paths[i][0][0],paths[i][0][1]),humans_radiuses[i], edgecolor='black', facecolor=colors[i % len(colors)], fill=True, zorder=1)
+    circle = Circle((float(paths[i][0][0]), float(paths[i][0][1])),humans_radiuses[i], edgecolor='black', facecolor=colors[i % len(colors)], fill=True, zorder=1)
     ax.add_patch(circle)
     ax.scatter(path[-1,0], path[-1,1], marker='*', color=colors[i % len(colors)], s=150, zorder=4)  # Goal
 ax.set_aspect('equal')
@@ -294,21 +295,21 @@ else:
 ### Plot trajectory
 figure, ax = plt.subplots(1,1, figsize=(16.04,9.11))
 figure.subplots_adjust(left=0.09, right=0.85, top=0.99, bottom=0.05)
-ax.set_xlim(xlims[0], xlims[1])
-ax.set_ylim(ylims[0], ylims[1])
+ax.set_xlim(float(xlims[0]), float(xlims[1]))
+ax.set_ylim(float(ylims[0]), float(ylims[1]))
 ax.set_xlabel('X')
 ax.set_ylabel('Y', labelpad=-13)
 for h in range(len(full_state)-1): 
-        head = plt.Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * humans_radiuses[h], full_state[h,1] + jnp.sin(full_state[h,4]) * humans_radiuses[h]), 0.1, color="blue", zorder=1)
+        head = Circle((full_state[h,0] + jnp.cos(full_state[h,4]) * humans_radiuses[h], full_state[h,1] + jnp.sin(full_state[h,4]) * humans_radiuses[h]), 0.1, color="blue", zorder=1)
         ax.add_patch(head)
-        circle = plt.Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor="blue", facecolor="white", fill=True, zorder=1)
+        circle = Circle((full_state[h,0],full_state[h,1]),humans_radiuses[h], edgecolor="blue", facecolor="white", fill=True, zorder=1)
         ax.add_patch(circle)
 for o in obstacles: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
 for i in range(n_robots):
     ax.plot(all_states[:, n_humans + i, 0], all_states[:, n_humans + i, 1], linestyle='--', color=colors[i % len(colors)], linewidth=2, zorder=2)
-    head = plt.Circle((all_states[0, n_humans + i, 0] + jnp.cos(starting_orientations[i]) * humans_radiuses[i], all_states[0, n_humans + i, 1] + jnp.sin(starting_orientations[i]) * humans_radiuses[i]), 0.1, color='black', zorder=1)
+    head = Circle((all_states[0, n_humans + i, 0] + jnp.cos(starting_orientations[i]) * humans_radiuses[i], all_states[0, n_humans + i, 1] + jnp.sin(starting_orientations[i]) * humans_radiuses[i]), 0.1, color='black', zorder=1)
     ax.add_patch(head)
-    circle = plt.Circle((all_states[0, n_humans + i, 0],all_states[0, n_humans + i, 1]),humans_radiuses[i], edgecolor='black', facecolor=colors[i % len(colors)], fill=True, zorder=1)
+    circle = Circle((float(all_states[0, n_humans + i, 0]), float(all_states[0, n_humans + i, 1])),humans_radiuses[i], edgecolor='black', facecolor=colors[i % len(colors)], fill=True, zorder=1)
     ax.add_patch(circle)
     ax.scatter(paths[i][-1][0], paths[i][-1][1], marker='*', color=colors[i % len(colors)], s=150, zorder=4)  # Goal
 ax.set_aspect('equal')
@@ -352,17 +353,17 @@ def animate(frame):
         human_pos = all_states[frame][h,:2]
         human_yaw = all_states[frame][h,4]
         color = "blue"
-        head = plt.Circle((human_pos[0] + jnp.cos(human_yaw) * info['humans_parameters'][h,0], human_pos[1] + jnp.sin(human_yaw) * info['humans_parameters'][h,0]), 0.1, color='black', zorder=1)
+        head = Circle((human_pos[0] + jnp.cos(human_yaw) * info['humans_parameters'][h,0], human_pos[1] + jnp.sin(human_yaw) * info['humans_parameters'][h,0]), 0.1, color='black', zorder=1)
         ax.add_patch(head)
-        circle = plt.Circle((human_pos[0], human_pos[1]), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, fill=True, zorder=1)
+        circle = Circle((float(human_pos[0]), float(human_pos[1])), info['humans_parameters'][h,0], edgecolor='black', facecolor=color, fill=True, zorder=1)
         ax.add_patch(circle)
     # Plot robots and their goals
     for r in range(n_robots):
         color = colors[r % len(colors)]
         robot_state = all_states[frame][n_humans + r]
-        head = plt.Circle((robot_state[0] + 0.3 * jnp.cos(robot_state[4]), robot_state[1] + 0.3 * jnp.sin(robot_state[4])), 0.1, color='black', zorder=1)
+        head = Circle((float(robot_state[0] + 0.3 * jnp.cos(robot_state[4])), float(robot_state[1] + 0.3 * jnp.sin(robot_state[4]))), 0.1, color='black', zorder=1)
         ax.add_patch(head)
-        circle = plt.Circle((robot_state[0], robot_state[1]), 0.3, edgecolor="black", facecolor=color, fill=True, zorder=3)
+        circle = Circle((float(robot_state[0]), float(robot_state[1])), 0.3, edgecolor="black", facecolor=color, fill=True, zorder=3)
         ax.add_patch(circle)
         # Plot robot goals
         ax.plot(
@@ -375,15 +376,10 @@ def animate(frame):
         )
     # Plot static obstacles
     for o in obstacles: ax.plot(o[0,:,0],o[0,:,1], color='black', linewidth=2, zorder=3)
-anim = FuncAnimation(fig, animate, interval=test_env.robot_dt*1000, frames=len(all_states))
+anim = FuncAnimation(fig, animate, interval=test_env.robot_dt*1000, frames=len(all_states)) # pyright: ignore[reportArgumentType] (the return value of the frame function is used only with blit=True)
 if save_videos:
     save_path = os.path.join(os.path.dirname(__file__), f'multi_agent_dir_safe.mp4')
     writer_video = FFMpegWriter(fps=int(1/test_env.robot_dt), bitrate=1800)
     anim.save(save_path, writer=writer_video, dpi=300)
-anim.paused = False
-def toggle_pause(self, *args, **kwargs):
-    if anim.paused: anim.resume()
-    else: anim.pause()
-    anim.paused = not anim.paused
-fig.canvas.mpl_connect('button_press_event', toggle_pause)
+pause_on_click(fig, anim)
 plt.show()
