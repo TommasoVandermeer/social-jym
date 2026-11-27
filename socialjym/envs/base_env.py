@@ -2297,13 +2297,13 @@ class BaseEnv(ABC):
         - human_legs_positions (self.n_humans,4): jnp.ndarray containing the x and y coordinates of the humans legs (only used if leg_dynamics is True).
         - human_radii (self.n_humans,): jnp.ndarray containing the radius of the humans.
         - human_legs_radii (self.n_humans,): jnp.ndarray containing the radius of the humans' legs (only used if leg_dynamics is True).
-        - static_obstacles (self.n_obstacles, m, 2, 2): jnp.ndarray containing the static obstacles as line segments (m is the number of segments per obstacle).
+        - static_obstacles (self.n_obstacles + 5 * self.noisy_walls, m, 2, 2): jnp.ndarray containing the static obstacles as line segments (m is the number of segments per obstacle).
 
         output:
         - lidar_output (self.lidar_num_rays,2): jnp.ndarray containing the lidar measurements of the robot and the angle (IN THE GLOBAL FRAME) for each ray.
           WARNING: the angles are in the global frame, not in the robot frame.
         - human_visibility_mask (self.n_humans,): boolean jnp.ndarray indicating which humans are visible by the LiDAR (i.e. at least one ray collides with them).
-        - obstacles_visibility_mask (self.n_obstacles, m): boolean jnp.ndarray indicating which static obstacle segments are visible by the LiDAR (i.e. at least one ray collides with them).
+        - obstacles_visibility_mask (self.n_obstacles + 5 * self.noisy_walls, m): boolean jnp.ndarray indicating which static obstacle segments are visible by the LiDAR (i.e. at least one ray collides with them).
         """
         angles = lidar_ray_angles(self.lidar_angular_range, self.lidar_num_rays, center=lidar_yaw)
         if self.leg_dynamics:
@@ -2323,10 +2323,10 @@ class BaseEnv(ABC):
         def obstacle_segments_visibility(obstacle_idx, segment_idxs, obstacle_collision_idxs):
             return vmap(segment_visibility, in_axes=(None, 0, None))(obstacle_idx, segment_idxs, obstacle_collision_idxs)
         obstacles_visibility_mask = vmap(obstacle_segments_visibility, in_axes=(0, None, None))(
-            jnp.arange(self.n_obstacles), 
+            jnp.arange(self.n_obstacles + 5 * self.noisy_walls), # The noisy walls are 5 extra obstacles
             jnp.arange(self.n_segments), 
             obstacle_collision_idxs
-        ) # Shape: (n_obstacles, n_segments)
+        ) # Shape: (n_obstacles + 5 * noisy_walls, n_segments)
         if self.lidar_noise:
             measurements = self.add_lidar_noise(measurements,noise_key)
         lidar_output = jnp.stack((measurements, angles), axis=-1)
