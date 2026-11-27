@@ -1,5 +1,6 @@
 import jax.numpy as jnp
-from jax import vmap, random, lax, tree_map
+from jax import vmap, random, lax
+from jax.tree_util import tree_map
 import matplotlib.pyplot as plt
 import os
 from scipy.spatial import ConvexHull

@@ -1682,7 +1682,7 @@ class BaseEnv(ABC):
             v2 = p2 - p1
             v3 = jnp.array([-direction[1], direction[0]])
             dot = jnp.dot(v2, v3)
-            t1 = jnp.cross(v2, v1) / dot
+            t1 = (v2[0] * v1[1] - v2[1] * v1[0]) / dot  # 2D cross product (jnp.cross no longer accepts 2D vectors)
             t2 = jnp.dot(v1, v3) / dot
             distance = lax.cond(
                 (dot != 0) & (t1 >= 0) & (t2 >= 0) & (t2 <= 1),

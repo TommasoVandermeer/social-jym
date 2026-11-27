@@ -94,7 +94,7 @@ def downsize_path(path):
         v1 = curr - prev
         v2 = next_ - curr
         # Check if vectors are colinear (cross product close to zero)
-        if jnp.abs(jnp.cross(v1, v2)) > 1e-5:
+        if jnp.abs(v1[0] * v2[1] - v1[1] * v2[0]) > 1e-5:
             downsized.append(curr)
     downsized.append(path[-1])
     return jnp.stack(downsized)

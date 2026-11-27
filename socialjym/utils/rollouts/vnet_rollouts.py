@@ -1,7 +1,8 @@
 import haiku as hk
 import optax
 from typing import Callable
-from jax import jit, lax, random, vmap, debug, tree_map
+from jax import jit, lax, random, vmap, debug
+from jax.tree_util import tree_map
 import jax.numpy as jnp
 from jax_tqdm import loop_tqdm
 import pickle

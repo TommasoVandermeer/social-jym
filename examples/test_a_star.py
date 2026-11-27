@@ -291,7 +291,7 @@ def find_a_star_path(occupancy_grid, start_pos, goal_pos, grid_coordinates, grid
             v1 = curr - prev
             v2 = next_ - curr
             # Check if vectors are colinear (cross product close to zero)
-            if jnp.abs(jnp.cross(v1, v2)) > epsilon:
+            if jnp.abs(v1[0] * v2[1] - v1[1] * v2[0]) > epsilon:
                 downsized.append(curr)
         downsized.append(path[-1])
         return jnp.stack(downsized)

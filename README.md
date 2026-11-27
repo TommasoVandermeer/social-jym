@@ -18,7 +18,9 @@ An environment based on JAX to train mobile robots within crowded environments. 
 
 ## Installation
 
-### Option 1: Virtual environment (tested on Ubuntu 22.04 with Python 3.10 and Debian 13 with Python 3.13)
+### Option 1: Virtual environment (tested on Debian 13 with Python 3.13)
+
+With Python 3.13 the package installs JAX 0.12.1. With Python 3.10 it installs the previous versions (JAX 0.4.30), which are used by the Docker image: recent JAX versions require Python 3.12 or newer. See [Reproducibility](#reproducibility) for the differences.
 
 Create a virtual environment.
 ```
@@ -36,10 +38,11 @@ Install the submodules and the main package.
 ```
 pip install -e social-jym social-jym/JHSFM social-jym/JSFM social-jym/JORCA
 ```
-Instead, if you want to run JAX on your GPU (with CUDA12) run:
+Instead, if you want to run JAX on your GPU (with CUDA 13) run:
 ```
-pip install -e social-jym[cuda12] social-jym/JHSFM social-jym/JSFM social-jym/JORCA
+pip install -e social-jym[cuda13] social-jym/JHSFM social-jym/JSFM social-jym/JORCA
 ```
+The `cuda12` extra is also available. With Python 3.13 no extra setup is needed for GPUs newer than Hopper (e.g. RTX 50xx).
 
 ### Option 2: Docker (Ubuntu 22.04, Python 3.10)
 
@@ -83,6 +86,14 @@ docker cp socialjym/ social-jym:/opt/social-jym/socialjym
 The container is always named `social-jym`, so this works as long as it is running.
 
 The container supports GUI forwarding (matplotlib windows, notebooks, etc.) via the host X11 server and, when not using `--no-mount`, mounts the repository root at `/opt/social-jym` so code changes are reflected immediately without rebuilding the image.
+
+## Reproducibility
+
+The code was moved from JAX 0.4.34 to JAX 0.12.1 (Python 3.13). The two versions differ in three ways:
+
+- **Random numbers.** Since JAX 0.5 the default random number generator (`jax_threefry_partitionable=True`) produces different numbers from the same seed. Episodes, network initializations, action sampling and training runs therefore differ from those of JAX 0.4, and the results of the papers cannot be reproduced bit for bit with the current version. To reproduce them exactly, use the corresponding release (`dir-safe-icar25`, `jessi-iros26`) with its pinned dependencies. With the current version, results are expected to be statistically equivalent, not identical.
+- **Floating point.** XLA computes some functions (e.g. `exp`, `tanh`, `erf`) with slightly different rounding, a few units in the last place in float32. With the same random numbers, the policies and the environments match JAX 0.4.34 up to this rounding: the largest difference between actions is below 1e-3 (below 2e-5 for the learned policies), and all discrete outputs (PRNG keys, masks, episode outcomes) are identical. Rounding can still move a threshold event by one step or sub-step (e.g. a human reaching its goal), after which the two trajectories diverge, so long closed-loop episodes are not identical.
+- **Checkpoints.** Parameters and rollout outputs are now saved with numpy arrays (`socialjym.utils.aux_functions.tree_to_numpy`) instead of `jax.Array` objects, so that they do not depend on the JAX version. Older checkpoints that contain pickled `jax.Array` objects still load with JAX 0.12.1, but may not with later versions: convert them to numpy arrays while they still load.
 
 ## Project structure
 The source code of the project can be found in the folder socialjym which includes all the python modules. 

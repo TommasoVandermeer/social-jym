@@ -1245,7 +1245,7 @@ class JESSI(BasePolicy):
         """
         # Limit readings to self.lidar_max_dist
         raw_ranges = obs[:, 11:]  # (T, L)
-        clipped_obs = obs.at[:, 11:].set(jnp.clip(obs[:, 11:], a_min=0.0, a_max=self.lidar_max_dist))
+        clipped_obs = obs.at[:, 11:].set(jnp.clip(obs[:, 11:], min=0.0, max=self.lidar_max_dist))
         hit_mask = raw_ranges < self.lidar_max_dist
         # Align LiDAR scans - (x,y) coordinates of pointcloud in the robot frame, first information corresponds to the most recent observation.
         aligned_lidar_scans = self.align_lidar(clipped_obs)[0]  # Shape: (n_stack, lidar_num_rays, 2)
