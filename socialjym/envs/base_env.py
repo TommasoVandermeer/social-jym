@@ -54,6 +54,14 @@ ENVIRONMENTS = [
 ]
 EPSILON = 1e-5 # Small value to avoid math overflow
 
+def strip_weak_types(tree):
+    """
+    Returns the pytree with the weak types of its arrays removed (same values and dtypes). Python scalars used to
+    initialize arrays give weakly-typed arrays, which become strongly typed after an operation with a strong array:
+    a jitted function taking both versions is traced and compiled twice.
+    """
+    return jax.tree_util.tree_map(lambda x: lax.convert_element_type(x, jnp.asarray(x).dtype), tree)
+
 def lidar_ray_angles(angular_range:float, num_rays:int, center=0.) -> jnp.ndarray:
     """
     Angles of the LiDAR rays, evenly spaced in [center - angular_range/2, center + angular_range/2].
@@ -821,7 +829,9 @@ class BaseEnv(ABC):
             "humans_leg_state": leg_state,
             "intermediate_leg_states": jnp.repeat(leg_state[None], int(self.robot_dt/self.humans_dt), axis=0), # Used to store the intermediate leg states between two robot steps
         }
-        return info
+        # Strong types, as after a step (otherwise the jitted functions taking the info are compiled twice: for the
+        # weakly-typed info of a reset and for the strongly-typed one of a step)
+        return strip_weak_types(info)
 
     @partial(jit, static_argnames=("self"))
     def _init_obstacles(self, key:jax.Array, scenario:int) -> jnp.ndarray:

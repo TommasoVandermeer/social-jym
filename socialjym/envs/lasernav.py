@@ -4,7 +4,7 @@ from jax import random, jit, lax, debug, vmap
 from functools import partial
 from types import FunctionType
 
-from .base_env import BaseEnv, SCENARIOS, ENVIRONMENTS, is_multiple
+from .base_env import BaseEnv, SCENARIOS, ENVIRONMENTS, is_multiple, strip_weak_types
 from socialjym.utils.rewards.base_reward import BaseReward
 
 class LaserNav(BaseEnv):
@@ -209,7 +209,7 @@ class LaserNav(BaseEnv):
         )
         info["humans_visibility_mask"] = humans_visibility_mask[0]
         info["obstacles_visibility_mask"] = obstacles_visibility_mask[0]
-        return info
+        return strip_weak_types(info) # See BaseEnv._init_info
 
     @partial(jit, static_argnames=("self"))
     def _get_current_obs(
