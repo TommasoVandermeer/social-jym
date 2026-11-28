@@ -36,11 +36,11 @@ git clone --recurse-submodules https://github.com/TommasoVandermeer/social-jym.g
 ```
 Install the submodules and the main package.
 ```
-pip install -e social-jym social-jym/JHSFM social-jym/JSFM social-jym/JORCA
+pip install -e social-jym -e social-jym/JHSFM -e social-jym/JSFM -e social-jym/JORCA
 ```
 Instead, if you want to run JAX on your GPU (with CUDA 13) run:
 ```
-pip install -e social-jym[cuda13] social-jym/JHSFM social-jym/JSFM social-jym/JORCA
+pip install -e "social-jym[cuda13]" -e social-jym/JHSFM -e social-jym/JSFM -e social-jym/JORCA
 ```
 The `cuda12` extra is also available. With Python 3.13 no extra setup is needed for GPUs newer than Hopper (e.g. RTX 50xx).
 
