@@ -2054,29 +2054,53 @@ class BaseEnv(ABC):
             return info, state
 
         if self.scenario != -1:  # If not custom scenario
-            new_info, new_state = lax.switch(
-                info["current_scenario"], 
-                [
-                    _update_circular_crossing, 
-                    _update_traffic_scenarios, 
-                    _update_traffic_scenarios, 
-                    lambda x: x,
-                    _update_delayed_episodes,
-                    _update_circular_crossing_with_static_obstacles,
-                    _update_crowd_navigation,
-                    _update_corner_traffic,
-                    _update_door_crossing,
-                    _update_crowd_chasing,
-                    lambda x: x,
-                    _update_delayed_episodes,
-                    lambda x: x,
-                    lambda x: x,
-                    lambda x: x,
-                    lambda x: x,
-                    lambda x: x,
-                ], 
-                (info, state),
-            )
+            no_update = lambda x: x
+            scenario_updates = [
+                _update_circular_crossing, 
+                _update_traffic_scenarios, 
+                _update_traffic_scenarios, 
+                no_update,
+                _update_delayed_episodes,
+                _update_circular_crossing_with_static_obstacles,
+                _update_crowd_navigation,
+                _update_corner_traffic,
+                _update_door_crossing,
+                _update_crowd_chasing,
+                no_update,
+                _update_delayed_episodes,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+                no_update,
+            ]
+            # Under vmap (batched current_scenario) lax.switch computes every branch, here at every humans_dt substep:
+            # only the updates of the scenarios that the environment can generate are included (the scenarios of the
+            # hybrid subset, or the environment scenario). Episodes of other scenarios (only possible with custom
+            # episodes) are not updated.
+            if self.scenario == SCENARIOS.index('hybrid_scenario'):
+                possible_scenarios = [int(sc) for sc in np.asarray(self.hybrid_scenario_subset)]
+            else:
+                possible_scenarios = [int(self.scenario)]
+            branches, branch_of_scenario = [], {}
+            for sc in possible_scenarios: # One branch per distinct update function
+                fn = scenario_updates[sc]
+                if fn not in branches:
+                    branches.append(fn)
+                branch_of_scenario[sc] = branches.index(fn)
+            if no_update not in branches:
+                branches.append(no_update)
+            branch_index = jnp.full((len(SCENARIOS),), branches.index(no_update), dtype=jnp.int32)
+            for sc, b in branch_of_scenario.items():
+                branch_index = branch_index.at[sc].set(b)
+            if len(branches) == 1:
+                new_info, new_state = info, state
+            else:
+                new_info, new_state = lax.switch(
+                    branch_index[jnp.clip(info["current_scenario"], 0, len(SCENARIOS) - 1)],
+                    branches,
+                    (info, state),
+                )
         else:
             new_info = info
             new_state = state
