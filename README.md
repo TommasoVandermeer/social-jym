@@ -87,6 +87,10 @@ The container is always named `social-jym`, so this works as long as it is runni
 
 The container supports GUI forwarding (matplotlib windows, notebooks, etc.) via the host X11 server and, when not using `--no-mount`, mounts the repository root at `/opt/social-jym` so code changes are reflected immediately without rebuilding the image.
 
+### Compilation cache
+
+Importing `socialjym` enables the JAX persistent compilation cache in `~/.cache/socialjym/jax_compilation_cache` (or in `$JAX_COMPILATION_CACHE_DIR`, if set). Compiled programs are reused across runs and across identical environments and policies, so only the first run of a script pays the compilation time, most of which is GPU autotuning. Set `SOCIALJYM_COMPILATION_CACHE=0` to disable it. The cache is not cleaned automatically: delete the folder to free disk space.
+
 ## Reproducibility
 
 The code was moved from JAX 0.4.34 and Haiku to JAX 0.12.1 and Flax (Python 3.13). The two versions differ in four ways:
